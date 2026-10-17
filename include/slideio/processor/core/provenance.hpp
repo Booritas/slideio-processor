@@ -12,6 +12,12 @@ namespace slideio::processor {
  * @brief The slide-level provenance record: which slide and scene, which
  * library version, and when.
  *
+ * Provenance is write-side. It always reports the running library's version
+ * and the time this object was constructed, so it cannot represent a record
+ * read back from a store with a different version or creation time; restoring
+ * those values is not supported by this type. Code reading a store must treat
+ * the persisted JSON as the source of truth.
+ *
  * Per-stage configuration is recorded by the workspace, not here. A moved-from
  * record is valid: it reads as slide id "", scene 0, and the library version,
  * and a setter re-initialises it.
@@ -72,15 +78,19 @@ public:
      */
     int32_t sceneIndex() const noexcept;
     /**
-     * @brief Returns the version of the library that made the record.
+     * @brief Returns the version of the running library.
+     *
+     * This is not stored per record; it is the same for every Provenance in
+     * the process.
      * @return A static null-terminated string, never null.
      * @throws Nothing.
      */
     const char* libraryVersion() const noexcept;
     /**
      * @brief Returns the creation time.
-     * @return Milliseconds since the Unix epoch (system clock), taken at
-     * construction and kept by copies.
+     * @return The time this object was constructed, in milliseconds since the
+     * Unix epoch (system clock); copies keep the source's value, and a
+     * moved-from record reads 0.
      * @throws Nothing.
      */
     int64_t createdAtUnixMs() const noexcept;

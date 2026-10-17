@@ -58,6 +58,25 @@ TEST(Provenance, BufferContractTruncatesAndTerminates) {
     EXPECT_EQ(untouched[0], 'Z');
 }
 
+TEST(Provenance, CapacityEqualToLengthTruncatesByOne) {
+    Provenance p; p.setSlideId("abc");
+    const int32_t n = p.toJson(nullptr, 0);
+    std::string full(n + 1, '\0');
+    p.toJson(full.data(), n + 1);
+    std::string buf(n, 'Z');
+    EXPECT_EQ(p.toJson(buf.data(), n), n);
+    EXPECT_EQ(std::strlen(buf.c_str()), static_cast<size_t>(n - 1));
+    EXPECT_EQ(buf.c_str(), std::string(full.c_str()).substr(0, n - 1));
+}
+
+TEST(Provenance, CapacityOneWritesEmptyString) {
+    Provenance p;
+    const int32_t n = p.toJson(nullptr, 0);
+    char c = 'Z';
+    EXPECT_EQ(p.toJson(&c, 1), n);
+    EXPECT_EQ(c, '\0');
+}
+
 TEST(Provenance, CopyAndMoveSet) {
     Provenance a; a.setSlideId("s"); a.setSceneIndex(3);
     const int64_t created = a.createdAtUnixMs();
@@ -78,7 +97,12 @@ TEST(Provenance, CopyAndMoveSet) {
     EXPECT_STREQ(a.slideId(), "");
     EXPECT_EQ(a.sceneIndex(), 0);
     EXPECT_STREQ(a.libraryVersion(), libraryVersion());
-    EXPECT_GE(a.toJson(nullptr, 0), 0);
+    const std::string movedFromJson = std::string("{\"slideId\":\"\",\"sceneIndex\":0,\"libraryVersion\":\"")
+        + libraryVersion() + "\",\"createdAtUnixMs\":0}";
+    std::string movedFromBuf(movedFromJson.size() + 1, '\0');
+    EXPECT_EQ(a.toJson(nullptr, 0), static_cast<int32_t>(movedFromJson.size()));
+    a.toJson(movedFromBuf.data(), static_cast<int32_t>(movedFromBuf.size()));
+    EXPECT_EQ(movedFromBuf.c_str(), movedFromJson);
     a.setSlideId("again");
     EXPECT_STREQ(a.slideId(), "again");
 
