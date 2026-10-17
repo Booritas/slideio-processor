@@ -37,3 +37,25 @@ TEST(ObjectRecord, AssignmentAndMove) {
     ObjectRecord d; d = std::move(c);
     EXPECT_EQ(d.layer(), LayerId(2)); EXPECT_EQ(d.measurements().count(), 1); EXPECT_FALSE(c.layer().isValid());
 }
+
+TEST(ObjectRecord, SelfAssignmentIsHarmless) {
+    ObjectRecord a; a.setLayer(LayerId(2)); a.setLabel(LabelId(3));
+    ObjectRecord& r = a;
+    a = r; EXPECT_EQ(a.layer(), LayerId(2));
+    a = std::move(r); EXPECT_EQ(a.layer(), LayerId(2)); EXPECT_EQ(a.label(), LabelId(3));
+}
+
+TEST(ObjectRecord, MovedFromIsUsable) {
+    ObjectRecord a; a.setLayer(LayerId(2));
+    ObjectRecord b(std::move(a));
+    EXPECT_TRUE(a.geometry().isEmpty()); EXPECT_EQ(a.measurements().count(), 0);
+    EXPECT_FALSE(a.boundingBox().width > 0);
+    a.measurements().set("x", 1, MeasurementUnit::Pixels); a.setLabel(LabelId(1));
+    EXPECT_EQ(a.measurements().count(), 1); EXPECT_TRUE(a.hasLabel());
+}
+
+TEST(ObjectRecord, IdInvalidForOutOfRangeAnchor) {
+    Point64 v[] = {{-5,2},{9,2},{9,8}}; Polygon p; p.addRing(v, 3, false);
+    ObjectRecord r; r.setGeometry(p); r.setLayer(LayerId(4));
+    EXPECT_FALSE(r.id().isValid());
+}

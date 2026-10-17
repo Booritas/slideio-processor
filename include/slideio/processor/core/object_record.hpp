@@ -6,6 +6,8 @@
 #include <slideio/processor/core/ids.hpp>
 #include <slideio/processor/core/measurement.hpp>
 
+#include <memory>
+
 namespace slideio::processor {
 
 /**
@@ -13,8 +15,13 @@ namespace slideio::processor {
  * measurements.
  *
  * The identifier is derived from the layer and the geometry anchor, so a
- * re-run producing the same geometry produces the same id (UR-STG-6). A
- * moved-from record is valid and in its default state.
+ * re-run producing the same geometry produces the same id (UR-STG-6).
+ *
+ * A moved-from record is valid but unspecified; in practice it reads as a
+ * default record. Const accessors never fail on it. The first non-const
+ * measurements() or setter call on a record moved-from by construction
+ * allocates its state again; exhausting memory there is fatal for
+ * measurements() (noexcept) and throws std::bad_alloc from the setters.
  * @par Thread-safety
  * ThreadCompatible: const members may run concurrently; any mutation needs
  * exclusive access.
@@ -35,7 +42,7 @@ public:
      */
     ObjectRecord(const ObjectRecord& other);
     /**
-     * @brief Moves a record. The source is left in its default state.
+     * @brief Moves a record. The source is left valid but unspecified.
      * @param other The record to move from.
      * @throws Nothing.
      */
@@ -48,7 +55,7 @@ public:
      */
     ObjectRecord& operator=(const ObjectRecord& other);
     /**
-     * @brief Move-assigns a record. The source is left in its default state.
+     * @brief Move-assigns a record. The source is left valid but unspecified.
      * @param other The record to move from.
      * @return This object.
      * @throws Nothing.
@@ -129,7 +136,7 @@ public:
     /**
      * @brief Sets the layer. This changes id().
      * @param layer The layer.
-     * @throws Nothing.
+     * @throws std::bad_alloc Only on a moved-from record, when memory is exhausted.
      */
     void setLayer(LayerId layer);
     /**
@@ -138,7 +145,7 @@ public:
      * Labels asserted later by other stages live in the annotation store, not
      * here.
      * @param label The label.
-     * @throws Nothing.
+     * @throws std::bad_alloc Only on a moved-from record, when memory is exhausted.
      */
     void setLabel(LabelId label);
     /**
@@ -153,11 +160,9 @@ public:
     void reset() noexcept;
 
 private:
-    Polygon geometry_;
-    MeasurementSet measurements_;
-    LayerId layer_;
-    StageId stage_;
-    LabelId label_;
+    class Impl;
+    Impl& ensure();
+    std::unique_ptr<Impl> impl_; // null only after a move construction
 };
 
 } // namespace slideio::processor

@@ -4,78 +4,108 @@
 
 namespace slideio::processor {
 
-ObjectRecord::ObjectRecord() = default;
+class ObjectRecord::Impl {
+public:
+    void reset() noexcept {
+        geometry.clear();
+        measurements.clear();
+        layer = LayerId();
+        stage = StageId();
+        label = LabelId();
+    }
 
-ObjectRecord::ObjectRecord(const ObjectRecord& other) = default;
+    Polygon geometry;
+    MeasurementSet measurements;
+    LayerId layer;
+    StageId stage;
+    LabelId label;
+};
 
-ObjectRecord::ObjectRecord(ObjectRecord&& other) noexcept
-    : geometry_(std::move(other.geometry_)),
-      measurements_(std::move(other.measurements_)),
-      layer_(other.layer_),
-      stage_(other.stage_),
-      label_(other.label_) {
-    other.reset();
+namespace {
+const Polygon& emptyPolygon() {
+    static const Polygon empty;
+    return empty;
 }
+const MeasurementSet& emptyMeasurements() {
+    static const MeasurementSet empty;
+    return empty;
+}
+} // namespace
+
+ObjectRecord::ObjectRecord() : impl_(std::make_unique<Impl>()) {}
+
+ObjectRecord::ObjectRecord(const ObjectRecord& other)
+    : impl_(std::make_unique<Impl>(other.impl_ ? *other.impl_ : Impl())) {}
+
+ObjectRecord::ObjectRecord(ObjectRecord&& other) noexcept : impl_(std::move(other.impl_)) {}
 
 ObjectRecord& ObjectRecord::operator=(const ObjectRecord& other) {
     if (this != &other) {
-        ObjectRecord copy(other);
-        *this = std::move(copy);
+        auto copy = std::make_unique<Impl>(other.impl_ ? *other.impl_ : Impl());
+        impl_ = std::move(copy);
     }
     return *this;
 }
 
 ObjectRecord& ObjectRecord::operator=(ObjectRecord&& other) noexcept {
     if (this != &other) {
-        geometry_ = std::move(other.geometry_);
-        measurements_ = std::move(other.measurements_);
-        layer_ = other.layer_;
-        stage_ = other.stage_;
-        label_ = other.label_;
-        other.reset();
+        impl_.swap(other.impl_); // never allocates; the source keeps our old state
     }
     return *this;
 }
 
 ObjectRecord::~ObjectRecord() = default;
 
-ObjectId ObjectRecord::id() const noexcept {
-    if (geometry_.isEmpty() || !layer_.isValid()) {
-        return ObjectId();
+ObjectRecord::Impl& ObjectRecord::ensure() {
+    if (!impl_) {
+        impl_ = std::make_unique<Impl>();
     }
-    return ObjectId::fromAnchor(layer_, geometry_.anchor());
+    return *impl_;
 }
 
-LayerId ObjectRecord::layer() const noexcept { return layer_; }
+ObjectId ObjectRecord::id() const noexcept {
+    if (!impl_ || impl_->geometry.isEmpty() || !impl_->layer.isValid()) {
+        return ObjectId();
+    }
+    return ObjectId::fromAnchor(impl_->layer, impl_->geometry.anchor());
+}
 
-StageId ObjectRecord::stage() const noexcept { return stage_; }
+LayerId ObjectRecord::layer() const noexcept { return impl_ ? impl_->layer : LayerId(); }
 
-const Polygon& ObjectRecord::geometry() const noexcept { return geometry_; }
+StageId ObjectRecord::stage() const noexcept { return impl_ ? impl_->stage : StageId(); }
 
-Rect64 ObjectRecord::boundingBox() const noexcept { return geometry_.boundingBox(); }
+const Polygon& ObjectRecord::geometry() const noexcept {
+    return impl_ ? impl_->geometry : emptyPolygon();
+}
 
-bool ObjectRecord::hasLabel() const noexcept { return label_.isValid(); }
+Rect64 ObjectRecord::boundingBox() const noexcept { return geometry().boundingBox(); }
 
-LabelId ObjectRecord::label() const noexcept { return label_; }
+bool ObjectRecord::hasLabel() const noexcept { return label().isValid(); }
 
-const MeasurementSet& ObjectRecord::measurements() const noexcept { return measurements_; }
+LabelId ObjectRecord::label() const noexcept { return impl_ ? impl_->label : LabelId(); }
 
-MeasurementSet& ObjectRecord::measurements() noexcept { return measurements_; }
+const MeasurementSet& ObjectRecord::measurements() const noexcept {
+    return impl_ ? impl_->measurements : emptyMeasurements();
+}
 
-void ObjectRecord::setGeometry(const Polygon& geometry) { geometry_ = geometry; }
+MeasurementSet& ObjectRecord::measurements() noexcept { return ensure().measurements; }
 
-void ObjectRecord::setLayer(LayerId layer) { layer_ = layer; }
+void ObjectRecord::setGeometry(const Polygon& geometry) { ensure().geometry = geometry; }
 
-void ObjectRecord::setLabel(LabelId label) { label_ = label; }
+void ObjectRecord::setLayer(LayerId layer) { ensure().layer = layer; }
 
-void ObjectRecord::clearLabel() noexcept { label_ = LabelId(); }
+void ObjectRecord::setLabel(LabelId label) { ensure().label = label; }
+
+void ObjectRecord::clearLabel() noexcept {
+    if (impl_) {
+        impl_->label = LabelId();
+    }
+}
 
 void ObjectRecord::reset() noexcept {
-    geometry_.clear();
-    measurements_.clear();
-    layer_ = LayerId();
-    stage_ = StageId();
-    label_ = LabelId();
+    if (impl_) {
+        impl_->reset();
+    }
 }
 
 } // namespace slideio::processor
