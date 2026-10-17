@@ -1,6 +1,8 @@
 # Scene source — presenting computed rasters as a `slideio::Scene`
 
-**Status:** draft for review
+**Status:** SlideIO half implemented, merged as
+[Booritas/slideio#86](https://github.com/Booritas/slideio/pull/86) on 2026-10-17;
+`Pipeline::asScene()` waits on the `pipeline` module
 **Date:** 2026-10-08
 **Arises from:** [Spike findings, open questions 3 and 4](2026-10-07-spike-q3-q4-findings.md) §1
 **Changes:** SlideIO (new public interface) and `slideio-processor` SDS
@@ -750,8 +752,8 @@ converter and Python — each of them simply issues one read per channel.
 consumer can see the mix before it reads and group its requests by type.
 
 What this does bound is `convertScene`: §9.1 already records that SVS rejects
-mixed channel types outright, and whether OME-TIFF accepts them is open
-question 1 in §13.
+mixed channel types outright, and OME-TIFF now does too (§13, question 1):
+such a scene exports one same-type channel range per file.
 
 ---
 
@@ -817,15 +819,14 @@ with its own design.
 
 **Fixing `initializeSceneBlock`'s channel-0 type assumption** (6.1), which
 gives every driver a silently mis-typed block for a mixed-type scene on the
-background-fill path. A second pre-existing SlideIO defect, found the same way
-as the first and worth the same treatment: an issue of its own. This design
-works around it by checking in the adapter rather than depending on a base
-class that does not check.
+background-fill path. **Done in PR #86** after all: `CVScene::blockDataType`
+types a block by the first channel requested, for every driver.
 
 **Fixing the undiagnosed downcast** in `makeTransformationCopy` (spike findings
 §1.2), which silently substitutes a different operation for a consumer-defined
 `Transformation`. A separate defect, unaffected by this work and still worth a
-fix, since the public `Transformation` base remains misusable.
+fix, since the public `Transformation` base remains misusable. **Filed** as
+[Booritas/slideio#89](https://github.com/Booritas/slideio/issues/89).
 
 **A 64-bit `getBlockSize`**, and the other 32-bit boundaries in §9.3.
 
@@ -833,8 +834,10 @@ fix, since the public `Transformation` base remains misusable.
 
 ## 13. Open
 
-1. Does OME-TIFF accept mixed channel data types, by splitting channel ranges
-   into separate directories? Decides how much of UR-IMG-9 is exportable (§9.1).
+1. ~~Does OME-TIFF accept mixed channel data types, by splitting channel ranges
+   into separate directories?~~ **Closed: no.** One OME-XML `Pixels` element
+   states one type, so PR #86 makes `convertScene` reject a mixed-type OME-TIFF
+   channel range, as SVS always did. Export one same-type range per file (§9.1).
 2. Which repository owns this document. It specifies a SlideIO change but arose
    from `slideio-processor`'s requirements; it currently lives here, and the
    SlideIO side may want its own copy or an issue referencing it.

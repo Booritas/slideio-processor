@@ -71,13 +71,14 @@ implementation.
 | 5 | How is geometry encoded in the store? | 03 §3.12 |
 | 6 | Is `Float16` computed natively or promoted? | 02 §2.3, 06 |
 | 15 | Canny's hysteresis against UR-PIX-3's untolerance'd acceptance | 06 §6.4 |
-| 16 | Does OME-TIFF accept mixed channel data types? | 05, and `convertScene` |
 
-Questions 3, 4, 7, 8, 9 and 10 were open when this document was written and are
+Questions 3, 4, 7, 8, 9, 10 and 16 were open when this document was written and are
 now resolved: 3 by the scene-source extension seam, 4 by the spike plus the
 physical-key change of 03 §3.12, 7 by the twenty-two-operation catalog of 06
 §6.10, 8 by the ten-label vocabulary of 02 §2.2, 9 as one slide per workspace,
-and 10 as UR-EXE-8's 30 minutes.
+10 as UR-EXE-8's 30 minutes, and 16 as no: OME-TIFF
+conversion rejects a channel range of mixed types (SlideIO PR #86), so a
+mixed-type scene exports one same-type channel range per file.
 
 **Both outstanding measurements were taken on 2026-10-10 and SDS 03 can be
 frozen.** The rowid-versus-anchor physical key of 03 §3.12 confirmed the

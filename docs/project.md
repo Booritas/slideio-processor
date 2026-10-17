@@ -81,7 +81,8 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   "lazy pipeline exposed as a `Scene`" achievable, and the `Pipeline::asScene()`
   implementation on top of it. Resolves open question 3.
 - [Scene source implementation plan](superpowers/plans/2026-10-08-scene-source.md) —
-  eight TDD tasks delivering the SlideIO half. Excludes `Pipeline::asScene()`,
+  eight TDD tasks delivering the SlideIO half, **delivered** as SlideIO PR #86
+  (merged 2026-10-17). Excludes `Pipeline::asScene()`,
   which waits on the `pipeline` module existing.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
