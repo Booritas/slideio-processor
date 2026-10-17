@@ -23,11 +23,13 @@ namespace slideio::processor {
  * The identifier is derived from the layer and the geometry anchor, so a
  * re-run producing the same geometry produces the same id (UR-STG-6).
  *
- * A moved-from record is valid but unspecified; in practice it reads as a
- * default record. Const accessors never fail on it. The first non-const
- * measurements() or setter call on a record moved-from by construction
- * allocates its state again; exhausting memory there is fatal for
- * measurements() (noexcept) and throws std::bad_alloc from the setters.
+ * After move construction or move assignment the source is a default record:
+ * every accessor returns the default value (empty geometry, invalid layer,
+ * stage and label, no measurements). Move assignment never swaps. Const
+ * accessors never fail on a moved-from record. Its first non-const
+ * measurements() or setter call allocates its state again; exhausting memory
+ * there is fatal for measurements() (noexcept) and throws std::bad_alloc from
+ * the setters.
  * @par Thread-safety
  * ThreadCompatible: const members may run concurrently; any mutation needs
  * exclusive access.
@@ -48,7 +50,7 @@ public:
      */
     ObjectRecord(const ObjectRecord& other);
     /**
-     * @brief Moves a record. The source is left valid but unspecified.
+     * @brief Moves a record. The source is left a default record.
      * @param other The record to move from.
      * @throws Nothing.
      */
@@ -61,7 +63,8 @@ public:
      */
     ObjectRecord& operator=(const ObjectRecord& other);
     /**
-     * @brief Move-assigns a record. The source is left valid but unspecified.
+     * @brief Move-assigns a record. The source is left a default record; never
+     * swaps.
      * @param other The record to move from.
      * @return This object.
      * @throws Nothing.
@@ -168,7 +171,7 @@ public:
 private:
     class Impl;
     Impl& ensure();
-    std::unique_ptr<Impl> impl_; // null only after a move construction
+    std::unique_ptr<Impl> impl_; // null only after a move (construction or assignment)
 };
 
 } // namespace slideio::processor

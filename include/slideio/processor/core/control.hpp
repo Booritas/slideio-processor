@@ -59,7 +59,8 @@ public:
      */
     CancellationToken& operator=(const CancellationToken& other) noexcept;
     /**
-     * @brief Move-assigns a token. The source is left never-cancelled.
+     * @brief Move-assigns a token. The source is left holding no state, so it is
+     * never cancelled; never swaps.
      * @param other The token to move from.
      * @return This object.
      * @throws Nothing.

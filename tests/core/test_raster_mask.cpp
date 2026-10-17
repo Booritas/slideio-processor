@@ -490,3 +490,14 @@ TEST(RasteriseBlockView, OriginRoundsToNearestLevelPixel) {
     for (int j = 0; j < 4; ++j) for (int i = 0; i < 4; ++i)
         EXPECT_EQ(buf[j * 4 + i], (i >= 2 && i <= 3 && j >= 1 && j <= 2) ? 9 : 0) << i << "," << j;
 }
+
+TEST(RasterMask, MoveAssignLeavesTheSourceNullNeverSwaps) {
+    RasterMask src(Rect64{0, 0, 2, 2}, 1, 2.0);
+    src.row(0)[0] = 255;
+    RasterMask dst(Rect64{5, 5, 3, 3}, 0, 1.0); // non-null target: a swap would hand it to src
+    dst = std::move(src);
+    EXPECT_EQ(dst.regionAtLevel(), (Rect64{0, 0, 2, 2}));
+    EXPECT_EQ(dst.setPixelCount(), 1);
+    EXPECT_TRUE(src.isNull());
+    EXPECT_EQ(src.regionAtLevel(), (Rect64{0, 0, 0, 0}));
+}

@@ -172,7 +172,7 @@ public:
      */
     Polygon& operator=(const Polygon& other);
     /**
-     * @brief Move-assigns a polygon. The source is left empty.
+     * @brief Move-assigns a polygon. The source is left empty; never swaps.
      * @param other The polygon to move from.
      * @return This object.
      * @throws Nothing.

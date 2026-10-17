@@ -49,7 +49,7 @@ ObjectRecord& ObjectRecord::operator=(const ObjectRecord& other) {
 
 ObjectRecord& ObjectRecord::operator=(ObjectRecord&& other) noexcept {
     if (this != &other) {
-        impl_.swap(other.impl_); // never allocates; the source keeps our old state
+        impl_ = std::move(other.impl_); // never allocates; the source reads as default
     }
     return *this;
 }

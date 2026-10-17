@@ -95,7 +95,7 @@ public:
      */
     BlockView& operator=(const BlockView& other);
     /**
-     * @brief Move-assigns a view.
+     * @brief Move-assigns a view. The source becomes a null view; never swaps.
      * @param other The view to move from.
      * @return This object.
      * @throws Nothing.

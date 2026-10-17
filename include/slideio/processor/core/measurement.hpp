@@ -121,7 +121,7 @@ public:
      */
     MeasurementSet& operator=(const MeasurementSet& other);
     /**
-     * @brief Move-assigns a set. The source is left empty.
+     * @brief Move-assigns a set. The source is left empty; never swaps.
      * @param other The set to move from.
      * @return This object.
      * @throws Nothing.

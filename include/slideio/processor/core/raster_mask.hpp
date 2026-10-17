@@ -58,7 +58,7 @@ public:
      */
     RasterMask(const RasterMask& other);
     /**
-     * @brief Moves a mask; the source becomes null.
+     * @brief Moves a mask. The source is left null (isNull() is true).
      * @param other The mask to move from.
      * @throws Nothing.
      */
@@ -72,8 +72,9 @@ public:
      */
     RasterMask& operator=(const RasterMask& other);
     /**
-     * @brief Replaces this mask with another by move.
-     * @param other The mask to move from; it receives this mask's old state.
+     * @brief Replaces this mask with another by move; this mask's old pixels
+     * are freed. Never swaps.
+     * @param other The mask to move from; it is left null (isNull() is true).
      * @return This mask.
      * @throws Nothing.
      */

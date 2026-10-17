@@ -59,3 +59,19 @@ TEST(ObjectRecord, IdInvalidForOutOfRangeAnchor) {
     ObjectRecord r; r.setGeometry(p); r.setLayer(LayerId(4));
     EXPECT_FALSE(r.id().isValid());
 }
+
+TEST(ObjectRecord, MoveAssignLeavesTheSourceDefaultNeverSwaps) {
+    Point64 v[] = {{5,2},{9,2},{9,8}}; Polygon p; p.addRing(v, 3, false);
+    ObjectRecord src; src.setGeometry(p); src.setLayer(LayerId(2)); src.setLabel(LabelId(3));
+    ObjectRecord dst; dst.setGeometry(p); dst.setLayer(LayerId(7)); dst.setLabel(LabelId(8));
+    dst.measurements().set("m", 1, MeasurementUnit::Intensity);
+    dst = std::move(src); // non-default target: a swap would hand its state to src
+    EXPECT_EQ(dst.layer(), LayerId(2)); EXPECT_EQ(dst.label(), LabelId(3));
+    EXPECT_EQ(dst.measurements().count(), 0);
+    // The source is a default record.
+    EXPECT_FALSE(src.layer().isValid()); EXPECT_FALSE(src.hasLabel());
+    EXPECT_TRUE(src.geometry().isEmpty()); EXPECT_EQ(src.measurements().count(), 0);
+    EXPECT_FALSE(src.id().isValid());
+    // And usable: a setter re-initialises it.
+    src.setLayer(LayerId(4)); EXPECT_EQ(src.layer(), LayerId(4));
+}

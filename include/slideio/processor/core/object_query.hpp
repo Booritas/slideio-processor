@@ -78,8 +78,8 @@ struct SLIDEIO_PROCESSOR_DATA_EXPORTS MeasurementBound {
  * @brief A fluent description of which objects to select from an ObjectSource.
  *
  * Every filter is optional and filters combine conjunctively. Setters do not
- * validate their input: a consumer rejects what it cannot use. A moved-from
- * query reads as a default query.
+ * validate their input: a consumer rejects what it cannot use. After move
+ * construction or move assignment the source is a default query.
  * @par Thread-safety
  * ThreadConfined (builder).
  * @par Requirements
@@ -99,7 +99,7 @@ public:
      */
     ObjectQuery(const ObjectQuery& other);
     /**
-     * @brief Moves a query. The source reads as a default query afterwards.
+     * @brief Moves a query. The source is left a default query.
      * @param other The query to move from.
      * @throws Nothing.
      */
@@ -112,7 +112,8 @@ public:
      */
     ObjectQuery& operator=(const ObjectQuery& other);
     /**
-     * @brief Move-assigns a query. The source reads as a default query afterwards.
+     * @brief Move-assigns a query. The source is left a default query; never
+     * swaps.
      * @param other The query to move from.
      * @return This object.
      * @throws Nothing.

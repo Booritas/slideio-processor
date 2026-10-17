@@ -70,13 +70,15 @@ public:
      */
     explicit GeoJsonReader(const char* path);
     /**
-     * @brief Moves a reader; the source becomes unusable.
+     * @brief Moves a reader. The source is left moved-from: it reports an empty
+     * feature and its next() throws InvalidArgumentError.
      * @param other The reader to move from.
      * @throws Nothing.
      */
     GeoJsonReader(GeoJsonReader&& other) noexcept;
     /**
-     * @brief Move-assigns a reader, closing this one's file.
+     * @brief Move-assigns a reader, closing this one's file. The source is left
+     * moved-from, as after move construction; never swaps.
      * @param other The reader to move from.
      * @return This object.
      * @throws Nothing.
@@ -193,13 +195,16 @@ public:
      */
     explicit GeoJsonWriter(const char* path);
     /**
-     * @brief Moves a writer; the source becomes unusable.
+     * @brief Moves a writer. The source is left moved-from: it rejects every
+     * call with InvalidArgumentError.
      * @param other The writer to move from.
      * @throws Nothing.
      */
     GeoJsonWriter(GeoJsonWriter&& other) noexcept;
     /**
-     * @brief Move-assigns a writer, closing this one's file without completing it.
+     * @brief Move-assigns a writer, closing this one's file without completing
+     * it. The source is left moved-from, as after move construction; never
+     * swaps.
      * @param other The writer to move from.
      * @return This object.
      * @throws Nothing.

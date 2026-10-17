@@ -23,9 +23,10 @@ namespace slideio::processor {
  * those values is not supported by this type. Code reading a store must treat
  * the persisted JSON as the source of truth.
  *
- * Per-stage configuration is recorded by the workspace, not here. A moved-from
- * record is valid: it reads as slide id "", scene 0, and the library version,
- * and a setter re-initialises it.
+ * Per-stage configuration is recorded by the workspace, not here. After move
+ * construction or move assignment the source is in a default state: it reads
+ * as slide id "", scene 0, and the library version, and a setter
+ * re-initialises it.
  * @par Thread-safety
  * ThreadCompatible: const members may run concurrently; any mutation needs
  * exclusive access.
@@ -47,7 +48,8 @@ public:
      */
     Provenance(const Provenance& other);
     /**
-     * @brief Moves a record. The source stays valid, see the class comment.
+     * @brief Moves a record. The source is left in the default state described
+     * in the class comment.
      * @param other The record to move from.
      * @throws Nothing.
      */
@@ -60,7 +62,8 @@ public:
      */
     Provenance& operator=(const Provenance& other);
     /**
-     * @brief Move-assigns a record. The source stays valid.
+     * @brief Move-assigns a record. The source is left in the default state
+     * described in the class comment; never swaps.
      * @param other The record to move from.
      * @return This object.
      * @throws Nothing.

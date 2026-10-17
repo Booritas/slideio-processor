@@ -87,7 +87,7 @@ RasterMask& RasterMask::operator=(const RasterMask& other) {
 
 RasterMask& RasterMask::operator=(RasterMask&& other) noexcept {
     if (this != &other) {
-        impl_.swap(other.impl_);
+        impl_ = std::move(other.impl_); // the source becomes null; never a swap
     }
     return *this;
 }

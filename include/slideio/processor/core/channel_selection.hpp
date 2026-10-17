@@ -53,7 +53,7 @@ public:
      */
     ChannelSelection& operator=(const ChannelSelection& other);
     /**
-     * @brief Move-assigns a selection. The source is left empty.
+     * @brief Move-assigns a selection. The source is left empty; never swaps.
      * @param other The selection to move from.
      * @return This object.
      * @throws Nothing.
