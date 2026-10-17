@@ -5,7 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <utility>
+#include <vector>
 
 using namespace slideio::processor;
 
@@ -143,4 +145,70 @@ TEST(Polygon, CopyAndMovePreserveRings) {
     Polygon b;
     b = std::move(a);
     EXPECT_EQ(b.ringPointCount(0), 4);
+}
+
+namespace {
+Polygon ring(std::initializer_list<Point64> pts, bool hole = false, Polygon p = {}) {
+    std::vector<Point64> v(pts);
+    p.addRing(v.data(), static_cast<int64_t>(v.size()), hole);
+    return p;
+}
+} // namespace
+
+TEST(Polygon, AnchorWhenAHoleHoldsTheSmallestY) {
+    Polygon p = ring({{0, 5}, {10, 5}, {10, 15}, {0, 15}});
+    p = ring({{3, 2}, {6, 2}, {6, 8}, {3, 8}}, true, p);
+    EXPECT_EQ(p.anchor(), (Point64{3, 2}));
+}
+
+TEST(Polygon, AnchorWhenASecondOuterRingHoldsTheSmallestY) {
+    Polygon p = square(0, 5, 10);
+    p = ring({{20, 1}, {30, 1}, {30, 9}, {20, 9}}, false, p);
+    EXPECT_EQ(p.anchor(), (Point64{20, 1}));
+}
+
+TEST(Polygon, AnchorTieOnYAcrossRingsTakesSmallestX) {
+    Polygon p = ring({{7, 0}, {12, 0}, {12, 9}, {7, 9}});
+    p = ring({{2, 0}, {4, 0}, {4, 3}, {2, 3}}, true, p);
+    EXPECT_EQ(p.anchor(), (Point64{2, 0}));
+    Polygon q = ring({{2, 0}, {4, 0}, {4, 3}, {2, 3}});
+    q = ring({{7, 0}, {12, 0}, {12, 9}, {7, 9}}, false, q);
+    EXPECT_EQ(q.anchor(), (Point64{2, 0}));
+}
+
+TEST(Polygon, ContainsAcrossASlantedEdge) { // pixel centres, R8
+    Polygon t = ring({{0, 0}, {10, 0}, {0, 10}}); // diagonal x + y = 10
+    EXPECT_TRUE(t.contains({4, 4}));  // centre sum 9
+    EXPECT_TRUE(t.contains({3, 5}));
+    EXPECT_TRUE(t.contains({0, 8}));
+    EXPECT_FALSE(t.contains({5, 5})); // centre sum 11
+    EXPECT_FALSE(t.contains({6, 4}));
+    EXPECT_FALSE(t.contains({1, 9}));
+    EXPECT_FALSE(t.contains({-1, 0}));
+    Polygon d = ring({{5, 0}, {10, 5}, {5, 10}, {0, 5}});
+    EXPECT_TRUE(d.contains({3, 3}));
+    EXPECT_TRUE(d.contains({2, 3}));
+    EXPECT_TRUE(d.contains({5, 5}));
+    EXPECT_FALSE(d.contains({1, 2}));
+    EXPECT_FALSE(d.contains({0, 0}));
+    EXPECT_FALSE(d.contains({8, 8}));
+    EXPECT_DOUBLE_EQ(d.area(), 50.0);
+}
+
+TEST(Polygon, HoleWindingDoesNotMatter) {
+    Polygon same = ring({{0, 0}, {10, 0}, {10, 10}, {0, 10}});
+    same = ring({{1, 1}, {7, 1}, {7, 7}, {1, 7}}, true, same);
+    Polygon opposite = ring({{0, 0}, {10, 0}, {10, 10}, {0, 10}});
+    opposite = ring({{1, 1}, {1, 7}, {7, 7}, {7, 1}}, true, opposite);
+    EXPECT_DOUBLE_EQ(opposite.area(), 64.0);
+    EXPECT_DOUBLE_EQ(opposite.area(), same.area());
+    EXPECT_EQ(opposite.centroid(), same.centroid());
+    EXPECT_EQ(opposite.centroid(), (Point64{6, 6}));
+    for (int64_t y = -1; y <= 10; ++y) {
+        for (int64_t x = -1; x <= 10; ++x) {
+            EXPECT_EQ(opposite.contains({x, y}), same.contains({x, y})) << x << "," << y;
+        }
+    }
+    EXPECT_FALSE(opposite.contains({3, 3}));
+    EXPECT_TRUE(opposite.contains({8, 8}));
 }

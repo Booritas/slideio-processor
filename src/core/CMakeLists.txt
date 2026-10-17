@@ -1,7 +1,9 @@
 add_library(slideio-processor-core OBJECT
+    channel_selection.cpp
     data_type.cpp
     error.cpp
     geometry.cpp
+    ids.cpp
     version.cpp
 )
 set_target_properties(slideio-processor-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
