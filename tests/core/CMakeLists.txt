@@ -1,6 +1,7 @@
 include(GoogleTest)
 
 add_executable(slideio_processor_core_tests
+    test_block_view.cpp
     test_channel_selection.cpp
     test_data_type.cpp
     test_error.cpp

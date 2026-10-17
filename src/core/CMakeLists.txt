@@ -1,4 +1,5 @@
 add_library(slideio-processor-core OBJECT
+    block_view.cpp
     channel_selection.cpp
     data_type.cpp
     error.cpp
