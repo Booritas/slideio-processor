@@ -159,8 +159,11 @@ public:
                                 static_cast<size_t>(dataTypeSizeBytes(planeType()));
         auto* base = static_cast<uint8_t*>(out.planeData(0));
         const int64_t stride = out.planeRowStrideBytes(0);
+        // Background: 0 for Label and Membership; -1 ("no object") for ObjectAnchor,
+        // because 0 is a valid packed anchor. All-ones bytes are int64 -1.
+        const int fill = content_ == LayerRasterContent::ObjectAnchor ? 0xFF : 0;
         for (int64_t y = 0; y < out.height(); ++y) {
-            std::memset(base + y * stride, 0, rowBytes);
+            std::memset(base + y * stride, fill, rowBytes);
         }
 
         // Descending id: the smallest id is written last and wins (R11).
@@ -171,7 +174,11 @@ public:
             if (content_ == LayerRasterContent::Label) {
                 value = record.hasLabel() ? record.label().value() : 0;
             } else if (content_ == LayerRasterContent::ObjectAnchor) {
-                value = record.id().anchorPacked();
+                const ObjectId id = record.id();
+                if (!id.isValid()) {
+                    continue; // its anchorPacked() would be -1, the "no object" value
+                }
+                value = id.anchorPacked();
             }
             rasteriseInto(out, 0, record.geometry(), value);
         }

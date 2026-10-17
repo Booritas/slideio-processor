@@ -70,7 +70,7 @@ TEST(LayerRasterSource, AnchorContentSmallestIdWins) {
     ASSERT_LT(a, b);
     EXPECT_EQ(buf[5 * 12 + 5], a);
     EXPECT_EQ(buf[10 * 12 + 10], b);
-    EXPECT_EQ(buf[11 * 12 + 0], 0);
+    EXPECT_EQ(buf[11 * 12 + 0], -1); // no object
     EXPECT_EQ(src.lastQuery().visibilityValue(), StageVisibility::CompletedOnly);
     EXPECT_TRUE(src.lastCursorClosed());
 }
@@ -133,4 +133,38 @@ TEST(LayerRasterSource, QueryCoversTheWholeRasterisedGrid) {
     EXPECT_LE(q.y, 0);
     EXPECT_GE(q.bottom(), 1024);
     EXPECT_EQ(buf[25 * 256 + 0], 1); // the sliver object lands in pixel (0, 25)
+}
+
+TEST(LayerRasterSource, AnchorAtOriginIsZeroAndBackgroundIsMinusOne) {
+    // A full-image annotation anchored at (0, 0) packs to 0, so 0 cannot mean "none".
+    FakeObjectSource src({rec(1, 0, 0, 4)});
+    auto rs = makeLayerRasterSource(src, LayerId(1), LayerRasterContent::ObjectAnchor);
+    std::vector<int64_t> buf(8 * 8, 123);
+    BlockPlane pl{buf.data(), DataType::Int64, 8 * 8, 0};
+    BlockView v(8, 8, Rect64{0, 0, 8, 8}, 0, &pl, 1);
+    rs->fillTile(v);
+    ASSERT_EQ(ObjectId::fromAnchor(LayerId(1), {0, 0}).anchorPacked(), 0);
+    for (int64_t y = 0; y < 8; ++y) {
+        for (int64_t x = 0; x < 8; ++x) {
+            const int64_t expected = (x < 4 && y < 4) ? 0 : -1;
+            EXPECT_EQ(buf[static_cast<size_t>(y * 8 + x)], expected) << x << "," << y;
+        }
+    }
+}
+
+TEST(LayerRasterSource, AnchorContentSkipsRecordsWithAnInvalidId) {
+    // rec(1, -4, 0, 8) anchors at x = -4, outside the packable range, so its id is
+    // invalid; it sorts before every valid id and would otherwise win the overlap.
+    FakeObjectSource src({rec(1, -4, 0, 8), rec(1, 2, 2, 4)});
+    ASSERT_FALSE(rec(1, -4, 0, 8).id().isValid());
+    auto rs = makeLayerRasterSource(src, LayerId(1), LayerRasterContent::ObjectAnchor);
+    std::vector<int64_t> buf(8 * 8, 123);
+    BlockPlane pl{buf.data(), DataType::Int64, 8 * 8, 0};
+    BlockView v(8, 8, Rect64{0, 0, 8, 8}, 0, &pl, 1);
+    rs->fillTile(v);
+    const int64_t valid = ObjectId::fromAnchor(LayerId(1), {2, 2}).anchorPacked();
+    EXPECT_EQ(buf[2 * 8 + 2], valid); // overlap: the valid object, not the skipped one
+    EXPECT_EQ(buf[0 * 8 + 0], -1);    // covered only by the skipped record
+    EXPECT_EQ(buf[5 * 8 + 5], valid);
+    EXPECT_EQ(buf[7 * 8 + 7], -1);
 }

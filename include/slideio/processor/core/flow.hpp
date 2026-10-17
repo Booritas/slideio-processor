@@ -282,7 +282,10 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS TileMaskSourcePtr makeLayerMaskSource(ObjectSourc
 enum class LayerRasterContent : int32_t {
     Label,        ///< The covering object's own label id (R11); 0 where none covers or it has none.
     Membership,   ///< 1 inside any object of the layer, 0 outside.
-    ObjectAnchor  ///< ObjectId::anchorPacked() of the covering object; 0 where none.
+    ObjectAnchor  ///< ObjectId::anchorPacked() of the covering object, written exactly;
+                  ///< -1 where none covers. 0 is a valid anchor (an object anchored at
+                  ///< (0, 0)), so -1, not 0, means "no object". Objects whose id is
+                  ///< invalid (anchor outside the packable range) are skipped.
 };
 
 /**
@@ -325,8 +328,12 @@ using TileRasterSourcePtr = std::shared_ptr<TileRasterSource>;
  * tile and rasterises the requested content into plane 0, at the tile's own
  * level. Where objects overlap, the smallest ObjectId wins. The query carries
  * StageVisibility::CompletedOnly. planeCount() is 1; planeType() is Int32 for
- * Label, Byte for Membership and Int64 for ObjectAnchor. Label writes the
- * record's own label, or 0 when it has none.
+ * Label, Byte for Membership and Int64 for ObjectAnchor. Background values:
+ * Label and Membership write 0 where no object covers a pixel; ObjectAnchor
+ * writes -1 there, because 0 is a valid packed anchor (an object anchored at
+ * (0, 0), such as a full-image annotation). Label writes the record's own
+ * label, or 0 when it has none. ObjectAnchor writes anchorPacked() exactly and
+ * skips records whose id is invalid.
  * @param source The objects; borrowed, must outlive the returned object (C-8).
  * @param layer The layer to read; must be valid.
  * @param content What to write.
