@@ -6,6 +6,7 @@ add_executable(slideio_processor_core_tests
     test_control.cpp
     test_data_type.cpp
     test_error.cpp
+    test_geojson_writer.cpp
     test_geometry.cpp
     test_ids.cpp
     test_layer_sources.cpp

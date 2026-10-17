@@ -4,6 +4,7 @@ add_library(slideio-processor-core OBJECT
     control.cpp
     data_type.cpp
     error.cpp
+    geojson_writer.cpp
     geometry.cpp
     ids.cpp
     measurement.cpp
