@@ -25,3 +25,13 @@ find_package(RapidJSON REQUIRED)
 enable_testing()
 add_subdirectory(src)
 add_subdirectory(tests)
+
+# Optional API documentation: only when Doxygen is installed.
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${PROJECT_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM)
+endif()

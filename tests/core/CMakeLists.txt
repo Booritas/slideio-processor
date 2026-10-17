@@ -18,6 +18,7 @@ add_executable(slideio_processor_core_tests
     test_object_record.cpp
     test_provenance.cpp
     test_raster_mask.cpp
+    test_umbrella.cpp
     test_version.cpp
 )
 target_link_libraries(slideio_processor_core_tests PRIVATE

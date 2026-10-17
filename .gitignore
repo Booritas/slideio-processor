@@ -1,5 +1,6 @@
 # Build trees and local installs
 build/
+build-debug/
 out/
 
 # Editor and tool state

@@ -69,3 +69,15 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 Run a single test with `-R <regex>`.
+
+## Documentation
+
+`include/slideio/processor/core/core.hpp` includes the whole `core` module. API
+documentation is generated from the headers with Doxygen; the `docs` target
+exists only when Doxygen is installed:
+
+```sh
+cmake --build build --target docs
+```
+
+Requirement-to-test coverage is in `docs/traceability.md`.
