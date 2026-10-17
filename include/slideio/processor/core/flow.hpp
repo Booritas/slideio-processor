@@ -41,6 +41,7 @@ public:
     /**
      * @brief Returns the number of objects emitted.
      * @return The count.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int64_t emittedCount() const = 0;
 };
@@ -78,6 +79,7 @@ public:
     /**
      * @brief Returns the number of assertions made.
      * @return The count.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int64_t assertedCount() const = 0;
 };
@@ -108,6 +110,7 @@ public:
     /**
      * @brief Returns the number of tiles written.
      * @return The count.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int64_t tilesWritten() const = 0;
 };
@@ -151,6 +154,7 @@ public:
     /**
      * @brief Returns the number of assertions made.
      * @return The count.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int64_t assertedCount() const = 0;
 };
@@ -181,6 +185,7 @@ public:
     /**
      * @brief Returns the zero-based position of the current object.
      * @return The position.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int64_t position() const = 0;
     /**
@@ -259,6 +264,12 @@ using TileMaskSourcePtr = std::shared_ptr<TileMaskSource>;
  * tile (grown by the dilation) and rasterises them, then widens the result by
  * `dilationLevel0Pixels`. The query carries StageVisibility::CompletedOnly, so
  * a restriction never sees a concurrently running stage's partial output.
+ *
+ * The returned source's fillMask() throws InvalidArgumentError for a null
+ * mask or a dilated region that overflows int64; it lets ProcessorError and
+ * std::bad_alloc from `source` through, and translates any other exception
+ * derived from std::exception thrown by `source` to InternalError, with its
+ * what() as the cause.
  * @param source The objects; borrowed, must outlive the returned object (C-8).
  * @param layer The layer to read; must be valid.
  * @param dilationLevel0Pixels Widening in level-0 pixels; finite and >= 0.
@@ -310,11 +321,13 @@ public:
     /**
      * @brief Returns the plane type the framework must allocate before fillTile().
      * @return The data type.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual DataType planeType() const = 0;
     /**
      * @brief Returns the plane count the framework must allocate before fillTile().
      * @return The number of planes.
+     * @throws ProcessorError Implementation-defined.
      */
     virtual int32_t planeCount() const = 0;
 };
@@ -334,6 +347,12 @@ using TileRasterSourcePtr = std::shared_ptr<TileRasterSource>;
  * (0, 0), such as a full-image annotation). Label writes the record's own
  * label, or 0 when it has none. ObjectAnchor writes anchorPacked() exactly and
  * skips records whose id is invalid.
+ *
+ * The returned source's fillTile() throws InvalidArgumentError when the view
+ * lacks plane 0 of planeType() or its scale or origin is unusable; it lets
+ * ProcessorError and std::bad_alloc from `source` through, and translates any
+ * other exception derived from std::exception thrown by `source` to
+ * InternalError, with its what() as the cause.
  * @param source The objects; borrowed, must outlive the returned object (C-8).
  * @param layer The layer to read; must be valid.
  * @param content What to write.

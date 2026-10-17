@@ -5,12 +5,21 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <system_error>
 
 namespace slideio::processor {
 
 MemoryBudget::~MemoryBudget() = default;
 
 namespace {
+
+// C-6: a std::system_error from the mutex or condition variable is translated.
+[[noreturn]] void synchronisationFailed(const char* operation, const std::system_error& e) {
+    ErrorContext ctx;
+    ctx.operationName = operation;
+    ctx.cause = e.what();
+    throw InternalError("MemoryBudget: synchronisation failed", ctx);
+}
 
 class MemoryBudgetImpl final : public MemoryBudget {
 public:
@@ -19,21 +28,33 @@ public:
     int64_t ceilingBytes() const override { return ceiling_; }
 
     int64_t reservedBytes() const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return reserved_;
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return reserved_;
+        } catch (const std::system_error& e) {
+            synchronisationFailed("reservedBytes", e);
+        }
     }
 
     int64_t availableBytes() const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return ceiling_ - reserved_;
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return ceiling_ - reserved_;
+        } catch (const std::system_error& e) {
+            synchronisationFailed("availableBytes", e);
+        }
     }
 
     bool tryReserve(int64_t bytes) override {
         if (bytes < 0) {
             throw InvalidArgumentError("bytes must not be negative");
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        return reserveLocked(bytes);
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return reserveLocked(bytes);
+        } catch (const std::system_error& e) {
+            synchronisationFailed("tryReserve", e);
+        }
     }
 
     void reserveOrWait(int64_t bytes, const CancellationToken& token) override {
@@ -43,10 +64,14 @@ public:
         if (bytes > ceiling_) {
             throw InvalidArgumentError("bytes exceeds the memory budget ceiling");
         }
-        std::unique_lock<std::mutex> lock(mutex_);
-        while (!reserveLocked(bytes)) {
-            token.throwIfCancelled();
-            released_.wait_for(lock, std::chrono::milliseconds(10));
+        try {
+            std::unique_lock<std::mutex> lock(mutex_);
+            while (!reserveLocked(bytes)) {
+                token.throwIfCancelled();
+                released_.wait_for(lock, std::chrono::milliseconds(10));
+            }
+        } catch (const std::system_error& e) {
+            synchronisationFailed("reserveOrWait", e);
         }
     }
 
@@ -54,12 +79,14 @@ public:
         if (bytes < 0) {
             throw InvalidArgumentError("bytes must not be negative");
         }
-        {
+        try {
             std::lock_guard<std::mutex> lock(mutex_);
             if (bytes > reserved_) {
                 throw InvalidArgumentError("bytes exceeds the reserved amount");
             }
             reserved_ -= bytes;
+        } catch (const std::system_error& e) {
+            synchronisationFailed("release", e);
         }
         released_.notify_all();
     }

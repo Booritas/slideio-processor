@@ -206,6 +206,7 @@ public:
      * @throws InvalidArgumentError When called twice or after end().
      * @throws IoError When writing fails.
      * @throws InternalError When serialising the provenance fails.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     void begin(const Provenance& provenance);
     /**
@@ -235,6 +236,7 @@ public:
      * @brief Closes the collection, flushes and checks the stream.
      * @throws InvalidArgumentError Before begin() or when already ended.
      * @throws IoError When the stream failed at any point since opening.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     void end();
     /**

@@ -10,6 +10,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -153,6 +154,8 @@ GeoJsonWriter::GeoJsonWriter(const char* path) {
     impl->path = path;
     try {
         impl->out.open(std::filesystem::u8path(impl->path), std::ios::binary | std::ios::trunc);
+    } catch (const std::bad_alloc&) {
+        throw; // C-6: never wrapped
     } catch (const std::exception& e) {
         throw impl->failure("open", e.what());
     }
@@ -178,6 +181,8 @@ void GeoJsonWriter::begin(const Provenance& provenance) {
         impl_->raw("{\"type\":\"FeatureCollection\",\"provenance\":");
         impl_->raw(json.data(), static_cast<size_t>(len));
         impl_->raw(",\"features\":[\n");
+    } catch (const std::bad_alloc&) {
+        throw; // C-6: never wrapped
     } catch (const std::exception& e) {
         throw impl_->failure("write", e.what());
     }
@@ -274,6 +279,8 @@ void GeoJsonWriter::writeFeature(const ObjectRecord& record, const char* layerNa
             impl_->raw(",\n");
         }
         impl_->raw(buf.GetString(), buf.GetSize());
+    } catch (const std::bad_alloc&) {
+        throw; // C-6: never wrapped
     } catch (const std::exception& e) {
         throw impl_->failure("write", e.what());
     }
@@ -289,6 +296,8 @@ void GeoJsonWriter::end() {
     try {
         impl_->raw("\n]}\n");
         impl_->out.flush();
+    } catch (const std::bad_alloc&) {
+        throw; // C-6: never wrapped
     } catch (const std::exception& e) {
         throw impl_->failure("write", e.what());
     }

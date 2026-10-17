@@ -623,6 +623,11 @@ bool GeoJsonReader::next() {
         } catch (const std::bad_alloc&) {
             d.failure = "GeoJsonReader: out of memory reading " + d.path;
             throw;
+        } catch (const std::ios_base::failure& e) {
+            d.failure = "GeoJsonReader: reading " + d.path + " failed";
+            ErrorContext ctx;
+            ctx.cause = e.what();
+            throw IoError(d.failure.c_str(), ctx);
         } catch (const std::exception& e) {
             d.failure = "GeoJsonReader: reading " + d.path + " failed";
             ErrorContext ctx;

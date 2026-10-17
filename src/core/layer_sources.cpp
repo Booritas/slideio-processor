@@ -8,7 +8,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <limits>
+#include <new>
 #include <vector>
 
 namespace slideio::processor {
@@ -40,19 +42,31 @@ private:
     Cursor* cursor_;
 };
 
-// Drains the cursor of `query` into a vector of records.
+// Drains the cursor of `query` into a vector of records. ProcessorError and
+// std::bad_alloc pass through; any other exception from the (foreign) source
+// is translated to InternalError with what() as the cause (C-6).
 std::vector<ObjectRecord> collect(ObjectSource& source, const ObjectQuery& query) {
-    std::vector<ObjectRecord> records;
-    CursorPtr cursor = source.query(query);
-    if (!cursor) {
-        throw InternalError("ObjectSource::query returned a null cursor");
+    try {
+        std::vector<ObjectRecord> records;
+        CursorPtr cursor = source.query(query);
+        if (!cursor) {
+            throw InternalError("ObjectSource::query returned a null cursor");
+        }
+        CursorCloser closer(*cursor);
+        while (cursor->next()) {
+            records.push_back(cursor->current());
+        }
+        closer.close();
+        return records;
+    } catch (const ProcessorError&) {
+        throw;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& e) {
+        ErrorContext ctx;
+        ctx.cause = e.what();
+        throw InternalError("layer source: the ObjectSource failed", ctx);
     }
-    CursorCloser closer(*cursor);
-    while (cursor->next()) {
-        records.push_back(cursor->current());
-    }
-    closer.close();
-    return records;
 }
 
 constexpr double kMaxExtent = 9.2e18; // safely inside int64

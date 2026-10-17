@@ -50,6 +50,16 @@ struct SLIDEIO_PROCESSOR_DATA_EXPORTS ErrorContext {
 /**
  * @brief Base class of every error that crosses the public API boundary.
  *
+ * Exception stance (C-6): std::bad_alloc is the only exception that is not a
+ * ProcessorError and may still cross the boundary; it is always documented
+ * where it can occur and never wrapped. Every other standard or third-party
+ * exception
+ * (std::system_error, std::filesystem::filesystem_error,
+ * std::ios_base::failure, std::length_error and so on) is translated: to
+ * IoError for an input/output failure, otherwise to InternalError, with the
+ * original what() as cause(). A lock failure inside a noexcept function is
+ * fatal (std::terminate) and is documented on that function.
+ *
  * what() gives the message, then "; stage: S", "; operation: O",
  * "; tile: (X, Y)" and "; cause: C", each only when present, in that order.
  * The text is composed once at construction. Copies share it, and copying

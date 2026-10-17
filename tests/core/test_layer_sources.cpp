@@ -10,6 +10,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <vector>
 
 using namespace slideio::processor;
@@ -167,4 +169,42 @@ TEST(LayerRasterSource, AnchorContentSkipsRecordsWithAnInvalidId) {
     EXPECT_EQ(buf[0 * 8 + 0], -1);    // covered only by the skipped record
     EXPECT_EQ(buf[5 * 8 + 5], valid);
     EXPECT_EQ(buf[7 * 8 + 7], -1);
+}
+
+namespace {
+// An ObjectSource that breaks the contract by throwing a non-ProcessorError.
+template <typename E>
+class ThrowingSource final : public ObjectSource {
+public:
+    CursorPtr query(const ObjectQuery&) override { throw E("source failed"); }
+    int64_t count(const ObjectQuery&) const override { return 0; }
+    bool get(ObjectId, ObjectRecord&) const override { return false; }
+};
+class BadAllocSource final : public ObjectSource {
+public:
+    CursorPtr query(const ObjectQuery&) override { throw std::bad_alloc(); }
+    int64_t count(const ObjectQuery&) const override { return 0; }
+    bool get(ObjectId, ObjectRecord&) const override { return false; }
+};
+} // namespace
+
+TEST(LayerSources, ForeignExceptionsFromTheSourceAreTranslated) {
+    ThrowingSource<std::runtime_error> bad;
+    RasterMask m(Rect64{0, 0, 4, 4}, 0, 1.0);
+    auto ms = makeLayerMaskSource(bad, LayerId(1), 0.0);
+    try {
+        ms->fillMask(m);
+        FAIL() << "expected InternalError";
+    } catch (const InternalError& e) {
+        EXPECT_STREQ(e.cause(), "source failed");
+    }
+    std::vector<uint8_t> buf(4 * 4, 0);
+    BlockPlane pl{buf.data(), DataType::Byte, 4, 0};
+    BlockView v(4, 4, Rect64{0, 0, 4, 4}, 0, &pl, 1);
+    auto rs = makeLayerRasterSource(bad, LayerId(1), LayerRasterContent::Membership);
+    EXPECT_THROW(rs->fillTile(v), InternalError);
+    // std::bad_alloc is the one non-ProcessorError that crosses unchanged.
+    BadAllocSource oom;
+    auto ms2 = makeLayerMaskSource(oom, LayerId(1), 0.0);
+    EXPECT_THROW(ms2->fillMask(m), std::bad_alloc);
 }

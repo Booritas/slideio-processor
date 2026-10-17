@@ -14,6 +14,9 @@ LogSink::~LogSink() = default;
 
 namespace {
 
+// setLogLevel() and logLevel() are noexcept on the strength of this.
+static_assert(std::atomic<LogLevel>::is_always_lock_free, "the log threshold must be lock-free");
+
 struct LogState {
     std::mutex mutex;
     LogSinkPtr sink;

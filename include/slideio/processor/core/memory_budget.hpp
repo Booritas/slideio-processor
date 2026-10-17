@@ -33,11 +33,15 @@ public:
     /**
      * @brief Returns the bytes currently reserved.
      * @return Reserved bytes, from 0 to ceilingBytes().
+     * @throws InternalError When the budget's internal lock fails (a translated
+     * std::system_error).
      */
     virtual int64_t reservedBytes() const = 0;
     /**
      * @brief Returns the bytes still available.
      * @return ceilingBytes() minus reservedBytes().
+     * @throws InternalError When the budget's internal lock fails (a translated
+     * std::system_error).
      */
     virtual int64_t availableBytes() const = 0;
     /**
@@ -45,6 +49,8 @@ public:
      * @param bytes The amount, at least 0. tryReserve(0) always succeeds.
      * @return True when reserved + bytes <= ceiling and the bytes were reserved.
      * @throws InvalidArgumentError When bytes is negative.
+     * @throws InternalError When the budget's internal lock fails (a translated
+     * std::system_error); nothing is reserved.
      */
     virtual bool tryReserve(int64_t bytes) = 0;
     /**
@@ -57,6 +63,8 @@ public:
      * the ceiling, because such a request could never succeed.
      * @throws CancelledError When the token is cancelled while waiting; nothing
      * is reserved.
+     * @throws InternalError When the budget's internal lock or condition
+     * variable fails (a translated std::system_error); nothing is reserved.
      */
     virtual void reserveOrWait(int64_t bytes, const CancellationToken& token) = 0;
     /**
@@ -64,6 +72,8 @@ public:
      * @param bytes The amount, from 0 to reservedBytes().
      * @throws InvalidArgumentError When bytes is negative or exceeds the
      * reserved amount; nothing is released.
+     * @throws InternalError When the budget's internal lock fails (a translated
+     * std::system_error); nothing is released.
      */
     virtual void release(int64_t bytes) = 0;
 };
