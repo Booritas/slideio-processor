@@ -62,6 +62,15 @@ int64_t ProcessorError::tileY() const noexcept { return impl_->tileY; }
 InvalidArgumentError::InvalidArgumentError(const char* message, const ErrorContext& context)
     : ProcessorError(ErrorCode::InvalidArgument, message, context) {}
 
+UnsupportedDataTypeError::UnsupportedDataTypeError(const char* message, DataType offendingType,
+                                                   DataTypeSet supportedTypes, const ErrorContext& context)
+    : ProcessorError(ErrorCode::UnsupportedDataType, message, context)
+    , offendingType_(offendingType)
+    , supportedTypes_(supportedTypes) {}
+
+DataType UnsupportedDataTypeError::offendingType() const noexcept { return offendingType_; }
+DataTypeSet UnsupportedDataTypeError::supportedTypes() const noexcept { return supportedTypes_; }
+
 ChannelArityError::ChannelArityError(const char* message, int32_t offendingChannelCount,
                                      const ErrorContext& context)
     : ProcessorError(ErrorCode::ChannelArity, message, context)

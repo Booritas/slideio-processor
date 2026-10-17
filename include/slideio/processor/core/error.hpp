@@ -1,6 +1,7 @@
 // Requirements: UR-API-5, UR-EXE-5, UR-RES-12
 #pragma once
 
+#include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -158,6 +159,43 @@ public:
      * @throws std::bad_alloc When the text cannot be allocated.
      */
     explicit InvalidArgumentError(const char* message, const ErrorContext& context = ErrorContext());
+};
+
+/**
+ * @brief A pixel data type is not supported by an operation.
+ * @par Thread-safety
+ * Immutable after construction.
+ * @par Requirements
+ * UR-API-5, UR-IMG-11
+ */
+class SLIDEIO_PROCESSOR_DATA_EXPORTS UnsupportedDataTypeError : public ProcessorError {
+public:
+    /**
+     * @brief Builds the error.
+     * @param message UTF-8 message; null reads as empty.
+     * @param offendingType The type that was rejected.
+     * @param supportedTypes The types the operation does accept.
+     * @param context Diagnostic context; its strings are copied.
+     * @throws std::bad_alloc When the text cannot be allocated.
+     */
+    UnsupportedDataTypeError(const char* message, DataType offendingType, DataTypeSet supportedTypes,
+                             const ErrorContext& context = ErrorContext());
+    /**
+     * @brief Returns the rejected type.
+     * @return The type.
+     * @throws Nothing.
+     */
+    DataType offendingType() const noexcept;
+    /**
+     * @brief Returns the accepted types.
+     * @return The set.
+     * @throws Nothing.
+     */
+    DataTypeSet supportedTypes() const noexcept;
+
+private:
+    DataType offendingType_;
+    DataTypeSet supportedTypes_;
 };
 
 /**

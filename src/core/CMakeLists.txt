@@ -1,4 +1,5 @@
 add_library(slideio-processor-core OBJECT
+    data_type.cpp
     error.cpp
     version.cpp
 )
