@@ -7,6 +7,8 @@ add_library(slideio-processor-core OBJECT
     geometry.cpp
     ids.cpp
     measurement.cpp
+    flow.cpp
+    object_query.cpp
     log.cpp
     memory_budget.cpp
     object_record.cpp

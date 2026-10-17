@@ -11,6 +11,7 @@ add_executable(slideio_processor_core_tests
     test_measurement.cpp
     test_memory_budget.cpp
     test_log.cpp
+    test_object_query.cpp
     test_object_record.cpp
     test_provenance.cpp
     test_version.cpp
