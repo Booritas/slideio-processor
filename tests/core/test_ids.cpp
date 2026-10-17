@@ -20,7 +20,7 @@ TEST(ObjectId, PacksAndOrders) {
     EXPECT_TRUE(ObjectId::fromAnchor(LayerId(1), {9, 99}) < a);   // layer first
     EXPECT_TRUE(ObjectId::fromAnchor(LayerId(2), {500, 44}) < a); // then scan position
 }
-TEST(ObjectId, OutOfRangeAnchorsAreInvalidNotWrapped) {            // Review Focus 5
+TEST(ObjectId, OutOfRangeAnchorsAreInvalidNotWrapped) {            // out-of-range anchors must not wrap into another object's id
     EXPECT_FALSE(ObjectId::fromAnchor(LayerId(1), {-1, 0}).isValid());
     EXPECT_FALSE(ObjectId::fromAnchor(LayerId(1), {0, -1}).isValid());
     EXPECT_FALSE(ObjectId::fromAnchor(LayerId(1), {int64_t(1) << 31, 0}).isValid());
@@ -35,7 +35,35 @@ TEST(ObjectId, StringRoundTrip) {
     char small[4]; EXPECT_EQ(a.toString(small, 4), 8); EXPECT_STREQ(small, "3:1");
     EXPECT_EQ(a.toString(nullptr, 0), 8);
     EXPECT_TRUE(ObjectId::fromString("3:120:45", b)); EXPECT_EQ(a, b);
-    for (const char* bad : {"", "3:120", "3:120:45x", "-3:1:1", "3: 1:1", "0:1:1", "1:2147483648:0"})
+    for (const char* bad : {"", "3:120", "3:120:45x", "-3:1:1", "3: 1:1", "0:1:1", "1:2147483648:0",
+                             "3:001:2", "03:1:2", "3:1:", "3:1:2:", "2147483648:1:1",
+                             "1:1:4294967296", "1:99999999999999999999:1", "1:1:99999999999999999999", ":1:1"})
         EXPECT_FALSE(ObjectId::fromString(bad, b)) << bad;
     EXPECT_EQ(a, b);                                                // unchanged on failure
+}
+TEST(ObjectId, StringEdgeCases) {
+    ObjectId b = ObjectId::fromAnchor(LayerId(7), {1, 1});
+    EXPECT_FALSE(ObjectId::fromString(nullptr, b));
+    EXPECT_EQ(b, ObjectId::fromAnchor(LayerId(7), {1, 1}));
+    EXPECT_TRUE(ObjectId::fromString("1:0:0", b));
+    EXPECT_EQ(b.anchorPoint(), (Point64{0, 0}));
+    EXPECT_TRUE(ObjectId::fromString("2147483647:2147483647:4294967295", b));
+    EXPECT_EQ(b.layer(), LayerId(2147483647));
+    EXPECT_EQ(b.anchorPoint(), (Point64{2147483647LL, 4294967295LL}));
+    char buf[40];
+    EXPECT_EQ(b.toString(buf, 40), 32); EXPECT_STREQ(buf, "2147483647:2147483647:4294967295");
+    ObjectId inv;
+    EXPECT_EQ(inv.toString(buf, 40), 7); EXPECT_STREQ(buf, "invalid");
+    EXPECT_EQ(inv.toString(nullptr, 0), 7);
+    ObjectId a = ObjectId::fromAnchor(LayerId(3), {120, 45});
+    char one[1] = {'x'}; EXPECT_EQ(a.toString(one, 1), 8); EXPECT_EQ(one[0], 0);
+    char untouched[4] = {'x', 'y', 'z', 'w'};
+    EXPECT_EQ(a.toString(untouched, 0), 8); EXPECT_EQ(untouched[0], 'x');
+}
+TEST(Ids, ComparisonOperators) {
+    EXPECT_TRUE(LayerId(1) == LayerId(1)); EXPECT_TRUE(LayerId(1) != LayerId(2));
+    EXPECT_FALSE(LayerId(2) < LayerId(2));
+    EXPECT_TRUE(RasterId(1) < RasterId(2)); EXPECT_TRUE(LabelId(3) == LabelId(3));
+    EXPECT_TRUE(ObjectId() == ObjectId());
+    EXPECT_TRUE(ObjectId::fromAnchor(LayerId(1), {1, 1}) != ObjectId());
 }

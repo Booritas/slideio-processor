@@ -24,8 +24,8 @@ namespace slideio::processor {
 class SLIDEIO_PROCESSOR_DATA_EXPORTS ChannelSelection {
 public:
     /**
-     * @brief Builds an empty explicit selection.
-     * @throws std::bad_alloc When memory is exhausted.
+     * @brief Builds an empty explicit selection. Does not allocate.
+     * @throws Nothing.
      */
     ChannelSelection();
     /**
@@ -69,24 +69,26 @@ public:
      * @param first The first channel index, at least 0.
      * @param count The number of channels, at least 1.
      * @return The selection first, first + 1, ... first + count - 1.
-     * @throws InvalidArgumentError When first < 0 or count < 1.
+     * @throws InvalidArgumentError When first < 0, count < 1, or
+     * first + count - 1 exceeds INT32_MAX.
      */
     static ChannelSelection range(int32_t first, int32_t count);
     /**
      * @brief Builds a selection of every channel.
-     * @return A selection with isAll() true and count() 0.
-     * @throws std::bad_alloc When memory is exhausted.
+     * @return A selection with isAll() true and count() 0. Does not allocate.
+     * @throws Nothing.
      */
-    static ChannelSelection all();
+    static ChannelSelection all() noexcept;
 
     /**
      * @brief Appends a channel.
      * @param channel The channel index, at least 0.
+     * @return This object, so calls can be chained.
      * @throws InvalidArgumentError When channel is negative, already selected,
      * or when isAll() is true. The selection is unchanged on failure.
      * @throws std::bad_alloc When memory is exhausted; the selection is unchanged.
      */
-    void add(int32_t channel);
+    ChannelSelection& add(int32_t channel);
     /**
      * @brief Tells whether every channel is selected.
      * @return True for a selection built by all().
@@ -117,7 +119,8 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    std::unique_ptr<Impl> impl_; // null until a channel is listed
+    bool all_;
 };
 
 } // namespace slideio::processor

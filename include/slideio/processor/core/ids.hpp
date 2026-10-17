@@ -43,35 +43,31 @@ public:
      * @throws Nothing.
      */
     bool isValid() const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids are equal.
+     * @throws Nothing.
+     */
+    bool operator==(LayerId other) const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids differ.
+     * @throws Nothing.
+     */
+    bool operator!=(LayerId other) const noexcept;
+    /**
+     * @brief Orders ids.
+     * @param other The id to compare with.
+     * @return True when this id sorts before other: by raw value.
+     * @throws Nothing.
+     */
+    bool operator<(LayerId other) const noexcept;
 
 private:
     int32_t value_;
 };
-
-/**
- * @brief Compares two layer ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values are equal.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(LayerId a, LayerId b) noexcept;
-/**
- * @brief Compares two layer ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values differ.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator!=(LayerId a, LayerId b) noexcept;
-/**
- * @brief Orders two layer ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when a's raw value is smaller.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator<(LayerId a, LayerId b) noexcept;
 
 /**
  * @brief Identifies a pipeline stage.
@@ -108,35 +104,31 @@ public:
      * @throws Nothing.
      */
     bool isValid() const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids are equal.
+     * @throws Nothing.
+     */
+    bool operator==(StageId other) const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids differ.
+     * @throws Nothing.
+     */
+    bool operator!=(StageId other) const noexcept;
+    /**
+     * @brief Orders ids.
+     * @param other The id to compare with.
+     * @return True when this id sorts before other: by raw value.
+     * @throws Nothing.
+     */
+    bool operator<(StageId other) const noexcept;
 
 private:
     int32_t value_;
 };
-
-/**
- * @brief Compares two stage ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values are equal.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(StageId a, StageId b) noexcept;
-/**
- * @brief Compares two stage ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values differ.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator!=(StageId a, StageId b) noexcept;
-/**
- * @brief Orders two stage ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when a's raw value is smaller.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator<(StageId a, StageId b) noexcept;
 
 /**
  * @brief Identifies a label.
@@ -174,35 +166,31 @@ public:
      * @throws Nothing.
      */
     bool isValid() const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids are equal.
+     * @throws Nothing.
+     */
+    bool operator==(LabelId other) const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids differ.
+     * @throws Nothing.
+     */
+    bool operator!=(LabelId other) const noexcept;
+    /**
+     * @brief Orders ids.
+     * @param other The id to compare with.
+     * @return True when this id sorts before other: by raw value.
+     * @throws Nothing.
+     */
+    bool operator<(LabelId other) const noexcept;
 
 private:
     int32_t value_;
 };
-
-/**
- * @brief Compares two label ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values are equal.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(LabelId a, LabelId b) noexcept;
-/**
- * @brief Compares two label ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values differ.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator!=(LabelId a, LabelId b) noexcept;
-/**
- * @brief Orders two label ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when a's raw value is smaller.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator<(LabelId a, LabelId b) noexcept;
 
 /**
  * @brief Identifies a raster.
@@ -239,35 +227,31 @@ public:
      * @throws Nothing.
      */
     bool isValid() const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids are equal.
+     * @throws Nothing.
+     */
+    bool operator==(RasterId other) const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids differ.
+     * @throws Nothing.
+     */
+    bool operator!=(RasterId other) const noexcept;
+    /**
+     * @brief Orders ids.
+     * @param other The id to compare with.
+     * @return True when this id sorts before other: by raw value.
+     * @throws Nothing.
+     */
+    bool operator<(RasterId other) const noexcept;
 
 private:
     int32_t value_;
 };
-
-/**
- * @brief Compares two raster ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values are equal.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(RasterId a, RasterId b) noexcept;
-/**
- * @brief Compares two raster ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when the raw values differ.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator!=(RasterId a, RasterId b) noexcept;
-/**
- * @brief Orders two raster ids by raw value.
- * @param a First id.
- * @param b Second id.
- * @return True when a's raw value is smaller.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator<(RasterId a, RasterId b) noexcept;
 
 /**
  * @brief Identifies an object by layer and anchor position.
@@ -302,14 +286,15 @@ public:
     /**
      * @brief Parses the text form written by toString().
      *
-     * Accepts exactly "<layer>:<x>:<y>" in decimal: no sign, no spaces, no
-     * trailing characters, layer at least 1 and the anchor in range.
-     * @param text UTF-8 text; must not be null.
+     * Accepts exactly "<layer>:<x>:<y>" in canonical decimal: no sign, no
+     * spaces, no trailing characters, no leading zeros (a lone "0" is fine for
+     * x and y), layer at least 1 and the anchor in range.
+     * @param text UTF-8 text.
      * @param out Receives the id on success; unchanged on failure.
-     * @return True when text was parsed.
-     * @throws InvalidArgumentError When text is null.
+     * @return True when text was parsed; false for a null or malformed text.
+     * @throws Nothing.
      */
-    static bool fromString(const char* text, ObjectId& out);
+    static bool fromString(const char* text, ObjectId& out) noexcept;
 
     /**
      * @brief Tells whether the id designates an object.
@@ -338,42 +323,39 @@ public:
     /**
      * @brief Writes the text form "<layer>:<x>:<y>", or "invalid".
      * @param buffer Destination, or null to query the length.
-     * @param capacity Buffer size in bytes, terminator included.
+     * @param capacity Buffer size in bytes, terminator included; with
+     * capacity <= 0 nothing is written.
      * @return The required length, excluding the terminator. The buffer is
      * filled and terminated when capacity allows, and truncated but still
      * terminated when it does not.
+     * @throws Nothing in practice; deliberately not noexcept, as in SDS 01 1.4.
+     */
+    int32_t toString(char* buffer, int32_t capacity) const;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids are equal.
      * @throws Nothing.
      */
-    int64_t toString(char* buffer, int64_t capacity) const noexcept;
+    bool operator==(const ObjectId& other) const noexcept;
+    /**
+     * @brief Compares by value.
+     * @param other The id to compare with.
+     * @return True when the ids differ.
+     * @throws Nothing.
+     */
+    bool operator!=(const ObjectId& other) const noexcept;
+    /**
+     * @brief Orders ids.
+     * @param other The id to compare with.
+     * @return True when this id sorts before other: by raw value, then by packed anchor (scan order).
+     * @throws Nothing.
+     */
+    bool operator<(const ObjectId& other) const noexcept;
 
 private:
     LayerId layer_;
     int64_t packed_;
 };
-
-/**
- * @brief Compares two object ids.
- * @param a First id.
- * @param b Second id.
- * @return True when layer and packed anchor are equal.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(const ObjectId& a, const ObjectId& b) noexcept;
-/**
- * @brief Compares two object ids.
- * @param a First id.
- * @param b Second id.
- * @return True when they differ.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator!=(const ObjectId& a, const ObjectId& b) noexcept;
-/**
- * @brief Orders object ids by layer value, then by packed anchor (scan order).
- * @param a First id.
- * @param b Second id.
- * @return True when a sorts before b.
- * @throws Nothing.
- */
-SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator<(const ObjectId& a, const ObjectId& b) noexcept;
 
 } // namespace slideio::processor
