@@ -153,12 +153,7 @@ void rasteriseInto(RasterMask& mask, const Polygon& polygon) {
     }
     const Rect64 region = mask.regionAtLevel();
     const double scale = mask.levelScale();
-    const detail::PixelGrid grid{static_cast<double>(region.x) * scale,
-                                 static_cast<double>(region.y) * scale,
-                                 scale,
-                                 scale,
-                                 region.width,
-                                 region.height};
+    const detail::PixelGrid grid{region.x, region.y, scale, scale, region.width, region.height};
     detail::forEachCoveredSpan(polygon, grid, [&mask](int64_t y, int64_t x0, int64_t x1) {
         std::memset(mask.row(y) + x0, 255, static_cast<size_t>(x1 - x0));
     });

@@ -172,6 +172,30 @@ TEST(RasterMask, SeamAgreementAcrossTiles) {                          // Review 
     }
 }
 
+TEST(RasterMask, SeamAgreementAtNonDyadicScales) {
+    // Ruling (controller): absolute level mapping. At scale 3 the vertex (3,30) lies on a lattice
+    // line, and edges (58,4)-(40,40) and (40,40)-(4,58) pass exactly through lattice corners
+    // between their vertices; 4.0001 is SDS 01 1.17's drifting pyramid. Tiles split at a
+    // non-aligned column and row must agree with the whole region at every pixel.
+    Point64 v[] = {{1,1},{58,4},{40,40},{4,58},{3,30}}; Polygon p; p.addRing(v, 5, false);
+    for (double scale : {3.0, 4.0001}) {
+        const int64_t n = static_cast<int64_t>(std::ceil(64.0 / scale)) + 2, o = -1;
+        const int64_t sx = n / 2 + 1, sy = n / 3 + 1;
+        RasterMask whole(Rect64{o, o, n, n}, 1, scale);
+        rasteriseInto(whole, p);
+        const Rect64 parts[] = {{o, o, sx, sy}, {o + sx, o, n - sx, sy},
+                                {o, o + sy, sx, n - sy}, {o + sx, o + sy, n - sx, n - sy}};
+        int64_t setInParts = 0;
+        for (const Rect64& r : parts) {
+            RasterMask t(r, 1, scale); rasteriseInto(t, p); setInParts += t.setPixelCount();
+            for (int64_t y = r.y; y < r.bottom(); ++y) for (int64_t x = r.x; x < r.right(); ++x)
+                EXPECT_EQ(t.test({x, y}), whole.test({x, y})) << scale << ":" << x << "," << y;
+        }
+        EXPECT_EQ(setInParts, whole.setPixelCount());
+        EXPECT_GT(whole.setPixelCount(), 0); EXPECT_LT(whole.setPixelCount(), n * n);
+    }
+}
+
 TEST(RasterMask, AdditiveAndClear) {
     RasterMask m(Rect64{0,0,4,4}, 0, 1.0);
     Point64 a[] = {{0,0},{1,0},{1,1},{0,1}}, b[] = {{3,3},{4,3},{4,4},{3,4}};
@@ -245,4 +269,41 @@ TEST(RasterMask, RandomStarPolygonsMatchAreaReference) {
             EXPECT_EQ(m.test({x, y}), area > 1e-9) << iter << ": " << x << "," << y << " area " << area;
         }
     }
+}
+
+TEST(RasterMask, RandomSeamAgreementAtNonDyadicScales) {
+    // Random rings whose edges run along slopes +-1 and +-1/2 from random integer vertices, so
+    // many of them pass exactly through lattice corners and centres between vertices. Every
+    // tile split must agree with the whole region at scales 3 and 4.0001.
+    std::mt19937 rng(4242u);
+    int64_t disagreements = 0;
+    int tried = 0;
+    for (int iter = 0; iter < 200; ++iter) {
+        const double scale = iter % 2 == 0 ? 3.0 : 4.0001;
+        std::vector<Point64> v;
+        Point64 cur{static_cast<int64_t>(rng() % 20) + 20, static_cast<int64_t>(rng() % 20) + 20};
+        const int n = 3 + static_cast<int>(rng() % 6);
+        for (int k = 0; k < n; ++k) {
+            v.push_back(cur);
+            const int64_t d = 1 + static_cast<int64_t>(rng() % 12);
+            const int64_t dx = (rng() % 2 ? d : -d), dy = (rng() % 3 == 0 ? dx / 2 : (rng() % 2 ? d : -d));
+            cur = Point64{cur.x + dx, cur.y + dy};
+        }
+        Polygon p;
+        try { p.addRing(v.data(), static_cast<int64_t>(v.size()), false); }
+        catch (const InvalidArgumentError&) { continue; }                // fewer than 3 distinct points
+        ++tried;
+        const int64_t g = 24, o = static_cast<int64_t>(rng() % 3);
+        RasterMask whole(Rect64{o, o, g, g}, 1, scale); rasteriseInto(whole, p);
+        const int64_t sx = 1 + static_cast<int64_t>(rng() % (g - 1)), sy = 1 + static_cast<int64_t>(rng() % (g - 1));
+        const Rect64 parts[] = {{o, o, sx, sy}, {o + sx, o, g - sx, sy},
+                                {o, o + sy, sx, g - sy}, {o + sx, o + sy, g - sx, g - sy}};
+        for (const Rect64& r : parts) {
+            RasterMask t(r, 1, scale); rasteriseInto(t, p);
+            for (int64_t y = r.y; y < r.bottom(); ++y) for (int64_t x = r.x; x < r.right(); ++x)
+                if (t.test({x, y}) != whole.test({x, y})) ++disagreements;
+        }
+    }
+    EXPECT_EQ(disagreements, 0);
+    EXPECT_GT(tried, 150);
 }

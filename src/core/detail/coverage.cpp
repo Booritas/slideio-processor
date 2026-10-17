@@ -4,9 +4,11 @@
 #include <cmath>
 #include <vector>
 
-// The conservative even-odd kernel. Everything happens in pixel units of the
-// grid, u = (x - originX) / pixelW and v = (y - originY) / pixelH, where pixel
-// (i, j) is the square [i, i+1] x [j, j+1] and its centre is (i+0.5, j+0.5).
+// The conservative even-odd kernel. Everything happens in ABSOLUTE level pixel
+// units, u = x / pixelW and v = y / pixelH, where level pixel (i, j) is the
+// square [i, i+1] x [j, j+1] and its centre is (i+0.5, j+0.5). The grid's
+// integer origin is used only to clip and, at the very end, to turn absolute
+// pixel indices into grid-relative ones (plan ruling: absolute level mapping).
 //
 // Step 2 (boundary): a pixel is marked when an edge passes through its OPEN
 // interior. The cells are found row by row: the part of the edge inside the
@@ -24,10 +26,11 @@
 // line v = y + 0.5 when (va <= vc) != (vb <= vc), and a centre is inside when
 // it lies in [c(2k), c(2k+1)) of the sorted crossings.
 //
-// No epsilon is used anywhere: an epsilon would make a decision depend on the
-// magnitude of u and v, and therefore on the grid origin, which breaks seam
-// agreement between tiles. When pixelW and pixelH are powers of two the
-// mapping is exact, and so is every decision.
+// No epsilon is used anywhere, and no value that enters a decision depends on
+// the grid origin: u and v round the same way for every tile, and every lattice
+// comparison is against an absolute integer. Two grids sharing a seam therefore
+// agree on every pixel by construction, at any scale (4.0001 included). When
+// pixelW and pixelH are powers of two the mapping is also exact.
 
 namespace slideio::processor::detail {
 
@@ -81,13 +84,15 @@ double firstCentreAtOrAfter(double c) {
 class Kernel {
 public:
     explicit Kernel(const PixelGrid& grid)
-        : w_(grid.width), h_(grid.height), wd_(static_cast<double>(grid.width)),
-          hd_(static_cast<double>(grid.height)) {}
+        : x0_(grid.originLevelX), x1_(grid.originLevelX + grid.width), y0_(grid.originLevelY),
+          y1_(grid.originLevelY + grid.height), x0d_(static_cast<double>(x0_)),
+          x1d_(static_cast<double>(x1_)), y0d_(static_cast<double>(y0_)),
+          y1d_(static_cast<double>(y1_)) {}
 
     // Marks the cells of row j whose open u-range meets the interval [lo, hi], lo < hi.
     void markInterval(int64_t j, double lo, double hi) {
-        const int64_t i0 = clampIndex(std::floor(lo), 0, w_);
-        const int64_t i1 = clampIndex(std::ceil(hi), 0, w_);
+        const int64_t i0 = clampIndex(std::floor(lo), x0_, x1_);
+        const int64_t i1 = clampIndex(std::ceil(hi), x0_, x1_);
         if (i0 < i1) {
             spans_.push_back(Span{j, i0, i1});
         }
@@ -95,8 +100,8 @@ public:
 
     // Marks the cell of row j containing u when u is strictly inside a cell.
     void markPoint(int64_t j, double u) {
-        if (!isInteger(u) && u > 0.0 && u < wd_) {
-            const int64_t i = clampIndex(std::floor(u), 0, w_ - 1);
+        if (!isInteger(u) && u > x0d_ && u < x1d_) {
+            const int64_t i = clampIndex(std::floor(u), x0_, x1_ - 1);
             spans_.push_back(Span{j, i, i + 1});
         }
     }
@@ -104,19 +109,19 @@ public:
     void boundary(const Edge& e) {
         const double umin = std::min(e.ua, e.ub), umax = std::max(e.ua, e.ub);
         const double vmin = std::min(e.va, e.vb), vmax = std::max(e.va, e.vb);
-        if (umax <= 0.0 || umin >= wd_ || vmax <= 0.0 || vmin >= hd_) {
+        if (umax <= x0d_ || umin >= x1d_ || vmax <= y0d_ || vmin >= y1d_) {
             return; // cannot reach the open interior of any grid cell
         }
         if (e.va == e.vb) {
             // Horizontal: on a lattice line it marks nothing; inside a row it
             // marks every cell its open extent crosses.
             if (!isInteger(e.va) && umin < umax) {
-                markInterval(clampIndex(std::floor(e.va), 0, h_ - 1), umin, umax);
+                markInterval(clampIndex(std::floor(e.va), y0_, y1_ - 1), umin, umax);
             }
             return;
         }
-        int64_t jlo = clampIndex(std::floor(vmin), 0, h_ - 1);
-        int64_t jhi = clampIndex(std::ceil(vmax) - 1.0, 0, h_ - 1);
+        int64_t jlo = clampIndex(std::floor(vmin), y0_, y1_ - 1);
+        int64_t jhi = clampIndex(std::ceil(vmax) - 1.0, y0_, y1_ - 1);
         if (e.ua == e.ub) {
             // Vertical: on a lattice line it marks nothing.
             if (isInteger(e.ua)) {
@@ -130,7 +135,7 @@ public:
         // Diagonal: limit the rows to where the edge is inside 0 <= u <= W, so
         // the work is bounded by the clipped edge. The clip is rounded, so the
         // row range is widened by one each way; each row is then decided exactly.
-        double t0 = (0.0 - e.ua) / (e.ub - e.ua), t1 = (wd_ - e.ua) / (e.ub - e.ua);
+        double t0 = (x0d_ - e.ua) / (e.ub - e.ua), t1 = (x1d_ - e.ua) / (e.ub - e.ua);
         if (t0 > t1) {
             std::swap(t0, t1);
         }
@@ -138,8 +143,8 @@ public:
         t1 = std::min(t1, 1.0);
         if (t0 <= t1) {
             const double c0 = e.va + t0 * (e.vb - e.va), c1 = e.va + t1 * (e.vb - e.va);
-            jlo = std::max(jlo, clampIndex(std::floor(std::min(c0, c1)) - 1.0, 0, h_ - 1));
-            jhi = std::min(jhi, clampIndex(std::ceil(std::max(c0, c1)), 0, h_ - 1));
+            jlo = std::max(jlo, clampIndex(std::floor(std::min(c0, c1)) - 1.0, y0_, y1_ - 1));
+            jhi = std::min(jhi, clampIndex(std::ceil(std::max(c0, c1)), y0_, y1_ - 1));
         }
         for (int64_t j = jlo; j <= jhi; ++j) {
             const double s0 = std::max(vmin, static_cast<double>(j));
@@ -161,13 +166,13 @@ public:
             return;
         }
         const double vmin = std::min(e.va, e.vb), vmax = std::max(e.va, e.vb);
-        if (vmax <= 0.0 || vmin >= hd_) {
+        if (vmax <= y0d_ || vmin >= y1d_) {
             return;
         }
         // Rows with vmin <= y + 0.5 < vmax, widened by one each way and then
         // decided by the exact predicate.
-        const int64_t ylo = clampIndex(std::ceil(vmin - 0.5) - 1.0, 0, h_ - 1);
-        const int64_t yhi = clampIndex(std::ceil(vmax - 0.5), 0, h_ - 1);
+        const int64_t ylo = clampIndex(std::ceil(vmin - 0.5) - 1.0, y0_, y1_ - 1);
+        const int64_t yhi = clampIndex(std::ceil(vmax - 0.5), y0_, y1_ - 1);
         for (int64_t y = ylo; y <= yhi; ++y) {
             const double vc = static_cast<double>(y) + 0.5;
             if ((e.va <= vc) != (e.vb <= vc)) {
@@ -188,8 +193,8 @@ public:
             }
             // Closed rings give an even count per row; a stray last one is ignored.
             for (size_t c = k; c + 1 < end; c += 2) {
-                const int64_t x0 = clampIndex(firstCentreAtOrAfter(crossings_[c].u), 0, w_);
-                const int64_t x1 = clampIndex(firstCentreAtOrAfter(crossings_[c + 1].u), 0, w_);
+                const int64_t x0 = clampIndex(firstCentreAtOrAfter(crossings_[c].u), x0_, x1_);
+                const int64_t x1 = clampIndex(firstCentreAtOrAfter(crossings_[c + 1].u), x0_, x1_);
                 if (x0 < x1) {
                     spans_.push_back(Span{crossings_[k].y, x0, x1});
                 }
@@ -212,13 +217,13 @@ public:
             }
         }
         for (const Span& s : merged) {
-            row(s.y, s.x0, s.x1);
+            row(s.y - y0_, s.x0 - x0_, s.x1 - x0_); // absolute -> grid-relative
         }
     }
 
 private:
-    int64_t w_, h_;
-    double wd_, hd_;
+    int64_t x0_, x1_, y0_, y1_; // the grid box in absolute level pixels, half-open
+    double x0d_, x1d_, y0d_, y1d_;
     std::vector<Span> spans_;
     std::vector<Crossing> crossings_;
 };
@@ -242,10 +247,10 @@ void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
         for (int64_t k = 0; k < n; ++k) {
             const Point64& a = points[static_cast<size_t>(k)];
             const Point64& b = points[static_cast<size_t>(k + 1 == n ? 0 : k + 1)];
-            const Edge e{(static_cast<double>(a.x) - grid.originX) / grid.pixelW,
-                         (static_cast<double>(a.y) - grid.originY) / grid.pixelH,
-                         (static_cast<double>(b.x) - grid.originX) / grid.pixelW,
-                         (static_cast<double>(b.y) - grid.originY) / grid.pixelH};
+            // Absolute level units: the rounding depends on the vertex and the
+            // scale only, never on which grid asked.
+            const Edge e{static_cast<double>(a.x) / grid.pixelW, static_cast<double>(a.y) / grid.pixelH,
+                         static_cast<double>(b.x) / grid.pixelW, static_cast<double>(b.y) / grid.pixelH};
             kernel.boundary(e);
             kernel.crossings(e);
         }

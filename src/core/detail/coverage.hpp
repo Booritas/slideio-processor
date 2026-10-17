@@ -7,10 +7,22 @@
 
 namespace slideio::processor::detail {
 
-/// A pixel grid in level-0 space: pixel (i, j) is the square
-/// [originX + i*pixelW, originX + (i+1)*pixelW) x [originY + j*pixelH, ...).
+/// A window of `width` x `height` pixels onto the pixel lattice of one level.
+///
+/// Level pixel (I, J), in ABSOLUTE level coordinates, is the level-0 square
+/// [I*pixelW, (I+1)*pixelW) x [J*pixelH, (J+1)*pixelH). The window holds the
+/// level pixels originLevelX <= I < originLevelX + width (and likewise for J);
+/// grid pixel (i, j) is level pixel (originLevelX + i, originLevelY + j).
+///
+/// The origin is an integer on purpose: the kernel maps vertices as x / pixelW
+/// with no origin term, so the rounding is identical for every window and two
+/// windows sharing a seam agree on it at any scale. Callers supply:
+/// - RasterMask: originLevel = region.x / region.y, pixelW = pixelH = levelScale.
+/// - BlockView (Task 12): pixelW = slideRect.width / width (likewise H), and
+///   originLevelX = llround(slideRect.x / pixelW) (likewise Y).
 struct PixelGrid {
-    double originX, originY, pixelW, pixelH;
+    int64_t originLevelX, originLevelY;
+    double pixelW, pixelH;
     int64_t width, height;
 };
 
