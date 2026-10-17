@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <type_traits>
@@ -277,4 +278,55 @@ TEST(GeoJsonWriter, MoveKeepsTheStream) {
     GeoJsonWriter b(std::move(a));
     b.end();
     EXPECT_NE(readFile(path).find("]}\n"), std::string::npos);
+}
+
+// UR-QA-3: the same records and the same Provenance give byte-identical files.
+// One Provenance instance is used for both writes, because a Provenance records
+// its construction time; a restoring or fixed-timestamp Provenance is a
+// precondition for byte-identical exports across runs (reporting plan).
+TEST(GeoJsonWriter, SameInputAndProvenanceGiveByteIdenticalFiles) {
+    Provenance prov;
+    prov.setSlideId("slide-qa3");
+    prov.setSceneIndex(2);
+
+    std::vector<ObjectRecord> records;
+    records.push_back(triangle(1));
+    {
+        // Two outer rings and a hole: a MultiPolygon with hole ownership.
+        Polygon p;
+        Point64 outerA[] = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+        Point64 hole[] = {{12, 12}, {14, 12}, {14, 14}, {12, 14}};
+        Point64 outerB[] = {{30, 30}, {35, 30}, {35, 35}};
+        p.addRing(outerA, 4, false);
+        p.addRing(hole, 4, true);
+        p.addRing(outerB, 3, false);
+        ObjectRecord r;
+        r.setGeometry(p);
+        r.setLayer(LayerId(3));
+        r.setLabel(LabelId(5));
+        r.measurements().set("area", 96.5, MeasurementUnit::SquarePixels);
+        r.measurements().set("mean", 0.1, MeasurementUnit::Intensity);
+        records.push_back(r);
+    }
+    const char* names[] = {"tumour", "local-tag"};
+    const bool local[] = {false, true};
+
+    auto write = [&](const std::filesystem::path& path) {
+        GeoJsonWriter w(path.u8string().c_str());
+        w.begin(prov);
+        for (const ObjectRecord& r : records) {
+            w.writeFeature(r, "nuclei", names, local, 2);
+        }
+        w.end();
+    };
+    auto first = uniqueTempPath("qa3a", ".geojson");
+    auto second = uniqueTempPath("qa3b", ".geojson");
+    TempFileGuard g1(first);
+    TempFileGuard g2(second);
+    write(first);
+    write(second);
+    const std::string a = readFile(first);
+    const std::string b = readFile(second);
+    ASSERT_FALSE(a.empty());
+    EXPECT_EQ(a, b);
 }
