@@ -1,8 +1,11 @@
 #include "core/detail/coverage.hpp"
 
+#include <slideio/processor/core/error.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 // The conservative even-odd kernel. Everything happens in ABSOLUTE level pixel
@@ -262,6 +265,32 @@ void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
     }
     kernel.interior();
     kernel.emit(row);
+}
+
+PixelGrid gridOfView(const BlockView& view) {
+    if (view.isNull()) {
+        throw InvalidArgumentError("rasteriseInto: view is null");
+    }
+    constexpr double kMinScale = 1e-6;
+    const int64_t width = view.width(), height = view.height();
+    const Rect64 rect = view.slideRect();
+    const double sx = static_cast<double>(rect.width) / static_cast<double>(width);
+    const double sy = static_cast<double>(rect.height) / static_cast<double>(height);
+    if (!std::isfinite(sx) || !std::isfinite(sy) || !(sx >= kMinScale) || !(sy >= kMinScale)) {
+        throw InvalidArgumentError("rasteriseInto: view scale must be finite and at least 1e-6");
+    }
+    const double ox = std::round(static_cast<double>(rect.x) / sx);
+    const double oy = std::round(static_cast<double>(rect.y) / sy);
+    constexpr double kOriginLimit = 4611686018427387904.0; // 2^62
+    if (!(std::fabs(ox) < kOriginLimit) || !(std::fabs(oy) < kOriginLimit)) {
+        throw InvalidArgumentError("rasteriseInto: view origin does not fit");
+    }
+    const int64_t originX = static_cast<int64_t>(ox), originY = static_cast<int64_t>(oy);
+    if (originX > std::numeric_limits<int64_t>::max() - width ||
+        originY > std::numeric_limits<int64_t>::max() - height) {
+        throw InvalidArgumentError("rasteriseInto: view origin does not fit");
+    }
+    return PixelGrid{originX, originY, sx, sy, width, height};
 }
 
 } // namespace slideio::processor::detail

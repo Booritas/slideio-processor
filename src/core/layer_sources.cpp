@@ -2,6 +2,8 @@
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 
+#include "core/detail/coverage.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -43,7 +45,7 @@ std::vector<ObjectRecord> collect(ObjectSource& source, const ObjectQuery& query
     std::vector<ObjectRecord> records;
     CursorPtr cursor = source.query(query);
     if (!cursor) {
-        throw InvalidArgumentError("ObjectSource::query returned a null cursor");
+        throw InternalError("ObjectSource::query returned a null cursor");
     }
     CursorCloser closer(*cursor);
     while (cursor->next()) {
@@ -142,7 +144,15 @@ public:
             throw InvalidArgumentError("fillTile: view needs plane 0 of the source's plane type");
         }
         ObjectQuery query;
-        query.layer(layer_).intersecting(out.slideRect()).visibility(StageVisibility::CompletedOnly);
+        // Query the whole rasterised grid, which can extend past slideRect by half a pixel.
+        const detail::PixelGrid grid = detail::gridOfView(out);
+        const int64_t qx0 = toInt64Floor(static_cast<double>(grid.originLevelX) * grid.pixelW);
+        const int64_t qy0 = toInt64Floor(static_cast<double>(grid.originLevelY) * grid.pixelH);
+        const int64_t qx1 = toInt64Ceil(static_cast<double>(grid.originLevelX + grid.width) * grid.pixelW);
+        const int64_t qy1 = toInt64Ceil(static_cast<double>(grid.originLevelY + grid.height) * grid.pixelH);
+        query.layer(layer_)
+            .intersecting(Rect64{qx0, qy0, qx1 - qx0, qy1 - qy0})
+            .visibility(StageVisibility::CompletedOnly);
         std::vector<ObjectRecord> records = collect(*source_, query);
 
         const size_t rowBytes = static_cast<size_t>(out.width()) *
@@ -154,7 +164,7 @@ public:
         }
 
         // Descending id: the smallest id is written last and wins (R11).
-        std::sort(records.begin(), records.end(),
+        std::stable_sort(records.begin(), records.end(),
                   [](const ObjectRecord& a, const ObjectRecord& b) { return b.id() < a.id(); });
         for (const ObjectRecord& record : records) {
             int64_t value = 1;

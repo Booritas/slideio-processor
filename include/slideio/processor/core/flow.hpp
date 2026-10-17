@@ -280,7 +280,7 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS TileMaskSourcePtr makeLayerMaskSource(ObjectSourc
  * UR-RES-5
  */
 enum class LayerRasterContent : int32_t {
-    Label,        ///< The object's effective label id; 0 where no object covers.
+    Label,        ///< The covering object's own label id (R11); 0 where none covers or it has none.
     Membership,   ///< 1 inside any object of the layer, 0 outside.
     ObjectAnchor  ///< ObjectId::anchorPacked() of the covering object; 0 where none.
 };

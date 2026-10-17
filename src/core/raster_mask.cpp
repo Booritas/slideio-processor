@@ -319,25 +319,7 @@ void rasteriseInto(BlockView& plane, int32_t planeIndex, const Polygon& polygon,
         throw InvalidArgumentError("rasteriseInto: planeIndex out of range");
     }
     const Sample sample = makeSample(plane.planeType(planeIndex), value);
-    const int64_t width = plane.width(), height = plane.height();
-    const Rect64 rect = plane.slideRect();
-    const double sx = static_cast<double>(rect.width) / static_cast<double>(width);
-    const double sy = static_cast<double>(rect.height) / static_cast<double>(height);
-    if (!std::isfinite(sx) || !std::isfinite(sy) || !(sx >= kMinScale) || !(sy >= kMinScale)) {
-        throw InvalidArgumentError("rasteriseInto: view scale must be finite and at least 1e-6");
-    }
-    const double ox = std::round(static_cast<double>(rect.x) / sx);
-    const double oy = std::round(static_cast<double>(rect.y) / sy);
-    constexpr double kOriginLimit = 4611686018427387904.0; // 2^62
-    if (!(std::fabs(ox) < kOriginLimit) || !(std::fabs(oy) < kOriginLimit)) {
-        throw InvalidArgumentError("rasteriseInto: view origin does not fit");
-    }
-    const int64_t originX = static_cast<int64_t>(ox), originY = static_cast<int64_t>(oy);
-    if (originX > std::numeric_limits<int64_t>::max() - width ||
-        originY > std::numeric_limits<int64_t>::max() - height) {
-        throw InvalidArgumentError("rasteriseInto: view origin does not fit");
-    }
-    const detail::PixelGrid grid{originX, originY, sx, sy, width, height};
+    const detail::PixelGrid grid = detail::gridOfView(plane);
     unsigned char* base = static_cast<unsigned char*>(plane.planeData(planeIndex));
     const int64_t stride = plane.planeRowStrideBytes(planeIndex);
     detail::forEachCoveredSpan(polygon, grid, [&](int64_t y, int64_t x0, int64_t x1) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/geometry.hpp>
 
 #include <cstdint>
@@ -34,6 +35,12 @@ struct PixelGrid {
 /// inside by even-odd with the same tie rule as Polygon::contains. Every run is
 /// computed before the first call, so a throw (std::bad_alloc) leaves the
 /// caller's target untouched. Not exported.
+/// The grid a BlockView is rasterised on: pixel size slideRect/size, origin
+/// llround(slideRect.x / pixelW). Shared by rasteriseInto(BlockView...) and
+/// the layer raster source so a query can cover exactly what is rasterised.
+/// Throws InvalidArgumentError for a null view or an unusable scale or origin.
+PixelGrid gridOfView(const BlockView& view);
+
 void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
                         const std::function<void(int64_t y, int64_t x0, int64_t x1)>& row);
 
