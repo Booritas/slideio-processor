@@ -21,7 +21,9 @@ namespace slideio::processor {
  *
  * A Polygon's first ring is an outer ring and the rest are holes; a
  * MultiPolygon contributes each member polygon the same way. Coordinates are
- * rounded to the nearest integer. A feature whose geometry is null, missing,
+ * parsed independently of the C locale and rounded to the nearest integer,
+ * halves away from zero. A leading UTF-8 byte order mark is skipped; byte
+ * offsets in messages still count it. A feature whose geometry is null, missing,
  * empty, or of any other type is skipped with a LogLevel::Warning message
  * naming its index and type.
  *

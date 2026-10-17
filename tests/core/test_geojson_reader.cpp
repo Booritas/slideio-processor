@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <clocale>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -331,6 +332,87 @@ TEST(GeoJsonReader, AccessorsBeforeNextAndAfterMove) {
     EXPECT_STREQ(a.layerName(), "");
     EXPECT_EQ(a.propertyCount(), 0);
     EXPECT_EQ(a.featuresRead(), 0);
+}
+
+namespace {
+
+// Switches the C numeric locale to a comma-decimal one and restores the previous one on exit.
+class CommaDecimalLocale {
+public:
+    CommaDecimalLocale() {
+        const char* prev = std::setlocale(LC_NUMERIC, nullptr);
+        previous_ = prev != nullptr ? prev : "C";
+        for (const char* name : {"de_DE.UTF-8", "de_DE", "German_Germany.1252"}) {
+            if (std::setlocale(LC_NUMERIC, name) != nullptr) {
+                if (std::localeconv()->decimal_point[0] == ',') {
+                    active_ = true;
+                    return;
+                }
+                std::setlocale(LC_NUMERIC, previous_.c_str());
+            }
+        }
+    }
+    CommaDecimalLocale(const CommaDecimalLocale&) = delete;
+    CommaDecimalLocale& operator=(const CommaDecimalLocale&) = delete;
+    ~CommaDecimalLocale() { std::setlocale(LC_NUMERIC, previous_.c_str()); }
+    bool active() const { return active_; }
+
+private:
+    std::string previous_;
+    bool active_ = false;
+};
+
+} // namespace
+
+TEST(GeoJsonReader, CoordinatesIgnoreTheCLocale) {
+    CommaDecimalLocale locale;
+    if (!locale.active()) {
+        GTEST_SKIP() << "no comma-decimal locale available";
+    }
+    auto path = uniqueTempPath("locale", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[12.6,0.4],[12,12.5e0]]]}})");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    Point64 pts[3];
+    r.geometry().ringPoints(0, pts, 3);
+    EXPECT_EQ(pts[1], (Point64{13, 0}));
+    EXPECT_EQ(pts[2], (Point64{12, 13}));
+}
+
+TEST(GeoJsonReader, LeadingUtf8BomIsSkipped) {
+    auto path = uniqueTempPath("bom", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, "\xEF\xBB\xBF" R"({"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Polygon","coordinates":)" +
+                        square(0) + R"(},"properties":{"layer":"bom"}}]})");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    EXPECT_STREQ(r.layerName(), "bom");
+    EXPECT_FALSE(r.next());
+
+    auto bad = uniqueTempPath("bombad", ".geojson");             // offsets still count from the file start
+    TempFileGuard guardBad(bad);
+    writeFile(bad, "\xEF\xBB\xBF[ x ]");
+    GeoJsonReader rb(bad.u8string().c_str());
+    try {
+        rb.next();
+        FAIL() << "expected InvalidArgumentError";
+    } catch (const InvalidArgumentError& e) {
+        EXPECT_NE(messageOf(e).find("offset 5"), std::string::npos) << e.what();
+    }
+}
+
+TEST(GeoJsonReader, TinyAndNegativeCoordinatesRound) {
+    auto path = uniqueTempPath("tiny", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[1e-400,-0.0],[-2.5,0],[-2,-3.49E0]]]}})");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    Point64 pts[3];
+    r.geometry().ringPoints(0, pts, 3);
+    EXPECT_EQ(pts[0], (Point64{0, 0}));
+    EXPECT_EQ(pts[1], (Point64{-3, 0}));                           // llround: half away from zero
+    EXPECT_EQ(pts[2], (Point64{-2, -3}));
 }
 
 TEST(GeoJsonReader, StreamsTenThousandFeatures) {

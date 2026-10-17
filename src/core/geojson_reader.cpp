@@ -8,13 +8,17 @@
 #include <rapidjson/reader.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <locale>
 #include <new>
+#include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -88,6 +92,89 @@ struct CurrentFeature {
     }
 };
 
+// True when the JSON number `text`, whose conversion was out of range, is too
+// large rather than too small: its decimal magnitude (digits before the point,
+// or minus the zeros after it, plus the exponent) is positive.
+bool overflows(const char* text, size_t len) {
+    size_t i = (len > 0 && text[0] == '-') ? 1 : 0;
+    while (i < len && text[i] == '0') {
+        ++i;
+    }
+    int64_t magnitude = 0;
+    while (i < len && text[i] >= '0' && text[i] <= '9') {
+        ++magnitude;
+        ++i;
+    }
+    if (i < len && text[i] == '.') {
+        ++i;
+        if (magnitude == 0) {
+            while (i < len && text[i] == '0') {
+                --magnitude;
+                ++i;
+            }
+        }
+        while (i < len && text[i] >= '0' && text[i] <= '9') {
+            ++i;
+        }
+    }
+    if (i < len && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        const bool negative = i < len && text[i] == '-';
+        if (i < len && (text[i] == '-' || text[i] == '+')) {
+            ++i;
+        }
+        int64_t exponent = 0;
+        while (i < len && text[i] >= '0' && text[i] <= '9') {
+            exponent = std::min<int64_t>(exponent * 10 + (text[i] - '0'), 1000000);
+            ++i;
+        }
+        magnitude += negative ? -exponent : exponent;
+    }
+    return magnitude > 0;
+}
+
+// Converts a JSON number independently of the C locale. Overflow gives
+// +-infinity and underflow gives zero, as strtod would.
+double parseNumber(const char* text, size_t len) {
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+    double value = 0.0;
+    const std::from_chars_result r = std::from_chars(text, text + len, value);
+    if (r.ec == std::errc::result_out_of_range) {
+        const double sign = (len > 0 && text[0] == '-') ? -1.0 : 1.0;
+        return overflows(text, len) ? sign * std::numeric_limits<double>::infinity() : 0.0;
+    }
+    if (r.ec != std::errc() || r.ptr != text + len) {
+        return std::numeric_limits<double>::quiet_NaN(); // not a JSON number; rejected as non-finite
+    }
+    return value;
+#else
+    std::istringstream in(std::string(text, len));
+    in.imbue(std::locale::classic());
+    double value = 0.0;
+    in >> value; // on a range error the stream stores +-max or a value near zero
+    if (in.fail() && overflows(text, len)) {
+        const double sign = (len > 0 && text[0] == '-') ? -1.0 : 1.0;
+        return sign * std::numeric_limits<double>::infinity();
+    }
+    return value;
+#endif
+}
+
+// Opens the file in binary mode and skips a leading UTF-8 byte order mark,
+// reporting its length in `bomSize`.
+std::ifstream openInput(const std::string& path, size_t& bomSize) {
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+    char head[3] = {};
+    in.read(head, 3);
+    if (in.gcount() == 3 && head[0] == '\xEF' && head[1] == '\xBB' && head[2] == '\xBF') {
+        bomSize = 3;
+    } else {
+        in.clear();
+        in.seekg(0);
+    }
+    return in;
+}
+
 void warnSkipped(const std::string& path, int64_t index, const std::string& reason) {
     logMessage(LogLevel::Warning, "GeoJsonReader: skipping feature %lld of %s: %s",
                static_cast<long long>(index), path.c_str(), reason.c_str());
@@ -135,7 +222,6 @@ private:
     std::vector<Ctx> stack_;
     std::vector<CoordArray> coords_;
     std::string key_;
-    std::string number_;
     int64_t skip_ = 0;          // depth of the value being skipped; 0 when not skipping
     int64_t nextIndex_ = 0;     // index of the next element of the feature list
     bool rootIsCollection_ = false;
@@ -285,9 +371,8 @@ private:
                 pending.coordsMalformed = true;
             } else {
                 if (top.numbers < 2) {
-                    number_.assign(s, len);
-                    // Overflow gives +-HUGE_VAL, rejected when the ring is built.
-                    (top.numbers == 0 ? top.x : top.y) = std::strtod(number_.c_str(), nullptr);
+                    // A non-finite result is rejected when the ring is built.
+                    (top.numbers == 0 ? top.x : top.y) = parseNumber(s, len);
                 }
                 ++top.numbers; // a third number (z) is ignored
             }
@@ -326,12 +411,13 @@ private:
 class GeoJsonReader::Impl {
 public:
     explicit Impl(const char* p)
-        : path(p), in(std::filesystem::u8path(path), std::ios::binary), buffer(kReadBufferSize),
-          stream(in, buffer.data(), buffer.size()), handler(path) {
+        : path(p), in(openInput(path, bomSize)), buffer(kReadBufferSize), stream(in, buffer.data(), buffer.size()),
+          handler(path) {
         reader.IterativeParseInit();
     }
 
     std::string path;
+    size_t bomSize = 0; // set by openInput; parse offsets are relative to the end of the BOM
     std::ifstream in;
     std::vector<char> buffer;
     rapidjson::IStreamWrapper stream;
@@ -359,7 +445,7 @@ public:
     }
 
     [[noreturn]] void throwParseError() {
-        const std::string offset = std::to_string(reader.GetErrorOffset());
+        const std::string offset = std::to_string(reader.GetErrorOffset() + bomSize);
         if (in.bad()) {
             failure = "GeoJsonReader: reading " + path + " failed at byte offset " + offset;
             throw IoError(failure.c_str());
