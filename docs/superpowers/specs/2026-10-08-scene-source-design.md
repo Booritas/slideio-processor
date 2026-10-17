@@ -454,19 +454,18 @@ virtual.
 `cv::Mat` holds one depth for every channel it carries, so a block spanning a
 `Byte` channel and a `Float32` one cannot be built at all. An earlier draft of
 this document said the base class already rejected that. **It does not.**
-`CVScene::initializeSceneBlock` (`cvscene.cpp:330`) takes channel **0**'s type
+Before PR #86, `CVScene::initializeSceneBlock` took channel **0**'s type
 unconditionally — not even the type of the channels the caller asked for — and
-sizes the block from it:
+sized the block from it, so asking a scene whose channel 0 is `Byte` for
+channels {3, 4} of type `Float32` silently returned a `Byte` block.
 
-```cpp
-const slideio::DataType dt = this->getChannelDataType(0);
-output.create(blockSize, CV_MAKETYPE(CVTools::toOpencvType(dt), numChannels));
-```
-
-Ask a scene whose channel 0 is `Byte` for channels {3, 4} of type `Float32` and
-the result is a `Byte` block, silently, with no error raised. Every driver
-inherits this; it is a pre-existing SlideIO defect for mixed-type scenes and is
-listed in §12.
+PR #86 fixed half of that. The block is now typed by the first channel
+requested (`CVScene::blockDataType`, `cvscene.cpp:343`), so a same-type request
+on channels other than 0 is correct for every driver. A request that *mixes*
+types — {0: `Byte`, 3: `Float32`} — is still accepted by the base class and
+every driver, and comes back typed by its first channel. That remaining gap is
+a pre-existing SlideIO defect, listed in §12 and filed as
+[Booritas/slideio#90](https://github.com/Booritas/slideio/issues/90).
 
 For this adapter it is not merely wrong but unsafe. `SourceCVScene` computes
 the buffer length it passes to the source from the `cv::Mat` it allocated, so a
@@ -693,7 +692,8 @@ these limits apply to any `Scene` handed to `convertScene` today.
 | JPEG and JPEG 2000 are the only encodings offered; there is no uncompressed option | `ConverterParameters` raises "Unsupported compression type" for anything else (`converterparameters.cpp:23-31`) |
 | JPEG requires 8-bit on every channel | `checkJpegRequirements` (`tiffconverter.cpp:940`) |
 | JPEG 2000 has no 8-bit check in the converter | `checkEncodingRequirements` only checks JPEG (`tiffconverter.cpp:956`) |
-| SVS rejects mixed channel types | `checkSVSRequirements` (`:924`) |
+| SVS rejects a scene with mixed channel types, whatever channel range is set | `checkSVSRequirements` checks every channel of the scene (`tiffconverter.cpp:957`) |
+| OME-TIFF rejects a channel range of mixed types (since PR #86) | `checkOMETIFFRequirements` checks the range set by `ConverterParameters::setChannelRange` |
 | Output formats are SVS and OME-TIFF only | `ImageFormat` |
 
 *Corrected 2026-10-17.* An earlier version of this section said a float result
@@ -701,9 +701,10 @@ writes uncompressed. It does not: the converter offers no uncompressed
 encoding. A non-8-bit result can only go out as JPEG 2000. Whether the JPEG 2000
 encoder handles `Float32` correctly is **not verified**; the SlideIO end-to-end
 test (`test_sourcescene_conversion.cpp`) exercises only 8-bit data through
-lossless JPEG 2000. And UR-IMG-9 permits mixed channel types that SVS will not
-accept; whether OME-TIFF handles them by splitting channel ranges into separate
-directories was not confirmed and should not be assumed.
+lossless JPEG 2000. And UR-IMG-9 permits mixed channel types that neither
+format accepts in one file. OME-TIFF takes them one same-type channel range per
+file, set with `ConverterParameters::setChannelRange`; SVS does not take them at
+all, since its check ignores the range (§13, question 1).
 
 The converter also needed one change for computed scenes. `TiffConverter`
 re-opened every scene by file path in each reader thread, which a computed
@@ -742,8 +743,9 @@ the viewer, not here, but it is the difference between interactive and unusable.
 A single `readBlock` call delivers one interleaved buffer of one data type, so
 a scene whose channels differ in type is read one channel per call. The
 restriction is `cv::Mat`'s and applies to every SlideIO scene, not just a
-computed one; what is new here is only that `SourceCVScene` *says so* instead
-of returning a mis-sized block (6.1).
+computed one. The base class types a block by its first requested channel,
+but does not reject a request that mixes types; `SourceCVScene` does, instead
+of returning a block of the wrong type (6.1).
 
 Nothing is lost. Every channel reads back losslessly one at a time, so a
 `Pipeline` whose output channels differ in type still reaches a viewer, a
@@ -751,9 +753,9 @@ converter and Python — each of them simply issues one read per channel.
 `SceneMetadata::channelDataTypes` declares the true per-channel types, so a
 consumer can see the mix before it reads and group its requests by type.
 
-What this does bound is `convertScene`: §9.1 already records that SVS rejects
-mixed channel types outright, and OME-TIFF now does too (§13, question 1):
-such a scene exports one same-type channel range per file.
+What this does bound is `convertScene` (§9.1). SVS rejects a mixed-type scene
+outright. OME-TIFF rejects a mixed-type channel range (§13, question 1), so such
+a scene exports to OME-TIFF one same-type channel range per file.
 
 ---
 
@@ -817,10 +819,12 @@ level selection (SDS 05 §5.6–5.9); and a `Transformation` maps blocks to bloc
 so it cannot express operations that emit objects. Worth doing on its own merits,
 with its own design.
 
-**Fixing `initializeSceneBlock`'s channel-0 type assumption** (6.1), which
-gives every driver a silently mis-typed block for a mixed-type scene on the
-background-fill path. **Done in PR #86** after all: `CVScene::blockDataType`
-types a block by the first channel requested, for every driver.
+**Rejecting mixed-type block requests in the base class** (6.1). Every driver
+other than `SourceCVScene` still returns a block typed by the first requested
+channel for a request that mixes types. **Filed** as
+[Booritas/slideio#90](https://github.com/Booritas/slideio/issues/90). The
+related channel-0 assumption in `initializeSceneBlock` was brought into scope
+and fixed in PR #86: a block is now typed by the first channel requested.
 
 **Fixing the undiagnosed downcast** in `makeTransformationCopy` (spike findings
 §1.2), which silently substitutes a different operation for a consumer-defined
@@ -837,7 +841,9 @@ fix, since the public `Transformation` base remains misusable. **Filed** as
 1. ~~Does OME-TIFF accept mixed channel data types, by splitting channel ranges
    into separate directories?~~ **Closed: no.** One OME-XML `Pixels` element
    states one type, so PR #86 makes `convertScene` reject a mixed-type OME-TIFF
-   channel range, as SVS always did. Export one same-type range per file (§9.1).
+   channel range. Export one same-type range per file to OME-TIFF (§9.1). SVS
+   is stricter: it rejects any scene with mixed channel types, whatever range
+   is set.
 2. Which repository owns this document. It specifies a SlideIO change but arose
    from `slideio-processor`'s requirements; it currently lives here, and the
    SlideIO side may want its own copy or an issue referencing it.
