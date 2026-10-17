@@ -1,0 +1,3 @@
+[submodule "extern/slideio"]
+	path = extern/slideio
+	url = https://github.com/Booritas/slideio.git

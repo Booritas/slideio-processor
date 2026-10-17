@@ -1,0 +1,64 @@
+==== measurement 2, e/f interleaved on F: (724 GB free) ====
+start Sat 10/10/2026 19:57:31.40
+
+======== PASS r1_text (mode=2) ========
+mode=2 (measurements-text-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj     78399 rows/s (interval)  elapsed    38.3s
+     2.0M obj     65112 rows/s (interval)  elapsed    84.3s
+     3.0M obj     72846 rows/s (interval)  elapsed   125.5s
+     4.0M obj     70156 rows/s (interval)  elapsed   168.3s
+     5.0M obj     77531 rows/s (interval)  elapsed   207.0s
+     6.0M obj     65240 rows/s (interval)  elapsed   253.0s
+     7.0M obj     70609 rows/s (interval)  elapsed   295.5s
+     8.0M obj     68412 rows/s (interval)  elapsed   339.3s
+     9.0M obj     80498 rows/s (interval)  elapsed   376.6s
+ANNOTATE mode=2 order=0 29786316 rows: insert 413.3s + checkpoint 0.0s = 413.3s total, 72066 rows/s
+  read annotations of one object   0.0210 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 4608540672 bytes, +1585762304 (53.2 bytes/row)
+
+======== PASS r1_interned (mode=3) ========
+mode=3 (measurements-interned-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    203347 rows/s (interval)  elapsed    14.8s
+     2.0M obj    181919 rows/s (interval)  elapsed    31.2s
+     3.0M obj    162605 rows/s (interval)  elapsed    49.7s
+     4.0M obj    162732 rows/s (interval)  elapsed    68.1s
+     5.0M obj    174538 rows/s (interval)  elapsed    85.3s
+     6.0M obj    159676 rows/s (interval)  elapsed   104.1s
+     7.0M obj    144518 rows/s (interval)  elapsed   124.9s
+     8.0M obj    152018 rows/s (interval)  elapsed   144.6s
+     9.0M obj    143312 rows/s (interval)  elapsed   165.5s
+ANNOTATE mode=3 order=0 29786316 rows: insert 186.6s + checkpoint 0.7s = 187.3s total, 158990 rows/s
+  read annotations of one object   0.0082 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 3801018368 bytes, +778240000 (26.1 bytes/row)
+
+======== PASS r2_text (mode=2) ========
+mode=2 (measurements-text-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj     77309 rows/s (interval)  elapsed    38.8s
+     2.0M obj     85691 rows/s (interval)  elapsed    73.8s
+     3.0M obj     84774 rows/s (interval)  elapsed   109.2s
+     4.0M obj     89515 rows/s (interval)  elapsed   142.7s
+     5.0M obj     83343 rows/s (interval)  elapsed   178.7s
+     6.0M obj     74366 rows/s (interval)  elapsed   219.1s
+     7.0M obj     71016 rows/s (interval)  elapsed   261.3s
+     8.0M obj     66301 rows/s (interval)  elapsed   306.5s
+     9.0M obj     78814 rows/s (interval)  elapsed   344.6s
+ANNOTATE mode=2 order=0 29786316 rows: insert 376.5s + checkpoint 0.0s = 376.5s total, 79110 rows/s
+  read annotations of one object   0.0098 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 4608540672 bytes, +1585762304 (53.2 bytes/row)
+
+======== PASS r2_interned (mode=3) ========
+mode=3 (measurements-interned-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    160043 rows/s (interval)  elapsed    18.7s
+     2.0M obj    159316 rows/s (interval)  elapsed    37.6s
+     3.0M obj    154039 rows/s (interval)  elapsed    57.1s
+     4.0M obj    141565 rows/s (interval)  elapsed    78.2s
+     5.0M obj    125745 rows/s (interval)  elapsed   102.1s
+     6.0M obj    142426 rows/s (interval)  elapsed   123.2s
+     7.0M obj    148430 rows/s (interval)  elapsed   143.4s
+     8.0M obj    131364 rows/s (interval)  elapsed   166.2s
+     9.0M obj    127592 rows/s (interval)  elapsed   189.7s
+ANNOTATE mode=3 order=0 29786316 rows: insert 212.9s + checkpoint 0.9s = 213.8s total, 139341 rows/s
+  read annotations of one object   0.0081 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 3801018368 bytes, +778240000 (26.1 bytes/row)
+
+==== DONE Sat 10/10/2026 20:27:44.63 ====

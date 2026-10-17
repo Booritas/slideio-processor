@@ -1,0 +1,15 @@
+# Build trees and local installs
+build/
+out/
+
+# Editor and tool state
+.crossnote/
+.vs/
+.vscode/
+.idea/
+
+# Superpowers scratch workspaces
+.superpowers/
+
+# Third-party papers: cited, not redistributed
+docs/algorithms/*.pdf

@@ -1,0 +1,34 @@
+==== measurement 2 re-run: e/f with the checkpoint timed ====
+start Sat 10/10/2026 19:38:49.84
+
+======== PASS e2_meas_text (mode=2 order=0) ========
+mode=2 (measurements-text-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    565848 rows/s (interval)  elapsed     5.3s
+     2.0M obj    711834 rows/s (interval)  elapsed     9.5s
+     3.0M obj    731640 rows/s (interval)  elapsed    13.6s
+     4.0M obj    742990 rows/s (interval)  elapsed    17.7s
+     5.0M obj    739039 rows/s (interval)  elapsed    21.7s
+     6.0M obj    752880 rows/s (interval)  elapsed    25.7s
+     7.0M obj    743734 rows/s (interval)  elapsed    29.7s
+     8.0M obj    763462 rows/s (interval)  elapsed    33.7s
+     9.0M obj    740055 rows/s (interval)  elapsed    37.7s
+ANNOTATE mode=2 order=0 29786316 rows: insert 41.4s + checkpoint 0.0s = 41.4s total, 719035 rows/s
+  read annotations of one object   0.0121 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 4608540672 bytes, +1585762304 (53.2 bytes/row)
+
+======== PASS f2_meas_interned (mode=3 order=0) ========
+mode=3 (measurements-interned-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    429012 rows/s (interval)  elapsed     7.0s
+     2.0M obj    436790 rows/s (interval)  elapsed    13.9s
+     3.0M obj    276049 rows/s (interval)  elapsed    24.7s
+     4.0M obj     64321 rows/s (interval)  elapsed    71.4s
+     5.0M obj     54558 rows/s (interval)  elapsed   126.4s
+     6.0M obj     52181 rows/s (interval)  elapsed   183.8s
+     7.0M obj     74335 rows/s (interval)  elapsed   224.2s
+     8.0M obj     53762 rows/s (interval)  elapsed   280.0s
+     9.0M obj     37259 rows/s (interval)  elapsed   360.5s
+ANNOTATE mode=3 order=0 29786316 rows: insert 415.2s + checkpoint 1.0s = 416.2s total, 71564 rows/s
+  read annotations of one object   0.0097 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 3801018368 bytes, +778240000 (26.1 bytes/row)
+
+==== DONE Sat 10/10/2026 19:55:54.46 ====

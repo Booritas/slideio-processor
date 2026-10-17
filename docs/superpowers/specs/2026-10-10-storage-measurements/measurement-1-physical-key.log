@@ -1,0 +1,93 @@
+==== measurement 1: physical key scheme, 10M objects, C: ====
+start Sat 10/10/2026 15:59:15.70
+
+======== WRITE mode 0 ========
+mode=0 (anchor-pk) total=10000000 batch=10000
+     1.0M     41864 obj/s (interval)  elapsed   23.9s
+     2.0M     21416 obj/s (interval)  elapsed   70.6s
+     3.0M      8848 obj/s (interval)  elapsed  183.6s
+     4.0M      6629 obj/s (interval)  elapsed  334.5s
+     5.0M     10519 obj/s (interval)  elapsed  429.5s
+     6.0M      4679 obj/s (interval)  elapsed  643.3s
+     7.0M      5759 obj/s (interval)  elapsed  816.9s
+     8.0M      5084 obj/s (interval)  elapsed 1013.6s
+     9.0M      3395 obj/s (interval)  elapsed 1308.2s
+    10.0M      4066 obj/s (interval)  elapsed 1554.1s
+INSERT mode=0 10000000 attempted, 71228 collisions, 1554.1s = 6435 obj/s
+done 0 at 15:59:15.72
+
+======== WRITE mode 1 ========
+mode=1 (anchor-pk-sorted-batch) total=10000000 batch=10000
+     1.0M     47186 obj/s (interval)  elapsed   21.2s
+     2.0M     10987 obj/s (interval)  elapsed  112.2s
+     3.0M     10972 obj/s (interval)  elapsed  203.4s
+     4.0M      6755 obj/s (interval)  elapsed  351.4s
+     5.0M      5829 obj/s (interval)  elapsed  523.0s
+     6.0M      4329 obj/s (interval)  elapsed  754.0s
+     7.0M      4034 obj/s (interval)  elapsed 1001.9s
+     8.0M      3528 obj/s (interval)  elapsed 1285.3s
+     9.0M      3705 obj/s (interval)  elapsed 1555.2s
+    10.0M      3501 obj/s (interval)  elapsed 1840.9s
+INSERT mode=1 10000000 attempted, 71228 collisions, 1840.9s = 5432 obj/s
+done 1 at 15:59:15.72
+
+======== WRITE mode 2 ========
+mode=2 (rowid-pk+unique-anchor) total=10000000 batch=10000
+     1.0M     90872 obj/s (interval)  elapsed   11.0s
+     2.0M     61868 obj/s (interval)  elapsed   27.2s
+     3.0M      7670 obj/s (interval)  elapsed  157.5s
+     4.0M     40609 obj/s (interval)  elapsed  182.2s
+     5.0M     13310 obj/s (interval)  elapsed  257.3s
+     6.0M     31040 obj/s (interval)  elapsed  289.5s
+     7.0M     11894 obj/s (interval)  elapsed  373.6s
+     8.0M     11320 obj/s (interval)  elapsed  461.9s
+     9.0M     10831 obj/s (interval)  elapsed  554.3s
+    10.0M     10560 obj/s (interval)  elapsed  649.0s
+INSERT mode=2 10000000 attempted, 71228 collisions, 649.0s = 15409 obj/s
+done 2 at 15:59:15.72
+
+======== QUERY mode 0 ========
+  rtree-only  viewport   1024px     3.77 ms/query     1366.2 rows/query
+  +geom join  viewport   1024px     7.34 ms/query     1360.8 rows/query
+  rtree-only  viewport   4096px    14.19 ms/query    21088.8 rows/query
+  +geom join  viewport   4096px    42.21 ms/query    20980.9 rows/query
+  rtree-only  viewport  16384px    68.82 ms/query   334521.6 rows/query
+  +geom join  viewport  16384px   403.74 ms/query   334371.0 rows/query
+  get(ObjectId) by anchor   0.0094 ms/lookup  (31 hits of 20000)
+
+======== QUERY mode 1 ========
+  rtree-only  viewport   1024px     0.51 ms/query     1366.2 rows/query
+  +geom join  viewport   1024px     4.71 ms/query     1360.8 rows/query
+  rtree-only  viewport   4096px     5.06 ms/query    21088.8 rows/query
+  +geom join  viewport   4096px    33.09 ms/query    20980.9 rows/query
+  rtree-only  viewport  16384px    43.61 ms/query   334521.5 rows/query
+  +geom join  viewport  16384px   398.28 ms/query   334370.9 rows/query
+  get(ObjectId) by anchor   0.0086 ms/lookup  (31 hits of 20000)
+
+======== QUERY mode 2 ========
+  rtree-only  viewport   1024px     0.50 ms/query     1366.2 rows/query
+  +geom join  viewport   1024px     2.33 ms/query     1360.8 rows/query
+  rtree-only  viewport   4096px     3.69 ms/query    21088.8 rows/query
+  +geom join  viewport   4096px    17.33 ms/query    20980.9 rows/query
+  rtree-only  viewport  16384px    38.68 ms/query   334521.6 rows/query
+  +geom join  viewport  16384px   231.16 ms/query   334371.0 rows/query
+  get(ObjectId) by anchor   0.0085 ms/lookup  (31 hits of 20000)
+
+======== STORE SIZES ========
+ Volume in drive C has no label.
+ Volume Serial Number is E3CF-2DE5
+
+ Directory of C:\Users\Stanislav\AppData\Local\Temp\claude\d--Projects-slideio-slideio-processor\92158dab-a1ba-4a92-b724-57e217e5c692\scratchpad\spike2
+
+10/10/2026  04:25 PM        3126394880 m0.db
+
+ Directory of C:\Users\Stanislav\AppData\Local\Temp\claude\d--Projects-slideio-slideio-processor\92158dab-a1ba-4a92-b724-57e217e5c692\scratchpad\spike2
+
+10/10/2026  04:55 PM        3113033728 m1.db
+
+ Directory of C:\Users\Stanislav\AppData\Local\Temp\claude\d--Projects-slideio-slideio-processor\92158dab-a1ba-4a92-b724-57e217e5c692\scratchpad\spike2
+
+10/10/2026  05:06 PM        3022778368 m2.db
+               3 File(s)     9262206976 bytes
+               0 Dir(s)    115876085760 bytes free
+==== DONE Sat 10/10/2026 17:07:47.16 ====

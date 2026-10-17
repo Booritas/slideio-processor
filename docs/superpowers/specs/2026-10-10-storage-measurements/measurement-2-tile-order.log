@@ -1,0 +1,36 @@
+==== measurement 2 addendum: tile-shuffled order, C: ====
+start Sat 10/10/2026 22:04:38.12
+
+======== PASS g_lab_tile (mode=0 order=2) ========
+  (tile order: 7745 runs of 1282, shuffled)
+mode=0 (labels-clustered) order=tile-shuffled objects=9928772 rows=9928772
+     1.0M obj    312635 rows/s (interval)  elapsed     3.2s
+     2.0M obj    288004 rows/s (interval)  elapsed     6.7s
+     3.0M obj    286966 rows/s (interval)  elapsed    10.2s
+     4.0M obj    281166 rows/s (interval)  elapsed    13.7s
+     5.0M obj    237993 rows/s (interval)  elapsed    17.9s
+     6.0M obj    274723 rows/s (interval)  elapsed    21.6s
+     7.0M obj    282094 rows/s (interval)  elapsed    25.1s
+     8.0M obj    259292 rows/s (interval)  elapsed    29.0s
+     9.0M obj    255407 rows/s (interval)  elapsed    32.9s
+ANNOTATE mode=0 order=2 9928772 rows: insert 36.6s + checkpoint 0.2s = 36.8s total, 269814 rows/s
+  read annotations of one object   0.0041 ms  (20000 rows over 20000 objects)
+  store 3022778368 -> 3162529792 bytes, +139751424 (14.1 bytes/row)
+
+======== PASS h_meas_tile (mode=3 order=2) ========
+  (tile order: 7745 runs of 1282, shuffled)
+mode=3 (measurements-interned-name) order=tile-shuffled objects=9928772 rows=29786316
+     1.0M obj     84946 rows/s (interval)  elapsed    35.3s
+     2.0M obj    139259 rows/s (interval)  elapsed    56.9s
+     3.0M obj    799859 rows/s (interval)  elapsed    60.6s
+     4.0M obj    790736 rows/s (interval)  elapsed    64.4s
+     5.0M obj    799647 rows/s (interval)  elapsed    68.2s
+     6.0M obj    493059 rows/s (interval)  elapsed    74.2s
+     7.0M obj    289134 rows/s (interval)  elapsed    84.6s
+     8.0M obj    229623 rows/s (interval)  elapsed    97.7s
+     9.0M obj    220458 rows/s (interval)  elapsed   111.3s
+ANNOTATE mode=3 order=2 29786316 rows: insert 117.3s + checkpoint 0.1s = 117.3s total, 253862 rows/s
+  read annotations of one object   0.0193 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 3784986624 bytes, +762208256 (25.6 bytes/row)
+
+==== DONE Sat 10/10/2026 22:08:22.12 ====

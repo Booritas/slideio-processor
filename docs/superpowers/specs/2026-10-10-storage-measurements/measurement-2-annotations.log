@@ -1,0 +1,94 @@
+==== measurement 2: annotation write rate, 9.93M objects, C: ====
+start Sat 10/10/2026 17:37:03.54
+
+======== PASS a_lab_asc (mode=0 order=0) ========
+mode=0 (labels-clustered) order=ascending objects=9928772 rows=9928772
+     1.0M obj    142135 rows/s (interval)  elapsed     7.0s
+     2.0M obj    171643 rows/s (interval)  elapsed    12.9s
+     3.0M obj    184847 rows/s (interval)  elapsed    18.3s
+     4.0M obj    146862 rows/s (interval)  elapsed    25.1s
+     5.0M obj    163704 rows/s (interval)  elapsed    31.2s
+     6.0M obj    168751 rows/s (interval)  elapsed    37.1s
+     7.0M obj    246012 rows/s (interval)  elapsed    41.2s
+     8.0M obj    218061 rows/s (interval)  elapsed    45.8s
+     9.0M obj    224689 rows/s (interval)  elapsed    50.2s
+ANNOTATE mode=0 order=0 9928772 rows in 56.4s = 176032 rows/s
+  read annotations of one object   0.0043 ms  (20000 rows over 20000 objects)
+  store 3022778368 -> 3159752704 bytes, +136974336 (13.8 bytes/row)
+
+======== PASS b_lab_shuf (mode=0 order=1) ========
+mode=0 (labels-clustered) order=shuffled objects=9928772 rows=9928772
+     1.0M obj      7635 rows/s (interval)  elapsed   131.0s
+     2.0M obj     45389 rows/s (interval)  elapsed   153.0s
+     3.0M obj      3852 rows/s (interval)  elapsed   412.6s
+     4.0M obj      6819 rows/s (interval)  elapsed   559.3s
+     5.0M obj      6378 rows/s (interval)  elapsed   716.0s
+     6.0M obj      6462 rows/s (interval)  elapsed   870.8s
+     7.0M obj     10144 rows/s (interval)  elapsed   969.4s
+     8.0M obj      6807 rows/s (interval)  elapsed  1116.3s
+     9.0M obj      6462 rows/s (interval)  elapsed  1271.0s
+ANNOTATE mode=0 order=1 9928772 rows in 1386.1s = 7163 rows/s
+  read annotations of one object   0.0091 ms  (20000 rows over 20000 objects)
+  store 3022778368 -> 3154313216 bytes, +131534848 (13.2 bytes/row)
+
+======== PASS c_lab_idx_asc (mode=1 order=0) ========
+mode=1 (labels-rowid+index) order=ascending objects=9928772 rows=9928772
+     1.0M obj    135281 rows/s (interval)  elapsed     7.4s
+     2.0M obj    194597 rows/s (interval)  elapsed    12.5s
+     3.0M obj    166294 rows/s (interval)  elapsed    18.5s
+     4.0M obj    151650 rows/s (interval)  elapsed    25.1s
+     5.0M obj    149163 rows/s (interval)  elapsed    31.8s
+     6.0M obj    143115 rows/s (interval)  elapsed    38.8s
+     7.0M obj    145528 rows/s (interval)  elapsed    45.7s
+     8.0M obj    148313 rows/s (interval)  elapsed    52.4s
+     9.0M obj    142058 rows/s (interval)  elapsed    59.5s
+ANNOTATE mode=1 order=0 9928772 rows in 61.8s = 160699 rows/s
+  read annotations of one object   0.0157 ms  (20000 rows over 20000 objects)
+  store 3022778368 -> 3375108096 bytes, +352329728 (35.5 bytes/row)
+
+======== PASS d_lab_idx_shuf (mode=1 order=1) ========
+mode=1 (labels-rowid+index) order=shuffled objects=9928772 rows=9928772
+     1.0M obj     14098 rows/s (interval)  elapsed    70.9s
+     2.0M obj     25022 rows/s (interval)  elapsed   110.9s
+     3.0M obj      2925 rows/s (interval)  elapsed   452.7s
+     4.0M obj      7431 rows/s (interval)  elapsed   587.3s
+     5.0M obj      3324 rows/s (interval)  elapsed   888.1s
+     6.0M obj      5226 rows/s (interval)  elapsed  1079.5s
+     7.0M obj      5111 rows/s (interval)  elapsed  1275.1s
+     8.0M obj      5444 rows/s (interval)  elapsed  1458.8s
+     9.0M obj      6435 rows/s (interval)  elapsed  1614.2s
+ANNOTATE mode=1 order=1 9928772 rows in 1740.4s = 5705 rows/s
+  read annotations of one object   0.0043 ms  (20000 rows over 20000 objects)
+  store 3022778368 -> 3368734720 bytes, +345956352 (34.8 bytes/row)
+
+======== PASS e_meas_text (mode=2 order=0) ========
+mode=2 (measurements-text-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    551429 rows/s (interval)  elapsed     5.4s
+     2.0M obj    703914 rows/s (interval)  elapsed     9.7s
+     3.0M obj    676103 rows/s (interval)  elapsed    14.1s
+     4.0M obj    703637 rows/s (interval)  elapsed    18.4s
+     5.0M obj    702483 rows/s (interval)  elapsed    22.7s
+     6.0M obj    697223 rows/s (interval)  elapsed    27.0s
+     7.0M obj    715376 rows/s (interval)  elapsed    31.2s
+     8.0M obj    715803 rows/s (interval)  elapsed    35.4s
+     9.0M obj    702053 rows/s (interval)  elapsed    39.6s
+ANNOTATE mode=2 order=0 29786316 rows in 43.6s = 683074 rows/s
+  read annotations of one object   0.0108 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 4608540672 bytes, +1585762304 (53.2 bytes/row)
+
+======== PASS f_meas_interned (mode=3 order=0) ========
+mode=3 (measurements-interned-name) order=ascending objects=9928772 rows=29786316
+     1.0M obj    172053 rows/s (interval)  elapsed    17.4s
+     2.0M obj    292052 rows/s (interval)  elapsed    27.7s
+     3.0M obj    464044 rows/s (interval)  elapsed    34.2s
+     4.0M obj    470034 rows/s (interval)  elapsed    40.6s
+     5.0M obj    419172 rows/s (interval)  elapsed    47.7s
+     6.0M obj    424962 rows/s (interval)  elapsed    54.8s
+     7.0M obj    467164 rows/s (interval)  elapsed    61.2s
+     8.0M obj    122489 rows/s (interval)  elapsed    85.7s
+     9.0M obj     73502 rows/s (interval)  elapsed   126.5s
+ANNOTATE mode=3 order=0 29786316 rows in 157.0s = 189684 rows/s
+  read annotations of one object   0.0091 ms  (60000 rows over 20000 objects)
+  store 3022778368 -> 3801018368 bytes, +778240000 (26.1 bytes/row)
+
+==== DONE Sat 10/10/2026 18:40:58.90 ====
