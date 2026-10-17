@@ -1,11 +1,13 @@
 add_library(slideio-processor-core OBJECT
     block_view.cpp
     channel_selection.cpp
+    control.cpp
     data_type.cpp
     error.cpp
     geometry.cpp
     ids.cpp
     measurement.cpp
+    memory_budget.cpp
     object_record.cpp
     version.cpp
 )

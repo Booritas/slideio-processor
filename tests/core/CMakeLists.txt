@@ -3,11 +3,13 @@ include(GoogleTest)
 add_executable(slideio_processor_core_tests
     test_block_view.cpp
     test_channel_selection.cpp
+    test_control.cpp
     test_data_type.cpp
     test_error.cpp
     test_geometry.cpp
     test_ids.cpp
     test_measurement.cpp
+    test_memory_budget.cpp
     test_object_record.cpp
     test_version.cpp
 )
