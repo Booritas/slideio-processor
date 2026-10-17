@@ -4,6 +4,8 @@ add_library(slideio-processor-core OBJECT
     error.cpp
     geometry.cpp
     ids.cpp
+    measurement.cpp
+    object_record.cpp
     version.cpp
 )
 set_target_properties(slideio-processor-core PROPERTIES POSITION_INDEPENDENT_CODE ON)

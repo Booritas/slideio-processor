@@ -6,6 +6,8 @@ add_executable(slideio_processor_core_tests
     test_error.cpp
     test_geometry.cpp
     test_ids.cpp
+    test_measurement.cpp
+    test_object_record.cpp
     test_version.cpp
 )
 target_link_libraries(slideio_processor_core_tests PRIVATE
