@@ -5,7 +5,6 @@
 #include "core/detail/coverage.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>

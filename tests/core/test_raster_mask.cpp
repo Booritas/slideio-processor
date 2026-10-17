@@ -461,8 +461,32 @@ TEST(RasteriseBlockView, PlanesAndStrideAndTinyScale) {
     for (size_t k = 0; k < a.size(); ++k) EXPECT_EQ(a[k], 9);
     for (size_t y = 0; y < 3; ++y) for (size_t x = 0; x < 8; ++x)
         EXPECT_EQ(b[y * 8 + x], (x == 1 && y == 1) ? 200 : 9) << x << "," << y;
-    uint8_t one[1] = {0}; BlockPlane pt{one, DataType::Byte, 2000000, 0};
+    std::vector<uint8_t> big(2000000, 0); BlockPlane pt{big.data(), DataType::Byte, 2000000, 0};
     BlockView tiny(2000000, 1, Rect64{0, 0, 1, 1}, 0, &pt, 1);        // scale 5e-7 < 1e-6
     EXPECT_THROW(rasteriseInto(tiny, 0, p, 1), InvalidArgumentError);
-    EXPECT_EQ(one[0], 0);
+    EXPECT_TRUE(std::all_of(big.begin(), big.end(), [](uint8_t b) { return b == 0; }));
+}
+
+TEST(RasteriseBlockView, MatchesMaskOverloadAtScaleOne) {
+    Point64 v[] = {{1,1},{13,3},{9,12},{2,10}}, h[] = {{5,5},{7,5},{7,7},{5,7}};
+    Polygon p; p.addRing(v, 4, false); p.addRing(h, 4, true);
+    RasterMask m(Rect64{0, 0, 16, 16}, 0, 1.0); rasteriseInto(m, p);
+    std::vector<uint8_t> buf(16 * 16, 0);
+    BlockPlane pl{buf.data(), DataType::Byte, 16, 0};
+    BlockView view(16, 16, Rect64{0, 0, 16, 16}, 0, &pl, 1);
+    rasteriseInto(view, 0, p, 255);
+    for (int64_t y = 0; y < 16; ++y) for (int64_t x = 0; x < 16; ++x)
+        EXPECT_EQ(buf[static_cast<size_t>(y * 16 + x)] != 0, m.test({x, y})) << x << "," << y;
+    EXPECT_GT(m.setPixelCount(), 0);
+}
+
+TEST(RasteriseBlockView, OriginRoundsToNearestLevelPixel) {
+    // slideRect.x = 31 at scale 3: origin llround(31 / 3) = 10, so view pixel i is level pixel 10 + i.
+    std::vector<int32_t> buf(4 * 4, 0);
+    BlockPlane pl{buf.data(), DataType::Int32, 4 * 4, 0};
+    BlockView v(4, 4, Rect64{31, 60, 12, 12}, 1, &pl, 1);
+    Point64 s[] = {{36,63},{42,63},{42,69},{36,69}}; Polygon p; p.addRing(s, 4, false);  // level x 12..14, y 21..22
+    rasteriseInto(v, 0, p, 9);
+    for (int j = 0; j < 4; ++j) for (int i = 0; i < 4; ++i)
+        EXPECT_EQ(buf[j * 4 + i], (i >= 2 && i <= 3 && j >= 1 && j <= 2) ? 9 : 0) << i << "," << j;
 }

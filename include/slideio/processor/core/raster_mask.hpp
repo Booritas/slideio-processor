@@ -211,7 +211,9 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS void dilateMask(RasterMask& mask, int32_t radius)
  * pixel (i, j) is absolute level pixel (originLevelX + i, originLevelY + j),
  * where originLevelX = llround(slideRect().x / sx) and originLevelY =
  * llround(slideRect().y / sy); vertices map as x / sx with no origin term, so
- * neighbouring views agree on a shared seam at any scale. The fill rule is the
+ * neighbouring views agree on a shared seam when they derive the same scale.
+ * Integer slideRects over a non-integer pyramid (for example 4.0001) can derive
+ * slightly different scales per view, and then the seams may differ. The fill rule is the
  * conservative even-odd rule of the mask overload. Pixels the polygon does not
  * cover are left unchanged. Every run is computed before the first write, so a
  * throw leaves the plane untouched.
