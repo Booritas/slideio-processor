@@ -1,6 +1,7 @@
 #include "core/detail/coverage.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <vector>
 
@@ -182,6 +183,10 @@ public:
     }
 
     void interior() {
+        // Callers guarantee scale >= 1e-6, so every u is finite; a NaN here would
+        // break the strict weak ordering std::sort needs.
+        assert(std::none_of(crossings_.begin(), crossings_.end(),
+                            [](const Crossing& c) { return std::isnan(c.u); }));
         std::sort(crossings_.begin(), crossings_.end(), [](const Crossing& a, const Crossing& b) {
             return a.y != b.y ? a.y < b.y : a.u < b.u;
         });

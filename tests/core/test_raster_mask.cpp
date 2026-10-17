@@ -1,4 +1,5 @@
 // Requirements: UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <string>
 #include <utility>
@@ -306,4 +308,161 @@ TEST(RasterMask, RandomSeamAgreementAtNonDyadicScales) {
     }
     EXPECT_EQ(disagreements, 0);
     EXPECT_GT(tried, 150);
+}
+
+TEST(RasterMask, ConstructorRejectsOverflowAndTinyScale) {
+    const int64_t big = std::numeric_limits<int64_t>::max();
+    EXPECT_THROW(RasterMask(Rect64{big - 1, 0, 4, 4}, 0, 1.0), InvalidArgumentError);
+    EXPECT_THROW(RasterMask(Rect64{0, big - 1, 4, 4}, 0, 1.0), InvalidArgumentError);
+    EXPECT_THROW(RasterMask(Rect64{0, 0, 4, 4}, 0, 1e-7), InvalidArgumentError);
+    EXPECT_NO_THROW(RasterMask(Rect64{0, 0, 4, 4}, 0, 1e-6));
+}
+
+TEST(RasterMask, HugeCoordinatesSpanningRegionFillIt) {
+    const int64_t k = 3000000000LL;
+    Point64 sq[] = {{-k, -k}, {k, -k}, {k, k}, {-k, k}}, dia[] = {{-k, 0}, {0, -k}, {k, 0}, {0, k}};
+    for (double scale : {1.0, 2.0}) {
+        Polygon a, b; a.addRing(sq, 4, false); b.addRing(dia, 4, false);
+        RasterMask m(Rect64{-4, -4, 8, 8}, 0, scale); rasteriseInto(m, a);
+        EXPECT_EQ(m.setPixelCount(), 64) << scale;
+        RasterMask d(Rect64{-4, -4, 8, 8}, 0, scale); rasteriseInto(d, b);
+        EXPECT_EQ(d.setPixelCount(), 64) << scale;
+        EXPECT_TRUE(d.test({-4, -4})); EXPECT_TRUE(d.test({3, 3}));
+    }
+}
+
+TEST(RasterMask, HugeCoordinatesFarOutsideSetNothing) {
+    const int64_t k = 3000000000LL, off = 2 * k;                      // spans [k, 3k], region near 0
+    Point64 sq[] = {{off - k, off - k}, {off + k, off - k}, {off + k, off + k}, {off - k, off + k}};
+    Point64 dia[] = {{off - k, off}, {off, off - k}, {off + k, off}, {off, off + k}};
+    Point64 neg[] = {{-off - k, -off - k}, {-off + k, -off - k}, {-off + k, -off + k}, {-off - k, -off + k}};
+    for (const Point64* v : {sq, dia, neg}) {
+        Polygon p; p.addRing(v, 4, false);
+        RasterMask m(Rect64{-4, -4, 8, 8}, 0, 1.0); rasteriseInto(m, p);
+        EXPECT_TRUE(m.isEmpty());
+        EXPECT_FALSE(m.test({0, 0})); EXPECT_FALSE(m.test({-4, 3}));
+    }
+}
+
+TEST(RasterMask, HorizontalEdgeOnPixelCentreLine) {
+    // Level-0 (1,1),(7,1),(7,5),(1,5) at scale 2 is the level rectangle u in [0.5,3.5], v in
+    // [0.5,2.5]: the top edge lies on row 0's centre line and the bottom edge on row 2's.
+    Point64 v[] = {{1,1},{7,1},{7,5},{1,5}}; Polygon p; p.addRing(v, 4, false);
+    RasterMask m(Rect64{0,0,5,4}, 1, 2.0); rasteriseInto(m, p);
+    EXPECT_EQ(dump(m), (std::vector<std::string>{"####.", "####.", "####.", "....."}));
+    // Boundary rule: both horizontal edges cross their rows' open interior, so row 2 is covered
+    // although its centre line (the bottom edge) is not inside by the tie rule; row 3 is untouched.
+    for (int64_t x = 0; x < 5; ++x) EXPECT_FALSE(m.test({x, 3}));
+    // Every level pixel that contains the centre of a level-0 pixel inside the polygon is set.
+    for (int64_t y = 0; y < 8; ++y) for (int64_t x = 0; x < 10; ++x)
+        if (p.contains({x, y})) EXPECT_TRUE(m.test({x / 2, y / 2})) << x << "," << y;
+    // The same shape at scale 1 with integer edges: exact against contains.
+    Point64 w[] = {{1,1},{4,1},{4,3},{1,3}}; Polygon q; q.addRing(w, 4, false);
+    RasterMask n(Rect64{0,0,5,4}, 0, 1.0); rasteriseInto(n, q);
+    for (int64_t y = 0; y < 4; ++y) for (int64_t x = 0; x < 5; ++x)
+        EXPECT_EQ(n.test({x, y}), q.contains({x, y})) << x << "," << y;
+}
+
+TEST(RasterMask, OverlappingOuterRingsCancelUnderEvenOdd) {
+    // Level units at scale 2: A = [0,6]^2, B = [2.5,8.5]^2; the overlap [2.5,6]^2 cancels.
+    Point64 a[] = {{0,0},{12,0},{12,12},{0,12}}, b[] = {{5,5},{17,5},{17,17},{5,17}};
+    Polygon p; p.addRing(a, 4, false); p.addRing(b, 4, false);
+    RasterMask m(Rect64{0,0,10,10}, 1, 2.0); rasteriseInto(m, p);
+    EXPECT_EQ(dump(m), (std::vector<std::string>{
+        "######....", "######....", "#########.", "###...###.", "###...###.", "###...###.",
+        "..#######.", "..#######.", "..#######.", ".........."}));
+    EXPECT_FALSE(m.test({4, 4}));                                     // fully inside both rings
+    EXPECT_TRUE(m.test({2, 4}));                                      // B's left edge crosses it
+}
+
+TEST(DilateMask, SquareSeparableWithinRegion) {
+    RasterMask m(Rect64{0,0,5,5}, 0, 1.0); m.row(2)[2] = 255; dilateMask(m, 1);
+    EXPECT_EQ(dump(m), (std::vector<std::string>{".....", ".###.", ".###.", ".###.", "....."}));
+    RasterMask c(Rect64{0,0,3,3}, 0, 1.0); c.row(0)[0] = 255; dilateMask(c, 5);
+    EXPECT_EQ(c.setPixelCount(), 9); dilateMask(c, 0);
+    EXPECT_THROW(dilateMask(c, -1), InvalidArgumentError);
+}
+
+TEST(DilateMask, EdgesRadiusTwoAndNull) {
+    RasterMask m(Rect64{-2, 3, 7, 4}, 0, 1.0); m.row(0)[0] = 255; m.row(3)[6] = 255; dilateMask(m, 2);
+    EXPECT_EQ(dump(m), (std::vector<std::string>{"###....", "###.###", "###.###", "....###"}));
+    RasterMask e(Rect64{0,0,4,4}, 0, 1.0); dilateMask(e, 3); EXPECT_TRUE(e.isEmpty());
+    RasterMask big(Rect64{0,0,3,3}, 0, 1.0); big.row(1)[1] = 255; dilateMask(big, 2147483647);
+    EXPECT_EQ(big.setPixelCount(), 9);
+    RasterMask n; EXPECT_THROW(dilateMask(n, 1), InvalidArgumentError);
+}
+
+TEST(RasteriseBlockView, WritesValueAtViewScale) {
+    std::vector<int64_t> buf(4 * 4, 0);
+    BlockPlane pl{buf.data(), DataType::Int64, 4 * 8, 0};
+    BlockView v(4, 4, Rect64{0, 0, 16, 16}, 2, &pl, 1);
+    Point64 s[] = {{5,5},{11,5},{11,11},{5,11}}; Polygon p; p.addRing(s, 4, false);
+    rasteriseInto(v, 0, p, (int64_t(1) << 40));
+    EXPECT_EQ(buf[1 * 4 + 1], int64_t(1) << 40); EXPECT_EQ(buf[2 * 4 + 2], int64_t(1) << 40);
+    EXPECT_EQ(buf[0], 0); EXPECT_EQ(buf[3 * 4 + 3], 0);
+}
+
+TEST(RasteriseBlockView, AbsoluteOriginAndUntouchedPixels) {
+    // View at level-0 x in [30,42), y in [60,72), 4x4 pixels: scale 3, origin level pixel (10,20).
+    std::vector<int32_t> buf(4 * 4, 7);
+    BlockPlane pl{buf.data(), DataType::Int32, 4 * 4, 0};
+    BlockView v(4, 4, Rect64{30, 60, 12, 12}, 1, &pl, 1);
+    Point64 s[] = {{33,63},{39,63},{39,69},{33,69}}; Polygon p; p.addRing(s, 4, false);   // pixels 1..2
+    rasteriseInto(v, 0, p, -5);
+    for (int j = 0; j < 4; ++j) for (int i = 0; i < 4; ++i)
+        EXPECT_EQ(buf[j * 4 + i], (i >= 1 && i <= 2 && j >= 1 && j <= 2) ? -5 : 7) << i << "," << j;
+}
+
+TEST(RasteriseBlockView, ValueMustFitType) {
+    uint8_t b[4]; BlockPlane pb{b, DataType::Byte, 2, 0}; BlockView vb(2, 2, Rect64{0,0,2,2}, 0, &pb, 1);
+    Point64 s[] = {{0,0},{2,0},{2,2},{0,2}}; Polygon p; p.addRing(s, 4, false);
+    EXPECT_THROW(rasteriseInto(vb, 0, p, 256), InvalidArgumentError);
+    EXPECT_THROW(rasteriseInto(vb, 1, p, 1), InvalidArgumentError);
+    uint16_t h[4]; BlockPlane ph{h, DataType::Float16, 4, 0}; BlockView vh(2, 2, Rect64{0,0,2,2}, 0, &ph, 1);
+    rasteriseInto(vh, 0, p, 3); EXPECT_EQ(h[0], 0x4200);               // 3.0 in IEEE half
+    EXPECT_THROW(rasteriseInto(vh, 0, p, 2049), InvalidArgumentError);
+}
+
+TEST(RasteriseBlockView, TypeRangesAndFloatEncodings) {
+    Point64 s[] = {{0,0},{2,0},{2,2},{0,2}}; Polygon p; p.addRing(s, 4, false);
+    int8_t i8[4]; BlockPlane p8{i8, DataType::Int8, 2, 0}; BlockView v8(2, 2, Rect64{0,0,2,2}, 0, &p8, 1);
+    rasteriseInto(v8, 0, p, -128); EXPECT_EQ(i8[3], -128);
+    EXPECT_THROW(rasteriseInto(v8, 0, p, -129), InvalidArgumentError);
+    EXPECT_THROW(rasteriseInto(v8, 0, p, 128), InvalidArgumentError);
+    uint64_t u64[4]; BlockPlane pu{u64, DataType::UInt64, 16, 0}; BlockView vu(2, 2, Rect64{0,0,2,2}, 0, &pu, 1);
+    rasteriseInto(vu, 0, p, std::numeric_limits<int64_t>::max());
+    EXPECT_EQ(u64[0], uint64_t(std::numeric_limits<int64_t>::max()));
+    EXPECT_THROW(rasteriseInto(vu, 0, p, -1), InvalidArgumentError);
+    uint32_t u32[4]; BlockPlane p32{u32, DataType::UInt32, 8, 0}; BlockView v32(2, 2, Rect64{0,0,2,2}, 0, &p32, 1);
+    rasteriseInto(v32, 0, p, 4294967295LL); EXPECT_EQ(u32[1], 4294967295u);
+    EXPECT_THROW(rasteriseInto(v32, 0, p, 4294967296LL), InvalidArgumentError);
+    float f[4]; BlockPlane pf{f, DataType::Float32, 8, 0}; BlockView vf(2, 2, Rect64{0,0,2,2}, 0, &pf, 1);
+    rasteriseInto(vf, 0, p, 16777216); EXPECT_EQ(f[2], 16777216.0f);
+    EXPECT_THROW(rasteriseInto(vf, 0, p, 16777217), InvalidArgumentError);
+    double d[4]; BlockPlane pd{d, DataType::Float64, 16, 0}; BlockView vd(2, 2, Rect64{0,0,2,2}, 0, &pd, 1);
+    rasteriseInto(vd, 0, p, -(int64_t(1) << 53)); EXPECT_EQ(d[3], -9007199254740992.0);
+    EXPECT_THROW(rasteriseInto(vd, 0, p, (int64_t(1) << 53) + 1), InvalidArgumentError);
+    uint16_t h[4]; BlockPlane ph{h, DataType::Float16, 4, 0}; BlockView vh(2, 2, Rect64{0,0,2,2}, 0, &ph, 1);
+    rasteriseInto(vh, 0, p, -2048); EXPECT_EQ(h[0], 0xE800);          // -2048 = -2^11
+    rasteriseInto(vh, 0, p, 1); EXPECT_EQ(h[1], 0x3C00);
+    rasteriseInto(vh, 0, p, 0); EXPECT_EQ(h[2], 0x0000);
+    rasteriseInto(vh, 0, p, 1025); EXPECT_EQ(h[3], 0x6401);
+    BlockView nullView; EXPECT_THROW(rasteriseInto(nullView, 0, p, 1), InvalidArgumentError);
+    EXPECT_THROW(rasteriseInto(v8, -1, p, 1), InvalidArgumentError);
+}
+
+TEST(RasteriseBlockView, PlanesAndStrideAndTinyScale) {
+    // Two planes, padded rows: only the chosen plane changes, padding bytes stay.
+    std::vector<uint8_t> a(3 * 8, 9), b(3 * 8, 9);
+    BlockPlane pl[] = {{a.data(), DataType::Byte, 8, 0}, {b.data(), DataType::Byte, 8, 1}};
+    BlockView v(3, 3, Rect64{0, 0, 3, 3}, 0, pl, 2);
+    Point64 s[] = {{1,1},{2,1},{2,2},{1,2}}; Polygon p; p.addRing(s, 4, false);
+    rasteriseInto(v, 1, p, 200);
+    for (size_t k = 0; k < a.size(); ++k) EXPECT_EQ(a[k], 9);
+    for (size_t y = 0; y < 3; ++y) for (size_t x = 0; x < 8; ++x)
+        EXPECT_EQ(b[y * 8 + x], (x == 1 && y == 1) ? 200 : 9) << x << "," << y;
+    uint8_t one[1] = {0}; BlockPlane pt{one, DataType::Byte, 2000000, 0};
+    BlockView tiny(2000000, 1, Rect64{0, 0, 1, 1}, 0, &pt, 1);        // scale 5e-7 < 1e-6
+    EXPECT_THROW(rasteriseInto(tiny, 0, p, 1), InvalidArgumentError);
+    EXPECT_EQ(one[0], 0);
 }

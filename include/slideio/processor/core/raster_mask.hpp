@@ -1,6 +1,7 @@
 // Requirements: UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
 #pragma once
 
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
 
@@ -35,9 +36,11 @@ public:
      * @param regionAtLevel The region, in pixels of `level`.
      * @param level The pyramid level, at least 0.
      * @param levelScale The factor mapping level pixels to level-0 pixels;
-     * finite and greater than 0.
+     * finite and at least 1e-6 (real pyramid scales are at least 1; the bound
+     * keeps coordinate division finite).
      * @throws InvalidArgumentError For an empty region, a region whose area
-     * overflows, a negative level, or a scale that is not positive and finite.
+     * overflows, a region whose x + width or y + height overflows int64, a
+     * negative level, or a scale that is not finite or is below 1e-6.
      * @throws std::bad_alloc When the pixels cannot be allocated.
      */
     RasterMask(const Rect64& regionAtLevel, int32_t level, double levelScale);
@@ -178,5 +181,59 @@ private:
  * UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
  */
 SLIDEIO_PROCESSOR_DATA_EXPORTS void rasteriseInto(RasterMask& mask, const Polygon& polygon);
+
+/**
+ * @brief Widens the set region by `radius` level pixels, in place.
+ *
+ * The structuring element is the square of side 2 * radius + 1 (plan ruling
+ * R14), applied as a horizontal pass and then a vertical one, so the result is
+ * exact. Dilation stays inside the mask's region: pixels outside it are never
+ * created. A radius of 0 is a no-op.
+ * @param mask The mask to dilate; must not be null.
+ * @param radius The radius in level pixels, at least 0.
+ * @throws InvalidArgumentError When the mask is null or radius is negative.
+ * @throws std::bad_alloc When working memory cannot be allocated; the mask is
+ * then unchanged.
+ * @par Thread-safety
+ * ThreadCompatible: concurrent calls on distinct masks are safe.
+ * @par Requirements
+ * UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
+ */
+SLIDEIO_PROCESSOR_DATA_EXPORTS void dilateMask(RasterMask& mask, int32_t radius);
+
+/**
+ * @brief Fills `polygon` into one plane of a block view with `value`.
+ *
+ * For a TileRasterSource building an auxiliary input. `polygon` is in level-0
+ * coordinates; the level scale is recovered from the view itself as
+ * sx = slideRect().width / width() and sy = slideRect().height / height(), so
+ * the mapping comes from integers the framework already agreed on. The view's
+ * pixel (i, j) is absolute level pixel (originLevelX + i, originLevelY + j),
+ * where originLevelX = llround(slideRect().x / sx) and originLevelY =
+ * llround(slideRect().y / sy); vertices map as x / sx with no origin term, so
+ * neighbouring views agree on a shared seam at any scale. The fill rule is the
+ * conservative even-odd rule of the mask overload. Pixels the polygon does not
+ * cover are left unchanged. Every run is computed before the first write, so a
+ * throw leaves the plane untouched.
+ *
+ * `value` must be exactly representable in the plane's type: the type's range
+ * for integer types; |value| at most 2048 for Float16 (stored as the IEEE half
+ * bit pattern), 2^24 for Float32 and 2^53 for Float64.
+ * @param plane The view to write into.
+ * @param planeIndex The plane, from 0 to plane.planeCount() - 1.
+ * @param polygon The polygon, in level-0 coordinates.
+ * @param value The value to store in every covered pixel.
+ * @throws InvalidArgumentError When planeIndex is out of range (always for a
+ * null view), when value does not fit the plane's type (the message names the
+ * type and the value), when the derived scale is not finite or is below 1e-6,
+ * or when the derived origin does not fit.
+ * @throws std::bad_alloc When working memory cannot be allocated.
+ * @par Thread-safety
+ * ThreadCompatible: concurrent calls on distinct views are safe.
+ * @par Requirements
+ * UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
+ */
+SLIDEIO_PROCESSOR_DATA_EXPORTS void rasteriseInto(BlockView& plane, int32_t planeIndex,
+                                                  const Polygon& polygon, int64_t value);
 
 } // namespace slideio::processor
