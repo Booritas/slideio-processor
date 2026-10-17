@@ -1,6 +1,7 @@
 include(GoogleTest)
 
 add_executable(slideio_processor_core_tests
+    test_error.cpp
     test_version.cpp
 )
 target_link_libraries(slideio_processor_core_tests PRIVATE

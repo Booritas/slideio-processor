@@ -1,9 +1,9 @@
 // Requirements: UR-API-6, UR-RES-11
 #pragma once
 
-#include <cstdint>
-
 #include <slideio/processor/core/export.hpp>
+
+#include <cstdint>
 
 namespace slideio::processor {
 

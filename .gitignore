@@ -13,3 +13,6 @@ out/
 
 # Third-party papers: cited, not redistributed
 docs/algorithms/*.pdf
+
+# Local CMake presets
+CMakeUserPresets.json

@@ -1,4 +1,5 @@
 add_library(slideio-processor-core OBJECT
+    error.cpp
     version.cpp
 )
 set_target_properties(slideio-processor-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
