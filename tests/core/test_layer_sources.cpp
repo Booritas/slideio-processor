@@ -32,7 +32,8 @@ TEST(LayerMaskSource, DilationReachesObjectsOutsideTheTile) {
     auto ms = makeLayerMaskSource(src, LayerId(1), 3.0);
     RasterMask m(Rect64{0, 0, 16, 16}, 0, 1.0);
     ms->fillMask(m);
-    EXPECT_EQ(src.lastQuery().intersectingValue(), (Rect64{-3, -3, 22, 22}));
+    // [-3, 19) grown by one level-0 pixel on each side against rounding slivers.
+    EXPECT_EQ(src.lastQuery().intersectingValue(), (Rect64{-4, -4, 24, 24}));
     EXPECT_TRUE(m.test({15, 5})); // dilated into the tile
     EXPECT_FALSE(m.test({14, 5})); // and no further
     EXPECT_THROW(makeLayerMaskSource(src, LayerId(), 0.0), InvalidArgumentError);
@@ -105,7 +106,9 @@ TEST(LayerMaskSource, ScaleOtherThanOneUsesLevelRadiusAndLevel0Query) {
     auto ms = makeLayerMaskSource(src, LayerId(1), 4.0); // r = ceil(4 / 3) = 2
     RasterMask m(Rect64{10, 10, 16, 16}, 1, 3.0);
     ms->fillMask(m);
-    EXPECT_EQ(src.lastQuery().intersectingValue(), (Rect64{3 * (10 - 2), 3 * (10 - 2), 60, 60}));
+    // [3 * (10 - 2), 3 * (28 + 2)) grown by one level-0 pixel on each side.
+    EXPECT_EQ(src.lastQuery().intersectingValue(),
+              (Rect64{3 * (10 - 2) - 1, 3 * (10 - 2) - 1, 60 + 2, 60 + 2}));
     EXPECT_TRUE(m.test({25, 14}));
     EXPECT_FALSE(m.test({24, 14})); // r is 2, not 3
 }
@@ -129,11 +132,8 @@ TEST(LayerRasterSource, QueryCoversTheWholeRasterisedGrid) {
     BlockPlane pl{buf.data(), DataType::Byte, 256, 0};
     BlockView v(256, 256, Rect64{20481, 0, 1024, 1024}, 0, &pl, 1);
     rs->fillTile(v);
-    const Rect64 q = src.lastQuery().intersectingValue();
-    EXPECT_LE(q.x, 20480);
-    EXPECT_GE(q.right(), 21504);
-    EXPECT_LE(q.y, 0);
-    EXPECT_GE(q.bottom(), 1024);
+    // The grid [20480, 21504) x [0, 1024), grown by one level-0 pixel on each side.
+    EXPECT_EQ(src.lastQuery().intersectingValue(), (Rect64{20479, -1, 1026, 1026}));
     EXPECT_EQ(buf[25 * 256 + 0], 1); // the sliver object lands in pixel (0, 25)
 }
 

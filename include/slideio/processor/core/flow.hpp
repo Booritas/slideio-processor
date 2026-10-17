@@ -268,12 +268,14 @@ using TileMaskSourcePtr = std::shared_ptr<TileMaskSource>;
  * @brief Makes a mask source backed by the objects of one layer.
  *
  * For each tile it queries `source` for the objects of `layer` intersecting the
- * tile (grown by the dilation) and rasterises them, then widens the result by
+ * tile (grown by the dilation, then by one level-0 pixel on each side so that
+ * rounding never drops a sliver) and rasterises them, then widens the result by
  * `dilationLevel0Pixels`. The query carries StageVisibility::CompletedOnly, so
  * a restriction never sees a concurrently running stage's partial output.
  *
  * The returned source's fillMask() throws InvalidArgumentError for a null
- * mask or a dilated region that overflows int64; it lets ProcessorError and
+ * mask, a dilated region that overflows int64, or a level-0 query extent
+ * outside the supported range; it lets ProcessorError and
  * std::bad_alloc from `source` through, and translates any other exception
  * derived from std::exception thrown by `source` to InternalError, with its
  * what() as the cause.
@@ -345,7 +347,9 @@ using TileRasterSourcePtr = std::shared_ptr<TileRasterSource>;
  * @brief Makes a raster source backed by the objects of one layer.
  *
  * For each tile it queries `source` for the objects of `layer` intersecting the
- * tile and rasterises the requested content into plane 0, at the tile's own
+ * tile's rasterised grid, grown by one level-0 pixel on each side so that
+ * rounding never drops a sliver, and rasterises the requested content into
+ * plane 0, at the tile's own
  * level. Where objects overlap, the smallest ObjectId wins. The query carries
  * StageVisibility::CompletedOnly. planeCount() is 1; planeType() is Int32 for
  * Label, Byte for Membership and Int64 for ObjectAnchor. Background values:
@@ -356,7 +360,8 @@ using TileRasterSourcePtr = std::shared_ptr<TileRasterSource>;
  * skips records whose id is invalid.
  *
  * The returned source's fillTile() throws InvalidArgumentError when the view
- * lacks plane 0 of planeType() or its scale or origin is unusable; it lets
+ * lacks plane 0 of planeType(), its scale or origin is unusable, or its
+ * level-0 query extent is outside the supported range; it lets
  * ProcessorError and std::bad_alloc from `source` through, and translates any
  * other exception derived from std::exception thrown by `source` to
  * InternalError, with its what() as the cause.

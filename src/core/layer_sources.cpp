@@ -87,6 +87,24 @@ int64_t toInt64Ceil(double v) {
     return static_cast<int64_t>(f);
 }
 
+// The level-0 query rectangle [x0, x1) x [y0, y1), grown by one level-0 pixel
+// on each side so that a sliver created by rounding the level grid is never
+// excluded. Growth saturates at the int64 limits; an extent whose width or
+// height does not fit int64 is rejected.
+Rect64 paddedQuery(int64_t x0, int64_t y0, int64_t x1, int64_t y1) {
+    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    x0 = x0 > kMin ? x0 - 1 : x0;
+    y0 = y0 > kMin ? y0 - 1 : y0;
+    x1 = x1 < kMax ? x1 + 1 : x1;
+    y1 = y1 < kMax ? y1 + 1 : y1;
+    // x1 - x0 overflows iff x0 < 0 and x1 > kMax + x0 (x1 >= x0 here).
+    if ((x0 < 0 && x1 > kMax + x0) || (y0 < 0 && y1 > kMax + y0)) {
+        throw InvalidArgumentError("layer source: query extent overflows int64");
+    }
+    return Rect64{x0, y0, x1 - x0, y1 - y0};
+}
+
 class LayerMaskSource final : public TileMaskSource {
 public:
     LayerMaskSource(ObjectSource& source, LayerId layer, double dilation)
@@ -123,7 +141,7 @@ public:
             toInt64Ceil(static_cast<double>(scratchRegion.x + scratchRegion.width) * scale);
         const int64_t y1 =
             toInt64Ceil(static_cast<double>(scratchRegion.y + scratchRegion.height) * scale);
-        const Rect64 level0{x0, y0, x1 - x0, y1 - y0};
+        const Rect64 level0 = paddedQuery(x0, y0, x1, y1);
 
         ObjectQuery query;
         query.layer(layer_).intersecting(level0).visibility(StageVisibility::CompletedOnly);
@@ -165,7 +183,7 @@ public:
         const int64_t qx1 = toInt64Ceil(static_cast<double>(grid.originLevelX + grid.width) * grid.pixelW);
         const int64_t qy1 = toInt64Ceil(static_cast<double>(grid.originLevelY + grid.height) * grid.pixelH);
         query.layer(layer_)
-            .intersecting(Rect64{qx0, qy0, qx1 - qx0, qy1 - qy0})
+            .intersecting(paddedQuery(qx0, qy0, qx1, qy1))
             .visibility(StageVisibility::CompletedOnly);
         std::vector<ObjectRecord> records = collect(*source_, query);
 
