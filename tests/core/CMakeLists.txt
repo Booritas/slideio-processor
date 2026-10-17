@@ -8,6 +8,7 @@ add_executable(slideio_processor_core_tests
     test_error.cpp
     test_geometry.cpp
     test_ids.cpp
+    test_layer_sources.cpp
     test_measurement.cpp
     test_memory_budget.cpp
     test_log.cpp

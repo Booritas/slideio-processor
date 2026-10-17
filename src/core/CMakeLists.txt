@@ -8,6 +8,7 @@ add_library(slideio-processor-core OBJECT
     ids.cpp
     measurement.cpp
     flow.cpp
+    layer_sources.cpp
     object_query.cpp
     log.cpp
     memory_budget.cpp
