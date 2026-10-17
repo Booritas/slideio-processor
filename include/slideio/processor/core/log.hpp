@@ -11,6 +11,21 @@
 #include <cstdint>
 #include <memory>
 
+/**
+ * @def SLIDEIO_PROCESSOR_PRINTF_FORMAT
+ * @brief Marks a function as taking a printf-style format string, so GCC and
+ * Clang check its calls; expands to nothing on other compilers.
+ *
+ * A declaration attribute only. The first argument is the 1-based index of
+ * the format parameter, the second that of the first variadic argument.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define SLIDEIO_PROCESSOR_PRINTF_FORMAT(formatIndex, firstArgIndex) \
+    __attribute__((format(printf, formatIndex, firstArgIndex)))
+#else
+#define SLIDEIO_PROCESSOR_PRINTF_FORMAT(formatIndex, firstArgIndex)
+#endif
+
 namespace slideio::processor {
 
 /**
@@ -111,6 +126,7 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS LogLevel logLevel() noexcept;
  * @par Requirements
  * UR-EXE-5 (diagnostics)
  */
-SLIDEIO_PROCESSOR_DATA_EXPORTS void logMessage(LogLevel level, const char* format, ...);
+SLIDEIO_PROCESSOR_DATA_EXPORTS void logMessage(LogLevel level, const char* format, ...)
+    SLIDEIO_PROCESSOR_PRINTF_FORMAT(2, 3);
 
 } // namespace slideio::processor

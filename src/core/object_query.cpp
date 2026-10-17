@@ -1,6 +1,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/object_query.hpp>
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>

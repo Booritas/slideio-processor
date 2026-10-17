@@ -2,6 +2,8 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <cstdint>
+
 namespace slideio::processor {
 
 namespace {

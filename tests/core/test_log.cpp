@@ -70,7 +70,16 @@ TEST_F(LogTest, LevelOffDiscardsEverything) {
 TEST_F(LogTest, NullFormatIsNoOp) {
     auto s = std::make_shared<CaptureSink>();
     setLogSink(s);
+    // A null format is deliberate here; silence GCC/Clang format checking for it.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wformat-security"
+#endif
     EXPECT_NO_THROW(logMessage(LogLevel::Error, nullptr));
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     EXPECT_TRUE(s->got.empty());
 }
 

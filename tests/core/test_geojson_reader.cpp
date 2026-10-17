@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <clocale>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>

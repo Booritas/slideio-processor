@@ -2,6 +2,7 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>

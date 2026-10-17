@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 #include <utility>
 #include <vector>
 

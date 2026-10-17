@@ -7,6 +7,7 @@
 #include <rapidjson/writer.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <string>

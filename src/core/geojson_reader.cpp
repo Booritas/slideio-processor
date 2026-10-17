@@ -8,8 +8,13 @@
 #include <rapidjson/reader.h>
 
 #include <algorithm>
+// <charconv> defines __cpp_lib_to_chars; without it parseNumber() falls back
+// to a classic-locale istringstream.
+#if __has_include(<charconv>)
 #include <charconv>
+#endif
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>

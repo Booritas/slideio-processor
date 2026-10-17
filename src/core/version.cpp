@@ -1,5 +1,7 @@
 #include <slideio/processor/core/version.hpp>
 
+#include <cstdint>
+
 namespace slideio::processor {
 
 const char* libraryVersion() noexcept { return SLIDEIO_PROCESSOR_VERSION_STRING; }

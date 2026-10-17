@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
 #include <thread>
 #include <type_traits>
 #include <utility>

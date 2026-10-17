@@ -1,6 +1,7 @@
 #include <slideio/processor/core/ids.hpp>
 
 #include <charconv>
+#include <cstdint>
 #include <cstring>
 
 namespace slideio::processor {
