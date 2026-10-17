@@ -7,8 +7,10 @@ add_library(slideio-processor-core OBJECT
     geometry.cpp
     ids.cpp
     measurement.cpp
+    log.cpp
     memory_budget.cpp
     object_record.cpp
+    provenance.cpp
     version.cpp
 )
 set_target_properties(slideio-processor-core PROPERTIES POSITION_INDEPENDENT_CODE ON)

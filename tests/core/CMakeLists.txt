@@ -10,7 +10,9 @@ add_executable(slideio_processor_core_tests
     test_ids.cpp
     test_measurement.cpp
     test_memory_budget.cpp
+    test_log.cpp
     test_object_record.cpp
+    test_provenance.cpp
     test_version.cpp
 )
 target_link_libraries(slideio_processor_core_tests PRIVATE
