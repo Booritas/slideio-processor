@@ -1,6 +1,11 @@
 // Requirements: UR-SEG-5, UR-SEG-6
 #pragma once
 
+/**
+ * @file measurement.hpp
+ * @brief MeasurementUnit, Measurement and MeasurementSet.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -30,7 +35,8 @@ enum class MeasurementUnit : int32_t {
  * A small value class. Populated instances come from MeasurementSet; a
  * default-built one has name "", value 0 and unit Dimensionless.
  * @par Thread-safety
- * ThreadCompatible: const members may run concurrently.
+ * ThreadCompatible: const members may run concurrently; assignment needs
+ * exclusive access.
  * @par Requirements
  * UR-SEG-5, UR-SEG-6
  */

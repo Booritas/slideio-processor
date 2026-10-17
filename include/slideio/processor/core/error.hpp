@@ -1,6 +1,12 @@
 // Requirements: UR-API-5, UR-EXE-5, UR-RES-12
 #pragma once
 
+/**
+ * @file error.hpp
+ * @brief ErrorCode, ErrorContext and the ProcessorError hierarchy thrown across the
+ * public API.
+ */
+
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/export.hpp>
 
@@ -34,7 +40,8 @@ enum class ErrorCode : int32_t {
  * (read as empty), and is copied by the error constructor, so the pointers
  * need only stay valid for the duration of that call.
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently.
+ * ThreadCompatible: concurrent reads are safe; writing a member needs
+ * exclusive access.
  * @par Requirements
  * UR-API-5, UR-EXE-5
  */

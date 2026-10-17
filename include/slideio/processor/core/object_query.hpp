@@ -1,6 +1,11 @@
 // Requirements: UR-RES-2, UR-RES-3, UR-RES-4, UR-RES-5, UR-STG-3, UR-STG-5
 #pragma once
 
+/**
+ * @file object_query.hpp
+ * @brief ObjectQuery, its filter enumerations and MeasurementBound.
+ */
+
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/ids.hpp>
@@ -58,7 +63,8 @@ enum class LabelFilter : int32_t {
  *
  * A POD value. The name pointer is owned by the query it came from.
  * @par Thread-safety
- * A value type.
+ * ThreadCompatible: concurrent reads are safe; writing a member needs
+ * exclusive access.
  * @par Requirements
  * UR-RES-2
  */
@@ -75,7 +81,7 @@ struct SLIDEIO_PROCESSOR_DATA_EXPORTS MeasurementBound {
  * validate their input: a consumer rejects what it cannot use. A moved-from
  * query reads as a default query.
  * @par Thread-safety
- * ThreadConfined (builder); const members may run concurrently.
+ * ThreadConfined (builder).
  * @par Requirements
  * UR-RES-2, UR-RES-3, UR-RES-4, UR-RES-5, UR-STG-3, UR-STG-5
  */
@@ -132,6 +138,13 @@ public:
     /**
      * @brief Restricts to objects intersecting a rectangle, in level-0 pixels.
      * A repeated call keeps the last value.
+     *
+     * Contract for an ObjectSource honouring it: the result must include at
+     * least every object whose geometry has positive-area overlap with `rect`.
+     * It may include more, for example every object whose bounding box
+     * intersects `rect`. Objects that only touch `rect` (share an edge or a
+     * corner, with zero-area overlap) need not be returned. Consumers that need
+     * an exact answer filter the result themselves.
      * @param rect The rectangle.
      * @return This query.
      * @throws std::bad_alloc When memory is exhausted.

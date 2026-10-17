@@ -1,6 +1,12 @@
 // Requirements: UR-RES-4, UR-RES-13, UR-STG-4, UR-STG-6
 #pragma once
 
+/**
+ * @file object_record.hpp
+ * @brief ObjectRecord: one segmented object with its layer, geometry, label and
+ * measurements.
+ */
+
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/ids.hpp>

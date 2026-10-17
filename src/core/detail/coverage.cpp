@@ -32,8 +32,11 @@
 //
 // No epsilon is used anywhere, and no value that enters a decision depends on
 // the grid origin: u and v round the same way for every tile, and every lattice
-// comparison is against an absolute integer. Two grids sharing a seam therefore
-// agree on every pixel by construction, at any scale (4.0001 included). When
+// comparison is against an absolute integer. Two grids with the same pixelW and
+// pixelH sharing a seam therefore agree on every pixel by construction, at any
+// such scale (4.0001 included). A BlockView grid is rounded first (see
+// gridOfView), so this says nothing about how close it is to the true level
+// grid. When
 // pixelW and pixelH are powers of two the mapping is also exact.
 
 namespace slideio::processor::detail {

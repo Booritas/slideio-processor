@@ -27,6 +27,17 @@ struct PixelGrid {
     int64_t width, height;
 };
 
+/// The grid a BlockView is rasterised on: pixel size slideRect/size, origin
+/// llround(slideRect.x / pixelW). Shared by rasteriseInto(BlockView...) and
+/// the layer raster source so a query can cover exactly what is rasterised.
+///
+/// The origin is ROUNDED: when slideRect.x / pixelW (or y / pixelH) is not an
+/// integer, this grid is offset from the true level grid by up to half a level
+/// pixel. The kernel's conservative guarantee holds on this rounded grid, not
+/// on the true one. Not exported.
+/// Throws InvalidArgumentError for a null view or an unusable scale or origin.
+PixelGrid gridOfView(const BlockView& view);
+
 /// The conservative even-odd coverage kernel (SDS 01 1.17, plan ruling R10).
 ///
 /// Calls row(y, x0, x1) for each maximal run [x0, x1) of covered pixels in row
@@ -35,12 +46,6 @@ struct PixelGrid {
 /// inside by even-odd with the same tie rule as Polygon::contains. Every run is
 /// computed before the first call, so a throw (std::bad_alloc) leaves the
 /// caller's target untouched. Not exported.
-/// The grid a BlockView is rasterised on: pixel size slideRect/size, origin
-/// llround(slideRect.x / pixelW). Shared by rasteriseInto(BlockView...) and
-/// the layer raster source so a query can cover exactly what is rasterised.
-/// Throws InvalidArgumentError for a null view or an unusable scale or origin.
-PixelGrid gridOfView(const BlockView& view);
-
 void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
                         const std::function<void(int64_t y, int64_t x0, int64_t x1)>& row);
 

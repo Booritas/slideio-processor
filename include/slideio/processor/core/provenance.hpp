@@ -1,6 +1,11 @@
 // Requirements: UR-RES-11
 #pragma once
 
+/**
+ * @file provenance.hpp
+ * @brief Provenance: the slide-level provenance record written with every export.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>

@@ -1,6 +1,11 @@
 // Requirements: UR-EXE-2
 #pragma once
 
+/**
+ * @file memory_budget.hpp
+ * @brief MemoryBudget, a shared byte ceiling, and makeMemoryBudget().
+ */
+
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/export.hpp>
 

@@ -1,6 +1,12 @@
 // Requirements: UR-IMG-5, UR-STG-3, UR-QA-2, UR-QA-3
 #pragma once
 
+/**
+ * @file raster_mask.hpp
+ * @brief RasterMask and the conservative rasterisers rasteriseInto() and
+ * dilateMask().
+ */
+
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
@@ -129,6 +135,15 @@ public:
 
     /**
      * @brief Tests the level pixel containing a level-0 slide point.
+     *
+     * `slidePoint` is a corner-lattice POINT (SDS 01 1.17), not a pixel index:
+     * it maps to level pixel (floor(x / levelScale), floor(y / levelScale)),
+     * the pixel whose square contains the point (a point on a pixel's left or
+     * top edge belongs to that pixel). Contrast Polygon::contains(), which
+     * takes a pixel index tested at its centre. Testing an object's anchor()
+     * with testLevel0() is the intended restriction test: the anchor pixel's
+     * square starts at the anchor point, so the anchor maps to the level pixel
+     * that holds the object's anchor pixel.
      * @param slidePoint The point, in level-0 coordinates.
      * @return test({floor(x / levelScale), floor(y / levelScale)}); false for
      * a null mask.
@@ -212,8 +227,16 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS void dilateMask(RasterMask& mask, int32_t radius)
  * where originLevelX = llround(slideRect().x / sx) and originLevelY =
  * llround(slideRect().y / sy); vertices map as x / sx with no origin term, so
  * neighbouring views agree on a shared seam when they derive the same scale.
- * Integer slideRects over a non-integer pyramid (for example 4.0001) can derive
- * slightly different scales per view, and then the seams may differ. The fill rule is the
+ *
+ * The conservative guarantee holds on the view's ROUNDED grid: the grid of
+ * level pixels starting at (originLevelX, originLevelY) with pixel size
+ * (sx, sy). When slideRect().x / sx (or y / sy) is not an integer, that grid
+ * is offset from the true level grid by up to half a level pixel, so
+ * "covered" is exact for the rounded grid, not for the true one. Integer
+ * slideRects over a non-integer pyramid (for example 4.0001) can also derive
+ * slightly different scales per view, and then the seams may differ: this
+ * overload does not keep such a pyramid in register. How a view learns its
+ * exact level scale is left to the pipeline. The fill rule is the
  * conservative even-odd rule of the mask overload. Pixels the polygon does not
  * cover are left unchanged. Every run is computed before the first write, so a
  * throw leaves the plane untouched.

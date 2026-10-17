@@ -1,6 +1,11 @@
 // Requirements: UR-IMG-8, UR-IMG-11, UR-IMG-12
 #pragma once
 
+/**
+ * @file data_type.hpp
+ * @brief DataType, its conversions to and from SlideIO, and DataTypeSet.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -108,8 +113,8 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS int32_t dataTypeToSlideio(DataType type) noexcept
  * Bit i is set when the enumerator with value i is a member. Unknown is
  * never a member.
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * ThreadCompatible: const members may run concurrently; add(), remove() and
+ * assignment need exclusive access.
  * @par Requirements
  * UR-IMG-8, UR-IMG-11, UR-IMG-12
  */

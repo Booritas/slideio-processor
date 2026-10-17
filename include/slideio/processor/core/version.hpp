@@ -1,6 +1,11 @@
 // Requirements: UR-API-6, UR-RES-11
 #pragma once
 
+/**
+ * @file version.hpp
+ * @brief Library version queries.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>

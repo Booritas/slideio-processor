@@ -1,6 +1,11 @@
 // Requirements: UR-IMG-6, UR-IMG-7, UR-ALG-2
 #pragma once
 
+/**
+ * @file channel_selection.hpp
+ * @brief ChannelSelection: which channels of a scene an operation reads.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>

@@ -1,6 +1,11 @@
 // Requirements: UR-RES-8, UR-RES-11, UR-RES-13, UR-RES-15, UR-RES-18
 #pragma once
 
+/**
+ * @file geojson.hpp
+ * @brief Streaming GeoJSON reader (GeoJsonReader) and writer (GeoJsonWriter).
+ */
+
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_record.hpp>
@@ -77,7 +82,12 @@ public:
      * @throws Nothing.
      */
     GeoJsonReader& operator=(GeoJsonReader&& other) noexcept;
+    /** @brief Deleted: the reader is move-only. */
     GeoJsonReader(const GeoJsonReader&) = delete;
+    /**
+     * @brief Deleted: the reader is move-only.
+     * @return Not applicable.
+     */
     GeoJsonReader& operator=(const GeoJsonReader&) = delete;
     /** @brief Closes the file. Never throws. */
     ~GeoJsonReader();
@@ -195,7 +205,12 @@ public:
      * @throws Nothing.
      */
     GeoJsonWriter& operator=(GeoJsonWriter&& other) noexcept;
+    /** @brief Deleted: the writer is move-only. */
     GeoJsonWriter(const GeoJsonWriter&) = delete;
+    /**
+     * @brief Deleted: the writer is move-only.
+     * @return Not applicable.
+     */
     GeoJsonWriter& operator=(const GeoJsonWriter&) = delete;
     /** @brief Closes the file without completing the document. Never throws. */
     ~GeoJsonWriter();

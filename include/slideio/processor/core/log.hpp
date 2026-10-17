@@ -1,6 +1,11 @@
 // Requirements: UR-EXE-5
 #pragma once
 
+/**
+ * @file log.hpp
+ * @brief Process-wide logging: LogLevel, LogSink and the logging functions.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -11,8 +16,17 @@ namespace slideio::processor {
 /**
  * @brief Severity of a log message, in increasing order. Off is never a message
  * level that is delivered; as the threshold it silences everything.
+ * @par Requirements
+ * UR-EXE-5 (diagnostics)
  */
-enum class LogLevel : int32_t { Trace, Debug, Info, Warning, Error, Off };
+enum class LogLevel : int32_t {
+    Trace,   ///< Finest detail, for tracing execution step by step.
+    Debug,   ///< Diagnostic detail useful when debugging.
+    Info,    ///< Normal progress and notable events.
+    Warning, ///< Something unexpected that did not stop the operation (the default threshold).
+    Error,   ///< A failure of the current operation.
+    Off      ///< Threshold only: discards every message; never a message level.
+};
 
 /**
  * @brief Receives log messages. Implement it and install it with setLogSink().

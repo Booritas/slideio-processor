@@ -1,6 +1,11 @@
 // Requirements: UR-RES-4, UR-QA-3
 #pragma once
 
+/**
+ * @file ids.hpp
+ * @brief Typed identifiers: LayerId, StageId, LabelId, RasterId and ObjectId.
+ */
+
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>
 
@@ -13,8 +18,8 @@ namespace slideio::processor {
  *
  * Valid iff value() > 0; the default value is 0, which means "none".
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * Immutable: an id has no mutating member other than assignment; any number
+ * of threads may read one without synchronisation.
  * @par Requirements
  * UR-RES-4, UR-QA-3
  */
@@ -74,8 +79,8 @@ private:
  *
  * Valid iff value() > 0; the default value is 0, which means "none".
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * Immutable: an id has no mutating member other than assignment; any number
+ * of threads may read one without synchronisation.
  * @par Requirements
  * UR-RES-4, UR-QA-3
  */
@@ -136,8 +141,8 @@ private:
  * Valid iff value() > 0; the default value is 0, which means "none" (it is
  * the background value of a label raster).
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * Immutable: an id has no mutating member other than assignment; any number
+ * of threads may read one without synchronisation.
  * @par Requirements
  * UR-RES-4, UR-QA-3
  */
@@ -197,8 +202,8 @@ private:
  *
  * Valid iff value() > 0; the default value is 0, which means "none".
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * Immutable: an id has no mutating member other than assignment; any number
+ * of threads may read one without synchronisation.
  * @par Requirements
  * UR-RES-4, UR-QA-3
  */
@@ -262,8 +267,8 @@ private:
  * wrapped one. An invalid id has layer 0 and anchorPacked() -1. Part of the
  * store format's stability contract.
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * Immutable: an id has no mutating member other than assignment; any number
+ * of threads may read one without synchronisation.
  * @par Requirements
  * UR-RES-4, UR-QA-3
  */

@@ -1,6 +1,12 @@
 // Requirements: UR-API-3, UR-IMG-9, UR-IMG-10
 #pragma once
 
+/**
+ * @file block_view.hpp
+ * @brief BlockPlane and BlockView: non-owning views of the planes of one raster
+ * tile.
+ */
+
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/geometry.hpp>

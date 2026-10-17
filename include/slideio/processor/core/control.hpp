@@ -1,6 +1,12 @@
 // Requirements: UR-EXE-4
 #pragma once
 
+/**
+ * @file control.hpp
+ * @brief Cancellation (CancellationToken, CancellationSource) and progress
+ * reporting (ProgressObserver).
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -18,8 +24,11 @@ class CancellationSource;
  * a CancellationSource share its flag and stay valid after the source is
  * destroyed. A moved-from token holds no state, so it is never cancelled.
  * @par Thread-safety
- * ThreadSafe: any member may run concurrently with CancellationSource::cancel().
- * Assigning to one token object from two threads at once is not safe.
+ * ThreadCompatible: concurrent const calls on one token object are safe; a
+ * non-const call (assignment) needs exclusive access to that object.
+ * @note Copies of a token share one flag, which is atomic: distinct copies may
+ * be queried from any number of threads while CancellationSource::cancel()
+ * runs concurrently.
  * @par Requirements
  * UR-EXE-4
  */
@@ -99,7 +108,12 @@ public:
     CancellationSource();
     /** @brief Destroys the source. Tokens already issued remain valid. */
     ~CancellationSource();
+    /** @brief Deleted: a source is not copyable (nor movable). */
     CancellationSource(const CancellationSource&) = delete;
+    /**
+     * @brief Deleted: a source is not copy-assignable (nor move-assignable).
+     * @return Not applicable.
+     */
     CancellationSource& operator=(const CancellationSource&) = delete;
 
     /**

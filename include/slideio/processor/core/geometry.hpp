@@ -1,6 +1,11 @@
 // Requirements: UR-IMG-2, UR-SEG-4, UR-SEG-5
 #pragma once
 
+/**
+ * @file geometry.hpp
+ * @brief Point64, Rect64 and Polygon: integer geometry on the pixel-corner lattice.
+ */
+
 #include <slideio/processor/core/export.hpp>
 
 #include <cstdint>
@@ -14,7 +19,8 @@ namespace slideio::processor {
  * Vertices lie on the pixel-corner lattice: the unit square (0,0)-(1,1) is
  * pixel (0,0). Used as a pixel index when passed to Polygon::contains().
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently.
+ * ThreadCompatible: concurrent reads are safe; writing a member needs
+ * exclusive access.
  * @par Requirements
  * UR-IMG-2, UR-SEG-4
  */
@@ -42,8 +48,8 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS bool operator==(Point64 a, Point64 b) noexcept;
  *
  * A rectangle is empty when width <= 0 or height <= 0.
  * @par Thread-safety
- * A value type: distinct instances may be used concurrently; a const
- * instance may be read from many threads.
+ * ThreadCompatible: const members may run concurrently; writing a member
+ * needs exclusive access.
  * @par Requirements
  * UR-IMG-2, UR-SEG-4
  */
@@ -271,8 +277,10 @@ public:
     /**
      * @brief Tests a pixel by the even-odd rule.
      *
-     * The test point is the centre of pixel p, (p.x + 0.5, p.y + 0.5).
-     * @param p The pixel.
+     * `p` is a PIXEL INDEX, not a lattice point: the test point is the centre
+     * of pixel p, (p.x + 0.5, p.y + 0.5) (plan ruling R8). Contrast
+     * RasterMask::testLevel0(), which takes a corner-lattice POINT.
+     * @param p The pixel index.
      * @return True when the centre lies inside.
      * @throws Nothing.
      */

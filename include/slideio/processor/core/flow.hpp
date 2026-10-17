@@ -1,6 +1,13 @@
 // Requirements: UR-RES-2, UR-RES-5, UR-RES-6, UR-EXT-4
 #pragma once
 
+/**
+ * @file flow.hpp
+ * @brief Flow interfaces: object, edge, raster and annotation sinks; object sources
+ * and cursors; tile mask and raster sources, including the layer-backed
+ * ones.
+ */
+
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/export.hpp>

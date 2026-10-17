@@ -11,6 +11,16 @@
  * Requirements: UR-API-2, UR-API-7.
  */
 
+/**
+ * @namespace slideio::processor
+ * @brief The public API of slideio-processor.
+ *
+ * Every public type and function of every module lives directly in this
+ * namespace; modules are header directories (slideio/processor/core/, ...),
+ * not nested namespaces (SDS 00 C-1). Private helpers live in
+ * slideio::processor::detail, in headers that are never installed.
+ */
+
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/channel_selection.hpp>
 #include <slideio/processor/core/control.hpp>
