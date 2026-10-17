@@ -1,7 +1,8 @@
-// Requirements: UR-RES-8, UR-RES-11, UR-RES-15, UR-RES-18
+// Requirements: UR-RES-8, UR-RES-11, UR-RES-13, UR-RES-15, UR-RES-18
 #pragma once
 
 #include <slideio/processor/core/export.hpp>
+#include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/core/provenance.hpp>
 
@@ -9,6 +10,142 @@
 #include <memory>
 
 namespace slideio::processor {
+
+/**
+ * @brief Streams Features out of a GeoJSON file, one at a time.
+ *
+ * Accepts a FeatureCollection (its "features" array; other members are
+ * skipped), a top-level array of Features, or a single Feature. The file is
+ * pull-parsed: next() reads only as far as the end of the next feature, so
+ * memory is bounded by one feature whatever the file size.
+ *
+ * A Polygon's first ring is an outer ring and the rest are holes; a
+ * MultiPolygon contributes each member polygon the same way. Coordinates are
+ * rounded to the nearest integer. A feature whose geometry is null, missing,
+ * empty, or of any other type is skipped with a LogLevel::Warning message
+ * naming its index and type.
+ *
+ * Properties are the feature's scalar "properties" members other than
+ * "classification" and "layer", in document order, followed by the scalar
+ * members of "properties.measurements", named "measurements.<key>". Values are
+ * text: strings as their content, numbers exactly as written in the file,
+ * booleans as "true" or "false". Nulls, arrays and other nested objects are
+ * skipped.
+ *
+ * Feature indices in messages are 0-based positions in the feature list,
+ * counting skipped features. A geometry error (a ring with fewer than 3
+ * distinct points, a non-finite or out-of-range coordinate, or malformed
+ * coordinate nesting) throws from next() but leaves the reader usable: the
+ * next call continues with the following feature. A parse or read error is
+ * final: every later next() throws again.
+ *
+ * Pointers returned by classification(), layerName(), propertyName() and
+ * propertyValue(), and the reference returned by geometry(), stay valid until
+ * the next call to next(), or until the reader is moved from or destroyed.
+ * Before the first successful next(), and after next() returns false or
+ * throws, the accessors report an empty feature.
+ *
+ * The reader is move-only. A moved-from reader reports an empty feature, and
+ * its next() throws InvalidArgumentError.
+ * @par Thread-safety
+ * ThreadConfined.
+ * @par Requirements
+ * UR-RES-8, UR-RES-13, UR-RES-15
+ */
+class SLIDEIO_PROCESSOR_DATA_EXPORTS GeoJsonReader {
+public:
+    /**
+     * @brief Opens the file. Nothing is parsed until next().
+     * @param path UTF-8 file path, opened through std::filesystem::u8path.
+     * @throws InvalidArgumentError When path is null.
+     * @throws IoError When the file cannot be opened; the message names the path.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    explicit GeoJsonReader(const char* path);
+    /**
+     * @brief Moves a reader; the source becomes unusable.
+     * @param other The reader to move from.
+     * @throws Nothing.
+     */
+    GeoJsonReader(GeoJsonReader&& other) noexcept;
+    /**
+     * @brief Move-assigns a reader, closing this one's file.
+     * @param other The reader to move from.
+     * @return This object.
+     * @throws Nothing.
+     */
+    GeoJsonReader& operator=(GeoJsonReader&& other) noexcept;
+    GeoJsonReader(const GeoJsonReader&) = delete;
+    GeoJsonReader& operator=(const GeoJsonReader&) = delete;
+    /** @brief Closes the file. Never throws. */
+    ~GeoJsonReader();
+
+    /**
+     * @brief Advances to the next feature with supported geometry.
+     *
+     * Invalidates every pointer and reference returned by the accessors.
+     * @return True when a feature was read; false at the end of the document.
+     * @throws InvalidArgumentError When the JSON is malformed or the top-level
+     * value is not an object or an array (the message names the path, the byte
+     * offset and the parser's error text); when a ring has fewer than 3
+     * distinct points, a coordinate is not finite or does not fit int64_t, or
+     * the coordinates are malformed (the message names the feature's index);
+     * after an earlier parse or read error; or on a moved-from reader.
+     * @throws IoError When reading the file fails.
+     * @throws InternalError When the parser fails for any other reason.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    bool next();
+    /**
+     * @brief Returns the current feature's geometry.
+     * @return The geometry; empty before the first successful next().
+     * @throws Nothing.
+     */
+    const Polygon& geometry() const noexcept;
+    /**
+     * @brief Returns the current feature's classification.
+     * @return properties.classification.name when classification is an object,
+     * the string itself when it is a string, otherwise "". Never null.
+     * @throws Nothing.
+     */
+    const char* classification() const noexcept;
+    /**
+     * @brief Returns the current feature's layer name.
+     * @return properties.layer when it is a string, otherwise "". Never null.
+     * @throws Nothing.
+     */
+    const char* layerName() const noexcept;
+    /**
+     * @brief Returns the number of properties of the current feature.
+     * @return The count, at least 0.
+     * @throws Nothing.
+     */
+    int32_t propertyCount() const noexcept;
+    /**
+     * @brief Returns a property's name.
+     * @param index 0 <= index < propertyCount().
+     * @return The UTF-8 name. Never null.
+     * @throws InvalidArgumentError When index is out of range.
+     */
+    const char* propertyName(int32_t index) const;
+    /**
+     * @brief Returns a property's value as text.
+     * @param index 0 <= index < propertyCount().
+     * @return The UTF-8 value. Never null.
+     * @throws InvalidArgumentError When index is out of range.
+     */
+    const char* propertyValue(int32_t index) const;
+    /**
+     * @brief Returns the number of features next() has returned so far.
+     * @return The count; skipped and failed features are not counted.
+     * @throws Nothing.
+     */
+    int64_t featuresRead() const noexcept;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 /**
  * @brief Streams objects into a GeoJSON FeatureCollection file.

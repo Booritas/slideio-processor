@@ -1,4 +1,4 @@
-// Test-only: unique temporary file paths and whole-file reads.
+// Test-only: unique temporary file paths and whole-file reads and writes.
 #pragma once
 
 #include <atomic>
@@ -35,6 +35,12 @@ inline std::filesystem::path uniqueTempPath(const char* stem, const char* ext) {
 inline std::string readFile(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Creates or truncates the file and writes `content` in binary mode.
+inline void writeFile(const std::filesystem::path& path, const std::string& content) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
 }
 
 // Removes the file when it goes out of scope, so a failing test leaves nothing behind.
