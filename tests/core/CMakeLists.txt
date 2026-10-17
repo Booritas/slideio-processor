@@ -3,6 +3,7 @@ include(GoogleTest)
 add_executable(slideio_processor_core_tests
     test_data_type.cpp
     test_error.cpp
+    test_geometry.cpp
     test_version.cpp
 )
 target_link_libraries(slideio_processor_core_tests PRIVATE
