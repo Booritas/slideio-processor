@@ -57,7 +57,13 @@ public:
      * @throws InvalidArgumentError Naming the offending field ("width", "height",
      * "level", "slideRect", "planes", "planeCount", or "planes[i].data",
      * "planes[i].type", "planes[i].rowStrideBytes", "planes[i].sourceChannel"),
-     * checked in that order.
+     * checked in that order, planes in index order. Also thrown, naming
+     * "planes[i].rowStrideBytes", in every build, when the offset of the last
+     * byte of the last row overflows int64_t.
+     * @note Debug builds (NDEBUG undefined) probe the last byte of each plane's
+     * final row with a volatile read; a buffer that is too small faults there.
+     * This is best effort, as no portable non-faulting check exists. Release
+     * builds perform no read and trust the caller.
      * @throws std::bad_alloc When memory is exhausted.
      */
     BlockView(int64_t width, int64_t height,

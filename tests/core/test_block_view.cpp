@@ -12,6 +12,17 @@
 
 using namespace slideio::processor;
 
+namespace {
+// The message must begin with the field name.
+template <typename F>
+void expectField(const char* field, F&& make) {
+    try { make(); FAIL() << field; }
+    catch (const InvalidArgumentError& e) {
+        EXPECT_EQ(std::string(e.what()).rfind(field, 0), 0u) << e.what();
+    }
+}
+} // namespace
+
 TEST(BlockView, MixedTypePlanesOverCallerMemory) {
     std::vector<uint8_t> a(4 * 3); std::vector<float> b(4 * 3);
     BlockPlane planes[] = {{a.data(), DataType::Byte, 4, 0}, {b.data(), DataType::Float32, 16, 3}};
@@ -26,10 +37,6 @@ TEST(BlockView, MixedTypePlanesOverCallerMemory) {
 
 TEST(BlockView, ValidationNamesField) {
     uint8_t buf[64]; BlockPlane ok{buf, DataType::Byte, 4, 0};
-    auto expectField = [&](const char* field, auto&& make) {
-        try { make(); FAIL() << field; }
-        catch (const InvalidArgumentError& e) { EXPECT_NE(std::string(e.what()).find(field), std::string::npos) << e.what(); }
-    };
     expectField("width",  [&]{ BlockView(0, 1, Rect64{0,0,1,1}, 0, &ok, 1); });
     expectField("level",  [&]{ BlockView(1, 1, Rect64{0,0,1,1}, -1, &ok, 1); });
     expectField("slideRect", [&]{ BlockView(1, 1, Rect64{0,0,0,1}, 0, &ok, 1); });
@@ -45,10 +52,6 @@ TEST(BlockView, ValidationNamesField) {
 
 TEST(BlockView, RemainingFieldsAndPlaneIndexInMessage) {
     uint8_t buf[64]; BlockPlane ok{buf, DataType::Byte, 4, 0};
-    auto expectField = [&](const char* field, auto&& make) {
-        try { make(); FAIL() << field; }
-        catch (const InvalidArgumentError& e) { EXPECT_NE(std::string(e.what()).find(field), std::string::npos) << e.what(); }
-    };
     expectField("height", [&]{ BlockView(1, 0, Rect64{0,0,1,1}, 0, &ok, 1); });
     expectField("planes", [&]{ BlockView(1, 1, Rect64{0,0,1,1}, 0, nullptr, 1); });
     BlockPlane two[] = {ok, ok};
@@ -85,4 +88,21 @@ TEST(BlockView, NullAndMovedFromViewsAreSafe) {
     BlockView a; a = m; EXPECT_EQ(a.planeData(0), buf);
     a = n; EXPECT_TRUE(a.isNull());
     BlockView b; b = std::move(m); EXPECT_EQ(b.planeSourceChannel(0), 1); EXPECT_TRUE(m.isNull());
+}
+
+TEST(BlockView, ValidationOrderIsPinned) {
+    uint8_t buf[64]; BlockPlane ok{buf, DataType::Byte, 4, 0};
+    expectField("width", [&]{ BlockView(0, 1, Rect64{0,0,1,1}, -1, &ok, 1); });
+    BlockPlane bad = ok; bad.data = nullptr; bad.type = DataType::Unknown;
+    expectField("planes[0].data", [&]{ BlockView(1, 1, Rect64{0,0,1,1}, 0, &bad, 1); });
+    // Per-plane order: every check on plane 0 runs before any check on plane 1.
+    BlockPlane two[] = {ok, bad};
+    two[0].sourceChannel = -1;
+    expectField("planes[0].sourceChannel", [&]{ BlockView(1, 1, Rect64{0,0,1,1}, 0, two, 2); });
+}
+
+TEST(BlockView, LastRowOffsetOverflowThrows) {
+    uint8_t buf[8]; BlockPlane p{buf, DataType::Byte, 4, 0};
+    expectField("planes[0].rowStrideBytes", [&]{
+        BlockView(4, std::numeric_limits<int64_t>::max() / 2, Rect64{0,0,4,1}, 0, &p, 1); });
 }

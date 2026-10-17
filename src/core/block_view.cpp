@@ -80,7 +80,22 @@ BlockView::BlockView(int64_t width, int64_t height,
         if (p.sourceChannel < 0) {
             fail(planeField(i, "sourceChannel") + " must not be negative");
         }
+        // Offset of the last byte of the last row must be representable.
+        const int64_t rowBytes = width * elementSize;
+        if ((height - 1) > std::numeric_limits<int64_t>::max() / p.rowStrideBytes
+            || (height - 1) * p.rowStrideBytes > std::numeric_limits<int64_t>::max() - (rowBytes - 1)) {
+            fail(planeField(i, "rowStrideBytes") + " addresses beyond the representable range");
+        }
     }
+#ifndef NDEBUG
+    // Best-effort addressability probe: a buffer that is too small faults here.
+    for (int32_t i = 0; i < planeCount; ++i) {
+        const BlockPlane& p = planes[i];
+        const int64_t last = (height - 1) * p.rowStrideBytes + width * dataTypeSizeBytes(p.type) - 1;
+        const volatile uint8_t* probe = static_cast<const volatile uint8_t*>(p.data) + last;
+        (void)*probe;
+    }
+#endif
     auto impl = std::make_unique<Impl>();
     impl->width = width;
     impl->height = height;
