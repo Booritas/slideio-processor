@@ -204,6 +204,40 @@ TEST(GeoJsonReader, PropertiesSkipNestedValuesAndKeepOrder) {
     EXPECT_FALSE(r.next());
 }
 
+TEST(GeoJsonReader, MeasurementsFollowTopLevelPropertiesWhateverTheirPosition) {
+    auto path = uniqueTempPath("order", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"Feature","properties":{"measurements":{"area":1,"perimeter":4.5},"name":"x","layer":"L","k":2},
+      "geometry":{"type":"Polygon","coordinates":)" + square(0) + "}}");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    const std::vector<std::pair<std::string, std::string>> want = {
+        {"name", "x"}, {"k", "2"}, {"measurements.area", "1"}, {"measurements.perimeter", "4.5"}};
+    ASSERT_EQ(r.propertyCount(), static_cast<int32_t>(want.size()));
+    for (int32_t i = 0; i < r.propertyCount(); ++i) {
+        EXPECT_EQ(r.propertyName(i), want[static_cast<size_t>(i)].first);
+        EXPECT_EQ(r.propertyValue(i), want[static_cast<size_t>(i)].second);
+    }
+}
+
+TEST(GeoJsonReader, CollectionMembersBeforeFeaturesAreNotInherited) {
+    auto path = uniqueTempPath("inherit", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection",
+      "geometry":{"type":"Polygon","coordinates":)" + square(9) + R"(},
+      "properties":{"layer":"collection","classification":"C","name":"top","measurements":{"m":1}},
+      "features":[{"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(}}]})");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    EXPECT_EQ(r.geometry().ringCount(), 1);
+    EXPECT_EQ(r.geometry().boundingBox().x, 0);
+    EXPECT_STREQ(r.layerName(), "");
+    EXPECT_STREQ(r.classification(), "");
+    EXPECT_EQ(r.propertyCount(), 0);
+    EXPECT_FALSE(r.next());
+    EXPECT_EQ(r.featuresRead(), 1);
+}
+
 TEST(GeoJsonReader, PolygonAndMultiPolygonRingRoles) {
     auto path = uniqueTempPath("roles", ".geojson");
     TempFileGuard guard(path);
@@ -278,7 +312,9 @@ TEST(GeoJsonReader, DegenerateRingNamesFeatureAndReaderStaysUsable) {
     EXPECT_EQ(r.featuresRead(), 1);
 }
 
-TEST(GeoJsonReader, RejectsNonFiniteOutOfRangeAndMalformedCoordinates) {
+// The reader's own non-finite check is a guard only: RapidJSON rejects a number
+// that overflows a double before the handler sees it (the first case below).
+TEST(GeoJsonReader, RejectsOverflowingOutOfRangeAndMalformedCoordinates) {
     {   // RapidJSON itself rejects a number that overflows a double, as a parse error.
         auto path = uniqueTempPath("huge", ".geojson");
         TempFileGuard guard(path);
@@ -443,5 +479,9 @@ TEST(GeoJsonReader, StreamsTenThousandFeatures) {
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     EXPECT_EQ(seen, kCount);
     EXPECT_EQ(r.featuresRead(), kCount);
-    EXPECT_LT(ms, 1000) << "reading took " << ms << " ms";
+#ifdef NDEBUG
+    EXPECT_LT(ms, 1000) << "reading took " << ms << " ms"; // Debug iterator checks are far slower
+#else
+    (void)ms;
+#endif
 }

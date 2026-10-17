@@ -13,6 +13,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <locale>
 #include <new>
@@ -54,8 +55,10 @@ struct PendingFeature {
     std::vector<Close> closes; // non-position arrays inside "coordinates", in closing order
     std::string classification;
     std::string layer;
-    std::vector<std::string> names;
+    std::vector<std::string> names;  // top-level scalar properties
     std::vector<std::string> values;
+    std::vector<std::string> measurementNames; // "measurements.<key>", appended after the top-level ones
+    std::vector<std::string> measurementValues;
 
     void resetGeometry() {
         hasGeometry = false;
@@ -72,6 +75,8 @@ struct PendingFeature {
         layer.clear();
         names.clear();
         values.clear();
+        measurementNames.clear();
+        measurementValues.clear();
     }
 };
 
@@ -133,6 +138,44 @@ bool overflows(const char* text, size_t len) {
     return magnitude > 0;
 }
 
+#if !(defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L)
+// True when `text` is exactly a JSON number: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+bool isJsonNumber(const char* text, size_t len) {
+    size_t i = 0;
+    const auto digits = [&]() {
+        const size_t from = i;
+        while (i < len && text[i] >= '0' && text[i] <= '9') {
+            ++i;
+        }
+        return i - from;
+    };
+    if (i < len && text[i] == '-') {
+        ++i;
+    }
+    if (i < len && text[i] == '0') {
+        ++i;
+    } else if (digits() == 0) {
+        return false;
+    }
+    if (i < len && text[i] == '.') {
+        ++i;
+        if (digits() == 0) {
+            return false;
+        }
+    }
+    if (i < len && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        if (i < len && (text[i] == '+' || text[i] == '-')) {
+            ++i;
+        }
+        if (digits() == 0) {
+            return false;
+        }
+    }
+    return i == len;
+}
+#endif
+
 // Converts a JSON number independently of the C locale. Overflow gives
 // +-infinity and underflow gives zero, as strtod would.
 double parseNumber(const char* text, size_t len) {
@@ -151,10 +194,13 @@ double parseNumber(const char* text, size_t len) {
     std::istringstream in(std::string(text, len));
     in.imbue(std::locale::classic());
     double value = 0.0;
-    in >> value; // on a range error the stream stores +-max or a value near zero
-    if (in.fail() && overflows(text, len)) {
+    if (!isJsonNumber(text, len)) {
+        return std::numeric_limits<double>::quiet_NaN(); // as from_chars' invalid_argument
+    }
+    in >> value;
+    if (in.fail()) { // a well-formed number that failed is out of range
         const double sign = (len > 0 && text[0] == '-') ? -1.0 : 1.0;
-        return sign * std::numeric_limits<double>::infinity();
+        return overflows(text, len) ? sign * std::numeric_limits<double>::infinity() : 0.0;
     }
     return value;
 #endif
@@ -336,9 +382,10 @@ private:
         return true;
     }
 
-    void property(std::string name, const char* s, size_t len) {
-        pending.names.push_back(std::move(name));
-        pending.values.emplace_back(s, len);
+    static void property(std::vector<std::string>& names, std::vector<std::string>& values, std::string name,
+                         const char* s, size_t len) {
+        names.push_back(std::move(name));
+        values.emplace_back(s, len);
     }
 
     bool scalar(Scalar kind, const char* s, size_t len) {
@@ -388,7 +435,7 @@ private:
                     pending.layer.assign(s, len);
                 }
             } else if (kind != Scalar::Null) {
-                property(key_, s, len);
+                property(pending.names, pending.values, key_, s, len);
             }
             break;
         case Ctx::Classification:
@@ -398,7 +445,7 @@ private:
             break;
         case Ctx::Measurements:
             if (kind != Scalar::Null) {
-                property("measurements." + key_, s, len);
+                property(pending.measurementNames, pending.measurementValues, "measurements." + key_, s, len);
             }
             break;
         }
@@ -520,6 +567,9 @@ public:
         current.geometry = std::move(geometry);
         current.classification.swap(f.classification);
         current.layer.swap(f.layer);
+        // Top-level properties first, then measurements, whatever their document order.
+        std::move(f.measurementNames.begin(), f.measurementNames.end(), std::back_inserter(f.names));
+        std::move(f.measurementValues.begin(), f.measurementValues.end(), std::back_inserter(f.values));
         current.names.swap(f.names);
         current.values.swap(f.values);
         return true;
