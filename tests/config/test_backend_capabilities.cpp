@@ -8,7 +8,6 @@
 
 #include <array>
 #include <cstdint>
-#include <cstdlib>
 
 using slideio::processor::BackendCapabilities;
 using slideio::processor::DataType;
@@ -24,12 +23,14 @@ constexpr std::array<DataType, 11> kAllTypes = {
 
 } // namespace
 
-TEST(BackendCapabilities, ReportsTheResolvedOpenCv) {
+// The expected version is the conanfile.py pin, read independently of the
+// build's find_package result (tests/config/CMakeLists.txt).
+TEST(BackendCapabilities, ReportsThePinnedOpenCv) {
     const BackendCapabilities& b = BackendCapabilities::instance();
     EXPECT_EQ(&b, &BackendCapabilities::instance());
     EXPECT_STREQ(b.backendName(), "OpenCV");
-    EXPECT_STREQ(b.backendVersion(), SLIDEIO_PROCESSOR_TEST_OPENCV_VERSION);
-    EXPECT_EQ(b.backendMajorVersion(), std::atoi(SLIDEIO_PROCESSOR_TEST_OPENCV_VERSION));
+    EXPECT_STREQ(b.backendVersion(), SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_VERSION);
+    EXPECT_EQ(b.backendMajorVersion(), SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_MAJOR);
 }
 
 TEST(BackendCapabilities, SupportedAndStorageOnlyPartitionAllTypes) {
@@ -53,10 +54,11 @@ TEST(BackendCapabilities, OpenCv4LacksExactlyTheThreeWideIntegers) { // UR-BLD-4
     EXPECT_EQ(detail::backendTypesForOpenCvMajor(6).count(), 11);
 }
 
-TEST(BackendCapabilities, InstanceMatchesTheRuleForItsMajor) {
+TEST(BackendCapabilities, InstanceMatchesTheRuleForThePinnedMajor) { // UR-BLD-4
     const BackendCapabilities& b = BackendCapabilities::instance();
-    const DataTypeSet rule = detail::backendTypesForOpenCvMajor(b.backendMajorVersion());
-    for (DataType t : kAllTypes) {
-        EXPECT_EQ(b.supports(t), rule.contains(t));
-    }
+    const bool wideIntegers = SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_MAJOR >= 5;
+    EXPECT_EQ(b.supports(DataType::UInt32), wideIntegers);
+    EXPECT_EQ(b.supports(DataType::Int64), wideIntegers);
+    EXPECT_EQ(b.supports(DataType::UInt64), wideIntegers);
+    EXPECT_EQ(b.supportedTypes().count(), wideIntegers ? 11 : 8);
 }

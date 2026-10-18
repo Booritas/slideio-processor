@@ -31,7 +31,7 @@ class SLIDEIO_PROCESSOR_DATA_EXPORTS Configuration {
 public:
     /**
      * @brief Builds a Configuration holding the documented defaults.
-     * @note The worker count is read from the hardware when this runs.
+     * @note The worker count is read from the hardware once per process.
      * @throws std::bad_alloc When memory is exhausted.
      */
     Configuration();
@@ -44,8 +44,7 @@ public:
     /**
      * @brief Moves a configuration; the source then reads as defaults().
      * @param other The configuration to move from.
-     * @throws Nothing. A failure to allocate the replacement state of the source
-     * is fatal and calls std::terminate.
+     * @throws Nothing. Never allocates.
      */
     Configuration(Configuration&& other) noexcept;
     /**
@@ -60,8 +59,7 @@ public:
      * Never swaps.
      * @param other The configuration to move from.
      * @return This object.
-     * @throws Nothing. A failure to allocate the replacement state of the source
-     * is fatal and calls std::terminate.
+     * @throws Nothing. Never allocates.
      */
     Configuration& operator=(Configuration&& other) noexcept;
     /// Destroys the configuration.
@@ -81,9 +79,9 @@ public:
      * @return A reference that stays valid until the process exits and keeps
      * reading the values it was published with, even after setProcessDefault().
      * Equals defaults() until something is set.
-     * @throws Nothing. Declared noexcept although the first call allocates and
-     * every call takes a mutex: failure to allocate or to lock is fatal and calls
-     * std::terminate.
+     * @throws Nothing. Never locks. Declared noexcept although the first use of the
+     * process default in the process allocates it: failure to allocate is fatal and
+     * calls std::terminate.
      * @par Thread-safety
      * ThreadSafe.
      */
@@ -228,8 +226,7 @@ public:
     /**
      * @brief Moves a builder; the source then reads as a default-constructed one.
      * @param other The builder to move from.
-     * @throws Nothing. A failure to allocate the replacement state of the source
-     * is fatal and calls std::terminate.
+     * @throws Nothing. Never allocates.
      */
     ConfigurationBuilder(ConfigurationBuilder&& other) noexcept;
     /**
@@ -244,8 +241,7 @@ public:
      * one. Never swaps.
      * @param other The builder to move from.
      * @return This object.
-     * @throws Nothing. A failure to allocate the replacement state of the source
-     * is fatal and calls std::terminate.
+     * @throws Nothing. Never allocates.
      */
     ConfigurationBuilder& operator=(ConfigurationBuilder&& other) noexcept;
     /// Destroys the builder.

@@ -82,6 +82,9 @@ void StreamLogSink::write(LogLevel level, const char* message) {
         std::fputs(line.c_str(), stderr);
         std::fflush(stderr);
     } else {
+        // A failed write leaves the stream's error state set, which would drop
+        // every later line; clear it so logging resumes once the file recovers.
+        file_.clear();
         file_.write(line.data(), static_cast<std::streamsize>(line.size()));
         file_.flush();
     }

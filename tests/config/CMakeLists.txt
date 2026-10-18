@@ -14,8 +14,19 @@ target_link_libraries(slideio_processor_config_tests PRIVATE
 target_include_directories(slideio_processor_config_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
+# The expected OpenCV version comes from the conanfile pin, not from
+# find_package: the tests then catch a wrong package resolved, or a wrong field
+# substituted into backend_version.hpp, instead of agreeing with it.
+file(STRINGS ${PROJECT_SOURCE_DIR}/conanfile.py OPENCV_REQUIREMENT
+    REGEX "requires\\(\"opencv/[0-9.]+\"\\)")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" PINNED_OPENCV_VERSION "${OPENCV_REQUIREMENT}")
+string(REGEX MATCH "^[0-9]+" PINNED_OPENCV_MAJOR "${PINNED_OPENCV_VERSION}")
+if(NOT PINNED_OPENCV_MAJOR)
+    message(FATAL_ERROR "tests/config: no opencv/<x.y.z> requirement found in conanfile.py")
+endif()
 target_compile_definitions(slideio_processor_config_tests PRIVATE
-    SLIDEIO_PROCESSOR_TEST_OPENCV_VERSION="${OpenCV_VERSION}")
+    SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_VERSION="${PINNED_OPENCV_VERSION}"
+    SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_MAJOR=${PINNED_OPENCV_MAJOR})
 # A hung waiter fails after 60 s instead of blocking the run.
 gtest_discover_tests(slideio_processor_config_tests TEST_PREFIX "config." PROPERTIES TIMEOUT 60)
 

@@ -167,6 +167,26 @@ TEST(Configuration, MovedFromReadsAsDefaults) {
     EXPECT_TRUE(b.equals(Configuration::defaults())); // NOLINT(bugprone-use-after-move)
 }
 
+TEST(Configuration, MovedFromObjectsStayUsable) {
+    Configuration a = ConfigurationBuilder().workerCount(2).build();
+    Configuration taken(std::move(a));
+    EXPECT_TRUE(Configuration(a).equals(Configuration::defaults())); // NOLINT(bugprone-use-after-move)
+    EXPECT_TRUE(ConfigurationBuilder(a).build().equals(Configuration::defaults()));
+    a = taken;
+    EXPECT_EQ(a.workerCount(), 2);
+
+    ConfigurationBuilder b;
+    b.workerCount(3).logFilePath(nullptr);
+    ConfigurationBuilder holder(std::move(b));
+    EXPECT_TRUE(ConfigurationBuilder(b).build().equals(Configuration::defaults())); // NOLINT(bugprone-use-after-move)
+    b.workerCount(5).tileSize(7, 9);
+    const Configuration rebuilt = b.build();
+    EXPECT_EQ(rebuilt.workerCount(), 5);
+    EXPECT_EQ(rebuilt.tileWidth(), 7);
+    EXPECT_EQ(rebuilt.tileHeight(), 9);
+    EXPECT_THROW(holder.build(), InvalidArgumentError);
+}
+
 TEST_F(ConfigurationProcessDefault, EqualsDefaultsUntilSet) {
     EXPECT_TRUE(Configuration::processDefault().equals(Configuration::defaults()));
 }

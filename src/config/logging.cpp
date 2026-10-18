@@ -12,12 +12,24 @@ namespace slideio::processor {
 
 namespace {
 
-// Serialises reconfigurations against each other only. It does not make the sink
-// and level change atomically for readers: a concurrent logMessage can briefly
-// see the new sink with the old level.
+// Serialises reconfigurations against each other only; readers never take it.
 std::mutex& configureMutex() {
     static std::mutex mutex;
     return mutex;
+}
+
+// The sink and the level cannot change atomically for a concurrent logMessage, so
+// a raised threshold goes in before the sink changes and a lowered one after: the
+// new sink is never handed a level below its own, only a message that had already
+// passed the old check when the switch began. The caller holds configureMutex().
+void install(LogSinkPtr sink, LogLevel level) noexcept {
+    if (level > logLevel()) {
+        setLogLevel(level);
+        setLogSink(std::move(sink));
+    } else {
+        setLogSink(std::move(sink));
+        setLogLevel(level);
+    }
 }
 
 } // namespace
@@ -27,8 +39,7 @@ void configureLogging(const Configuration& configuration) {
         // Build the sink first: if the file will not open, nothing has changed.
         LogSinkPtr sink = std::make_shared<detail::StreamLogSink>(configuration.logFilePath());
         std::lock_guard<std::mutex> lock(configureMutex());
-        setLogSink(std::move(sink));
-        setLogLevel(configuration.logLevel());
+        install(std::move(sink), configuration.logLevel());
     } catch (const ProcessorError&) {
         throw;
     } catch (const std::bad_alloc&) {
@@ -44,8 +55,7 @@ void configureLogging(LogSinkPtr sink, LogLevel level) {
     }
     try {
         std::lock_guard<std::mutex> lock(configureMutex());
-        setLogSink(std::move(sink));
-        setLogLevel(level);
+        install(std::move(sink), level);
     } catch (const std::bad_alloc&) {
         throw;
     } catch (const std::exception& e) { // a failed lock (std::system_error)
