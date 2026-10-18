@@ -4,7 +4,7 @@
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/core/provenance.hpp>
 
-#include "temp_path.hpp"
+#include "common/temp_path.hpp"
 
 #include <gtest/gtest.h>
 

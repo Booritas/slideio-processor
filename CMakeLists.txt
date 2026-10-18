@@ -19,6 +19,8 @@ else()
 endif()
 
 find_package(slideio 2.10 REQUIRED)
+# OpenCV is used for its version only: nothing links it (see src/CMakeLists.txt).
+find_package(OpenCV 4 REQUIRED)
 find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
 
