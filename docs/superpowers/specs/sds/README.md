@@ -72,6 +72,14 @@ implementation.
 | 6 | Is `Float16` computed natively or promoted? | 02 §2.3, 06 |
 | 15 | Canny's hysteresis against UR-PIX-3's untolerance'd acceptance | 06 §6.4 |
 
+Two design questions were raised while `core` was implemented. They come from
+the SDS rather than from `requirements.md`, so they carry no question number:
+
+| Question | Touches |
+|---|---|
+| At coarse levels the mask dilation is rounded up to whole level pixels, so the widening in level-0 pixels depends on the level | 01 §1.17 |
+| `MemoryBudget::reserveOrWait` gives no fairness guarantee, so a large request can starve behind smaller ones | 01 §1.11 |
+
 Questions 3, 4, 7, 8, 9 and 10 were open when this document was written and are
 now resolved: 3 by the scene-source extension seam, 4 by the spike plus the
 physical-key change of 03 §3.12, 7 by the twenty-two-operation catalog of 06

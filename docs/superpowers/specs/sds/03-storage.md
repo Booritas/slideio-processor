@@ -79,6 +79,16 @@ external locking. Sub-object references remain valid until `close()`.
 the store's version and the library's when they are incompatible, rather than
 misreading the file (UR-RES-12).
 
+**`provenance()` must restore what `core::Provenance` cannot.** The shipped
+`Provenance` is write-side only: `libraryVersion()` is the running library's
+and `createdAtUnixMs()` the object's construction time, with no setter for
+either (`01-core.md` 1.13). A `Provenance` built here from the stored row would
+therefore report the reading library's version and the time of the read, not
+the store's. `storage` must provide a route that returns the persisted version
+and creation time — a restoring constructor or factory in `core`, or a
+store-side record type — and until it does, the persisted JSON is the source of
+truth for them (UR-RES-11).
+
 Opened in WAL mode with one connection per accessing thread. That is what makes
 UR-OBS-1 achievable: a `ReadOnly` store in a viewer process reads concurrently
 with a `ReadWrite` store in a script process, neither blocking the other, each
@@ -357,6 +367,15 @@ An object read from the store and emitted again is attributed to the emitting
 stage, not the original one. That is the required behaviour, not a caveat: the
 new row is this stage's output and must be discarded with it.
 
+**Stamping the read side is this module's to build.** `core` stores the stage
+field on `ObjectRecord` but exposes no member that writes it, and in the
+shipped `core` `stage()` returns an invalid id on every record (`01-core.md`
+1.6). `storage` must add the route by which `Cursor::current()` and
+`ObjectStore::get` deliver records whose `stage()` is the producing stage —
+without a public setter, which would reopen the two-sources-of-truth problem
+1.6 closes. Until it exists, nothing a store returns can answer "which stage
+produced this object" through the record.
+
 `query` honours the `StageVisibility` of the query: `CompletedOnly` — the
 default — filters to objects of completed stages, so a later stage never sees
 another's partial output and UR-STG-5 holds by query filter rather than by
@@ -607,6 +626,17 @@ present, together with the asserted ones, and no precedence rule is needed
 because none of them overrides another. What changed is the cardinality a
 *consumer* sees — `hasLabel()` on a record still answers for the producer
 alone, and the effective set is what queries and exports use.
+
+**The effective set must reach raster sources too.** `core`'s
+`makeLayerRasterSource` with `LayerRasterContent::Label` writes each record's
+own row label, because an `ObjectSource` delivers `ObjectRecord`s and the
+effective set is not reachable through that interface (`01-core.md` 1.9). A
+label asserted by annotation therefore never appears in a label raster built
+from a store. `storage` must close that gap — by a store-backed raster source
+that reads `AnnotationStore`, or by an extension of `ObjectSource` that carries
+the effective set — and must keep the rule that the smallest `ObjectId` wins
+where objects overlap, and a fixed choice among an object's several labels,
+so the raster stays identical across runs (UR-QA-3).
 
 **Two deletes, and they are deliberately not symmetric.** `discardStage`
 (3.5) removes a stage's objects, and annotations on a removed object go with
@@ -1013,6 +1043,17 @@ though no stage produced them (UR-RES-13).
 
 `importRoiPolygon` is the UR-IMG-5 path: a QuPath-exported annotation becomes a
 processing ROI without any store being involved.
+
+**Two things `core::GeoJsonReader` leaves to this module.** First, QuPath
+before 0.3 wrote `properties.measurements` as an array of `{name, value}`
+objects rather than an object; the reader skips arrays, so such a file imports
+with no measurements and no diagnostic (`01-core.md` 1.14). If import is to
+support those files, `storage` must handle that form itself — through a
+reader extension or a pre-pass — or at least report the skipped measurements in
+`ImportResult`. Second, the reader does not expose a file's `provenance`
+member, and `core::Provenance` cannot hold a stored version or creation time
+(3.2); if import is to preserve the provenance of the file it reads, restoring
+it is this module's obligation, by the same route 3.2 requires.
 
 ## 3.12 Schema and format
 
