@@ -116,7 +116,7 @@ classDiagram
     }
 
     class DataTypeSet {
-        <<Immutable>>
+        <<ThreadCompatible>>
         +all() DataTypeSet
         +add(DataType) DataTypeSet
         +contains(DataType) bool
@@ -317,6 +317,7 @@ classDiagram
     class TileError
     class CancelledError
     class IoError
+    class InternalError
 
     ProcessorError <|-- InvalidArgumentError
     ProcessorError <|-- UnsupportedDataTypeError
@@ -326,6 +327,7 @@ classDiagram
     ProcessorError <|-- TileError
     ProcessorError <|-- CancelledError
     ProcessorError <|-- IoError
+    ProcessorError <|-- InternalError
     ProcessorError ..> ErrorCode
 ```
 
@@ -498,7 +500,7 @@ classDiagram
     }
 
     class CancellationToken {
-        <<ThreadSafe>>
+        <<ThreadCompatible>>
         +isCancelled() bool
         +throwIfCancelled() void
     }
@@ -509,7 +511,7 @@ classDiagram
     }
 
     class LogSink {
-        <<interface, ThreadSafe>>
+        <<interface, implementations must be thread-safe>>
         +write(LogLevel, cstr message) void
     }
 
@@ -534,7 +536,7 @@ classDiagram
     class GeoJsonWriter {
         <<ThreadConfined>>
         +begin(Provenance) void
-        +writeFeature(ObjectRecord, cstr layer, cstr label, bool isLocal) void
+        +writeFeature(ObjectRecord, cstr layer, cstr[] labels, bool[] isLocal, int32_t n) void
         +end() void
         +featuresWritten() int64_t
     }
@@ -543,12 +545,14 @@ classDiagram
         <<free functions>>
         +makeMemoryBudget(int64_t) MemoryBudgetPtr
         +setLogSink(LogSinkPtr) void
+        +exchangeLogSink(LogSinkPtr) LogSinkPtr
         +setLogLevel(LogLevel) void
         +logMessage(LogLevel, cstr fmt) void
         +libraryVersion() cstr
         +rasteriseInto(RasterMask, Polygon) void
         +dilateMask(RasterMask, int32_t radius) void
         +makeLayerMaskSource(ObjectSource, LayerId, double) TileMaskSourcePtr
+        +makeLayerRasterSource(ObjectSource, LayerId, LayerRasterContent) TileRasterSourcePtr
     }
 
     class RasterMask {

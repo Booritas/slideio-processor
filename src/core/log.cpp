@@ -37,14 +37,17 @@ LogSinkPtr currentSink() {
 
 } // namespace
 
-void setLogSink(LogSinkPtr sink) noexcept {
+LogSinkPtr exchangeLogSink(LogSinkPtr sink) noexcept {
     LogState& s = state();
-    {
-        std::lock_guard<std::mutex> lock(s.mutex);
-        s.sink.swap(sink);
-    }
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.sink.swap(sink);
+    return sink;
+}
+
+void setLogSink(LogSinkPtr sink) noexcept {
     // The previous sink is released here, outside the lock, so its destructor
     // may log.
+    exchangeLogSink(std::move(sink));
 }
 
 void setLogLevel(LogLevel level) noexcept { state().level.store(level); }

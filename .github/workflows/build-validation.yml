@@ -83,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.conan2
-          key: conan-${{ matrix.os }}-${{ hashFiles('conanfile.txt', 'extern/slideio/conanfile.txt', 'extern/slideio/src/**/conanfile.py', 'extern/slideio/conan/**') }}
+          key: conan-${{ matrix.os }}-${{ hashFiles('conanfile.py', 'extern/slideio/conanfile.txt', 'extern/slideio/src/**/conanfile.py', 'extern/slideio/conan/**') }}
           restore-keys: |
             conan-${{ matrix.os }}-
 

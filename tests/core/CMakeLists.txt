@@ -50,3 +50,7 @@ add_test(NAME public_headers_abi
 # Header-only use of slideio enums (mapping test): include directories, never link.
 target_include_directories(slideio_processor_core_tests PRIVATE
     $<TARGET_PROPERTY:slideio::core,INTERFACE_INCLUDE_DIRECTORIES>)
+
+# Shared test helpers (tests/common).
+target_include_directories(slideio_processor_core_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests)

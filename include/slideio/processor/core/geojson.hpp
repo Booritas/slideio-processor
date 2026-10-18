@@ -41,8 +41,9 @@ namespace slideio::processor {
  *
  * Feature indices in messages are 0-based positions in the feature list,
  * counting skipped features. A geometry error (a ring with fewer than 3
- * distinct points, a non-finite or out-of-range coordinate, or malformed
- * coordinate nesting) throws from next() but leaves the reader usable: the
+ * distinct points, a ring whose points all lie on one line, a polygon whose
+ * extent does not fit int64_t, a non-finite or out-of-range coordinate, or
+ * malformed coordinate nesting) throws from next() but leaves the reader usable: the
  * next call continues with the following feature. A parse or read error is
  * final: every later next() throws again.
  *
@@ -102,8 +103,9 @@ public:
      * @throws InvalidArgumentError When the JSON is malformed or the top-level
      * value is not an object or an array (the message names the path, the byte
      * offset and the parser's error text); when a ring has fewer than 3
-     * distinct points, a coordinate is not finite or does not fit int64_t, or
-     * the coordinates are malformed (the message names the feature's index);
+     * distinct points or all its points lie on one line, the polygon's extent
+     * does not fit int64_t (Polygon::addRing), a coordinate is not finite or
+     * does not fit int64_t, or the coordinates are malformed (the message names the feature's index);
      * after an earlier parse or read error; or on a moved-from reader.
      * @throws IoError When reading the file fails.
      * @throws InternalError When the parser fails for any other reason.

@@ -70,9 +70,13 @@ ctest --test-dir build -C Release --output-on-failure
 
 Run a single test with `-R <regex>`.
 
+OpenCV comes in through Conan now, but no library links it yet. The first
+`./build.sh -c debug` may build OpenCV Debug from source when the Conan cache lacks it.
+
 ## Documentation
 
-`include/slideio/processor/core/core.hpp` includes the whole `core` module. API
+`include/slideio/processor/core/core.hpp` includes the whole `core` module, and
+`include/slideio/processor/config/config.hpp` the whole `config` module. API
 documentation is generated from the headers with Doxygen; the `docs` target
 exists only when Doxygen is installed:
 

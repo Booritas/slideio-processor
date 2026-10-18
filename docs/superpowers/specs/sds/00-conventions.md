@@ -112,10 +112,20 @@ return sentinels.
 
 Exceptions only. No error codes, no output status parameters, no silent
 failure. Every exception thrown across the public boundary derives from
-`ProcessorError` (UR-API-5), and nothing else escapes — internal exceptions
-from SQLite, OpenCV or the standard library are caught at the boundary and
-rethrown as the appropriate `ProcessorError` subtype with the original message
-preserved as the cause.
+`ProcessorError` (UR-API-5), with one exception: `std::bad_alloc`. It is the
+only non-`ProcessorError` that may cross a public boundary, it is always listed
+in `@throws` wherever it can occur, and it is never wrapped — translating an
+allocation failure would itself need to allocate, and a caller that handles
+memory exhaustion already catches it by its standard type. Every other
+exception — from SQLite, OpenCV or the standard library (`std::system_error`,
+`std::filesystem::filesystem_error`, `std::ios_base::failure`,
+`std::length_error` and so on) — is caught at the boundary and translated, with
+its `what()` preserved as `cause()`: to `IoError` when it is an input/output
+failure, and to `InternalError` for anything else.
+
+A `noexcept` function cannot report a failure, so where its only possible one
+is a mutex error — `setLogSink`'s lock (`01-core.md` 1.15) — that failure is
+documented as fatal: `std::terminate` is called.
 
 Every error carries actionable context — stage, operation, tile coordinates,
 underlying cause (UR-EXE-5). Fields not applicable read as empty string or
@@ -144,6 +154,18 @@ Unannotated means ThreadCompatible. `storage` is the module where ThreadSafe
 appears (decision 4); `Cursor` and `EventCursor` are ThreadConfined
 deliberately, so per-thread iteration order stays deterministic.
 
+A class carries one level, not a level per member. In `core` the typed ids
+(`LayerId`, `StageId`, `LabelId`, `RasterId`, `ObjectId`) are Immutable: they
+have no mutating member other than assignment. The other small value types are
+ThreadCompatible, because they have public data members or a mutating member
+(`DataTypeSet::add`), or because their documented contract makes assignment
+the caller's to serialise: `DataTypeSet`, `Point64`, `Rect64`, `ErrorContext`,
+`Measurement`, `MeasurementBound` and `BlockPlane`.
+`CancellationToken` is ThreadCompatible as an object, with a note that its
+copies share one atomic flag, so distinct copies may be cancelled and queried
+from any number of threads at once. Builders such as `ObjectQuery` are
+ThreadConfined (C-10).
+
 ## C-8. Ownership and lifetime
 
 - `shared_ptr` returned from a factory: the caller shares ownership.
@@ -155,6 +177,16 @@ deliberately, so per-thread iteration order stays deterministic.
   `ProgressObserver`): the caller owns it and must outlive its registration.
 
 No public API transfers ownership through a raw pointer.
+
+**Moved-from objects.** After move construction *or* move assignment the
+source is in its empty or default state, and every accessor on it is safe.
+Where a class documents a null state (`BlockView`, `RasterMask`), the source
+is null. Move assignment never swaps: the target's old contents are released,
+never handed back to the source, so a moved-from object's state does not
+depend on what it was assigned to. The GeoJSON reader and writer, which hold an
+open file, are the one variation: their `noexcept` accessors still read as
+empty, but every operation on a moved-from one (`next()`, `begin()`,
+`writeFeature()`, `end()`) throws `InvalidArgumentError` (`01-core.md` 1.14).
 
 ## C-9. Naming
 
@@ -186,9 +218,11 @@ ObjectQuery q;
 q.layer(nuclei).intersecting(viewport).visibility(StageVisibility::IncludeInFlight);
 ```
 
-Fluent chains never allocate per call and never throw on the setter — validation
-happens at the terminal operation (`build()`, `run()`, or the call consuming the
-query), so an error names the whole configuration rather than one setter.
+Setters in a fluent chain never validate: the only exception one may throw is
+`std::bad_alloc`, since a setter may allocate (an `ObjectQuery` setter can, to
+store the value behind its pimpl). Validation happens at the terminal operation
+(`build()`, `run()`, or the call consuming the query), so an error names the
+whole configuration rather than one setter.
 
 ## C-11. Const-correctness and `noexcept`
 

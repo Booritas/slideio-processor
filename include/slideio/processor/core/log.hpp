@@ -84,6 +84,25 @@ using LogSinkPtr = std::shared_ptr<LogSink>;
 SLIDEIO_PROCESSOR_DATA_EXPORTS void setLogSink(LogSinkPtr sink) noexcept;
 
 /**
+ * @brief Installs the process-wide sink and returns the one it replaced.
+ *
+ * Use it instead of setLogSink() when the caller holds a lock of its own: the
+ * previous sink is handed back rather than released here, so the caller can let
+ * it go after unlocking, and a sink whose destructor logs or reconfigures logging
+ * cannot re-enter that lock.
+ * @param sink The new sink; null removes it and discards messages.
+ * @return The previous sink, or null when none was installed.
+ * @throws Nothing. As setLogSink(): failure to acquire the library's lock is
+ * fatal and calls std::terminate.
+ * @par Thread-safety
+ * ThreadSafe. A message already being written to the previous sink completes
+ * on it.
+ * @par Requirements
+ * UR-EXE-5 (diagnostics)
+ */
+SLIDEIO_PROCESSOR_DATA_EXPORTS LogSinkPtr exchangeLogSink(LogSinkPtr sink) noexcept;
+
+/**
  * @brief Sets the process-wide threshold.
  * @param level Messages below it are discarded; Off discards all. The default
  * is Warning.
