@@ -38,7 +38,8 @@ public:
     /**
      * @brief Returns the one instance.
      * @return A reference valid for the life of the process; always the same object.
-     * @throws Nothing.
+     * @throws Nothing. Declared noexcept although the first call allocates:
+     * failure to allocate is fatal and calls std::terminate.
      */
     static const BackendCapabilities& instance() noexcept;
 
@@ -76,11 +77,11 @@ public:
      */
     bool supports(DataType type) const noexcept;
 
-    /// Types carried losslessly by the library but not computed natively by
-    /// the backend. Reading, selection, conversion and storage remain lossless
-    /// for these (UR-IMG-10); only algorithms may decline them (UR-IMG-11).
     /**
      * @brief Returns the types carried losslessly but not computed natively.
+     *
+     * Reading, selection, conversion and storage remain lossless for these
+     * (UR-IMG-10); only algorithms may decline them (UR-IMG-11).
      * @return All eleven types minus supportedTypes().
      * @throws Nothing.
      */
