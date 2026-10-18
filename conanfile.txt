@@ -1,0 +1,7 @@
+[requires]
+gtest/1.17.0
+rapidjson/cci.20250205
+
+[generators]
+CMakeDeps
+CMakeToolchain

@@ -53,3 +53,31 @@ git add extern/slideio
 ```
 
 Reinstall SlideIO after moving the pin.
+
+## Building
+
+Conan 2 is required. On this Windows setup the executable is not on `PATH`;
+call it by its full path. SlideIO must already be installed to the local prefix
+(see above).
+
+```sh
+conan install . -of build/conan -s build_type=Release -s compiler.cppstd=17 --build=missing
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan/conan_toolchain.cmake \
+      -DCMAKE_PREFIX_PATH=<absolute path>/build/slideio-install/release
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+Run a single test with `-R <regex>`.
+
+## Documentation
+
+`include/slideio/processor/core/core.hpp` includes the whole `core` module. API
+documentation is generated from the headers with Doxygen; the `docs` target
+exists only when Doxygen is installed:
+
+```sh
+cmake --build build --target docs
+```
+
+Requirement-to-test coverage is in `docs/traceability.md`.

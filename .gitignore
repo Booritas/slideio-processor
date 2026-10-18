@@ -1,5 +1,6 @@
 # Build trees and local installs
 build/
+build-debug/
 out/
 
 # Editor and tool state
@@ -13,3 +14,6 @@ out/
 
 # Third-party papers: cited, not redistributed
 docs/algorithms/*.pdf
+
+# Local CMake presets
+CMakeUserPresets.json

@@ -1,0 +1,11 @@
+# Doxygen configuration for the public API (UR-API-7).
+PROJECT_NAME           = "slideio-processor"
+INPUT                  = include
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp
+EXTRACT_ALL            = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
+OUTPUT_DIRECTORY       = build/docs
+GENERATE_LATEX         = NO
+QUIET                  = YES
