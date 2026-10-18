@@ -1,4 +1,5 @@
 // Requirements: UR-EXE-5
+#include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/config/logging.hpp>
 #include <slideio/processor/core/error.hpp>
 
@@ -46,6 +47,32 @@ TEST_F(ConfigureLogging, CallerSinkAndLevel) {
     EXPECT_NO_THROW(configureLogging(nullptr, LogLevel::Info));
     logMessage(LogLevel::Error, "dropped");
     EXPECT_EQ(sink->got.size(), 1u);
+}
+
+// Reconfigures logging from its destructor, as an owner tearing down its sink might.
+class ReconfiguringSink : public LogSink {
+public:
+    explicit ReconfiguringSink(int* destroyed) : destroyed_(destroyed) {}
+    ~ReconfiguringSink() override {
+        ++*destroyed_;
+        configureLogging(nullptr, LogLevel::Off);
+    }
+    void write(LogLevel, const char*) override {}
+
+private:
+    int* destroyed_;
+};
+
+TEST_F(ConfigureLogging, ReplacedSinkMayReconfigureFromItsDestructor) { // PR #5 review
+    int destroyed = 0;
+    configureLogging(std::make_shared<ReconfiguringSink>(&destroyed), LogLevel::Info);
+    configureLogging(nullptr, LogLevel::Error); // the library held the only reference
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(logLevel(), LogLevel::Off); // the destructor's call ran last
+
+    configureLogging(std::make_shared<ReconfiguringSink>(&destroyed), LogLevel::Info);
+    configureLogging(Configuration::defaults()); // the Configuration overload too
+    EXPECT_EQ(destroyed, 2);
 }
 
 TEST_F(ConfigureLogging, InvalidLevelChangesNothing) {

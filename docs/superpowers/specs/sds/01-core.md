@@ -1336,6 +1336,7 @@ public:
 using LogSinkPtr = std::shared_ptr<LogSink>;
 
 void setLogSink(LogSinkPtr sink) noexcept;
+LogSinkPtr exchangeLogSink(LogSinkPtr sink) noexcept;
 void setLogLevel(LogLevel level) noexcept;
 LogLevel logLevel() noexcept;
 void logMessage(LogLevel level, const char* format, ...)
@@ -1356,7 +1357,11 @@ threshold, which defaults to `Warning`. The sink is called outside the
 library's lock, so a sink may itself log. `setLogLevel` and `logLevel` are a
 lock-free atomic and cannot fail. `setLogSink` swaps the sink under the
 library's lock, and because it is `noexcept` a failure to acquire that lock is
-fatal: `std::terminate` is called (C-6).
+fatal: `std::terminate` is called (C-6). `exchangeLogSink` does the same swap
+but returns the previous sink instead of releasing it, for a caller that holds
+a lock of its own (the `configureLogging` functions in `config`): the caller
+releases it after unlocking, so a sink whose destructor reconfigures logging
+cannot re-enter that lock.
 
 Declared here so every module can log; *configured* by `config`
 (`configureLogging`). That is the whole reason the `config → core` dependency

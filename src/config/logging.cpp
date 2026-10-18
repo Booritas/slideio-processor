@@ -21,15 +21,19 @@ std::mutex& configureMutex() {
 // The sink and the level cannot change atomically for a concurrent logMessage, so
 // a raised threshold goes in before the sink changes and a lowered one after: the
 // new sink is never handed a level below its own, only a message that had already
-// passed the old check when the switch began. The caller holds configureMutex().
-void install(LogSinkPtr sink, LogLevel level) noexcept {
+// passed the old check when the switch began. The caller holds configureMutex()
+// and releases the returned previous sink only after unlocking it: that sink's
+// destructor may call configureLogging(), which would otherwise re-enter the lock.
+LogSinkPtr install(LogSinkPtr sink, LogLevel level) noexcept {
+    LogSinkPtr previous;
     if (level > logLevel()) {
         setLogLevel(level);
-        setLogSink(std::move(sink));
+        previous = exchangeLogSink(std::move(sink));
     } else {
-        setLogSink(std::move(sink));
+        previous = exchangeLogSink(std::move(sink));
         setLogLevel(level);
     }
+    return previous;
 }
 
 } // namespace
@@ -38,8 +42,9 @@ void configureLogging(const Configuration& configuration) {
     try {
         // Build the sink first: if the file will not open, nothing has changed.
         LogSinkPtr sink = std::make_shared<detail::StreamLogSink>(configuration.logFilePath());
+        LogSinkPtr previous; // declared before the lock, so released after it
         std::lock_guard<std::mutex> lock(configureMutex());
-        install(std::move(sink), configuration.logLevel());
+        previous = install(std::move(sink), configuration.logLevel());
     } catch (const ProcessorError&) {
         throw;
     } catch (const std::bad_alloc&) {
@@ -54,8 +59,9 @@ void configureLogging(LogSinkPtr sink, LogLevel level) {
         throw InvalidArgumentError("configureLogging: level must be Trace..Off");
     }
     try {
+        LogSinkPtr previous; // declared before the lock, so released after it
         std::lock_guard<std::mutex> lock(configureMutex());
-        install(std::move(sink), level);
+        previous = install(std::move(sink), level);
     } catch (const std::bad_alloc&) {
         throw;
     } catch (const std::exception& e) { // a failed lock (std::system_error)

@@ -31,6 +31,18 @@ protected:
 
 } // namespace
 
+TEST_F(LogTest, ExchangeReturnsThePreviousSink) {
+    auto first = std::make_shared<CaptureSink>();
+    auto second = std::make_shared<CaptureSink>();
+    EXPECT_EQ(exchangeLogSink(first), nullptr);
+    EXPECT_EQ(exchangeLogSink(second), first);
+    setLogLevel(LogLevel::Info);
+    logMessage(LogLevel::Info, "to second");
+    EXPECT_TRUE(first->got.empty());
+    ASSERT_EQ(second->got.size(), 1u);
+    EXPECT_EQ(exchangeLogSink(nullptr), second);
+}
+
 TEST_F(LogTest, LevelFilterAndFormatting) {
     auto s = std::make_shared<CaptureSink>();
     setLogSink(s);

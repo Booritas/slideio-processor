@@ -545,6 +545,7 @@ classDiagram
         <<free functions>>
         +makeMemoryBudget(int64_t) MemoryBudgetPtr
         +setLogSink(LogSinkPtr) void
+        +exchangeLogSink(LogSinkPtr) LogSinkPtr
         +setLogLevel(LogLevel) void
         +logMessage(LogLevel, cstr fmt) void
         +libraryVersion() cstr
