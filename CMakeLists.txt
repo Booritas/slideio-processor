@@ -20,7 +20,12 @@ endif()
 
 find_package(slideio 2.10 REQUIRED)
 # OpenCV is used for its version only: nothing links it (see src/CMakeLists.txt).
-find_package(OpenCV 4 REQUIRED)
+# No version in find_package: the Conan-generated OpenCVConfigVersion.cmake accepts
+# only an exact major match, which would reject OpenCV 5 (UR-BLD-4).
+find_package(OpenCV REQUIRED)
+if(OpenCV_VERSION VERSION_LESS 4)
+  message(FATAL_ERROR "OpenCV 4 or later is required; found ${OpenCV_VERSION}")
+endif()
 find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
 
