@@ -3,6 +3,7 @@ include(GoogleTest)
 add_executable(slideio_processor_config_tests
     test_backend_capabilities.cpp
     test_configuration.cpp
+    test_logging.cpp
     test_standard_vocabulary.cpp
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/config/detail/backend_types.cpp
