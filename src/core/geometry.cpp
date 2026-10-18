@@ -78,7 +78,9 @@ public:
 namespace {
 
 // Shoelace sums of one ring, taken relative to its first vertex so that large
-// coordinates cost no precision.
+// coordinates cost no precision. The differences are taken in int64_t before
+// converting, which addRing()'s extent check makes safe: converting first would
+// collapse adjacent integers at and above 2^53.
 struct RingSums {
     double twiceArea = 0;  // signed
     double cxSum = 0;      // sum of (xi + xj) * cross, relative coordinates
@@ -91,10 +93,10 @@ RingSums sumRing(const Point64* p, int64_t n) {
     for (int64_t i = 0; i < n; ++i) {
         const Point64& a = p[i];
         const Point64& b = p[i + 1 == n ? 0 : i + 1];
-        const double ax = static_cast<double>(a.x) - static_cast<double>(p[0].x);
-        const double ay = static_cast<double>(a.y) - static_cast<double>(p[0].y);
-        const double bx = static_cast<double>(b.x) - static_cast<double>(p[0].x);
-        const double by = static_cast<double>(b.y) - static_cast<double>(p[0].y);
+        const double ax = static_cast<double>(a.x - p[0].x);
+        const double ay = static_cast<double>(a.y - p[0].y);
+        const double bx = static_cast<double>(b.x - p[0].x);
+        const double by = static_cast<double>(b.y - p[0].y);
         const double cross = ax * by - bx * ay;
         s.twiceArea += cross;
         s.cxSum += (ax + bx) * cross;
@@ -333,8 +335,8 @@ Point64 Polygon::centroid() const noexcept {
         }
         const double a = std::fabs(s.twiceArea) / 2;
         const double w = impl_->holes[i] ? -a : a;
-        const double cx = static_cast<double>(p[0].x) - static_cast<double>(ref.x) + s.cxSum / (3 * s.twiceArea);
-        const double cy = static_cast<double>(p[0].y) - static_cast<double>(ref.y) + s.cySum / (3 * s.twiceArea);
+        const double cx = static_cast<double>(p[0].x - ref.x) + s.cxSum / (3 * s.twiceArea);
+        const double cy = static_cast<double>(p[0].y - ref.y) + s.cySum / (3 * s.twiceArea);
         weight += w;
         wx += w * cx;
         wy += w * cy;
@@ -350,21 +352,40 @@ Point64 Polygon::centroid() const noexcept {
         double sx = 0;
         double sy = 0;
         for (int64_t k = 0; k < n; ++k) {
-            sx += static_cast<double>(impl_->points[static_cast<size_t>(k)].x) - static_cast<double>(ref.x);
-            sy += static_cast<double>(impl_->points[static_cast<size_t>(k)].y) - static_cast<double>(ref.y);
+            sx += static_cast<double>(impl_->points[static_cast<size_t>(k)].x - ref.x);
+            sy += static_cast<double>(impl_->points[static_cast<size_t>(k)].y - ref.y);
         }
         mx = sx / static_cast<double>(n);
         my = sy / static_cast<double>(n);
     }
-    return Point64{static_cast<int64_t>(std::llround(static_cast<double>(ref.x) + mx)),
-                   static_cast<int64_t>(std::llround(static_cast<double>(ref.y) + my))};
+    // Round the offset, then add the integer reference: adding ref as a double
+    // first would lose the low bits above 2^53. The centroid lies in the convex
+    // hull, so clamping to the extent only absorbs rounding.
+    const auto place = [](int64_t base, double offset, int64_t lo, int64_t hi) {
+        const double o = std::round(offset);
+        if (!(o >= static_cast<double>(lo - base))) {
+            return lo;
+        }
+        if (!(o <= static_cast<double>(hi - base))) {
+            return hi;
+        }
+        return std::clamp(base + static_cast<int64_t>(o), lo, hi);
+    };
+    return Point64{place(ref.x, mx, impl_->lo.x, impl_->hi.x), place(ref.y, my, impl_->lo.y, impl_->hi.y)};
 }
 
 bool Polygon::contains(Point64 p) const noexcept {
     if (isEmpty()) {
         return false;
     }
-    // Even-odd test at the centre of pixel p; coordinates relative to p.
+    // The centre (p.x + 0.5, p.y + 0.5) is inside the extent only when p is in
+    // [lo, hi) on both axes; past that, nothing contains it and the int64
+    // differences below might overflow.
+    if (p.x < impl_->lo.x || p.x >= impl_->hi.x || p.y < impl_->lo.y || p.y >= impl_->hi.y) {
+        return false;
+    }
+    // Even-odd test at the centre of pixel p; coordinates relative to p, with
+    // the differences taken in int64_t (p and every vertex lie in the extent).
     const double yc = 0.5;
     const double xc = 0.5;
     bool inside = false;
@@ -375,13 +396,13 @@ bool Polygon::contains(Point64 p) const noexcept {
         for (int64_t k = 0; k < n; ++k) {
             const Point64& a = v[k];
             const Point64& b = v[k + 1 == n ? 0 : k + 1];
-            const double ay = static_cast<double>(a.y) - static_cast<double>(p.y);
-            const double by = static_cast<double>(b.y) - static_cast<double>(p.y);
+            const double ay = static_cast<double>(a.y - p.y);
+            const double by = static_cast<double>(b.y - p.y);
             if ((ay <= yc) == (by <= yc)) {
                 continue;
             }
-            const double ax = static_cast<double>(a.x) - static_cast<double>(p.x);
-            const double bx = static_cast<double>(b.x) - static_cast<double>(p.x);
+            const double ax = static_cast<double>(a.x - p.x);
+            const double bx = static_cast<double>(b.x - p.x);
             const double dy = by - ay;
             const double lhs = (xc - ax) * dy;
             const double rhs = (yc - ay) * (bx - ax);

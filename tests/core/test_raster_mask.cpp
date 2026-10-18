@@ -525,3 +525,66 @@ TEST(DilateMask, MatchesBruteForceWhetherOrNotTheRowRingWraps) {
         }
     }
 }
+
+TEST(RasterMask, UnitSquareAtTwoToThe53IsCovered) { // issue #4
+    const int64_t x = int64_t(1) << 53;
+    Point64 v[] = {{x, 0}, {x + 1, 0}, {x + 1, 1}, {x, 1}};
+    Polygon p; p.addRing(v, 4, false);
+    RasterMask m(Rect64{x, 0, 1, 1}, 0, 1.0); rasteriseInto(m, p);
+    EXPECT_EQ(m.setPixelCount(), 1);
+    RasterMask around(Rect64{x - 2, -2, 5, 5}, 0, 1.0); rasteriseInto(around, p);
+    EXPECT_EQ(around.setPixelCount(), 1);
+    EXPECT_TRUE(around.test({x, 0}));
+    std::vector<uint8_t> buf(3 * 3, 0);
+    BlockPlane pl{buf.data(), DataType::Byte, 3, 0};
+    BlockView view(3, 3, Rect64{x - 1, -1, 3, 3}, 0, &pl, 1);
+    rasteriseInto(view, 0, p, 7);
+    EXPECT_EQ(buf, (std::vector<uint8_t>{0, 0, 0, 0, 7, 0, 0, 0, 0}));
+}
+
+TEST(RasterMask, LargeOffsetsMatchTheOriginAtIntegerScales) {
+    // Shifting a polygon by a multiple of the scale shifts its mask by whole level pixels, so
+    // far above 2^53 the mask must equal the one near the origin, pixel for pixel.
+    Point64 v[] = {{1,1},{58,4},{40,40},{4,58},{3,30}};
+    const int64_t d = int64_t(3) * 4 << 57;                            // ~1.7e18, a multiple of 3 and 4
+    std::vector<Point64> shifted;
+    for (const Point64& q : v) shifted.push_back({q.x + d, q.y + d});
+    Polygon nearP, farP;
+    nearP.addRing(v, 5, false); farP.addRing(shifted.data(), 5, false);
+    for (double scale : {1.0, 3.0, 4.0}) {
+        const int64_t n = static_cast<int64_t>(std::ceil(64.0 / scale)) + 2;
+        const int64_t s = d / static_cast<int64_t>(scale);
+        RasterMask a(Rect64{-1, -1, n, n}, 1, scale), b(Rect64{s - 1, s - 1, n, n}, 1, scale);
+        rasteriseInto(a, nearP); rasteriseInto(b, farP);
+        EXPECT_GT(a.setPixelCount(), 0);
+        for (int64_t y = 0; y < n; ++y) for (int64_t x = 0; x < n; ++x)
+            ASSERT_EQ(a.row(y)[x], b.row(y)[x]) << scale << ":" << x << "," << y;
+    }
+}
+
+TEST(RasterMask, SeamAgreementFarFromTheOrigin) {
+    // The seam guarantee must survive the polygon-local frame at a non-dyadic scale.
+    Point64 v[] = {{1,1},{58,4},{40,40},{4,58},{3,30}};
+    const int64_t d = (int64_t(1) << 60) + 12345;
+    std::vector<Point64> shifted;
+    for (const Point64& q : v) shifted.push_back({q.x + d, q.y + d});
+    Polygon p; p.addRing(shifted.data(), 5, false);
+    for (double scale : {3.0, 4.0001}) {
+        // d / scale in double is off by up to ~200 level pixels here, so the region carries a
+        // 256-pixel margin on each side to be sure it holds the whole ring.
+        const int64_t n = static_cast<int64_t>(std::ceil(64.0 / scale)) + 512;
+        const int64_t o = static_cast<int64_t>(std::floor(static_cast<double>(d) / scale)) - 256;
+        const int64_t sx = n / 2 + 1, sy = n / 3 + 1;
+        RasterMask whole(Rect64{o, o, n, n}, 1, scale); rasteriseInto(whole, p);
+        const Rect64 parts[] = {{o, o, sx, sy}, {o + sx, o, n - sx, sy},
+                                {o, o + sy, sx, n - sy}, {o + sx, o + sy, n - sx, n - sy}};
+        int64_t setInParts = 0;
+        for (const Rect64& r : parts) {
+            RasterMask t(r, 1, scale); rasteriseInto(t, p); setInParts += t.setPixelCount();
+            for (int64_t y = r.y; y < r.bottom(); ++y) for (int64_t x = r.x; x < r.right(); ++x)
+                ASSERT_EQ(t.test({x, y}), whole.test({x, y})) << scale << ":" << x << "," << y;
+        }
+        EXPECT_EQ(setInParts, whole.setPixelCount());
+        EXPECT_GT(whole.setPixelCount(), 100);                          // the ring is ~2900 px^2
+    }
+}

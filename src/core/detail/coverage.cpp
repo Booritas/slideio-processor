@@ -9,11 +9,20 @@
 #include <limits>
 #include <vector>
 
-// The conservative even-odd kernel. Everything happens in ABSOLUTE level pixel
-// units, u = x / pixelW and v = y / pixelH, where level pixel (i, j) is the
-// square [i, i+1] x [j, j+1] and its centre is (i+0.5, j+0.5). The grid's
-// integer origin is used only to clip and, at the very end, to turn absolute
-// pixel indices into grid-relative ones (plan ruling: absolute level mapping).
+// The conservative even-odd kernel. Everything happens in level pixel units,
+// u = x / pixelW and v = y / pixelH, where level pixel (i, j) is the square
+// [i, i+1] x [j, j+1] and its centre is (i+0.5, j+0.5) (plan ruling: absolute
+// level mapping).
+//
+// Those units are taken relative to an integer level pixel (shiftX, shiftY)
+// chosen from the POLYGON alone (see LocalAxis): u - shiftX is computed as
+// (x - refX) / pixelW + fracX, with x - refX exact in int64_t and fracX the
+// exact fractional level position of refX. Converting absolute coordinates to
+// double first would collapse adjacent integers at and above 2^53. Because
+// the reference depends on the polygon and the scale only, every grid
+// computes bit-identical local values, and lattice lines stay integers. The
+// grid box is shifted by the same integers, so the kernel below is unchanged
+// and the "absolute" in what follows means "polygon-local".
 //
 // Step 2 (boundary): a pixel is marked when an edge passes through its OPEN
 // interior. The cells are found row by row: the part of the edge inside the
@@ -240,6 +249,71 @@ private:
     std::vector<Crossing> crossings_;
 };
 
+// The error-free sum a + b = s + t (Knuth's TwoSum).
+void twoSum(double a, double b, double& s, double& t) {
+    s = a + b;
+    const double bb = s - a;
+    t = (a - (s - bb)) + (b - bb);
+}
+
+// One axis of the polygon-local frame: level position of x is
+// shift + (x - ref) / pixel + frac, with shift an integer and frac in [0, 1).
+struct LocalAxis {
+    int64_t ref = 0;
+    int64_t shift = 0;
+    double frac = 0.0;
+    double pixel = 1.0;
+
+    double map(int64_t x) const { return static_cast<double>(x - ref) / pixel + frac; }
+};
+
+// Splits ref / pixel into shift + frac exactly enough that frac is accurate to
+// an ulp of 1. Falls back to the absolute mapping (ref 0) when ref / pixel is
+// beyond 2^62 or when the grid box shifted by it would overflow.
+LocalAxis localAxis(int64_t ref, double pixel, int64_t gridLo, int64_t gridHi) {
+    LocalAxis a;
+    a.pixel = pixel;
+    const double qd = std::floor(static_cast<double>(ref) / pixel);
+    constexpr double kLimit = 4611686018427387904.0; // 2^62
+    if (!(std::fabs(qd) < kLimit)) {
+        return a;
+    }
+    // r = ref - q * pixel, exactly enough: ref = H + L with both parts exact
+    // doubles, q * pixel = p + e exactly (fma), and the large terms cancel.
+    const int64_t hi = static_cast<int64_t>(static_cast<uint64_t>(ref) & ~uint64_t{0xFFFFFFFF});
+    const double hd = static_cast<double>(hi), ld = static_cast<double>(ref - hi);
+    const double p = qd * pixel, e = std::fma(qd, pixel, -p);
+    double s1, t1;
+    twoSum(hd, -p, s1, t1);
+    double r = ((s1 + ld) + t1) - e;
+    int64_t q = static_cast<int64_t>(qd);
+    // The rounded quotient can be off by many units for large ref; fold that back.
+    const double k = std::floor(r / pixel);
+    if (k != 0.0 && std::fabs(k) < kLimit) {
+        q += static_cast<int64_t>(k);
+        r = std::fma(-k, pixel, r);
+    }
+    if (r < 0.0) {
+        q -= 1;
+        r += pixel;
+    } else if (r >= pixel) {
+        q += 1;
+        r -= pixel;
+    }
+    const double f = r / pixel;
+    // Shifting the grid box must not overflow.
+    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    const auto subFits = [&](int64_t v) { return q >= 0 ? v >= kMin + q : v <= kMax + q; };
+    if (!(f >= 0.0) || !subFits(gridLo) || !subFits(gridHi)) {
+        return a;
+    }
+    a.ref = ref;
+    a.shift = q;
+    a.frac = f < 1.0 ? f : std::nextafter(1.0, 0.0);
+    return a;
+}
+
 } // namespace
 
 void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
@@ -247,7 +321,16 @@ void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
     if (polygon.isEmpty() || grid.width <= 0 || grid.height <= 0) {
         return;
     }
-    Kernel kernel(grid);
+    // The polygon-local frame: its reference is the polygon's lowest corner, so
+    // every vertex difference x - ref is exact and non-negative (addRing keeps
+    // the extent within int64_t).
+    const Rect64 box = polygon.boundingBox();
+    const LocalAxis ax = localAxis(box.x, grid.pixelW, grid.originLevelX, grid.originLevelX + grid.width);
+    const LocalAxis ay = localAxis(box.y, grid.pixelH, grid.originLevelY, grid.originLevelY + grid.height);
+    PixelGrid local = grid;
+    local.originLevelX = grid.originLevelX - ax.shift;
+    local.originLevelY = grid.originLevelY - ay.shift;
+    Kernel kernel(local);
     std::vector<Point64> points;
     for (int32_t r = 0; r < polygon.ringCount(); ++r) {
         const int64_t n = polygon.ringPointCount(r);
@@ -259,10 +342,9 @@ void forEachCoveredSpan(const Polygon& polygon, const PixelGrid& grid,
         for (int64_t k = 0; k < n; ++k) {
             const Point64& a = points[static_cast<size_t>(k)];
             const Point64& b = points[static_cast<size_t>(k + 1 == n ? 0 : k + 1)];
-            // Absolute level units: the rounding depends on the vertex and the
-            // scale only, never on which grid asked.
-            const Edge e{static_cast<double>(a.x) / grid.pixelW, static_cast<double>(a.y) / grid.pixelH,
-                         static_cast<double>(b.x) / grid.pixelW, static_cast<double>(b.y) / grid.pixelH};
+            // Polygon-local level units: the rounding depends on the vertex, the
+            // polygon and the scale only, never on which grid asked.
+            const Edge e{ax.map(a.x), ay.map(a.y), ax.map(b.x), ay.map(b.y)};
             kernel.boundary(e);
             kernel.crossings(e);
         }

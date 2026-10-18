@@ -20,9 +20,10 @@ inline constexpr double kMinLevelScale = 1e-6;
 /// level pixels originLevelX <= I < originLevelX + width (and likewise for J);
 /// grid pixel (i, j) is level pixel (originLevelX + i, originLevelY + j).
 ///
-/// The origin is an integer on purpose: the kernel maps vertices as x / pixelW
-/// with no origin term, so the rounding is identical for every window and two
-/// windows sharing a seam agree on it at any scale. Callers supply:
+/// The origin is an integer on purpose: the kernel maps vertices with no
+/// origin term (relative to a reference taken from the polygon, never from the
+/// window), so the rounding is identical for every window and two windows
+/// sharing a seam agree on it at any scale. Callers supply:
 /// - RasterMask: originLevel = region.x / region.y, pixelW = pixelH = levelScale.
 /// - BlockView (Task 12): pixelW = slideRect.width / width (likewise H), and
 ///   originLevelX = llround(slideRect.x / pixelW) (likewise Y).

@@ -271,3 +271,34 @@ TEST(Polygon, BoundingBoxCoversEveryRingAndResetsOnClear) {
     Polygon copy(p);
     EXPECT_EQ(copy.boundingBox(), (Rect64{100, 100, 1, 1}));
 }
+
+TEST(Polygon, UnitSquareAtTwoToThe53KeepsItsMeasures) { // issue #4
+    const int64_t x = int64_t(1) << 53;                  // x and x + 1 collapse as doubles
+    Point64 v[] = {{x, 0}, {x + 1, 0}, {x + 1, 1}, {x, 1}};
+    Polygon p;
+    p.addRing(v, 4, false);
+    EXPECT_DOUBLE_EQ(p.area(), 1.0);
+    EXPECT_DOUBLE_EQ(p.perimeter(), 4.0);
+    EXPECT_TRUE(p.contains({x, 0}));
+    EXPECT_FALSE(p.contains({x + 1, 0}));
+    EXPECT_FALSE(p.contains({x - 1, 0}));
+    // A 4x2 rectangle: the centroid (x + 2, 1) needs the low bits too.
+    Point64 r[] = {{x + 1, 0}, {x + 5, 0}, {x + 5, 2}, {x + 1, 2}};
+    Polygon q;
+    q.addRing(r, 4, false);
+    EXPECT_EQ(q.centroid(), (Point64{x + 3, 1}));
+    EXPECT_DOUBLE_EQ(q.area(), 8.0);
+}
+
+TEST(Polygon, ContainsFarFromThePolygonDoesNotOverflow) {
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
+    Polygon p = square(kMax - 10, kMax - 10, 5);
+    EXPECT_TRUE(p.contains({kMax - 8, kMax - 8}));
+    EXPECT_FALSE(p.contains({kMin, kMin}));
+    EXPECT_FALSE(p.contains({0, 0}));
+    Polygon n = square(kMin, kMin, 5);
+    EXPECT_TRUE(n.contains({kMin + 4, kMin}));
+    EXPECT_FALSE(n.contains({kMax, kMax}));
+    EXPECT_EQ(n.centroid(), (Point64{kMin + 3, kMin + 3})); // 2.5 rounds away from zero
+}
