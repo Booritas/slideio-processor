@@ -136,6 +136,10 @@ fi
 # --- 3-4. This project --------------------------------------------------------------
 
 step "Installing Conan dependencies ($build_type)"
+# A fresh machine (a CI runner, a new container) has no default profile yet.
+if ! "$conan" profile path default >/dev/null 2>&1; then
+    "$conan" profile detect
+fi
 "$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 --build=missing
 
 step "Configuring ($build_type)"

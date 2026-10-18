@@ -1,0 +1,131 @@
+name: Build Validation
+
+# Validation builds only: every job builds SlideIO from the extern/slideio
+# submodule, builds this project against it and runs the test suite. Nothing is
+# packaged or published. The platforms follow SlideIO's own CI
+# (extern/slideio/.github/workflows/build-validation.yml and release.yml).
+#
+# A documentation-only change cannot break the build, so it does not start one.
+# GitHub skips the workflow only when *every* changed file matches the list, so a
+# commit touching src/ alongside a README still runs it.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # A cold Conan cache builds SlideIO's dependency graph (OpenCV, ICU, ...)
+    # from source wherever conan center has no binary. A ceiling, not an estimate.
+    timeout-minutes: 180
+
+    strategy:
+      # One platform failing should not hide whether the others build.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-2022
+          # 22.04, as SlideIO's Debian release build uses: it fixes the glibc
+          # floor at 2.35 (Ubuntu 22.04+, Debian 12+).
+          - name: Debian x86_64
+            os: ubuntu-22.04
+          # Named versions rather than macos-latest, so neither job's
+          # architecture changes under us.
+          - name: macOS arm64
+            os: macos-15
+          - name: macOS x86_64
+            os: macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # extern/slideio and its own submodules (jpegxrcodec, pole, the NDPI
+          # forks); SlideIO's configure stops with a FATAL_ERROR without them.
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        # distro is what SlideIO's install.py reads to pick its Conan profile.
+        run: pip install conan distro
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      # SlideIO's Conan profiles pin a compiler version; this rewrites them (and,
+      # on Windows, install.py's CMake generator) to the runner's compiler. It
+      # edits files inside the submodule, which only this job's checkout sees.
+      - name: Sync SlideIO toolchain
+        working-directory: extern/slideio
+        run: python sync-toolchain.py
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan-${{ matrix.os }}-${{ hashFiles('conanfile.txt', 'extern/slideio/conanfile.txt', 'extern/slideio/src/**/conanfile.py', 'extern/slideio/conan/**') }}
+          restore-keys: |
+            conan-${{ matrix.os }}-
+
+      - name: Build
+        shell: bash
+        env:
+          PYTHON: python
+        run: ./build.sh
+
+      - name: Test
+        shell: bash
+        run: ./run-tests.sh
+
+  build-manylinux:
+    name: manylinux_2_28 x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Built inside SlideIO's manylinux image rather than with it as the job's
+      # `container:`: a container job has to host the runner's Node, and this
+      # image exists to be old -- glibc 2.28 is the point of it. The image holds
+      # the toolchain (gcc 14, CMake, git, Python with conan and distro) and a
+      # Conan cache of SlideIO's dependencies, but no sources. The tag is pinned
+      # to the one SlideIO's CI uses, because `latest` on that repository is far
+      # behind the versioned tags.
+      #
+      # safe.directory: the checkout is owned by the runner user, the container
+      # runs as root, and git refuses to touch a repository it does not own.
+      - name: Build and test in the manylinux image
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            booritas/slideio-manylinux_2_28_x86_64:2.10.0 \
+            bash -c '
+              set -euo pipefail
+              git config --global --add safe.directory "*"
+              ./build.sh
+              ./run-tests.sh
+            '
