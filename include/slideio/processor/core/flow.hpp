@@ -273,10 +273,17 @@ using TileMaskSourcePtr = std::shared_ptr<TileMaskSource>;
  * `dilationLevel0Pixels`. The query carries StageVisibility::CompletedOnly, so
  * a restriction never sees a concurrently running stage's partial output.
  *
+ * Each fillMask() call allocates a scratch mask of (W + 2r) x (H + 2r) bytes,
+ * plus a working buffer of W + 2r times min(H + 2r, 2r + 2) bytes, where W x H
+ * is the tile and r = ceil(dilationLevel0Pixels / levelScale) is the radius in
+ * level pixels. The dilation is not capped, so a large one at a fine level costs
+ * memory quadratic in r on every tile; size it for the level it runs at.
+ *
  * The returned source's fillMask() throws InvalidArgumentError for a null
- * mask, a dilated region that overflows int64, or a level-0 query extent
- * outside the supported range; it lets ProcessorError and
- * std::bad_alloc from `source` through, and translates any other exception
+ * mask, a radius r above 2^31 - 1, a dilated region whose coordinates or pixel
+ * count overflow int64, or a level-0 query extent outside the supported range;
+ * it throws std::bad_alloc when the scratch memory cannot be allocated; it lets
+ * ProcessorError and std::bad_alloc from `source` through, and translates any other exception
  * derived from std::exception thrown by `source` to InternalError, with its
  * what() as the cause.
  * @param source The objects; borrowed, must outlive the returned object (C-8).

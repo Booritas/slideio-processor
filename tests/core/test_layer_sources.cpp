@@ -208,3 +208,15 @@ TEST(LayerSources, ForeignExceptionsFromTheSourceAreTranslated) {
     auto ms2 = makeLayerMaskSource(oom, LayerId(1), 0.0);
     EXPECT_THROW(ms2->fillMask(m), std::bad_alloc);
 }
+
+TEST(LayerMaskSource, RadiusPastInt32IsRejectedNotClamped) {
+    FakeObjectSource src({rec(1, 4, 4, 2)});
+    // r = ceil(3e9 / 1) level pixels: clamping to 2^31 - 1 would dilate less than asked.
+    auto ms = makeLayerMaskSource(src, LayerId(1), 3e9);
+    RasterMask m(Rect64{0, 0, 16, 16}, 0, 1.0);
+    EXPECT_THROW(ms->fillMask(m), InvalidArgumentError);
+    // At a coarse enough level the same dilation is a small radius: ceil(3e9 / 1e9) = 3.
+    RasterMask coarse(Rect64{0, 0, 4, 4}, 5, 1e9);
+    EXPECT_NO_THROW(ms->fillMask(coarse));
+    EXPECT_EQ(coarse.setPixelCount(), 16);
+}

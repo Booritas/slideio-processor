@@ -8,6 +8,11 @@
 
 namespace slideio::processor::detail {
 
+/// The smallest level scale (level-0 pixels per level pixel) accepted by
+/// RasterMask and gridOfView. One constant for both, because the kernel's
+/// NaN-free arithmetic relies on every entry point rejecting the same scales.
+inline constexpr double kMinLevelScale = 1e-6;
+
 /// A window of `width` x `height` pixels onto the pixel lattice of one level.
 ///
 /// Level pixel (I, J), in ABSOLUTE level coordinates, is the level-0 square

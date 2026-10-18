@@ -38,7 +38,6 @@ bool floorDiv(int64_t v, double scale, int64_t& out) noexcept {
 }
 
 // Smallest accepted scale: keeps x / scale finite for every int64 x.
-constexpr double kMinScale = 1e-6;
 
 } // namespace
 
@@ -51,7 +50,7 @@ RasterMask::RasterMask(const Rect64& regionAtLevel, int32_t level, double levelS
     if (level < 0) {
         throw InvalidArgumentError("RasterMask: level is negative");
     }
-    if (!std::isfinite(levelScale) || !(levelScale >= kMinScale)) {
+    if (!std::isfinite(levelScale) || !(levelScale >= detail::kMinLevelScale)) {
         throw InvalidArgumentError("RasterMask: levelScale must be finite and at least 1e-6");
     }
     // The region is non-empty, so width and height are positive here.
@@ -265,14 +264,20 @@ void dilateMask(RasterMask& mask, int32_t radius) {
     }
     const int64_t w = mask.regionAtLevel().width, h = mask.regionAtLevel().height;
     const int64_t r = radius;
+    // The vertical window at row y needs horizontal rows y - r - 1 .. y + r, so a
+    // ring of 2r + 2 rows (or all of them, if fewer) holds every live one.
+    const int64_t slots = std::min(h, 2 * r + 2);
     // All working memory first, so a bad_alloc leaves the mask unchanged.
-    std::vector<uint8_t> horizontal(static_cast<size_t>(w * h), 0);
+    std::vector<uint8_t> horizontal(static_cast<size_t>(slots * w), 0);
     std::vector<int64_t> counts(static_cast<size_t>(w), 0);
     std::vector<uint8_t> out(static_cast<size_t>(w), 0);
-    // Horizontal pass: a sliding count of set pixels in [x - r, x + r].
-    for (int64_t y = 0; y < h; ++y) {
+    auto slot = [&](int64_t y) { return horizontal.data() + static_cast<size_t>((y % slots) * w); };
+    // Horizontal pass for row y: a sliding count of set pixels in [x - r, x + r].
+    // Row y is read before the vertical pass overwrites it: rows are written in
+    // order and row y is first needed at output row y - r.
+    auto computeRow = [&](int64_t y) {
         const uint8_t* src = mask.row(y);
-        uint8_t* dst = horizontal.data() + static_cast<size_t>(y * w);
+        uint8_t* dst = slot(y);
         int64_t cnt = 0;
         for (int64_t x = 0; x <= std::min(r, w - 1); ++x) {
             cnt += src[x] != 0;
@@ -288,24 +293,26 @@ void dilateMask(RasterMask& mask, int32_t radius) {
             }
             dst[x] = cnt > 0 ? 255 : 0;
         }
-    }
+    };
     // Vertical pass: per-column counts of set pixels in rows [y - r, y + r].
     auto addRow = [&](int64_t y, int64_t sign) {
-        const uint8_t* src = horizontal.data() + static_cast<size_t>(y * w);
+        const uint8_t* src = slot(y);
         for (int64_t x = 0; x < w; ++x) {
             counts[static_cast<size_t>(x)] += sign * (src[x] != 0);
         }
     };
     for (int64_t y = 0; y <= std::min(r, h - 1); ++y) {
+        computeRow(y);
         addRow(y, 1);
     }
     for (int64_t y = 0; y < h; ++y) {
         if (y > 0) {
-            if (y + r < h) {
-                addRow(y + r, 1);
-            }
             if (y - r - 1 >= 0) {
-                addRow(y - r - 1, -1);
+                addRow(y - r - 1, -1); // before row y + r can reuse its slot
+            }
+            if (y + r < h) {
+                computeRow(y + r);
+                addRow(y + r, 1);
             }
         }
         for (int64_t x = 0; x < w; ++x) {

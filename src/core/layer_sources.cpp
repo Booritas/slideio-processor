@@ -42,22 +42,22 @@ private:
     Cursor* cursor_;
 };
 
-// Drains the cursor of `query` into a vector of records. ProcessorError and
-// std::bad_alloc pass through; any other exception from the (foreign) source
-// is translated to InternalError with what() as the cause (C-6).
-std::vector<ObjectRecord> collect(ObjectSource& source, const ObjectQuery& query) {
+// Calls `visit` with each record the cursor of `query` yields, in cursor
+// order. ProcessorError and std::bad_alloc pass through; any other exception
+// from the (foreign) source is translated to InternalError with what() as the
+// cause (C-6). `visit` must throw only ProcessorError or std::bad_alloc.
+template <typename Visit>
+void forEachRecord(ObjectSource& source, const ObjectQuery& query, Visit&& visit) {
     try {
-        std::vector<ObjectRecord> records;
         CursorPtr cursor = source.query(query);
         if (!cursor) {
             throw InternalError("ObjectSource::query returned a null cursor");
         }
         CursorCloser closer(*cursor);
         while (cursor->next()) {
-            records.push_back(cursor->current());
+            visit(cursor->current());
         }
         closer.close();
-        return records;
     } catch (const ProcessorError&) {
         throw;
     } catch (const std::bad_alloc&) {
@@ -67,6 +67,13 @@ std::vector<ObjectRecord> collect(ObjectSource& source, const ObjectQuery& query
         ctx.cause = e.what();
         throw InternalError("layer source: the ObjectSource failed", ctx);
     }
+}
+
+// Drains the cursor of `query` into a vector of records; see forEachRecord.
+std::vector<ObjectRecord> collect(ObjectSource& source, const ObjectQuery& query) {
+    std::vector<ObjectRecord> records;
+    forEachRecord(source, query, [&](const ObjectRecord& record) { records.push_back(record); });
+    return records;
 }
 
 constexpr double kMaxExtent = 9.2e18; // safely inside int64
@@ -117,11 +124,13 @@ public:
         const Rect64 region = out.regionAtLevel();
         const double scale = out.levelScale();
 
-        // Radius in level pixels, saturated to int32.
+        // Radius in level pixels. A radius past int32 is rejected rather than
+        // clamped, which would silently dilate less than asked.
         const double rd = std::ceil(dilation_ / scale);
-        const int32_t r = rd >= static_cast<double>(std::numeric_limits<int32_t>::max())
-                              ? std::numeric_limits<int32_t>::max()
-                              : static_cast<int32_t>(rd);
+        if (!(rd <= static_cast<double>(std::numeric_limits<int32_t>::max()))) {
+            throw InvalidArgumentError("fillMask: the dilation at this level exceeds 2^31 - 1 level pixels");
+        }
+        const int32_t r = static_cast<int32_t>(rd);
 
         constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
         constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
@@ -143,15 +152,13 @@ public:
             toInt64Ceil(static_cast<double>(scratchRegion.y + scratchRegion.height) * scale);
         const Rect64 level0 = paddedQuery(x0, y0, x1, y1);
 
+        // dilateMask stays inside its region, so dilate a scratch mask with a margin
+        // of r. Coverage is an OR and order-free: rasterise straight from the cursor.
+        RasterMask scratch(scratchRegion, out.level(), scale);
         ObjectQuery query;
         query.layer(layer_).intersecting(level0).visibility(StageVisibility::CompletedOnly);
-        const std::vector<ObjectRecord> records = collect(*source_, query);
-
-        // dilateMask stays inside its region, so dilate a scratch mask with a margin of r.
-        RasterMask scratch(scratchRegion, out.level(), scale);
-        for (const ObjectRecord& record : records) {
-            rasteriseInto(scratch, record.geometry());
-        }
+        forEachRecord(*source_, query,
+                      [&](const ObjectRecord& record) { rasteriseInto(scratch, record.geometry()); });
         dilateMask(scratch, r);
 
         const size_t width = static_cast<size_t>(region.width);

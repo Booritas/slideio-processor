@@ -12,6 +12,7 @@
 #include <chrono>
 #include <clocale>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -485,4 +486,60 @@ TEST(GeoJsonReader, StreamsTenThousandFeatures) {
 #else
     (void)ms;
 #endif
+}
+
+TEST(GeoJsonReader, IntegerCoordinatesBeyondTwoToThe53RoundTripExactly) {
+    auto path = uniqueTempPath("bigint", ".geojson");
+    TempFileGuard guard(path);
+    const int64_t big = (int64_t(1) << 53) + 1;                          // not representable as a double
+    const int64_t low = std::numeric_limits<int64_t>::min();
+    Polygon p;
+    Point64 v[] = {{big, 0}, {big + 2, 0}, {big + 2, 3}};
+    p.addRing(v, 3, false);
+    ObjectRecord rec;
+    rec.setGeometry(p);
+    rec.setLayer(LayerId(1));
+    { GeoJsonWriter w(path.u8string().c_str()); w.begin(Provenance()); w.writeFeature(rec, "cells", nullptr, nullptr, 0); w.end(); }
+    {
+        GeoJsonReader r(path.u8string().c_str());
+        ASSERT_TRUE(r.next());
+        Point64 pts[3];
+        r.geometry().ringPoints(0, pts, 3);
+        EXPECT_EQ(pts[0], v[0]);
+        EXPECT_EQ(pts[1], v[1]);
+        EXPECT_EQ(pts[2], v[2]);
+        EXPECT_EQ(ObjectId::fromAnchor(LayerId(1), r.geometry().anchor()), rec.id());
+    }
+    // int64 min and max as plain integers are exact too; one past max is rejected.
+    writeFile(path, R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[-9223372036854775808,0],[-1,0],[-1,9223372036854775807]]]}})");
+    {
+        GeoJsonReader r(path.u8string().c_str());
+        ASSERT_TRUE(r.next());
+        Point64 pts[3];
+        r.geometry().ringPoints(0, pts, 3);
+        EXPECT_EQ(pts[0], (Point64{low, 0}));
+        EXPECT_EQ(pts[2], (Point64{-1, std::numeric_limits<int64_t>::max()}));
+    }
+    writeFile(path, R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[9223372036854775808,0],[1,1]]]}})");
+    GeoJsonReader r(path.u8string().c_str());
+    EXPECT_THROW(r.next(), InvalidArgumentError);
+}
+
+TEST(GeoJsonReader, CollinearAndOverwideRingsNameTheFeature) {
+    const char* bad[] = {
+        R"([[[0,0],[5,0],[10,0],[0,0]]])",                                     // zero-area ring
+        R"([[[-9000000000000000000,0],[9000000000000000000,0],[0,5]]])",       // extent past int64
+    };
+    for (const char* coords : bad) {
+        auto path = uniqueTempPath("ring", ".geojson");
+        TempFileGuard guard(path);
+        writeFile(path, std::string(R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":)") + coords + "}}");
+        GeoJsonReader r(path.u8string().c_str());
+        try {
+            r.next();
+            ADD_FAILURE() << "expected InvalidArgumentError for " << coords;
+        } catch (const InvalidArgumentError& e) {
+            EXPECT_NE(messageOf(e).find("feature 0"), std::string::npos) << e.what();
+        }
+    }
 }

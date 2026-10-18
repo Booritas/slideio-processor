@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -66,6 +67,7 @@ public:
     std::vector<Point64> points;
     std::vector<int64_t> starts; // index in points of each ring's first vertex
     std::vector<char> holes;     // one flag per ring
+    Point64 lo{0, 0}, hi{0, 0};  // extent of all points; meaningful when points is non-empty
 
     int64_t ringBegin(size_t ring) const { return starts[ring]; }
     int64_t ringEnd(size_t ring) const {
@@ -100,6 +102,56 @@ RingSums sumRing(const Point64* p, int64_t n) {
         s.length += std::hypot(bx - ax, by - ay);
     }
     return s;
+}
+
+// |v| as an unsigned value; exact for every int64_t.
+uint64_t magnitude(int64_t v) { return v < 0 ? uint64_t{0} - static_cast<uint64_t>(v) : static_cast<uint64_t>(v); }
+
+// The exact 128-bit product of two 64-bit values, as high and low words.
+struct U128 {
+    uint64_t hi, lo;
+};
+U128 mul(uint64_t a, uint64_t b) {
+    const uint64_t aLo = a & 0xFFFFFFFFu, aHi = a >> 32;
+    const uint64_t bLo = b & 0xFFFFFFFFu, bHi = b >> 32;
+    const uint64_t ll = aLo * bLo, lh = aLo * bHi, hl = aHi * bLo, hh = aHi * bHi;
+    const uint64_t mid = (ll >> 32) + (lh & 0xFFFFFFFFu) + (hl & 0xFFFFFFFFu);
+    return U128{hh + (lh >> 32) + (hl >> 32) + (mid >> 32), (mid << 32) | (ll & 0xFFFFFFFFu)};
+}
+
+// True when a * b == c * d, exactly.
+bool productsEqual(int64_t a, int64_t b, int64_t c, int64_t d) {
+    const bool zero1 = a == 0 || b == 0, zero2 = c == 0 || d == 0;
+    if (zero1 || zero2) {
+        return zero1 && zero2;
+    }
+    if (((a < 0) != (b < 0)) != ((c < 0) != (d < 0))) {
+        return false; // non-zero products of opposite sign
+    }
+    const U128 p = mul(magnitude(a), magnitude(b)), q = mul(magnitude(c), magnitude(d));
+    return p.hi == q.hi && p.lo == q.lo;
+}
+
+// True when hi - lo fits int64_t (hi >= lo).
+bool spanFits(int64_t lo, int64_t hi) { return !(lo < 0 && hi > std::numeric_limits<int64_t>::max() + lo); }
+
+// True when every point lies on one line. Differences between points must fit
+// int64_t, which the caller has checked.
+bool allCollinear(const Point64* p, int64_t n) {
+    int64_t k = 1;
+    while (k < n && p[k] == p[0]) {
+        ++k;
+    }
+    if (k == n) {
+        return true;
+    }
+    const int64_t dx = p[k].x - p[0].x, dy = p[k].y - p[0].y;
+    for (int64_t i = k + 1; i < n; ++i) {
+        if (!productsEqual(dx, p[i].y - p[0].y, dy, p[i].x - p[0].x)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -168,6 +220,27 @@ void Polygon::addRing(const Point64* points, int64_t count, bool isHole) {
     if (isHole && isEmpty()) {
         throw InvalidArgumentError("the first ring must be an outer ring");
     }
+    // The polygon's extent must fit int64_t, so that boundingBox() and every
+    // difference between two vertices are exact.
+    Point64 lo = points[0], hi = points[0];
+    for (int64_t i = 1; i < n; ++i) {
+        lo.x = std::min(lo.x, points[i].x);
+        lo.y = std::min(lo.y, points[i].y);
+        hi.x = std::max(hi.x, points[i].x);
+        hi.y = std::max(hi.y, points[i].y);
+    }
+    if (!isEmpty()) {
+        lo.x = std::min(lo.x, impl_->lo.x);
+        lo.y = std::min(lo.y, impl_->lo.y);
+        hi.x = std::max(hi.x, impl_->hi.x);
+        hi.y = std::max(hi.y, impl_->hi.y);
+    }
+    if (!spanFits(lo.x, hi.x) || !spanFits(lo.y, hi.y)) {
+        throw InvalidArgumentError("the polygon's extent does not fit a 64-bit integer");
+    }
+    if (allCollinear(points, n)) {
+        throw InvalidArgumentError("a ring's points must not all lie on one line");
+    }
     if (!impl_) {
         impl_ = std::make_unique<Impl>();
     }
@@ -178,6 +251,8 @@ void Polygon::addRing(const Point64* points, int64_t count, bool isHole) {
         d.points.insert(d.points.end(), points, points + n);
         d.starts.push_back(static_cast<int64_t>(oldPoints));
         d.holes.push_back(isHole ? 1 : 0);
+        d.lo = lo;
+        d.hi = hi;
     } catch (...) {
         d.points.resize(oldPoints);
         d.starts.resize(oldRings);
@@ -200,14 +275,8 @@ Rect64 Polygon::boundingBox() const noexcept {
     if (isEmpty()) {
         return Rect64{0, 0, 0, 0};
     }
-    Point64 lo = impl_->points[0];
-    Point64 hi = lo;
-    for (const Point64& p : impl_->points) {
-        lo.x = std::min(lo.x, p.x);
-        lo.y = std::min(lo.y, p.y);
-        hi.x = std::max(hi.x, p.x);
-        hi.y = std::max(hi.y, p.y);
-    }
+    // addRing() keeps the extent and guarantees that these subtractions fit.
+    const Point64 lo = impl_->lo, hi = impl_->hi;
     return Rect64{lo.x, lo.y, hi.x - lo.x, hi.y - lo.y};
 }
 

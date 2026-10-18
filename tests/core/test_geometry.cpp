@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -104,11 +105,14 @@ TEST(Polygon, AnchorIsTopmostThenLeftmost) {
 
 TEST(Polygon, CentroidAndDegenerate) {
     EXPECT_EQ(square(10, 10, 4).centroid(), (Point64{12, 12}));
-    Point64 line[] = {{0, 0}, {4, 0}, {8, 0}};
+    // Zero area without a collinear ring: a hole cancelling its outer ring.
+    // The fallback is the vertex mean of ring 0, (17/4, 6/4), not the area centroid.
+    Point64 quad[] = {{0, 0}, {12, 0}, {5, 2}, {0, 4}};
     Polygon d;
-    d.addRing(line, 3, false);
+    d.addRing(quad, 4, false);
+    d.addRing(quad, 4, true);
     EXPECT_DOUBLE_EQ(d.area(), 0.0);
-    EXPECT_EQ(d.centroid(), (Point64{4, 0}));
+    EXPECT_EQ(d.centroid(), (Point64{4, 2}));
     EXPECT_EQ(Polygon().anchor(), (Point64{0, 0}));
     EXPECT_EQ(Polygon().centroid(), (Point64{0, 0}));
     EXPECT_EQ(Polygon().boundingBox(), (Rect64{0, 0, 0, 0}));
@@ -211,4 +215,59 @@ TEST(Polygon, HoleWindingDoesNotMatter) {
     }
     EXPECT_FALSE(opposite.contains({3, 3}));
     EXPECT_TRUE(opposite.contains({8, 8}));
+}
+
+TEST(Polygon, CollinearRingsAreRejected) {
+    Point64 horizontal[] = {{0, 0}, {5, 0}, {10, 0}};
+    Point64 diagonal[] = {{0, 0}, {5, 5}, {10, 10}, {5, 5}};
+    Point64 huge[] = {{-4000000000000000000LL, -4000000000000000000LL},
+                      {0, 0},
+                      {4000000000000000000LL, 4000000000000000000LL}}; // products past 2^64
+    Point64 repeated[] = {{3, 3}, {3, 3}, {7, 1}, {3, 3}, {7, 1}};
+    for (const auto& ring : {std::make_pair(horizontal, 3), std::make_pair(diagonal, 4),
+                             std::make_pair(huge, 3), std::make_pair(repeated, 5)}) {
+        Polygon p;
+        EXPECT_THROW(p.addRing(ring.first, ring.second, false), InvalidArgumentError);
+        EXPECT_TRUE(p.isEmpty());
+    }
+    Polygon withHole = square(0, 0, 10);
+    Point64 flatHole[] = {{2, 2}, {4, 4}, {6, 6}};
+    EXPECT_THROW(withHole.addRing(flatHole, 3, true), InvalidArgumentError);
+    EXPECT_EQ(withHole.ringCount(), 1);
+    // Off the line by one unit at full scale: not collinear.
+    Point64 nearly[] = {{-4000000000000000000LL, -4000000000000000000LL},
+                        {1, 0},
+                        {4000000000000000000LL, 4000000000000000000LL}};
+    Polygon ok;
+    EXPECT_NO_THROW(ok.addRing(nearly, 3, false));
+    EXPECT_FALSE(ok.boundingBox().isEmpty());
+}
+
+TEST(Polygon, ExtentMustFitInt64) { // UR-IMG-2
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
+    Point64 tooWide[] = {{-9000000000000000000LL, 0}, {9000000000000000000LL, 0}, {0, 5}};
+    Polygon p;
+    EXPECT_THROW(p.addRing(tooWide, 3, false), InvalidArgumentError);
+    EXPECT_TRUE(p.isEmpty());
+    Point64 widest[] = {{0, kMin}, {kMax, kMin}, {kMax, -1}}; // width and height exactly kMax
+    EXPECT_NO_THROW(p.addRing(widest, 3, false));
+    EXPECT_EQ(p.boundingBox(), (Rect64{0, kMin, kMax, kMax}));
+    // A second ring that would stretch the extent past int64 is refused; the polygon is unchanged.
+    Point64 far[] = {{-2, 0}, {-1, 0}, {-1, 1}};
+    EXPECT_THROW(p.addRing(far, 3, false), InvalidArgumentError);
+    EXPECT_EQ(p.ringCount(), 1);
+    EXPECT_EQ(p.boundingBox(), (Rect64{0, kMin, kMax, kMax}));
+}
+
+TEST(Polygon, BoundingBoxCoversEveryRingAndResetsOnClear) {
+    Polygon p = square(10, 10, 5);
+    p = square(-3, 20, 2, false, p);
+    EXPECT_EQ(p.boundingBox(), (Rect64{-3, 10, 18, 12}));
+    p.clear();
+    EXPECT_EQ(p.boundingBox(), (Rect64{0, 0, 0, 0}));
+    p = square(100, 100, 1, false, p);
+    EXPECT_EQ(p.boundingBox(), (Rect64{100, 100, 1, 1}));
+    Polygon copy(p);
+    EXPECT_EQ(copy.boundingBox(), (Rect64{100, 100, 1, 1}));
 }

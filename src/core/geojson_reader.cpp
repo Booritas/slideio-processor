@@ -36,9 +36,17 @@ namespace {
 constexpr unsigned kParseFlags = rapidjson::kParseNumbersAsStringsFlag;
 constexpr size_t kReadBufferSize = 64 * 1024;
 
+// One coordinate as parsed. An integer token that fits int64_t is kept
+// exactly, because a double loses integers above 2^53 that the writer emits.
+struct Coordinate {
+    double value = 0.0; // the token parsed as a double; used when !isInteger
+    int64_t integer = 0;
+    bool isInteger = false;
+};
+
 struct Position {
-    double x;
-    double y;
+    Coordinate x;
+    Coordinate y;
 };
 
 // One feature as parsed, before its geometry is checked. Coordinates are kept
@@ -211,6 +219,36 @@ double parseNumber(const char* text, size_t len) {
 #endif
 }
 
+// Parses a coordinate token. A plain JSON integer (-?digits, no fraction or
+// exponent) that fits int64_t is kept exactly; anything else goes through
+// parseNumber().
+Coordinate parseCoordinate(const char* text, size_t len) {
+    Coordinate c;
+    size_t i = (len > 0 && text[0] == '-') ? 1 : 0;
+    const bool negative = i == 1;
+    if (i < len) {
+        // Accumulate the magnitude; -2^63 is representable, 2^63 is not.
+        const uint64_t limit = negative ? uint64_t{1} << 63 : (uint64_t{1} << 63) - 1;
+        uint64_t magnitude = 0;
+        bool fits = true;
+        for (; i < len && text[i] >= '0' && text[i] <= '9'; ++i) {
+            const uint64_t digit = static_cast<uint64_t>(text[i] - '0');
+            if (magnitude > (limit - digit) / 10) {
+                fits = false;
+            } else {
+                magnitude = magnitude * 10 + digit;
+            }
+        }
+        if (i == len && fits) {
+            c.isInteger = true;
+            c.integer = negative ? static_cast<int64_t>(uint64_t{0} - magnitude) : static_cast<int64_t>(magnitude);
+            return c;
+        }
+    }
+    c.value = parseNumber(text, len);
+    return c;
+}
+
 // Opens the file in binary mode and skips a leading UTF-8 byte order mark,
 // reporting its length in `bomSize`.
 std::ifstream openInput(const std::string& path, size_t& bomSize) {
@@ -265,8 +303,8 @@ private:
         bool hasNumber = false;
         bool hasArray = false;
         int numbers = 0;
-        double x = 0.0;
-        double y = 0.0;
+        Coordinate x;
+        Coordinate y;
     };
 
     const std::string& path_;
@@ -424,7 +462,7 @@ private:
             } else {
                 if (top.numbers < 2) {
                     // A non-finite result is rejected when the ring is built.
-                    (top.numbers == 0 ? top.x : top.y) = parseNumber(s, len);
+                    (top.numbers == 0 ? top.x : top.y) = parseCoordinate(s, len);
                 }
                 ++top.numbers; // a third number (z) is ignored
             }
@@ -488,7 +526,11 @@ public:
                                         .c_str());
     }
 
-    int64_t toCoordinate(double v) const {
+    int64_t toCoordinate(const Coordinate& c) const {
+        if (c.isInteger) {
+            return c.integer;
+        }
+        const double v = c.value;
         // [-2^63, 2^63): every double in it rounds to a representable int64_t.
         if (!std::isfinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) {
             throw geometryError("a coordinate is not finite or does not fit a 64-bit integer");

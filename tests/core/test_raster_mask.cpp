@@ -501,3 +501,27 @@ TEST(RasterMask, MoveAssignLeavesTheSourceNullNeverSwaps) {
     EXPECT_TRUE(src.isNull());
     EXPECT_EQ(src.regionAtLevel(), (Rect64{0, 0, 0, 0}));
 }
+
+TEST(DilateMask, MatchesBruteForceWhetherOrNotTheRowRingWraps) {
+    // Heights below, at and above 2r + 2 exercise the ring of horizontal rows.
+    uint32_t seed = 12345;
+    auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 24; };
+    for (int32_t r : {1, 2, 3}) {
+        for (int64_t h : {int64_t{1}, int64_t{2} * r + 1, int64_t{2} * r + 2, int64_t{2} * r + 3, int64_t{17}}) {
+            const int64_t w = 9;
+            RasterMask m(Rect64{0, 0, w, h}, 0, 1.0);
+            for (int64_t y = 0; y < h; ++y)
+                for (int64_t x = 0; x < w; ++x) m.row(y)[x] = next() < 20 ? 255 : 0;
+            std::vector<std::vector<bool>> expect(static_cast<size_t>(h), std::vector<bool>(static_cast<size_t>(w)));
+            for (int64_t y = 0; y < h; ++y)
+                for (int64_t x = 0; x < w; ++x)
+                    for (int64_t j = std::max<int64_t>(0, y - r); j <= std::min(h - 1, y + r); ++j)
+                        for (int64_t i = std::max<int64_t>(0, x - r); i <= std::min(w - 1, x + r); ++i)
+                            if (m.row(j)[i]) expect[size_t(y)][size_t(x)] = true;
+            dilateMask(m, r);
+            for (int64_t y = 0; y < h; ++y)
+                for (int64_t x = 0; x < w; ++x)
+                    ASSERT_EQ(m.row(y)[x] != 0, expect[size_t(y)][size_t(x)]) << "r=" << r << " h=" << h << " at " << x << "," << y;
+        }
+    }
+}

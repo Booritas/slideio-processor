@@ -275,12 +275,11 @@ PixelGrid gridOfView(const BlockView& view) {
     if (view.isNull()) {
         throw InvalidArgumentError("rasteriseInto: view is null");
     }
-    constexpr double kMinScale = 1e-6;
     const int64_t width = view.width(), height = view.height();
     const Rect64 rect = view.slideRect();
     const double sx = static_cast<double>(rect.width) / static_cast<double>(width);
     const double sy = static_cast<double>(rect.height) / static_cast<double>(height);
-    if (!std::isfinite(sx) || !std::isfinite(sy) || !(sx >= kMinScale) || !(sy >= kMinScale)) {
+    if (!std::isfinite(sx) || !std::isfinite(sy) || !(sx >= kMinLevelScale) || !(sy >= kMinLevelScale)) {
         throw InvalidArgumentError("rasteriseInto: view scale must be finite and at least 1e-6");
     }
     const double ox = std::round(static_cast<double>(rect.x) / sx);

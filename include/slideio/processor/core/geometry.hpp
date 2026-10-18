@@ -220,8 +220,11 @@ public:
      * @param count Number of points in the array.
      * @param isHole True to add a hole. The first ring must be an outer ring.
      * @throws InvalidArgumentError When points is null, when fewer than 3
-     * points remain after dropping a closing point, or when isHole is true
-     * and the polygon is empty. The polygon is unchanged on failure.
+     * points remain after dropping a closing point, when the remaining points
+     * all lie on one line (a zero-area ring), when the polygon's extent with
+     * this ring would not fit a 64-bit integer (maxX - minX or maxY - minY
+     * overflows), or when isHole is true and the polygon is empty. The polygon
+     * is unchanged on failure.
      * @throws std::bad_alloc When memory is exhausted; the polygon is unchanged.
      */
     void addRing(const Point64* points, int64_t count, bool isHole);
@@ -240,6 +243,8 @@ public:
     /**
      * @brief Returns the extent of all vertices.
      * @return {minX, minY, maxX - minX, maxY - minY}, or {0, 0, 0, 0} when empty.
+     * It never overflows, because addRing() keeps the extent within int64, and
+     * it is non-empty for a non-empty polygon, because no ring is collinear.
      * @throws Nothing.
      */
     Rect64 boundingBox() const noexcept;
