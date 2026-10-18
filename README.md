@@ -70,6 +70,8 @@ ctest --test-dir build -C Release --output-on-failure
 
 Run a single test with `-R <regex>`.
 
+OpenCV comes in through Conan now, but no library links it yet.
+
 ## Documentation
 
 `include/slideio/processor/core/core.hpp` includes the whole `core` module. API

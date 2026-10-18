@@ -1,6 +1,10 @@
-# Requirement traceability: `core`
+# Requirement traceability
 
-Generated from the `// Requirements:` line and the `TEST` names of each file under `tests/core/`. IDs are those the `core` SDS (`docs/superpowers/specs/sds/01-core.md`, 1.1 to 1.17) lists, plus any further IDs the tests declare.
+Generated from the `// Requirements:` line and the `TEST` names of each file under `tests/<module>/`.
+
+## core
+
+IDs are those the `core` SDS (`docs/superpowers/specs/sds/01-core.md`, 1.1 to 1.17) lists, plus any further IDs the tests declare.
 
 | Requirement | Test file | Tests |
 |---|---|---|
@@ -58,6 +62,23 @@ Generated from the `// Requirements:` line and the `TEST` names of each file und
 | UR-STG-5 | `tests/core/test_object_query.cpp` | ObjectQuery.DefaultsAreUnfilteredCompletedOnly, ObjectQuery.FluentSettersReadBack, ObjectQuery.AnyFiltersDoNotCount, ObjectQuery.NullNameStoredEmptyAndNegativeIndexThrows, ObjectQuery.AssignmentAndMove, ObjectQuery.FlowInterfacesAreImplementable |
 | UR-STG-6 | `tests/core/test_object_record.cpp` | ObjectRecord.IdDerivesFromLayerAndAnchor, ObjectRecord.LabelMeasurementsCopyReset, ObjectRecord.AssignmentAndMove, ObjectRecord.SelfAssignmentIsHarmless, ObjectRecord.MovedFromIsUsable, ObjectRecord.IdInvalidForOutOfRangeAnchor |
 
-## Not covered by `core` tests
+### Not covered by `core` tests
 
 - **UR-RES-6**: SDS 01 section 1.9 satisfies it by omission. No `core` interface materialises a result set, so there is no behaviour for a `core` test to exercise. SDS 01 assigns the explicit, filter-bounded materialising call to `reporting`, where its test belongs.
+
+## config
+
+IDs are those the `config` SDS lists, plus any further IDs the tests declare. UR-IMG-12's matrix is completed by `pipeline`; `config` covers only the backend's supported and storage-only types.
+
+| Requirement | Test file | Tests |
+|---|---|---|
+| UR-BLD-4 | `tests/config/test_backend_capabilities.cpp` | BackendCapabilities.ReportsTheResolvedOpenCv, BackendCapabilities.SupportedAndStorageOnlyPartitionAllTypes, BackendCapabilities.OpenCv4LacksExactlyTheThreeWideIntegers, BackendCapabilities.InstanceMatchesTheRuleForItsMajor |
+| UR-IMG-10 | `tests/config/test_backend_capabilities.cpp` | BackendCapabilities.ReportsTheResolvedOpenCv, BackendCapabilities.SupportedAndStorageOnlyPartitionAllTypes, BackendCapabilities.OpenCv4LacksExactlyTheThreeWideIntegers, BackendCapabilities.InstanceMatchesTheRuleForItsMajor |
+| UR-IMG-11 | `tests/config/test_backend_capabilities.cpp` | BackendCapabilities.ReportsTheResolvedOpenCv, BackendCapabilities.SupportedAndStorageOnlyPartitionAllTypes, BackendCapabilities.OpenCv4LacksExactlyTheThreeWideIntegers, BackendCapabilities.InstanceMatchesTheRuleForItsMajor |
+| UR-IMG-12 | `tests/config/test_backend_capabilities.cpp` | BackendCapabilities.ReportsTheResolvedOpenCv, BackendCapabilities.SupportedAndStorageOnlyPartitionAllTypes, BackendCapabilities.OpenCv4LacksExactlyTheThreeWideIntegers, BackendCapabilities.InstanceMatchesTheRuleForItsMajor |
+| UR-EXE-2 | `tests/config/test_configuration.cpp` | Configuration.DocumentedDefaults, ConfigurationBuilder.EverySetterRoundTrips, ConfigurationBuilder.BuildNamesEveryOffendingSetting, ConfigurationBuilder.ValidBoundariesAreAccepted, ConfigurationBuilder.CopyAndMoveKeepTheSettings, Configuration.BuiltValueIsIndependentOfItsBuilder, Configuration.EqualsComparesStringsByContent, Configuration.CopyAssignmentCopies, Configuration.MovedFromReadsAsDefaults, ConfigurationProcessDefault.EqualsDefaultsUntilSet, ConfigurationProcessDefault.ProcessDefaultReferenceSurvivesReplacement, ConfigurationProcessDefault.ProcessDefaultIsSafeUnderConcurrentReplacement |
+| UR-EXE-3 | `tests/config/test_configuration.cpp` | Configuration.DocumentedDefaults, ConfigurationBuilder.EverySetterRoundTrips, ConfigurationBuilder.BuildNamesEveryOffendingSetting, ConfigurationBuilder.ValidBoundariesAreAccepted, ConfigurationBuilder.CopyAndMoveKeepTheSettings, Configuration.BuiltValueIsIndependentOfItsBuilder, Configuration.EqualsComparesStringsByContent, Configuration.CopyAssignmentCopies, Configuration.MovedFromReadsAsDefaults, ConfigurationProcessDefault.EqualsDefaultsUntilSet, ConfigurationProcessDefault.ProcessDefaultReferenceSurvivesReplacement, ConfigurationProcessDefault.ProcessDefaultIsSafeUnderConcurrentReplacement |
+| UR-EXE-5 | `tests/config/test_logging.cpp` | ConfigureLogging.CallerSinkAndLevel, ConfigureLogging.InvalidLevelChangesNothing, ConfigureLogging.FileSinkAppendsTimestampedLines, ConfigureLogging.UnopenableFileThrowsAndKeepsThePreviousSink, ConfigureLogging.EmptyPathWritesToStderr |
+| UR-EXE-6 | `tests/config/test_configuration.cpp` | Configuration.DocumentedDefaults, ConfigurationBuilder.EverySetterRoundTrips, ConfigurationBuilder.BuildNamesEveryOffendingSetting, ConfigurationBuilder.ValidBoundariesAreAccepted, ConfigurationBuilder.CopyAndMoveKeepTheSettings, Configuration.BuiltValueIsIndependentOfItsBuilder, Configuration.EqualsComparesStringsByContent, Configuration.CopyAssignmentCopies, Configuration.MovedFromReadsAsDefaults, ConfigurationProcessDefault.EqualsDefaultsUntilSet, ConfigurationProcessDefault.ProcessDefaultReferenceSurvivesReplacement, ConfigurationProcessDefault.ProcessDefaultIsSafeUnderConcurrentReplacement |
+| UR-OBS-6 | `tests/config/test_configuration.cpp` | Configuration.DocumentedDefaults, ConfigurationBuilder.EverySetterRoundTrips, ConfigurationBuilder.BuildNamesEveryOffendingSetting, ConfigurationBuilder.ValidBoundariesAreAccepted, ConfigurationBuilder.CopyAndMoveKeepTheSettings, Configuration.BuiltValueIsIndependentOfItsBuilder, Configuration.EqualsComparesStringsByContent, Configuration.CopyAssignmentCopies, Configuration.MovedFromReadsAsDefaults, ConfigurationProcessDefault.EqualsDefaultsUntilSet, ConfigurationProcessDefault.ProcessDefaultReferenceSurvivesReplacement, ConfigurationProcessDefault.ProcessDefaultIsSafeUnderConcurrentReplacement |
+| UR-RES-17 | `tests/config/test_standard_vocabulary.cpp` | StandardVocabulary.TenLabelsWithStableIdsInTableOrder, StandardVocabulary.LookupIsExactAndNonStandardIdsReadEmpty |
