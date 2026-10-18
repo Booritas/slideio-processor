@@ -12,7 +12,9 @@ namespace slideio::processor {
 
 namespace {
 
-// Serialises reconfiguration so a sink and its level are installed together.
+// Serialises reconfigurations against each other only. It does not make the sink
+// and level change atomically for readers: a concurrent logMessage can briefly
+// see the new sink with the old level.
 std::mutex& configureMutex() {
     static std::mutex mutex;
     return mutex;
@@ -44,6 +46,8 @@ void configureLogging(LogSinkPtr sink, LogLevel level) {
         std::lock_guard<std::mutex> lock(configureMutex());
         setLogSink(std::move(sink));
         setLogLevel(level);
+    } catch (const std::bad_alloc&) {
+        throw;
     } catch (const std::exception& e) { // a failed lock (std::system_error)
         throw InternalError(e.what());
     }

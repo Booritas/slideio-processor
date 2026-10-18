@@ -1,7 +1,9 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 
+#include <exception>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,8 +56,11 @@ struct ProcessDefaultRegistry {
 };
 
 ProcessDefaultRegistry& registry() {
-    static ProcessDefaultRegistry instance;
-    return instance;
+    // Deliberately leaked (G3: "never destroyed before process exit"): a static
+    // object would be destroyed at exit, dangling references still held by
+    // other static destructors.
+    static auto* instance = new ProcessDefaultRegistry;
+    return *instance;
 }
 
 } // namespace
@@ -104,11 +109,19 @@ const Configuration& Configuration::processDefault() noexcept {
 }
 
 void Configuration::setProcessDefault(const Configuration& configuration) {
-    auto next = std::make_unique<Configuration>(configuration);
-    ProcessDefaultRegistry& r = registry();
-    std::lock_guard<std::mutex> lock(r.mutex);
-    r.published.push_back(std::move(next));
-    r.current = r.published.back().get();
+    try {
+        auto next = std::make_unique<Configuration>(configuration);
+        ProcessDefaultRegistry& r = registry();
+        std::lock_guard<std::mutex> lock(r.mutex); // may throw std::system_error
+        r.published.push_back(std::move(next));
+        r.current = r.published.back().get();
+    } catch (const ProcessorError&) {
+        throw;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& e) {
+        throw InternalError(e.what());
+    }
 }
 
 int64_t Configuration::memoryCeilingBytes() const noexcept {
