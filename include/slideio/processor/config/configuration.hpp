@@ -31,17 +31,22 @@ class SLIDEIO_PROCESSOR_DATA_EXPORTS Configuration {
 public:
     /**
      * @brief Builds a Configuration holding the documented defaults.
-     * @note The worker count is read from the hardware when this runs. Failure to
-     * allocate is fatal and calls std::terminate.
+     * @note The worker count is read from the hardware when this runs.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     Configuration();
     /// Copies a configuration.
+    /// @throws std::bad_alloc When memory is exhausted.
     Configuration(const Configuration&);
-    /// Moves a configuration; the source then reads as defaults().
+    /// Moves a configuration; the source then reads as defaults(). A failure to
+    /// allocate the replacement state of the source is fatal and calls std::terminate.
     Configuration(Configuration&&) noexcept;
     /// Copy-assigns a configuration.
+    /// @throws std::bad_alloc When memory is exhausted.
     Configuration& operator=(const Configuration&);
-    /// Move-assigns a configuration; the source then reads as defaults().
+    /// Move-assigns a configuration; the source then reads as defaults(). A
+    /// failure to allocate the replacement state of the source is fatal and calls
+    /// std::terminate.
     Configuration& operator=(Configuration&&) noexcept;
     ~Configuration();
 
@@ -70,7 +75,7 @@ public:
      * unaffected. Every earlier default is kept alive until the process exits,
      * so references from processDefault() never dangle; each call therefore
      * costs one Configuration of memory.
-     * @throws std::bad_alloc When the copy cannot be allocated.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     static void setProcessDefault(const Configuration& configuration);
 
@@ -126,16 +131,24 @@ private:
 class SLIDEIO_PROCESSOR_DATA_EXPORTS ConfigurationBuilder {
 public:
     /// Starts from the documented defaults.
+    /// @throws std::bad_alloc When memory is exhausted.
     ConfigurationBuilder();
     /// Starts from an existing configuration.
+    /// @throws std::bad_alloc When memory is exhausted.
     explicit ConfigurationBuilder(const Configuration& from);
     /// Copies a builder.
+    /// @throws std::bad_alloc When memory is exhausted.
     ConfigurationBuilder(const ConfigurationBuilder&);
-    /// Moves a builder; the source then reads as a default-constructed one.
+    /// Moves a builder; the source then reads as a default-constructed one. A
+    /// failure to allocate the replacement state of the source is fatal and calls
+    /// std::terminate.
     ConfigurationBuilder(ConfigurationBuilder&&) noexcept;
     /// Copy-assigns a builder.
+    /// @throws std::bad_alloc When memory is exhausted.
     ConfigurationBuilder& operator=(const ConfigurationBuilder&);
     /// Move-assigns a builder; the source then reads as a default-constructed one.
+    /// A failure to allocate the replacement state of the source is fatal and
+    /// calls std::terminate.
     ConfigurationBuilder& operator=(ConfigurationBuilder&&) noexcept;
     ~ConfigurationBuilder();
 
@@ -148,6 +161,7 @@ public:
     /// @brief Sets whether tile size follows the native tiling of the slide.
     ConfigurationBuilder& tileSizeFromSlide(bool fromSlide);
     /// @brief Sets the log file path ("" = stderr); the text is copied. build() rejects null.
+    /// @throws std::bad_alloc When memory is exhausted.
     ConfigurationBuilder& logFilePath(const char* path);
     /// @brief Sets the log threshold; build() requires Trace..Off.
     ConfigurationBuilder& logLevel(LogLevel level);
@@ -159,6 +173,7 @@ public:
     ConfigurationBuilder& objectBatchSize(int64_t size);
     /// @brief Sets the scratch directory ("" = platform temporary directory); the
     /// text is copied. build() rejects null.
+    /// @throws std::bad_alloc When memory is exhausted.
     ConfigurationBuilder& scratchDirectory(const char* path);
 
     /**
@@ -166,6 +181,7 @@ public:
      * @return An independent Configuration; later builder changes do not affect it.
      * @throws InvalidArgumentError Naming every offending setting, in declaration
      * order, not just the first.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     Configuration build() const;
 
