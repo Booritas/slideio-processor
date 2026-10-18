@@ -6,6 +6,7 @@ configure_file(backend_version.hpp.in
 add_library(slideio-processor-config OBJECT
     backend_capabilities.cpp
     configuration.cpp
+    standard_vocabulary.cpp
     detail/backend_types.cpp
 )
 set_target_properties(slideio-processor-config PROPERTIES POSITION_INDEPENDENT_CODE ON)
