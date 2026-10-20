@@ -26,7 +26,10 @@ void warnFailure(const char* step, const std::string& name, const std::string& s
 
 bool ChangeSignal::isSupported() noexcept { return true; }
 
-ChangeSignal::ChangeSignal(const std::string& storeUuid, const std::string& storePath) noexcept {
+// Every handle, writer or reader, creates or opens the event: the system destroys a
+// named event with its last handle, so a reader never leaves one behind.
+ChangeSignal::ChangeSignal(const std::string& storeUuid, const std::string& storePath, Role role) noexcept {
+    (void)role;
     try {
         name_ = "Local\\slideio-processor-" + storeUuid;
         storePath_ = storePath;

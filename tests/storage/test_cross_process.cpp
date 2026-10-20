@@ -13,7 +13,9 @@
 #include <slideio/processor/storage/store.hpp>
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -28,6 +30,11 @@
 
 #ifndef _WIN32
 #include <sys/wait.h>
+#endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <cerrno>
+#include <fcntl.h>
+#include <semaphore.h>
 #endif
 
 using namespace slideio::processor;
@@ -53,6 +60,22 @@ struct WrittenStore {
         layer = store->layers().declareSemantic("cells", store->layers().pixelLayer());
         stage = store->stageStateWriter().declare("segment", "");
         store->stageStateWriter().setStatus(stage, StageStatus::Running);
+        openWriter();
+    }
+
+    // Closes the store: no writer holds the file until reopen().
+    void close() {
+        writer.reset();
+        store->close();
+    }
+
+    // Opens the store ReadWrite again, with a new writer for the same stage.
+    void reopen(const std::string& path, const Configuration& config) {
+        store = Store::open(path.c_str(), OpenMode::ReadWrite, config);
+        openWriter();
+    }
+
+    void openWriter() {
         writer = store->objects().writerForStage(stage);
         writer->setBatchSizeObjects(kBatchObjects);
     }
@@ -151,6 +174,56 @@ std::vector<int64_t> followUntilBatches(EventCursorPtr cursor, int batches) {
     return sequences;
 }
 
+// True when a wake-up signal can be opened here: the platform has one and, on Linux,
+// /dev/shm is usable (a sandbox may deny it).
+bool signalCanOpen() {
+    if (!detail::ChangeSignal::isSupported()) return false;
+    const std::string uuid = "probe" + std::to_string(Clock::now().time_since_epoch().count());
+    detail::ChangeSignal probe(uuid, "probe", detail::ChangeSignal::Role::Writer);
+    const bool open = probe.isOpen();
+    probe.unlink();
+    return open;
+}
+
+// Blocks `cursor` in next(5000) on another thread, runs `commit` 300 ms later, and
+// expects the cursor to wake with the commit's event within 500 ms of it, well inside
+// the 2000 ms poll interval the stores use.
+template <class Commit>
+void expectPromptWake(const EventCursorPtr& cursor, Commit&& commit) {
+    std::future<std::pair<bool, Clock::time_point>> woken = std::async(std::launch::async, [cursor] {
+        const bool got = cursor->next(5000);
+        return std::make_pair(got, Clock::now());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the cursor is blocked by now
+    const Clock::time_point committed = Clock::now();
+    commit();
+    const std::pair<bool, Clock::time_point> result = woken.get();
+
+    ASSERT_TRUE(result.first);
+    EXPECT_EQ(cursor->current().kind(), EventKind::ObjectsAdded);
+    const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(result.second - committed);
+    EXPECT_LT(latency.count(), 500) << "the cursor woke " << latency.count() << " ms after the commit";
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+// meta.store_uuid of the store at `path`, read directly.
+std::string storeUuidOf(const std::string& path) {
+    sqlite3* db = nullptr;
+    std::string uuid;
+    if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+        sqlite3_stmt* select = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'store_uuid'", -1, &select, nullptr) ==
+                SQLITE_OK &&
+            sqlite3_step(select) == SQLITE_ROW) {
+            uuid = reinterpret_cast<const char*>(sqlite3_column_text(select, 0));
+        }
+        sqlite3_finalize(select);
+    }
+    sqlite3_close(db);
+    return uuid;
+}
+#endif
+
 } // namespace
 
 TEST(CrossProcess, ReaderNeverSeesAPartialBatchAndNeverErrors) {  // Review Focus 3
@@ -173,6 +246,13 @@ TEST(CrossProcess, ReaderNeverSeesAPartialBatchAndNeverErrors) {  // Review Focu
         EXPECT_EQ(counts[i] % kBatchObjects, 0) << "count " << i << " is " << counts[i];
         if (i > 0) EXPECT_GE(counts[i], counts[i - 1]) << "count " << i;
     }
+    // The reader ran while the batches landed, so the checks above are not vacuous. The
+    // helper was querying before the first commit, its 3 s window outlasts the ~1 s of
+    // writes by far, and each count takes milliseconds, so it records many mid-write
+    // counts; one is enough.
+    EXPECT_TRUE(std::any_of(counts.begin(), counts.end(),
+                            [](int64_t c) { return c > 0 && c < 50 * kBatchObjects; }))
+        << "no count was taken while the batches were being written";
     written.store->close();
 }
 
@@ -215,7 +295,11 @@ TEST(ChangeSignal, SignalAndPollingSeeTheSameSequence) {  // UR-OBS-6
     const std::vector<int64_t> fromSignal = signalSeen.get();
 
     EXPECT_EQ(fromSignal, pollSeen);
-    EXPECT_EQ(objectsAddedSequences(*signalled).size(), 30u);
+    // Not two empty runs: the followers saw every batch the journal holds.
+    const std::vector<int64_t> journal = objectsAddedSequences(*signalled);
+    EXPECT_EQ(journal.size(), 30u);
+    EXPECT_TRUE(std::includes(pollSeen.begin(), pollSeen.end(), journal.begin(), journal.end()))
+        << "the polling follower missed ObjectsAdded events";
     viaSignal->close();
     viaPolling->close();
     signalled->close();
@@ -224,27 +308,57 @@ TEST(ChangeSignal, SignalAndPollingSeeTheSameSequence) {  // UR-OBS-6
 }
 
 TEST(ChangeSignal, SignalWakesBeforeThePollInterval) {
-    if (!detail::ChangeSignal::isSupported()) GTEST_SKIP() << "no wake-up signal on this platform; cursors poll";
+    if (!signalCanOpen()) GTEST_SKIP() << "no wake-up signal can be opened here; cursors poll";
     StoreFilesGuard files("signal_latency");
     const Configuration config = ConfigurationBuilder().eventPollIntervalMs(2000).build();
     WrittenStore written(files.utf8(), config);
     StorePtr reader = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
     EventCursorPtr cursor = reader->events().subscribe(EventJournal::kFromNow);
 
-    std::future<std::pair<bool, Clock::time_point>> woken = std::async(std::launch::async, [cursor] {
-        const bool got = cursor->next(5000);
-        return std::make_pair(got, Clock::now());
-    });
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the cursor is blocked by now
-    const Clock::time_point committed = Clock::now();
-    written.writeBatch(0);
-    const std::pair<bool, Clock::time_point> result = woken.get();
-
-    ASSERT_TRUE(result.first);
-    EXPECT_EQ(cursor->current().kind(), EventKind::ObjectsAdded);
-    const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(result.second - committed);
-    EXPECT_LT(latency.count(), 500) << "the cursor woke " << latency.count() << " ms after the commit";
+    expectPromptWake(cursor, [&written] { written.writeBatch(0); });
     cursor->close();
     reader->close();
     written.store->close();
 }
+
+TEST(ChangeSignal, SignalReachesAReaderOpenedBeforeTheWriter) {
+    if (!signalCanOpen()) GTEST_SKIP() << "no wake-up signal can be opened here; cursors poll";
+    StoreFilesGuard files("signal_late_writer");
+    const Configuration config = ConfigurationBuilder().eventPollIntervalMs(2000).build();
+    WrittenStore written(files.utf8(), config);
+    written.close();
+    // No writer while the reader opens: on Linux the semaphore's name does not exist.
+    StorePtr reader = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EventCursorPtr cursor = reader->events().subscribe(EventJournal::kFromNow);
+    written.reopen(files.utf8(), config);
+
+    expectPromptWake(cursor, [&written] { written.writeBatch(0); });
+    cursor->close();
+    reader->close();
+    written.store->close();
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+TEST(ChangeSignal, ReadOnlyHandleLeavesNoSemaphoreName) {
+    StoreFilesGuard files("signal_no_leak");
+    Store::open(files.utf8().c_str(), OpenMode::CreateNew, Configuration())->close();  // the writer unlinks
+    const std::string name = "/slideio-processor-" + storeUuidOf(files.utf8());
+    ASSERT_EQ(name.size(), std::string("/slideio-processor-").size() + 32);
+
+    StorePtr reader = Store::open(files.utf8().c_str(), OpenMode::ReadOnly,
+                                  ConfigurationBuilder().eventPollIntervalMs(50).build());
+    EventCursorPtr cursor = reader->events().subscribe(EventJournal::kFromNow);
+    EXPECT_FALSE(cursor->next(300));  // several waits, each trying to open the name
+    cursor->close();
+    reader->close();
+
+    errno = 0;
+    sem_t* left = sem_open(name.c_str(), 0);
+    if (left != SEM_FAILED) {
+        sem_close(left);
+        sem_unlink(name.c_str());
+        FAIL() << "a read-only handle left the semaphore " << name << " behind";
+    }
+    EXPECT_EQ(errno, ENOENT);
+}
+#endif

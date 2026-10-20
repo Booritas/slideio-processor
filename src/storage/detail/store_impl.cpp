@@ -341,8 +341,9 @@ void StoreImpl::openChangeSignal() noexcept {
         return;
     }
     try {
-        auto signal = std::make_unique<ChangeSignal>(storeUuid_, path_);
-        if (signal->isOpen()) waiter_ = std::make_shared<CommitWaiter>(std::move(signal));
+        // Kept even when not open yet: a Linux reader opens the name once a writer makes it.
+        const ChangeSignal::Role role = isReadOnly() ? ChangeSignal::Role::Reader : ChangeSignal::Role::Writer;
+        waiter_ = std::make_shared<CommitWaiter>(std::make_unique<ChangeSignal>(storeUuid_, path_, role));
     } catch (const std::bad_alloc&) {
         // No signal: cursors poll, which is always correct (UR-OBS-6).
     }

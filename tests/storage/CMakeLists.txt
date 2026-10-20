@@ -36,7 +36,7 @@ add_executable(slideio_processor_storage_tests
 )
 # SQLite is linked directly to probe the R*Tree module of the Conan build.
 target_link_libraries(slideio_processor_storage_tests PRIVATE
-    slideio-processor-data SQLite::SQLite3 rapidjson GTest::gtest_main)
+    slideio-processor-data SQLite::SQLite3 rapidjson Threads::Threads GTest::gtest_main)
 target_include_directories(slideio_processor_storage_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)

@@ -26,6 +26,8 @@ if(WIN32)
 else()
     target_sources(slideio-processor-storage PRIVATE detail/change_signal_posix.cpp)
 endif()
+# sem_* live in libpthread on glibc before 2.34.
+target_link_libraries(slideio-processor-storage PRIVATE Threads::Threads)
 set_target_properties(slideio-processor-storage PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(slideio-processor-storage PRIVATE SLIDEIO_PROCESSOR_DATA_API)
 # SQLite is linked PRIVATE and never exported from the library.
