@@ -214,10 +214,11 @@ void StoreImpl::createNew() {
         formatVersion_ = storeFormatVersion();
         storeUuid_ = uuid;
     } catch (...) {
-        // Leave no half-made store behind: the file is the one created above.
+        // Leave no half-made store behind: the file is the one created above. The lock
+        // file goes too, while the lock is still held.
         writeConnection_.close();
         removeStoreFiles(path_);
-        writerLock_.release();
+        writerLock_.removeFileAndRelease(path_);
         throw;
     }
 }

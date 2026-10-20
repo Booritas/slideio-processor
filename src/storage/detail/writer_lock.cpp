@@ -60,6 +60,15 @@ int currentPid() { return static_cast<int>(getpid()); }
 
 } // namespace
 
+void WriterLock::removeFileAndRelease(const std::string& storePath) noexcept {
+    if (held()) {
+        // On Windows the handle shares delete access, so the file can go while it is open.
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::u8path(lockPathOf(storePath)), ec);
+    }
+    release();
+}
+
 WriterLock::WriterLock(WriterLock&& other) noexcept {
 #ifdef _WIN32
     handle_ = std::exchange(other.handle_, nullptr);

@@ -24,6 +24,8 @@ using namespace slideio::processor;
 namespace {
 
 // Runs one statement on the file through a raw sqlite3 connection.
+// Rule (helper_process.hpp): this and rawQueryText use the test's own SQLite copy, so call
+// them only while no Store has the file open.
 void rawExec(const std::string& path, const char* sql) {
     sqlite3* db = nullptr;
     ASSERT_EQ(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
@@ -191,6 +193,27 @@ TEST(Store, SecondWriterIsRefusedReaderIsNot) {
     EXPECT_NO_THROW(Store::open(path.c_str(), OpenMode::ReadOnly, cfg));
     w->close();
     EXPECT_NO_THROW(Store::open(path.c_str(), OpenMode::ReadWrite, cfg));  // lock released
+}
+
+TEST(Store, FailedCreateNewLeavesNoFilesBehind) {
+    StoreFilesGuard files;
+    const std::string path = files.utf8();
+    // A directory where the WAL file must go: creation fails after the writer lock is
+    // taken and the store file is made, when the write connection switches to WAL.
+    std::filesystem::path wal = files.path();
+    wal += "-wal";
+    ASSERT_TRUE(std::filesystem::create_directory(wal));
+    EXPECT_THROW(Store::open(path.c_str(), OpenMode::CreateNew, Configuration()), IoError);
+    std::error_code ec;
+    std::filesystem::remove(wal, ec);  // the obstacle itself, should cleanup have left it
+
+    for (const char* suffix : {"", "-shm", "-journal", "-writer.lock"}) {
+        std::filesystem::path side = files.path();
+        side += suffix;
+        EXPECT_FALSE(std::filesystem::exists(side)) << side.u8string() << " was left behind";
+    }
+    // Nothing half-made blocks a retry on the same path.
+    EXPECT_NO_THROW(Store::open(path.c_str(), OpenMode::CreateNew, Configuration())->close());
 }
 
 TEST(Store, ClosedAndReadOnlyRefuseWork) {

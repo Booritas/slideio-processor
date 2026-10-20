@@ -29,6 +29,10 @@ public:
     // Releases the lock; a no-op when it is not held. The file is left in place:
     // removing it would race with a process that has just opened it.
     void release() noexcept;
+    // Removes the lock file of the store at `storePath` while the lock is still held,
+    // then releases it: for a store whose creation failed, so nothing is left behind.
+    // Removing it first means no opener can lock the old file by name in between.
+    void removeFileAndRelease(const std::string& storePath) noexcept;
 
 private:
 #ifdef _WIN32
