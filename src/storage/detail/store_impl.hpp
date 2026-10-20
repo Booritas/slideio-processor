@@ -10,6 +10,7 @@
 // withWriteTransaction. Reads check a connection out of a pool, one per concurrent
 // caller: withReadConnection for a call, acquireRead for a cursor's lifetime.
 
+#include "storage/detail/change_signal.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/writer_lock.hpp"
 
@@ -59,15 +60,23 @@ private:
 };
 
 // What a waiting event cursor blocks on. Shared (shared_ptr) between the store and its
-// cursors, so a cursor never reaches back into a destroyed StoreImpl. Task 9 gives it
-// the wake-up signal handle.
+// cursors, so a cursor never reaches back into a destroyed StoreImpl. It holds the
+// store's wake-up signal (ruling S13), or none: signal disabled, unsupported, or failed
+// to open. Without one, waits sleep and cursors poll.
 class CommitWaiter {
 public:
-    // Posts the wake-up after a commit that appended an event. No-op until the signal
-    // arrives (ruling S13).
+    explicit CommitWaiter(std::unique_ptr<ChangeSignal> signal = nullptr) noexcept : signal_(std::move(signal)) {}
+
+    // Posts the wake-up after a commit that appended an event; a no-op without a signal.
     void notify() noexcept;
-    // Blocks for at most timeoutMs, or until notified. Today it sleeps the whole time.
-    void wait(int32_t timeoutMs) const;
+    // Blocks for at most timeoutMs, or until a commit in any process posts the signal.
+    // Without a signal it sleeps the whole time. Never throws.
+    void wait(int32_t timeoutMs) const noexcept;
+    // Removes the signal's name (the writer, on close; see ChangeSignal::unlink).
+    void unlinkSignal() noexcept;
+
+private:
+    std::unique_ptr<ChangeSignal> signal_;
 };
 
 class StoreImpl;
@@ -218,6 +227,10 @@ public:
 private:
     void openExisting();
     void createNew();
+    // Gives waiter_ the wake-up signal named for storeUuid_ when the configuration enables
+    // it and the platform supports it. Never throws: a failure logs a Warning, and
+    // cursors poll.
+    void openChangeSignal() noexcept;
     void openWriteConnection(int flags);
     void configureWriteConnection();
     int32_t readFormatVersion(sqlite3* db) const;
@@ -230,6 +243,7 @@ private:
     OpenMode mode_;
     Configuration configuration_;
     int32_t formatVersion_ = 0;
+    std::string storeUuid_;  // meta.store_uuid; names the wake-up signal
     std::atomic<bool> open_{false};
     WriterLock writerLock_;
     mutable std::mutex writeMutex_;

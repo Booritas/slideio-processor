@@ -2,6 +2,7 @@
 
 #include "storage/detail/schema.hpp"
 
+#include <slideio/processor/core/log.hpp>
 #include <slideio/processor/storage/store_format.hpp>
 
 #include <rapidjson/document.h>
@@ -151,6 +152,7 @@ StoreImpl::StoreImpl(const char* path, OpenMode mode, const Configuration& confi
         if (!exists) throwIo("Store::open: no store at '" + path_ + "'");
         openExisting();
     }
+    openChangeSignal();
     open_.store(true, std::memory_order_release);
 }
 
@@ -179,11 +181,13 @@ void StoreImpl::openExisting() {
     if (mode_ == OpenMode::ReadOnly) {
         ReadLease probe(pool_, pool_->acquire("Store::open"));
         formatVersion_ = readFormatVersion(probe.get());
+        storeUuid_ = metaText(probe.get(), kMetaStoreUuid).value_or(std::string());
         return;
     }
     // Read the version before anything touches the file, then take the lock.
     openWriteConnection(0);
     formatVersion_ = readFormatVersion(writeConnection_.get());
+    storeUuid_ = metaText(writeConnection_.get(), kMetaStoreUuid).value_or(std::string());
     writerLock_ = WriterLock::acquire(path_);
     configureWriteConnection();
 }
@@ -208,6 +212,7 @@ void StoreImpl::createNew() {
             throw;
         }
         formatVersion_ = storeFormatVersion();
+        storeUuid_ = uuid;
     } catch (...) {
         // Leave no half-made store behind: the file is the one created above.
         writeConnection_.close();
@@ -313,10 +318,34 @@ void StoreImpl::setMetaInt64(sqlite3* db, const char* key, int64_t value) {
     upsert.run();
 }
 
-void CommitWaiter::notify() noexcept {}
+void CommitWaiter::notify() noexcept {
+    if (signal_) signal_->post();
+}
 
-void CommitWaiter::wait(int32_t timeoutMs) const {
-    if (timeoutMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+void CommitWaiter::wait(int32_t timeoutMs) const noexcept {
+    if (signal_) {
+        signal_->wait(timeoutMs);
+    } else if (timeoutMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+    }
+}
+
+void CommitWaiter::unlinkSignal() noexcept {
+    if (signal_) signal_->unlink();
+}
+
+void StoreImpl::openChangeSignal() noexcept {
+    if (!configuration_.eventSignalEnabled() || !ChangeSignal::isSupported()) return;
+    if (storeUuid_.empty()) {
+        logMessage(LogLevel::Warning, "Store::open: '%s' has no store_uuid; event cursors poll", path_.c_str());
+        return;
+    }
+    try {
+        auto signal = std::make_unique<ChangeSignal>(storeUuid_, path_);
+        if (signal->isOpen()) waiter_ = std::make_shared<CommitWaiter>(std::move(signal));
+    } catch (const std::bad_alloc&) {
+        // No signal: cursors poll, which is always correct (UR-OBS-6).
+    }
 }
 
 void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
@@ -333,6 +362,9 @@ void StoreImpl::close() {
         std::lock_guard<std::mutex> guard(writeMutex_);
         writeConnection_.close();
     }
+    // The writer removes the signal's name (Linux) while it still holds the lock, so it
+    // never removes the name a later writer has opened.
+    if (!isReadOnly()) waiter_->unlinkSignal();
     writerLock_.release();
     if (flushError) std::rethrow_exception(flushError);
 }

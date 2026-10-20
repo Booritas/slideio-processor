@@ -1,6 +1,18 @@
 include(GoogleTest)
 
+# An observer in another process, for test_cross_process.cpp. It lands in the shared
+# runtime output directory beside slideio-processor-data, so it finds the library.
+add_executable(store_observer_helper store_observer_helper.cpp)
+target_link_libraries(store_observer_helper PRIVATE slideio-processor-data)
+
+if(WIN32)
+    set(STORAGE_CHANGE_SIGNAL_SOURCE change_signal_win32.cpp)
+else()
+    set(STORAGE_CHANGE_SIGNAL_SOURCE change_signal_posix.cpp)
+endif()
+
 add_executable(slideio_processor_storage_tests
+    test_cross_process.cpp
     test_event_journal.cpp
     test_stage_state.cpp
     test_geometry_codec.cpp
@@ -12,6 +24,7 @@ add_executable(slideio_processor_storage_tests
     test_types.cpp
     test_vocabulary_registry.cpp
     # Not exported from the library, so compiled into the test directly.
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/${STORAGE_CHANGE_SIGNAL_SOURCE}
     ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp
@@ -27,6 +40,9 @@ target_link_libraries(slideio_processor_storage_tests PRIVATE
 target_include_directories(slideio_processor_storage_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
+add_dependencies(slideio_processor_storage_tests store_observer_helper)
+target_compile_definitions(slideio_processor_storage_tests PRIVATE
+    SLIDEIO_PROCESSOR_TEST_OBSERVER_HELPER="$<TARGET_FILE:store_observer_helper>")
 # A hung waiter fails after 60 s instead of blocking the run.
 gtest_discover_tests(slideio_processor_storage_tests TEST_PREFIX "storage." PROPERTIES TIMEOUT 60)
 

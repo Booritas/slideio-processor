@@ -19,6 +19,13 @@ add_library(slideio-processor-storage OBJECT
     detail/store_impl.cpp
     detail/writer_lock.cpp
 )
+# The wake-up signal (ruling S13): a named event on Windows; elsewhere a POSIX named
+# semaphore (Linux) or no signal at all (macOS), both in the POSIX source.
+if(WIN32)
+    target_sources(slideio-processor-storage PRIVATE detail/change_signal_win32.cpp)
+else()
+    target_sources(slideio-processor-storage PRIVATE detail/change_signal_posix.cpp)
+endif()
 set_target_properties(slideio-processor-storage PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(slideio-processor-storage PRIVATE SLIDEIO_PROCESSOR_DATA_API)
 # SQLite is linked PRIVATE and never exported from the library.
