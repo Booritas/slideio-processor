@@ -24,10 +24,15 @@ int orientation(Point64 a, Point64 b, Point64 c) noexcept;
 // of one lies inside the other. False when either is empty.
 bool polygonsIntersect(const Polygon& a, const Polygon& b);
 
-// True when the closed region of inner lies inside or on the closed region of outer:
-// every vertex of inner is inside or on outer, no edge of inner properly crosses an edge
-// of outer, and no vertex of outer lies strictly inside inner (which an outer hole
-// surrounded by inner would). False when either is empty.
+// True when the closed region of inner lies inside or on the closed region of outer,
+// exactly, for concave polygons and holes too. Fast rejections: a vertex of inner outside
+// outer, an edge of inner properly crossing an edge of outer, a vertex of outer strictly
+// inside inner. When the boundaries do not touch, passing those is containment. When
+// they touch (a vertex of one on the other's boundary), every edge of each is cut at the
+// other's vertices on it, and for each piece, a point just beside its midpoint, on either
+// side, that is inside inner must be inside outer; this catches an inner escaping through
+// an outer vertex or along a shared edge. Midpoints use doubled coordinates and 256-bit
+// cross products, so the test is exact for any int64 input. False when either is empty.
 bool polygonContainedBy(const Polygon& inner, const Polygon& outer);
 
 } // namespace slideio::processor::detail

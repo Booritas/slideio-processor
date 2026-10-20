@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <random>
@@ -418,4 +419,201 @@ TEST(PolygonPredicates, HolesAndNesting) {
     EXPECT_TRUE(detail::polygonsIntersect(square(40, 40, 2), square(0, 0, 100)));
     EXPECT_FALSE(detail::polygonsIntersect(Polygon(), square(0, 0, 1)));
     EXPECT_FALSE(detail::polygonContainedBy(Polygon(), square(0, 0, 1)));
+}
+
+// Review round 1: an inner polygon escaping the outer one through edges that pass exactly
+// through outer vertices, or along shared boundaries.
+TEST(PolygonPredicates, ContainedByRejectsEscapesAlongTheBoundary) {
+    const Polygon u = polygonOf({{0, 0}, {30, 0}, {30, 30}, {20, 30}, {20, 10}, {10, 10}, {10, 30}, {0, 30}});
+    const Polygon acrossNotch = polygonOf({{0, 30}, {10, 10}, {20, 10}, {30, 30}});  // covers the notch
+    EXPECT_FALSE(detail::polygonContainedBy(acrossNotch, u));
+    EXPECT_TRUE(detail::polygonsIntersect(acrossNotch, u));  // they share an edge
+
+    Polygon frame = square(0, 0, 30);
+    const Point64 hole[] = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+    frame.addRing(hole, 4, true);
+    const Polygon theHole = square(10, 10, 10);
+    EXPECT_FALSE(detail::polygonContainedBy(theHole, frame));
+    EXPECT_TRUE(detail::polygonsIntersect(theHole, frame));  // touching counts
+
+    // Shapes that share boundary with the outer one and stay inside it.
+    EXPECT_TRUE(detail::polygonContainedBy(u, u));
+    EXPECT_TRUE(detail::polygonContainedBy(frame, frame));
+    EXPECT_TRUE(detail::polygonContainedBy(polygonOf({{0, 0}, {10, 0}, {10, 30}, {0, 30}}), u));   // a prong
+    EXPECT_TRUE(detail::polygonContainedBy(polygonOf({{0, 0}, {30, 0}, {30, 10}, {0, 10}}), u));   // the base
+    EXPECT_TRUE(detail::polygonContainedBy(polygonOf({{0, 0}, {30, 0}, {20, 10}, {10, 10}}), u));  // two vertices
+    EXPECT_TRUE(detail::polygonContainedBy(polygonOf({{0, 0}, {10, 0}, {10, 10}, {0, 30}}), u));
+    EXPECT_TRUE(detail::polygonContainedBy(polygonOf({{0, 0}, {10, 0}, {10, 10}}), frame));  // touches the hole
+    EXPECT_FALSE(detail::polygonContainedBy(polygonOf({{0, 0}, {30, 0}, {30, 30}, {0, 30}}), u));
+    EXPECT_FALSE(detail::polygonContainedBy(polygonOf({{10, 0}, {20, 0}, {20, 20}, {10, 20}}), u));  // into the notch
+    EXPECT_FALSE(detail::polygonContainedBy(polygonOf({{5, 5}, {25, 5}, {25, 25}, {5, 25}}), frame));
+}
+
+namespace {
+
+// ---- An independent brute-force reference on the doubled lattice -------------------------
+
+using Ring = std::vector<Point64>;
+using Rings = std::vector<Ring>;  // ring 0 outer, the rest holes
+
+enum class Where { Outside, Boundary, Inside };
+
+int64_t cross2(Point64 o, Point64 p, Point64 q) { return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x); }
+
+// Locates the point (X / 2, Y / 2) against the polygon, by the even-odd rule.
+Where locateDoubled(const Rings& rings, int64_t X, int64_t Y) {
+    const Point64 p{X, Y};
+    bool inside = false;
+    for (const Ring& ring : rings) {
+        for (size_t i = 0; i < ring.size(); ++i) {
+            const Point64 a{2 * ring[i].x, 2 * ring[i].y};
+            const Point64 b{2 * ring[(i + 1) % ring.size()].x, 2 * ring[(i + 1) % ring.size()].y};
+            if (cross2(a, b, p) == 0 && std::min(a.x, b.x) <= p.x && p.x <= std::max(a.x, b.x) &&
+                std::min(a.y, b.y) <= p.y && p.y <= std::max(a.y, b.y)) {
+                return Where::Boundary;
+            }
+            if ((a.y > p.y) != (b.y > p.y)) {
+                // The crossing's x compared with p.x, without division.
+                const int64_t lhs = (p.x - a.x) * (b.y - a.y);
+                const int64_t rhs = (p.y - a.y) * (b.x - a.x);
+                if (b.y > a.y ? lhs < rhs : lhs > rhs) inside = !inside;
+            }
+        }
+    }
+    return inside ? Where::Inside : Where::Outside;
+}
+
+bool segmentsMeet2(Point64 a, Point64 b, Point64 c, Point64 d) {
+    const auto sgn = [](int64_t v) { return (v > 0) - (v < 0); };
+    const int o1 = sgn(cross2(a, b, c)), o2 = sgn(cross2(a, b, d)), o3 = sgn(cross2(c, d, a)), o4 = sgn(cross2(c, d, b));
+    const auto on = [](Point64 p, Point64 q, Point64 r) {
+        return std::min(p.x, q.x) <= r.x && r.x <= std::max(p.x, q.x) && std::min(p.y, q.y) <= r.y &&
+               r.y <= std::max(p.y, q.y);
+    };
+    if (o1 != o2 && o3 != o4) return true;
+    return (o1 == 0 && on(a, b, c)) || (o2 == 0 && on(a, b, d)) || (o3 == 0 && on(c, d, a)) || (o4 == 0 && on(c, d, b));
+}
+
+// Simple rings: no two edges meet except neighbours at their shared vertex, and no
+// neighbours are collinear.
+bool isSimple(const Rings& rings) {
+    struct E {
+        Point64 a, b;
+        size_t ring, index;
+    };
+    std::vector<E> edges;
+    for (size_t r = 0; r < rings.size(); ++r) {
+        const Ring& ring = rings[r];
+        if (ring.size() < 3) return false;
+        for (size_t i = 0; i < ring.size(); ++i) {
+            if (cross2(ring[i], ring[(i + 1) % ring.size()], ring[(i + 2) % ring.size()]) == 0) return false;
+            edges.push_back({ring[i], ring[(i + 1) % ring.size()], r, i});
+        }
+    }
+    for (size_t i = 0; i < edges.size(); ++i) {
+        for (size_t j = i + 1; j < edges.size(); ++j) {
+            const E& p = edges[i];
+            const E& q = edges[j];
+            const size_t n = rings[p.ring].size();
+            const bool neighbours = p.ring == q.ring && ((p.index + 1) % n == q.index || (q.index + 1) % n == p.index);
+            if (!neighbours && segmentsMeet2(p.a, p.b, q.a, q.b)) return false;
+        }
+    }
+    return true;
+}
+
+// A star-shaped ring around c, clamped to [lo, hi]; isSimple decides whether it is usable.
+Ring starRing(std::mt19937& random, Point64 c, int64_t maxRadius, int64_t lo, int64_t hi) {
+    std::uniform_int_distribution<int> count(3, 7);
+    std::uniform_real_distribution<double> angle(0.0, 6.283185307179586);
+    std::uniform_int_distribution<int64_t> radius(1, maxRadius);
+    std::vector<double> angles(static_cast<size_t>(count(random)));
+    for (double& a : angles) a = angle(random);
+    std::sort(angles.begin(), angles.end());
+    Ring ring;
+    for (double a : angles) {
+        const double r = static_cast<double>(radius(random));
+        const Point64 p{std::clamp<int64_t>(std::llround(static_cast<double>(c.x) + r * std::cos(a)), lo, hi),
+                        std::clamp<int64_t>(std::llround(static_cast<double>(c.y) + r * std::sin(a)), lo, hi)};
+        if (ring.empty() || !(ring.back() == p)) ring.push_back(p);
+    }
+    while (ring.size() > 1 && ring.front() == ring.back()) ring.pop_back();
+    return ring;
+}
+
+Polygon toPolygon(const Rings& rings) {
+    Polygon polygon;
+    for (size_t r = 0; r < rings.size(); ++r) {
+        polygon.addRing(rings[r].data(), static_cast<int64_t>(rings[r].size()), r > 0);
+    }
+    return polygon;
+}
+
+} // namespace
+
+// ContainedBy never claims a containment that a sample point disproves. The samples are
+// every half-integer point of the inner bounding box; one strictly inside inner and
+// strictly outside outer disproves it.
+TEST(PolygonPredicates, ContainedByAgreesWithBruteForce) {
+    std::mt19937 random(8);
+    std::uniform_int_distribution<int> coin(0, 5);
+    std::uniform_int_distribution<int64_t> centre(3, 7);
+    int checked = 0, containedWithContact = 0;
+    for (int iteration = 0; iteration < 4000; ++iteration) {
+        Rings outer{starRing(random, Point64{centre(random), centre(random)}, 5, 0, 10)};
+        if (coin(random) < 2) {  // a hole
+            outer.push_back(starRing(random, Point64{centre(random), centre(random)}, 2, 0, 10));
+            if (outer[1].empty() ||
+                locateDoubled({outer[0]}, 2 * outer[1][0].x, 2 * outer[1][0].y) != Where::Inside) {
+                continue;
+            }
+        }
+        if (!isSimple(outer)) continue;
+        Rings inner;
+        switch (coin(random)) {
+        case 0:
+        case 1: {  // some of the outer ring's vertices, in order: escapes through concave notches
+            Ring subset;
+            for (const Point64& p : outer[0]) {
+                if (coin(random) < 4) subset.push_back(p);
+            }
+            inner = {subset};
+            break;
+        }
+        case 2:  // the hole, or the outer ring alone
+            inner = {outer.size() > 1 ? outer[1] : outer[0]};
+            break;
+        default:
+            inner = {starRing(random, Point64{centre(random), centre(random)}, 4, 0, 10)};
+        }
+        if (!isSimple(inner)) continue;
+        Polygon innerPolygon, outerPolygon;
+        try {
+            innerPolygon = toPolygon(inner);
+            outerPolygon = toPolygon(outer);
+        } catch (const InvalidArgumentError&) {
+            continue;
+        }
+        const bool claimed = detail::polygonContainedBy(innerPolygon, outerPolygon);
+        bool disproved = false;
+        bool contact = false;
+        const Rect64 box = innerPolygon.boundingBox();
+        for (int64_t X = 2 * box.x; X <= 2 * box.right() && !disproved; ++X) {
+            for (int64_t Y = 2 * box.y; Y <= 2 * box.bottom(); ++Y) {
+                const Where in = locateDoubled(inner, X, Y);
+                const Where out = locateDoubled(outer, X, Y);
+                if (in == Where::Inside && out == Where::Outside) {
+                    disproved = true;
+                    break;
+                }
+                if (in == Where::Boundary && out == Where::Boundary) contact = true;
+            }
+        }
+        ++checked;
+        if (claimed && contact) ++containedWithContact;
+        EXPECT_FALSE(claimed && disproved) << "iteration " << iteration;
+    }
+    // Not vacuous: many pairs, many of them contained while touching.
+    EXPECT_GT(checked, 1000);
+    EXPECT_GT(containedWithContact, 100);
 }
