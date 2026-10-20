@@ -15,10 +15,11 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration), journal(core), stageReader(core), stageWriter(core) {}
+        : core(path, mode, configuration), journal(core), layerRegistry(core), stageReader(core), stageWriter(core) {}
 
     detail::StoreImpl core;
     EventJournal journal;
+    LayerRegistry layerRegistry;
     StageStateReader stageReader;
     StageStateWriter stageWriter;
 };
@@ -80,6 +81,10 @@ void Store::setProvenance(const Provenance& provenance) {
 }
 
 EventJournal& Store::events() noexcept { return impl_->journal; }
+
+LayerRegistry& Store::layers() noexcept { return impl_->layerRegistry; }
+
+const LayerRegistry& Store::layers() const noexcept { return impl_->layerRegistry; }
 
 StageStateReader& Store::stageStates() noexcept { return impl_->stageReader; }
 

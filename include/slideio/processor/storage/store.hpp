@@ -10,6 +10,7 @@
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
+#include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
@@ -130,6 +131,15 @@ public:
      * @throws Nothing.
      */
     EventJournal& events() noexcept;
+    /**
+     * @brief Returns the layer registry of this store.
+     * @return The registry, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every query and refuses declarations.
+     * @throws Nothing.
+     */
+    LayerRegistry& layers() noexcept;
+    /** @copydoc layers() */
+    const LayerRegistry& layers() const noexcept;
     /**
      * @brief Returns the stage state reader of this store.
      * @return The reader, valid while this store lives. Usable until close(); a

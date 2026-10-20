@@ -161,7 +161,6 @@ TEST_F(StageState, WrittenLayerValidation) {
     StageStateWriter& w = store().stageStateWriter();
     const StageStateReader& r = store().stageStates();
     const StageId a = w.declare("nuclei", "");
-    // Layers cannot be declared before Task 6; the positive path is tested there.
     EXPECT_THROW(w.addWrittenLayer(a, LayerId(2)), InvalidArgumentError);   // unknown layer
     EXPECT_THROW(w.addWrittenLayer(a, LayerId()), InvalidArgumentError);    // invalid layer
     EXPECT_THROW(w.addWrittenLayer(a, LayerId(1)), InvalidArgumentError);   // the pixel layer
@@ -169,6 +168,42 @@ TEST_F(StageState, WrittenLayerValidation) {
     EXPECT_EQ(r.writtenLayerCount(a), 0);
     EXPECT_THROW(r.writtenLayerAt(a, 0), InvalidArgumentError);
     EXPECT_THROW(r.writtenLayerCount(StageId(99)), InvalidArgumentError);
+}
+
+TEST_F(StageState, WrittenLayersAreRecordedInAscendingOrder) {
+    StageStateWriter& w = store().stageStateWriter();
+    const StageStateReader& r = store().stageStates();
+    LayerRegistry& layers = store().layers();
+    const LayerId tissue = layers.declareSemantic("tissue", layers.pixelLayer());
+    const LayerId cells = layers.declareSemantic("cells", tissue);
+    const LayerId sp = layers.declarePrimitive("superpixels");
+    const StageId a = w.declare("nuclei", "");
+    const StageId b = w.declare("cells", "");
+
+    w.addWrittenLayer(a, sp);
+    w.addWrittenLayer(a, tissue);
+    w.addWrittenLayer(a, cells);
+    w.addWrittenLayer(a, tissue);  // already recorded: no second row
+    EXPECT_EQ(r.writtenLayerCount(a), 3);
+    EXPECT_EQ(r.writtenLayerAt(a, 0), tissue);
+    EXPECT_EQ(r.writtenLayerAt(a, 1), cells);
+    EXPECT_EQ(r.writtenLayerAt(a, 2), sp);
+    EXPECT_THROW(r.writtenLayerAt(a, 3), InvalidArgumentError);
+    EXPECT_THROW(r.writtenLayerAt(a, -1), InvalidArgumentError);
+    EXPECT_EQ(r.writtenLayerCount(b), 0);
+    w.addWrittenLayer(b, cells);
+    EXPECT_EQ(r.writtenLayerCount(b), 1);
+    EXPECT_EQ(r.writtenLayerAt(b, 0), cells);
+    EXPECT_EQ(r.writtenLayerCount(a), 3);  // per stage
+
+    // Recording a written layer is not a status change: no event.
+    EventCursorPtr cursor = store().events().subscribe(EventJournal::kFromBeginning);
+    int declared = 0;
+    while (cursor->next(0)) {
+        EXPECT_EQ(cursor->current().kind(), EventKind::LayerDeclared);
+        ++declared;
+    }
+    EXPECT_EQ(declared, 3);
 }
 
 TEST_F(StageState, ReadOnlyAnswersAndRefusesWrites) {

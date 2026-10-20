@@ -109,8 +109,10 @@ CREATE TABLE events(
 void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid) {
     exec(db, kDdl);
 
-    Statement pixel(db, "INSERT INTO layers(id, name, kind, parent_id, depth) VALUES (1, 'pixel', ?, NULL, 0)");
-    pixel.bindInt64(1, static_cast<int64_t>(LayerKind::Semantic));
+    Statement pixel(db, "INSERT INTO layers(id, name, kind, parent_id, depth) VALUES (?, ?, ?, NULL, 0)");
+    pixel.bindInt64(1, kPixelLayerId);
+    pixel.bindText(2, kPixelLayerName);
+    pixel.bindInt64(3, static_cast<int64_t>(LayerKind::Semantic));
     pixel.run();
 
     StoreImpl::setMetaInt64(db, kMetaFormatVersion, storeFormatVersion());

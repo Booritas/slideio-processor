@@ -1,6 +1,7 @@
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
 #include "storage/detail/event_log.hpp"
+#include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
 
@@ -12,8 +13,6 @@
 namespace slideio::processor {
 
 namespace {
-
-constexpr int32_t kPixelLayerId = 1;
 
 [[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
     const std::string message = std::string(operation) + ": " + what;
@@ -144,7 +143,7 @@ void StageStateWriter::addWrittenLayer(StageId stage, LayerId layer) {
     constexpr const char* kOperation = "StageStateWriter::addWrittenLayer";
     impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         requireStage(db, kOperation, stage);
-        if (layer.value() == kPixelLayerId) throwInvalid(kOperation, "the pixel layer is not written by a stage");
+        if (layer.value() == detail::kPixelLayerId) throwInvalid(kOperation, "the pixel layer is not written by a stage");
         {
             detail::Statement existing(db, "SELECT 1 FROM layers WHERE id = ?");
             existing.bindInt64(1, layer.value());

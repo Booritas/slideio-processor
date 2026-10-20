@@ -1,5 +1,6 @@
 add_library(slideio-processor-storage OBJECT
     event_journal.cpp
+    layer_registry.cpp
     stage_state_reader.cpp
     stage_state_writer.cpp
     store.cpp

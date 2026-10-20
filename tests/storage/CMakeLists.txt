@@ -4,6 +4,7 @@ add_executable(slideio_processor_storage_tests
     test_event_journal.cpp
     test_stage_state.cpp
     test_geometry_codec.cpp
+    test_layer_registry.cpp
     test_store.cpp
     test_store_impl.cpp
     test_types.cpp

@@ -5,6 +5,8 @@
 
 #include <sqlite3.h>
 
+#include <cstdint>
+
 namespace slideio::processor::detail {
 
 // meta keys.
@@ -14,6 +16,10 @@ inline constexpr const char* kMetaProvenance = "provenance";
 inline constexpr const char* kMetaImportPolicy = "import_policy";
 inline constexpr const char* kMetaJournalTruncatedBelow = "journal_truncated_below";
 inline constexpr const char* kMetaStoreUuid = "store_uuid";
+
+// The pixel layer, created with the store (ruling S5); declared layers number from 2.
+inline constexpr int32_t kPixelLayerId = 1;
+inline constexpr const char* kPixelLayerName = "pixel";
 
 // Creates every plan-A table and index, the pixel layer (id 1) and the initial meta
 // rows. Runs inside the caller's write transaction on `db`. `provenanceJson` is the
