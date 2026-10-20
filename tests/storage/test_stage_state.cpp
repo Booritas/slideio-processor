@@ -102,6 +102,7 @@ TEST_F(StageState, StatusChangesAreJournalled) {
         EXPECT_EQ(cursor->current().stage(), a);
         EXPECT_EQ(cursor->current().stageStatus(), status);
         EXPECT_EQ(cursor->current().objectCount(), 0);
+        EXPECT_TRUE(cursor->current().boundingBox() == (Rect64{0, 0, 0, 0}));
         EXPECT_EQ(cursor->current().layer(), LayerId());
     }
     EXPECT_FALSE(cursor->next(0));
