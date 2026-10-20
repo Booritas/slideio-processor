@@ -22,6 +22,7 @@ add_executable(slideio_processor_storage_tests
     test_store.cpp
     test_store_impl.cpp
     test_types.cpp
+    test_umbrella.cpp
     test_vocabulary_registry.cpp
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/${STORAGE_CHANGE_SIGNAL_SOURCE}
