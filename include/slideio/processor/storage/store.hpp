@@ -11,6 +11,7 @@
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
+#include <slideio/processor/storage/object_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
@@ -150,6 +151,14 @@ public:
     VocabularyRegistry& vocabulary() noexcept;
     /** @copydoc vocabulary() */
     const VocabularyRegistry& vocabulary() const noexcept;
+    /**
+     * @brief Returns the object store of this store.
+     * @return The object store, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every query and refuses writers and discards. A writer
+     * it returned throws IoError once the store is closed or destroyed.
+     * @throws Nothing.
+     */
+    ObjectStore& objects() noexcept;
     /**
      * @brief Returns the stage state reader of this store.
      * @return The reader, valid while this store lives. Usable until close(); a

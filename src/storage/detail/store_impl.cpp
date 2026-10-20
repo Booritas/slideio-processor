@@ -139,6 +139,7 @@ StoreImpl::StoreImpl(const char* path, OpenMode mode, const Configuration& confi
         throw InvalidArgumentError(message.c_str());
     }
     pool_ = std::make_shared<ConnectionPool>(path_);
+    gate_ = std::make_shared<StoreGate>(this, path_);
 
     std::error_code ec;
     const bool exists = std::filesystem::exists(std::filesystem::u8path(path_), ec);
@@ -322,6 +323,7 @@ void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
 
 void StoreImpl::close() {
     if (!open_.exchange(false, std::memory_order_acq_rel)) return;
+    gate_->detach();  // waits for writer calls in flight; they then fail "store is closed"
     pool_->close();
     {
         std::lock_guard<std::mutex> guard(writeMutex_);

@@ -1,6 +1,9 @@
 add_library(slideio-processor-storage OBJECT
     event_journal.cpp
     layer_registry.cpp
+    object_cursor.cpp
+    object_store.cpp
+    object_writer.cpp
     stage_state_reader.cpp
     stage_state_writer.cpp
     store.cpp
@@ -9,6 +12,8 @@ add_library(slideio-processor-storage OBJECT
     detail/event_log.cpp
     detail/geometry_codec.cpp
     detail/label_aliases.cpp
+    detail/polygon_predicates.cpp
+    detail/query_builder.cpp
     detail/schema.cpp
     detail/sqlite.cpp
     detail/store_impl.cpp

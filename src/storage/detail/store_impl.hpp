@@ -2,7 +2,9 @@
 #pragma once
 
 // The shared core of an open store (rulings S2, S3, S4): its connections, the write
-// mutex, the writer lock and the meta table. Every storage class holds a StoreImpl&.
+// mutex, the writer lock and the meta table. Every storage class owned by Store holds a
+// StoreImpl&; a handle that may outlive the Store holds a ReadLease (cursors) or the
+// StoreGate (writers) instead.
 //
 // Writes run on one write connection, serialised by the write mutex, each inside
 // withWriteTransaction. Reads check a connection out of a pool, one per concurrent
@@ -23,6 +25,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -64,6 +67,37 @@ public:
     void notify() noexcept;
     // Blocks for at most timeoutMs, or until notified. Today it sleeps the whole time.
     void wait(int32_t timeoutMs) const;
+};
+
+class StoreImpl;
+
+// The route by which a handle that may outlive its Store (an ObjectWriterPtr) reaches
+// the StoreImpl. Shared (shared_ptr) between the store and such handles. close()
+// detaches it, waiting for calls already inside with() to return; from then on with()
+// throws IoError "<operation>: store is closed ('<path>')" and never touches the
+// StoreImpl again.
+class StoreGate {
+public:
+    StoreGate(StoreImpl* store, std::string path) : store_(store), path_(std::move(path)) {}
+    StoreGate(const StoreGate&) = delete;
+    StoreGate& operator=(const StoreGate&) = delete;
+
+    // Runs fn(StoreImpl&) while the store cannot be detached, and returns its result.
+    // fn must not call with() again on this gate.
+    template <class Fn>
+    auto with(const char* operation, Fn&& fn) -> decltype(fn(std::declval<StoreImpl&>()));
+
+    void detach() noexcept {
+        std::unique_lock<std::shared_mutex> guard(mutex_);
+        store_ = nullptr;
+    }
+
+    const std::string& path() const noexcept { return path_; }
+
+private:
+    std::shared_mutex mutex_;
+    StoreImpl* store_;
+    const std::string path_;
 };
 
 class StoreImpl {
@@ -129,6 +163,10 @@ public:
     // the write connection fails to close.
     void close();
 
+    // The gate handles that may outlive this store reach it through; detached by
+    // close().
+    std::shared_ptr<StoreGate> gate() const noexcept { return gate_; }
+
 private:
     void openExisting();
     void createNew();
@@ -150,7 +188,18 @@ private:
     Connection writeConnection_;
     std::shared_ptr<ConnectionPool> pool_;
     std::shared_ptr<CommitWaiter> waiter_ = std::make_shared<CommitWaiter>();
+    std::shared_ptr<StoreGate> gate_;
 };
+
+template <class Fn>
+auto StoreGate::with(const char* operation, Fn&& fn) -> decltype(fn(std::declval<StoreImpl&>())) {
+    std::shared_lock<std::shared_mutex> guard(mutex_);
+    if (store_ == nullptr) {
+        const std::string message = std::string(operation) + ": store is closed ('" + path_ + "')";
+        throw IoError(message.c_str());
+    }
+    return fn(*store_);
+}
 
 // Returns Provenance::toJson as a string, the form meta.provenance holds. Throws
 // InternalError and std::bad_alloc, as toJson does.
