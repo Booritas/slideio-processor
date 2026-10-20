@@ -1,7 +1,11 @@
 include(GoogleTest)
 
 add_executable(slideio_processor_storage_tests
+    test_geometry_codec.cpp
+    test_store.cpp
     test_types.cpp
+    # Not exported from the library, so compiled into the test directly.
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
 )
 # SQLite is linked directly to probe the R*Tree module of the Conan build.
 target_link_libraries(slideio_processor_storage_tests PRIVATE
