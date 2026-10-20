@@ -1,4 +1,5 @@
 // Requirements: UR-OBS-2, UR-OBS-3, UR-OBS-7, UR-OBS-6
+#include "storage/helper_process.hpp"
 #include "storage/store_fixture.hpp"
 
 #include "storage/detail/event_log.hpp"
@@ -23,49 +24,39 @@ namespace detail = slideio::processor::detail;
 
 namespace {
 
-// Appends events to the store file through a raw second connection, as another process
-// would. Every column is written explicitly; a raw insert never posts the wake-up signal.
-class RawAppender {
-public:
-    explicit RawAppender(const std::string& path) {
-        EXPECT_EQ(sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
-        sqlite3_busy_timeout(db_, 5000);
-    }
-    RawAppender(const RawAppender&) = delete;
-    RawAppender& operator=(const RawAppender&) = delete;
-    ~RawAppender() { sqlite3_close(db_); }
+std::string nullable(int v) { return v == 0 ? "NULL" : std::to_string(v); }
 
-    // Appends one event and returns its sequence. A zero stage, layer, label or status
-    // is written as NULL.
-    int64_t append(EventKind kind, int stage, int layer, int label, int64_t count, int64_t minX, int64_t minY,
-                   int64_t maxX, int64_t maxY, int status, int64_t timestamp) {
-        const std::string sql = "INSERT INTO events(kind, stage_id, layer_id, label_id, object_count, min_x, "
-                                "min_y, max_x, max_y, stage_status, timestamp_ms) VALUES (" +
-                                std::to_string(static_cast<int>(kind)) + ", " + nullable(stage) + ", " +
-                                nullable(layer) + ", " + nullable(label) + ", " + std::to_string(count) + ", " +
-                                std::to_string(minX) + ", " + std::to_string(minY) + ", " + std::to_string(maxX) +
-                                ", " + std::to_string(maxY) + ", " + nullable(status) + ", " +
-                                std::to_string(timestamp) + ")";
-        exec(sql.c_str());
-        return sqlite3_last_insert_rowid(db_);
-    }
+// The INSERT of one event, every column written explicitly. A zero stage, layer, label
+// or status is written as NULL.
+std::string eventInsert(EventKind kind, int stage, int layer, int label, int64_t count, int64_t minX,
+                        int64_t minY, int64_t maxX, int64_t maxY, int status, int64_t timestamp) {
+    return "INSERT INTO events(kind, stage_id, layer_id, label_id, object_count, min_x, min_y, max_x, "
+           "max_y, stage_status, timestamp_ms) VALUES (" +
+           std::to_string(static_cast<int>(kind)) + ", " + nullable(stage) + ", " + nullable(layer) + ", " +
+           nullable(label) + ", " + std::to_string(count) + ", " + std::to_string(minX) + ", " +
+           std::to_string(minY) + ", " + std::to_string(maxX) + ", " + std::to_string(maxY) + ", " +
+           nullable(status) + ", " + std::to_string(timestamp) + ");\n";
+}
 
-    // Appends an ObjectsAdded event for stage 1, layer 2 whose count is `n`.
-    int64_t appendSimple(int64_t n) {
-        return append(EventKind::ObjectsAdded, 1, 2, 0, n, 10 * n, 20 * n, 10 * n + 5, 20 * n + 5, 0, 1000 + n);
+// The INSERTs, in one transaction, of ObjectsAdded events for stage 1, layer 2 whose
+// counts are `first` to `last`; on an empty journal they take sequences `first` to `last`.
+std::string simpleEvents(int64_t first, int64_t last) {
+    std::string sql = "BEGIN;\n";
+    for (int64_t n = first; n <= last; ++n) {
+        sql += eventInsert(EventKind::ObjectsAdded, 1, 2, 0, n, 10 * n, 20 * n, 10 * n + 5, 20 * n + 5, 0, 1000 + n);
     }
+    return sql + "COMMIT;\n";
+}
 
-private:
-    static std::string nullable(int v) { return v == 0 ? "NULL" : std::to_string(v); }
-    void exec(const char* sql) {
-        char* error = nullptr;
-        EXPECT_EQ(sqlite3_exec(db_, sql, nullptr, nullptr, &error), SQLITE_OK) << (error != nullptr ? error : "");
-        sqlite3_free(error);
+// Every event a test appends comes from another process, as a foreign writer's would,
+// while the fixture's store stays open (rule: helper_process.hpp). A raw insert never
+// posts the wake-up signal.
+class EventJournalTest : public StoreFixture {
+protected:
+    void appendFromAnotherProcess(const std::string& sql) {
+        ASSERT_EQ(execInAnotherProcess(pathUtf8(), sql), 0) << sql;
     }
-    sqlite3* db_ = nullptr;
 };
-
-class EventJournalTest : public StoreFixture {};
 
 } // namespace
 
@@ -86,8 +77,7 @@ TEST_F(EventJournalTest, PositionConstants) {
 
 TEST_F(EventJournalTest, ReplayLateJoinAndResume) {
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    for (int64_t n = 1; n <= 5; ++n) raw.appendSimple(n);
+    appendFromAnotherProcess(simpleEvents(1, 5));
     EXPECT_EQ(j.newestSequence(), 5);
     EXPECT_EQ(j.oldestSequence(), 1);
     EXPECT_EQ(j.eventCount(), 5);
@@ -122,7 +112,7 @@ TEST_F(EventJournalTest, ReplayLateJoinAndResume) {
     auto now = j.subscribe(EventJournal::kFromNow);
     EXPECT_EQ(now->position(), 5);
     EXPECT_FALSE(now->next(0));
-    raw.appendSimple(6);
+    appendFromAnotherProcess(simpleEvents(6, 6));
     ASSERT_TRUE(now->next(0));
     EXPECT_EQ(now->current().sequence(), 6);
 
@@ -136,9 +126,9 @@ TEST_F(EventJournalTest, ReplayLateJoinAndResume) {
 
 TEST_F(EventJournalTest, FieldsOfOtherKindsRoundTrip) {
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    raw.append(EventKind::StageStateChanged, 3, 0, 0, 0, 0, 0, 0, 0, static_cast<int>(StageStatus::Complete), 77);
-    raw.append(EventKind::LabelAdded, 0, 0, 65536, 0, 0, 0, 0, 0, 0, 78);
+    appendFromAnotherProcess(
+        eventInsert(EventKind::StageStateChanged, 3, 0, 0, 0, 0, 0, 0, 0, static_cast<int>(StageStatus::Complete), 77) +
+        eventInsert(EventKind::LabelAdded, 0, 0, 65536, 0, 0, 0, 0, 0, 0, 78));
     auto c = j.subscribe(EventJournal::kFromBeginning);
     ASSERT_TRUE(c->next(0));
     EXPECT_EQ(c->current().kind(), EventKind::StageStateChanged);
@@ -154,8 +144,7 @@ TEST_F(EventJournalTest, FieldsOfOtherKindsRoundTrip) {
 
 TEST_F(EventJournalTest, ReadsMoreThanOnePageInOrder) {
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    for (int64_t n = 1; n <= 600; ++n) raw.appendSimple(n);
+    appendFromAnotherProcess(simpleEvents(1, 600));
     auto c = j.subscribe(EventJournal::kFromBeginning);
     for (int64_t n = 1; n <= 600; ++n) {
         ASSERT_TRUE(c->next(0));
@@ -166,20 +155,18 @@ TEST_F(EventJournalTest, ReadsMoreThanOnePageInOrder) {
 
 TEST_F(EventJournalTest, CursorSeesEventsCommittedBetweenPages) {
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    raw.appendSimple(1);
+    appendFromAnotherProcess(simpleEvents(1, 1));
     auto c = j.subscribe(EventJournal::kFromBeginning);
     ASSERT_TRUE(c->next(0));
     EXPECT_FALSE(c->next(0));
-    raw.appendSimple(2);  // committed after the cursor's first page
+    appendFromAnotherProcess(simpleEvents(2, 2));  // committed after the cursor's first page
     ASSERT_TRUE(c->next(0));
     EXPECT_EQ(c->current().sequence(), 2);
 }
 
 TEST_F(EventJournalTest, TruncationIsReportedNotSkipped) {  // UR-OBS-7
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    for (int64_t n = 1; n <= 10; ++n) raw.appendSimple(n);
+    appendFromAnotherProcess(simpleEvents(1, 10));
     j.truncateBelow(6);
     EXPECT_EQ(j.eventCount(), 5);
     EXPECT_EQ(j.oldestSequence(), 6);
@@ -205,13 +192,12 @@ TEST_F(EventJournalTest, TruncationIsReportedNotSkipped) {  // UR-OBS-7
 
 TEST_F(EventJournalTest, TruncatingEverythingKeepsSequencesAndStartsAfterNewest) {
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    for (int64_t n = 1; n <= 3; ++n) raw.appendSimple(n);
+    appendFromAnotherProcess(simpleEvents(1, 3));
     j.truncateBelow(100);  // beyond the newest sequence
     EXPECT_EQ(j.eventCount(), 0);
     EXPECT_EQ(j.newestSequence(), 3);
     EXPECT_EQ(j.oldestSequence(), 4);
-    raw.appendSimple(4);  // sequences are never reused
+    appendFromAnotherProcess(simpleEvents(4, 4));  // sequences are never reused
     EXPECT_EQ(j.newestSequence(), 4);
     auto c = j.subscribe(EventJournal::kFromBeginning);
     ASSERT_TRUE(c->next(0));
@@ -236,15 +222,16 @@ TEST_F(EventJournalTest, BlockingNextWakesOnAppendFromAnotherThread) {
     EventJournal& j = store().events();
     auto c = j.subscribe(EventJournal::kFromNow);
     const std::string path = pathUtf8();
-    std::thread writer([path] {
+    int helperExit = -1;
+    std::thread writer([path, &helperExit] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        RawAppender raw(path);
-        raw.appendSimple(1);
+        helperExit = execInAnotherProcess(path, simpleEvents(1, 1));
     });
     const auto start = std::chrono::steady_clock::now();
     const bool got = c->next(5000);
     const auto elapsed = std::chrono::steady_clock::now() - start;
     writer.join();
+    ASSERT_EQ(helperExit, 0);
     ASSERT_TRUE(got);
     EXPECT_EQ(c->current().sequence(), 1);
     EXPECT_LT(elapsed, std::chrono::milliseconds(3000));
@@ -265,10 +252,7 @@ TEST_F(EventJournalTest, ClosedCursorAndClosedStore) {
 }
 
 TEST_F(EventJournalTest, ReadOnlyStoreReadsButRefusesTruncation) {
-    {
-        RawAppender raw(pathUtf8());
-        raw.appendSimple(1);
-    }
+    appendFromAnotherProcess(simpleEvents(1, 1));
     StorePtr ro = reopen(OpenMode::ReadOnly);
     EXPECT_EQ(ro->events().eventCount(), 1);
     auto c = ro->events().subscribe(EventJournal::kFromBeginning);
@@ -287,8 +271,7 @@ TEST(EventValue, DefaultReadsAsNoEvent) {
 }
 
 TEST_F(EventJournalTest, EventCopyAndMoveLeaveMovedFromDefault) {
-    RawAppender raw(pathUtf8());
-    raw.appendSimple(7);
+    appendFromAnotherProcess(simpleEvents(7, 7));  // sequence 1, count 7
     auto c = store().events().subscribe(EventJournal::kFromBeginning);
     ASSERT_TRUE(c->next(0));
     Event copy = c->current();
@@ -310,6 +293,8 @@ TEST_F(EventJournalTest, EventCopyAndMoveLeaveMovedFromDefault) {
 namespace {
 
 // The first column of the first row of a query on the store file, as an integer; -1 for NULL.
+// Rule (helper_process.hpp): the test's own SQLite copy, so use it only on a file no Store
+// has open. A StoreImpl compiled into this test shares this copy and is safe beside it.
 int64_t rawScalar(const std::string& path, const char* sql) {
     sqlite3* db = nullptr;
     EXPECT_EQ(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
@@ -398,8 +383,7 @@ TEST(EventCursorTimeout, NeverReturnsEarlyWithSmallPollInterval) {
 
 TEST_F(EventJournalTest, LiveCursorIsToldWhenItsPositionIsTruncatedAway) {  // UR-OBS-7
     EventJournal& j = store().events();
-    RawAppender raw(pathUtf8());
-    for (int64_t n = 1; n <= 10; ++n) raw.appendSimple(n);
+    appendFromAnotherProcess(simpleEvents(1, 10));
     auto c = j.subscribe(EventJournal::kFromBeginning);
     ASSERT_TRUE(c->next(0));
     ASSERT_TRUE(c->next(0));

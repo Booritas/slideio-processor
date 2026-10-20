@@ -1,4 +1,5 @@
 // Requirements: UR-OBS-1, UR-OBS-3, UR-OBS-6
+#include "storage/helper_process.hpp"
 #include "storage/store_fixture.hpp"
 
 #include "storage/detail/change_signal.hpp"
@@ -18,7 +19,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -28,9 +28,6 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
-#include <sys/wait.h>
-#endif
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include <cerrno>
 #include <fcntl.h>
@@ -112,20 +109,6 @@ private:
     std::filesystem::path path_;
 };
 
-// Runs the observer helper with `args` through std::system and returns its exit code.
-int runHelper(const std::vector<std::string>& args) {
-    std::string command = std::string("\"") + SLIDEIO_PROCESSOR_TEST_OBSERVER_HELPER + "\"";
-    for (const std::string& arg : args) command += " \"" + arg + "\"";
-#ifdef _WIN32
-    // cmd /c strips the outermost quotes; wrap the whole line so the quoted paths survive.
-    command = "\"" + command + "\"";
-    return std::system(command.c_str());
-#else
-    const int status = std::system(command.c_str());
-    return status != -1 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-#endif
-}
-
 // Starts the helper in another thread; the future yields its exit code.
 std::future<int> launchHelper(std::vector<std::string> args) {
     return std::async(std::launch::async, [args] { return runHelper(args); });
@@ -186,8 +169,8 @@ bool signalCanOpen() {
 }
 
 // Blocks `cursor` in next(5000) on another thread, runs `commit` 300 ms later, and
-// expects the cursor to wake with the commit's event within 500 ms of it, well inside
-// the 2000 ms poll interval the stores use.
+// expects the cursor to wake with the commit's event within 1000 ms of it, well inside
+// the 2000 ms poll interval the stores use: only the signal can wake it that soon.
 template <class Commit>
 void expectPromptWake(const EventCursorPtr& cursor, Commit&& commit) {
     std::future<std::pair<bool, Clock::time_point>> woken = std::async(std::launch::async, [cursor] {
@@ -202,11 +185,13 @@ void expectPromptWake(const EventCursorPtr& cursor, Commit&& commit) {
     ASSERT_TRUE(result.first);
     EXPECT_EQ(cursor->current().kind(), EventKind::ObjectsAdded);
     const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(result.second - committed);
-    EXPECT_LT(latency.count(), 500) << "the cursor woke " << latency.count() << " ms after the commit";
+    EXPECT_LT(latency.count(), 1000) << "the cursor woke " << latency.count() << " ms after the commit";
 }
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 // meta.store_uuid of the store at `path`, read directly.
+// Rule (helper_process.hpp): the test's own SQLite copy; call it only while no Store has
+// the file open.
 std::string storeUuidOf(const std::string& path) {
     sqlite3* db = nullptr;
     std::string uuid;

@@ -1,9 +1,11 @@
 include(GoogleTest)
 
-# An observer in another process, for test_cross_process.cpp. It lands in the shared
-# runtime output directory beside slideio-processor-data, so it finds the library.
+# Another process on a store: an observer for test_cross_process.cpp, and a raw SQL
+# writer for tests that need a foreign writer beside a live store (helper_process.hpp).
+# It lands in the shared runtime output directory beside slideio-processor-data, so it
+# finds the library. SQLite is linked directly for the raw writer.
 add_executable(store_observer_helper store_observer_helper.cpp)
-target_link_libraries(store_observer_helper PRIVATE slideio-processor-data)
+target_link_libraries(store_observer_helper PRIVATE slideio-processor-data SQLite::SQLite3)
 
 if(WIN32)
     set(STORAGE_CHANGE_SIGNAL_SOURCE change_signal_win32.cpp)

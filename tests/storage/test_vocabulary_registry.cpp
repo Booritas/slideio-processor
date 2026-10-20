@@ -1,4 +1,5 @@
 // Requirements: UR-RES-17, UR-RES-18, UR-RES-19
+#include "storage/helper_process.hpp"
 #include "storage/store_fixture.hpp"
 
 #include <slideio/processor/config/standard_vocabulary.hpp>
@@ -18,7 +19,9 @@ namespace {
 
 class VocabularyRegistryTest : public StoreFixture {};
 
-// Runs one statement on a second connection to the store file, as another process would.
+// Runs one statement on a raw connection to the store file, in this process.
+// Rule (helper_process.hpp): the test's own SQLite copy, so use it only while no Store has
+// the file open; a write beside a live store goes through execInAnotherProcess.
 void rawExec(const std::string& path, const char* sql) {
     sqlite3* db = nullptr;
     ASSERT_EQ(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
@@ -180,7 +183,8 @@ TEST_F(VocabularyRegistryTest, NewerStandardLabelIsUnrecognisedButIntact) {  // 
 TEST_F(VocabularyRegistryTest, SeesRowsAddedThroughAnotherConnection) {
     VocabularyRegistry& V = store().vocabulary();
     EXPECT_EQ(V.count(), 10);
-    rawExec(pathUtf8(), "INSERT INTO labels(id, name, origin) VALUES (65536, 'raw', 1)");
+    // Another process adds a row while this store stays open.
+    ASSERT_EQ(execInAnotherProcess(pathUtf8(), "INSERT INTO labels(id, name, origin) VALUES (65536, 'raw', 1)"), 0);
     EXPECT_EQ(V.count(), 11);
     LabelId id;
     EXPECT_TRUE(V.find("raw", id));
@@ -206,7 +210,8 @@ TEST_F(VocabularyRegistryTest, ImportPolicyPersists) {
 TEST_F(VocabularyRegistryTest, ImportPolicyIsReadFresh) {
     VocabularyRegistry& V = store().vocabulary();
     EXPECT_EQ(V.importPolicy(), ImportPolicy::Strict);
-    rawExec(pathUtf8(), "UPDATE meta SET value = 1 WHERE key = 'import_policy'");
+    // Another process changes the policy while this store stays open.
+    ASSERT_EQ(execInAnotherProcess(pathUtf8(), "UPDATE meta SET value = 1 WHERE key = 'import_policy'"), 0);
     EXPECT_EQ(V.importPolicy(), ImportPolicy::Permissive);
 }
 
