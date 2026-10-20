@@ -139,11 +139,27 @@ int64_t oldestOn(sqlite3* db, int64_t newest) {
     return newest + 1;
 }
 
+// Throws InvalidArgumentError when events above `position` were truncated away: a
+// subscriber is told so, never silently moved past the gap (UR-OBS-7).
+void throwIfTruncated(sqlite3* db, int64_t position) {
+    const int64_t watermark = watermarkOn(db);
+    if (position + 1 < watermark) {
+        const std::string message = "EventJournal: position " + std::to_string(position) +
+                                    " has been truncated away; the journal now begins at sequence " +
+                                    std::to_string(watermark);
+        throw InvalidArgumentError(message.c_str());
+    }
+}
+
 class EventCursorImpl final : public EventCursor {
 public:
-    EventCursorImpl(detail::StoreImpl& store, detail::ReadLease&& lease, int64_t start)
-        : store_(store), lease_(std::move(lease)), position_(start), pollIntervalMs_(std::max<int32_t>(
-                                                                         1, store.configuration().eventPollIntervalMs())) {}
+    EventCursorImpl(std::string path, detail::ReadLease&& lease, int64_t start, int32_t pollIntervalMs,
+                    std::shared_ptr<detail::CommitWaiter> waiter)
+        : path_(std::move(path)),
+          lease_(std::move(lease)),
+          position_(start),
+          pollIntervalMs_(std::max<int32_t>(1, pollIntervalMs)),
+          waiter_(std::move(waiter)) {}
 
     bool next(int32_t timeoutMs) override {
         if (timeoutMs < -1) {
@@ -155,16 +171,19 @@ public:
         const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 0);
         for (;;) {
             checkUsable();
+            // A buffered page was read before any truncation; the watermark is checked anyway,
+            // so a cursor behind it is told rather than served rows the journal has dropped.
+            if (index_ < page_.size()) throwIfTruncated(lease_->get(), position_);
             if (index_ >= page_.size() && !fetchPage()) {
                 if (timeoutMs == 0) return false;
                 int32_t slice = pollIntervalMs_;
                 if (timeoutMs > 0) {
                     const auto remaining =
-                        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+                        std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now()).count();
                     if (remaining <= 0) return false;
                     slice = static_cast<int32_t>(std::min<int64_t>(remaining, pollIntervalMs_));
                 }
-                store_.waitForCommit(slice);
+                waiter_->wait(slice);
                 continue;
             }
             current_ = std::move(page_[index_++]);
@@ -184,11 +203,11 @@ public:
 
 private:
     void checkUsable() const {
-        store_.checkOpen("EventCursor::next");
         if (!lease_) {
-            const std::string message = std::string("EventCursor::next: the cursor is closed ('") + store_.path() + "')";
+            const std::string message = std::string("EventCursor::next: the cursor is closed ('") + path_ + "')";
             throw IoError(message.c_str());
         }
+        lease_->checkStoreOpen("EventCursor::next", path_);
     }
 
     // Reads the next page above the last row buffered, in its own read transaction.
@@ -198,6 +217,7 @@ private:
         index_ = 0;
         sqlite3* db = lease_->get();
         ReadTransaction transaction(db);
+        throwIfTruncated(db, position_);
         detail::Statement select(db,
                                  "SELECT seq, kind, stage_id, layer_id, label_id, object_count, min_x, min_y, "
                                  "max_x, max_y, stage_status, timestamp_ms FROM events WHERE seq > ? "
@@ -209,10 +229,11 @@ private:
         return !page_.empty();
     }
 
-    detail::StoreImpl& store_;
+    std::string path_;
     std::optional<detail::ReadLease> lease_;
     int64_t position_;  // the sequence last returned, or the resolved start
     int32_t pollIntervalMs_;
+    std::shared_ptr<detail::CommitWaiter> waiter_;
     std::vector<Event> page_;
     size_t index_ = 0;
     Event current_;
@@ -274,17 +295,13 @@ EventCursorPtr EventJournal::subscribe(int64_t fromSequence) {
         } else if (fromSequence == kFromNow) {
             start = newestOn(db);
         } else {
-            if (fromSequence + 1 < watermark) {
-                const std::string message = "EventJournal::subscribe: position " + std::to_string(fromSequence) +
-                                            " has been truncated away; the journal now begins at sequence " +
-                                            std::to_string(watermark);
-                throw InvalidArgumentError(message.c_str());
-            }
+            throwIfTruncated(db, fromSequence);
             start = fromSequence;
         }
         transaction.commit();
     }
-    return std::make_shared<EventCursorImpl>(store, std::move(lease), start);
+    return std::make_shared<EventCursorImpl>(store.path(), std::move(lease), start,
+                                             store.configuration().eventPollIntervalMs(), store.commitWaiter());
 }
 
 void EventJournal::truncateBelow(int64_t sequence) {

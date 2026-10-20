@@ -45,9 +45,25 @@ public:
 
     sqlite3* get() const noexcept { return connection_.get(); }
 
+    // Throws IoError "<operation>: store is closed ('<path>')" once the store that issued
+    // this lease has closed or been destroyed. Reads only state the lease itself shares.
+    void checkStoreOpen(const char* operation, const std::string& path) const;
+
 private:
     std::shared_ptr<ConnectionPool> pool_;
     Connection connection_;
+};
+
+// What a waiting event cursor blocks on. Shared (shared_ptr) between the store and its
+// cursors, so a cursor never reaches back into a destroyed StoreImpl. Task 9 gives it
+// the wake-up signal handle.
+class CommitWaiter {
+public:
+    // Posts the wake-up after a commit that appended an event. No-op until the signal
+    // arrives (ruling S13).
+    void notify() noexcept;
+    // Blocks for at most timeoutMs, or until notified. Today it sleeps the whole time.
+    void wait(int32_t timeoutMs) const;
 };
 
 class StoreImpl {
@@ -102,14 +118,12 @@ public:
     static void setMetaInt64(sqlite3* db, const char* key, int64_t value);
 
     // Called after any write transaction that appended an event has committed, so that
-    // subscribers waiting in waitForCommit wake at once. A no-op until the wake-up
-    // signal arrives (ruling S13); correctness never depends on it.
+    // subscribers waiting on the CommitWaiter wake at once. Correctness never depends
+    // on it.
     void notifyCommitted() noexcept;
 
-    // Blocks the calling event cursor for at most `timeoutMs` (never more than one poll
-    // interval is requested) or until a commit has been signalled. Today it sleeps the
-    // whole interval; the signal wait replaces the sleep.
-    void waitForCommit(int32_t timeoutMs) const;
+    // The waiter event cursors share; outlives this object while a cursor holds it.
+    std::shared_ptr<CommitWaiter> commitWaiter() const noexcept { return waiter_; }
 
     // Releases every connection and the writer lock. Idempotent. Throws IoError when
     // the write connection fails to close.
@@ -135,6 +149,7 @@ private:
     mutable std::mutex writeMutex_;
     Connection writeConnection_;
     std::shared_ptr<ConnectionPool> pool_;
+    std::shared_ptr<CommitWaiter> waiter_ = std::make_shared<CommitWaiter>();
 };
 
 // Returns Provenance::toJson as a string, the form meta.provenance holds. Throws

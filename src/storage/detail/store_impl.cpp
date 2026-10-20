@@ -53,6 +53,11 @@ public:
         }
     }
 
+    bool isClosed() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return closed_;
+    }
+
     void close() noexcept {
         std::vector<Connection> idle;
         std::lock_guard<std::mutex> guard(mutex_);
@@ -77,6 +82,10 @@ ReadLease::ReadLease(std::shared_ptr<ConnectionPool> pool, Connection connection
 
 ReadLease::~ReadLease() {
     if (pool_ && connection_) pool_->release(std::move(connection_));
+}
+
+void ReadLease::checkStoreOpen(const char* operation, const std::string& path) const {
+    if (pool_->isClosed()) ConnectionPool::throwClosed(operation, path);
 }
 
 namespace {
@@ -303,11 +312,13 @@ void StoreImpl::setMetaInt64(sqlite3* db, const char* key, int64_t value) {
     upsert.run();
 }
 
-void StoreImpl::notifyCommitted() noexcept {}
+void CommitWaiter::notify() noexcept {}
 
-void StoreImpl::waitForCommit(int32_t timeoutMs) const {
+void CommitWaiter::wait(int32_t timeoutMs) const {
     if (timeoutMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
 }
+
+void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
 
 void StoreImpl::close() {
     if (!open_.exchange(false, std::memory_order_acq_rel)) return;

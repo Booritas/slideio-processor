@@ -138,7 +138,7 @@ private:
  *
  * A cursor holds one store connection for its lifetime and reads the journal in
  * pages, each page in its own read transaction, so events committed meanwhile become
- * visible. It must not outlive the Store that produced it.
+ * visible. It may outlive the Store that produced it: next() then throws IoError.
  * @par Thread-safety
  * ThreadConfined: one thread at a time uses a cursor; distinct cursors are
  * independent.

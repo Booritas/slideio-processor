@@ -368,3 +368,48 @@ TEST(EventLog, AppendEventJoinsTheCallersTransaction) {
                  InternalError);
     EXPECT_EQ(rawScalar(files.utf8(), "SELECT COUNT(*) FROM events"), 2);
 }
+
+// A cursor is handed to observers as a shared_ptr and may outlive the Store.
+TEST(EventCursorLifetime, OutlivesItsStore) {
+    StoreFilesGuard files("cursorlife");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    EventCursorPtr cursor = store->events().subscribe(EventJournal::kFromBeginning);
+    EXPECT_FALSE(cursor->next(0));
+    store.reset();
+    EXPECT_THROW(cursor->next(0), IoError);
+    EXPECT_THROW(cursor->next(50), IoError);
+    cursor.reset();  // destroying it afterwards is clean
+}
+
+// next(t) returns false only once t ms have passed, even when the poll interval is small
+// and t is not a multiple of it.
+TEST(EventCursorTimeout, NeverReturnsEarlyWithSmallPollInterval) {
+    StoreFilesGuard files("cursortimeout");
+    Configuration config = ConfigurationBuilder().eventPollIntervalMs(10).build();
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    auto cursor = store->events().subscribe(EventJournal::kFromBeginning);
+    for (int32_t timeout : {50, 53, 7, 1}) {
+        const auto start = std::chrono::steady_clock::now();
+        EXPECT_FALSE(cursor->next(timeout));
+        EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(timeout)) << timeout;
+    }
+}
+
+TEST_F(EventJournalTest, LiveCursorIsToldWhenItsPositionIsTruncatedAway) {  // UR-OBS-7
+    EventJournal& j = store().events();
+    RawAppender raw(pathUtf8());
+    for (int64_t n = 1; n <= 10; ++n) raw.appendSimple(n);
+    auto c = j.subscribe(EventJournal::kFromBeginning);
+    ASSERT_TRUE(c->next(0));
+    ASSERT_TRUE(c->next(0));
+    j.truncateBelow(6);
+    try {
+        c->next(0);
+        FAIL() << "next() should have thrown";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find('2'), std::string::npos) << message;
+        EXPECT_NE(message.find('6'), std::string::npos) << message;
+    }
+}
