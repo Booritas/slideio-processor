@@ -108,4 +108,10 @@ void ObjectRecord::reset() noexcept {
     }
 }
 
+ObjectRecord ObjectRecord::restored(const ObjectRecord& record, StageId stage) {
+    ObjectRecord copy(record);
+    copy.ensure().stage = stage;
+    return copy;
+}
+
 } // namespace slideio::processor

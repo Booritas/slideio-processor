@@ -17,15 +17,14 @@ namespace slideio::processor {
  * @brief The slide-level provenance record: which slide and scene, which
  * library version, and when.
  *
- * Provenance is write-side. It always reports the running library's version
- * and the time this object was constructed, so it cannot represent a record
- * read back from a store with a different version or creation time; restoring
- * those values is not supported by this type. Code reading a store must treat
- * the persisted JSON as the source of truth.
+ * A default-constructed Provenance reports the running library's version and
+ * the time it was constructed. A record read back from a store, possibly
+ * written by another version at another time, is rebuilt with restored(),
+ * which reproduces the stored values; there is no setter for either.
  *
  * Per-stage configuration is recorded by the workspace, not here. After move
  * construction or move assignment the source is in a default state: it reads
- * as slide id "", scene 0, and the library version, and a setter
+ * as slide id "", scene 0, and the running library's version, and a setter
  * re-initialises it.
  * @par Thread-safety
  * ThreadCompatible: const members may run concurrently; any mutation needs
@@ -86,11 +85,11 @@ public:
      */
     int32_t sceneIndex() const noexcept;
     /**
-     * @brief Returns the version of the running library.
+     * @brief Returns the library version recorded in this provenance.
      *
-     * This is not stored per record; it is the same for every Provenance in
-     * the process.
-     * @return A static null-terminated string, never null.
+     * The running library's version for a default-constructed record; the
+     * stored version for one built by restored().
+     * @return A null-terminated string, never null, valid while this object lives.
      * @throws Nothing.
      */
     const char* libraryVersion() const noexcept;
@@ -130,6 +129,22 @@ public:
      * @throws std::bad_alloc When memory is exhausted.
      */
     int32_t toJson(char* buffer, int32_t capacity) const;
+
+    /**
+     * @brief Rebuilds a provenance record from stored values.
+     *
+     * For code reading a store. Not a setter: it only reproduces what was
+     * persisted, and the result reads back exactly these values. toJson() of
+     * the result carries the restored version and time.
+     * @param slideId UTF-8 slide identifier, copied; null reads as "".
+     * @param sceneIndex The scene index, stored as given.
+     * @param libraryVersion UTF-8 library version, copied; null reads as "".
+     * @param createdAtUnixMs The creation time, in milliseconds since the Unix epoch.
+     * @return The restored record.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    static Provenance restored(const char* slideId, int32_t sceneIndex, const char* libraryVersion,
+                               int64_t createdAtUnixMs);
 
 private:
     class Impl;
