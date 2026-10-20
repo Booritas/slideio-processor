@@ -262,6 +262,22 @@ TEST(Store, ProvenanceRoundTripsStoredVersionAndTime) {  // UR-RES-11
 
     rawExec(path, "UPDATE meta SET value = '{\"slideId\":1}' WHERE key = 'provenance'");
     EXPECT_THROW(Store::open(path.c_str(), OpenMode::ReadOnly, cfg)->provenance(), InternalError);
+
+    // A slide id may carry a patient identifier: a malformed record never reaches the error.
+    for (const char* record : {"UPDATE meta SET value = '{\"slideId\":\"ACC-0042\",\"sceneIndex\":' "
+                               "WHERE key = 'provenance'",
+                               "UPDATE meta SET value = '{\"slideId\":\"ACC-0042\",\"sceneIndex\":\"x\"}' "
+                               "WHERE key = 'provenance'"}) {
+        rawExec(path, record);
+        try {
+            Store::open(path.c_str(), OpenMode::ReadOnly, cfg)->provenance();
+            FAIL() << "a malformed record was accepted";
+        } catch (const InternalError& e) {
+            EXPECT_FALSE(contains(e.what(), "ACC-0042")) << e.what();
+            EXPECT_FALSE(contains(e.cause(), "ACC-0042")) << e.cause();
+            EXPECT_TRUE(contains(e.what(), "bytes")) << e.what();
+        }
+    }
 }
 
 TEST(Store, NonAsciiPath) {  // Review Focus 5

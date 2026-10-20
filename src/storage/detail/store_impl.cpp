@@ -31,9 +31,17 @@ public:
         return Connection::open(path_, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX);
     }
 
-    // Keeps the connection for reuse, or closes it once the pool has closed.
+    // Keeps the connection for reuse, or closes it once the pool has closed. A read
+    // transaction left open (a caller that threw, a cursor that ended early) is rolled
+    // back first: pooled, it would freeze every later read on an old snapshot and pin
+    // the WAL against checkpoints. When the rollback fails the connection is closed.
     void release(Connection&& connection) noexcept {
         Connection c = std::move(connection);
+        if (c && sqlite3_get_autocommit(c.get()) == 0 &&
+            (sqlite3_exec(c.get(), "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK ||
+             sqlite3_get_autocommit(c.get()) == 0)) {
+            return;  // c closes here
+        }
         std::lock_guard<std::mutex> guard(mutex_);
         if (closed_) return;
         try {
@@ -323,11 +331,15 @@ Provenance parseProvenanceJson(const std::string& json, const std::string& store
                                         createdAt->GetInt64());
         }
     }
-    const std::string message =
-        "Store::provenance: meta.provenance of '" + storePath + "' is not a provenance record";
-    ErrorContext context;
-    context.cause = json.c_str();
-    throw InternalError(message.c_str(), context);
+    // The record holds the slide id, which may carry a patient identifier (HIPAA, GDPR
+    // data minimisation): report where and how it is malformed, never its text.
+    std::string cause = doc.HasParseError()
+                            ? "JSON parse error at offset " + std::to_string(doc.GetErrorOffset())
+                            : std::string("missing or mistyped field");
+    cause += " in a record of " + std::to_string(json.size()) + " bytes";
+    const std::string message = "Store::provenance: meta.provenance of '" + storePath +
+                                "' is not a provenance record (" + cause + ")";
+    throw InternalError(message.c_str());
 }
 
 } // namespace slideio::processor::detail

@@ -83,13 +83,15 @@ public:
 
     // Runs fn(sqlite3* readConnection) on a pooled read connection and returns its
     // result. No transaction is opened: a single statement is its own snapshot; fn
-    // opens one itself when it needs several statements to agree. Throws IoError when
+    // opens one itself when it needs several statements to agree. A transaction still
+    // open when the connection returns to the pool is rolled back. Throws IoError when
     // closed or on a SQLite failure.
     template <class Fn>
     auto withReadConnection(const char* operation, Fn&& fn) const -> decltype(fn(std::declval<sqlite3*>()));
 
-    // Checks a read connection out for as long as the lease lives (a cursor). Throws
-    // IoError when closed or on a SQLite failure.
+    // Checks a read connection out for as long as the lease lives (a cursor). A
+    // transaction still open when the lease ends is rolled back. Throws IoError when
+    // closed or on a SQLite failure.
     ReadLease acquireRead(const char* operation) const;
 
     // meta accessors, on any connection, inside or outside a transaction. A missing key
@@ -130,7 +132,8 @@ private:
 std::string provenanceToJson(const Provenance& provenance);
 
 // Parses meta.provenance (Provenance::toJson) and restores the stored record. Throws
-// InternalError naming the store path when the text is not a provenance record.
+// InternalError naming the store path, the parse-error offset and the record size, but
+// never the record's text, when it is not a provenance record.
 Provenance parseProvenanceJson(const std::string& json, const std::string& storePath);
 
 template <class Fn>
