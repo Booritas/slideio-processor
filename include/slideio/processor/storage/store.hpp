@@ -10,6 +10,8 @@
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
+#include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
 #include <slideio/processor/storage/types.hpp>
 
@@ -128,6 +130,22 @@ public:
      * @throws Nothing.
      */
     EventJournal& events() noexcept;
+    /**
+     * @brief Returns the stage state reader of this store.
+     * @return The reader, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every member.
+     * @throws Nothing.
+     */
+    StageStateReader& stageStates() noexcept;
+    /**
+     * @brief Returns the stage state writer of this store.
+     *
+     * The workspace records stage rows only through it. On a ReadOnly store the
+     * writer exists and every member throws IoError.
+     * @return The writer, valid while this store lives. Usable until close().
+     * @throws Nothing.
+     */
+    StageStateWriter& stageStateWriter() noexcept;
 
     /**
      * @brief Flushes pending batches and releases every connection and the writer

@@ -1,5 +1,7 @@
 add_library(slideio-processor-storage OBJECT
     event_journal.cpp
+    stage_state_reader.cpp
+    stage_state_writer.cpp
     store.cpp
     store_format.cpp
     detail/event_log.cpp
