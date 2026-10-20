@@ -15,9 +15,10 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration) {}
+        : core(path, mode, configuration), journal(core) {}
 
     detail::StoreImpl core;
+    EventJournal journal;
 };
 
 Store::Store(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -75,6 +76,8 @@ void Store::setProvenance(const Provenance& provenance) {
         detail::StoreImpl::setMetaText(db, detail::kMetaProvenance, json);
     });
 }
+
+EventJournal& Store::events() noexcept { return impl_->journal; }
 
 void Store::close() { impl_->core.close(); }
 

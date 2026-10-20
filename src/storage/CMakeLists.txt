@@ -1,6 +1,8 @@
 add_library(slideio-processor-storage OBJECT
+    event_journal.cpp
     store.cpp
     store_format.cpp
+    detail/event_log.cpp
     detail/geometry_codec.cpp
     detail/schema.cpp
     detail/sqlite.cpp

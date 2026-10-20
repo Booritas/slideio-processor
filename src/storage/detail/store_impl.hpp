@@ -101,6 +101,16 @@ public:
     static void setMetaText(sqlite3* db, const char* key, const std::string& value);
     static void setMetaInt64(sqlite3* db, const char* key, int64_t value);
 
+    // Called after any write transaction that appended an event has committed, so that
+    // subscribers waiting in waitForCommit wake at once. A no-op until the wake-up
+    // signal arrives (ruling S13); correctness never depends on it.
+    void notifyCommitted() noexcept;
+
+    // Blocks the calling event cursor for at most `timeoutMs` (never more than one poll
+    // interval is requested) or until a commit has been signalled. Today it sleeps the
+    // whole interval; the signal wait replaces the sleep.
+    void waitForCommit(int32_t timeoutMs) const;
+
     // Releases every connection and the writer lock. Idempotent. Throws IoError when
     // the write connection fails to close.
     void close();

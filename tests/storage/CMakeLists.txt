@@ -1,11 +1,13 @@
 include(GoogleTest)
 
 add_executable(slideio_processor_storage_tests
+    test_event_journal.cpp
     test_geometry_codec.cpp
     test_store.cpp
     test_store_impl.cpp
     test_types.cpp
     # Not exported from the library, so compiled into the test directly.
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp

@@ -6,10 +6,12 @@
 
 #include <rapidjson/document.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <random>
 #include <system_error>
+#include <thread>
 
 namespace slideio::processor::detail {
 
@@ -299,6 +301,12 @@ void StoreImpl::setMetaInt64(sqlite3* db, const char* key, int64_t value) {
     upsert.bindText(1, key);
     upsert.bindInt64(2, value);
     upsert.run();
+}
+
+void StoreImpl::notifyCommitted() noexcept {}
+
+void StoreImpl::waitForCommit(int32_t timeoutMs) const {
+    if (timeoutMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
 }
 
 void StoreImpl::close() {

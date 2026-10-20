@@ -9,6 +9,7 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
+#include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/store_format.hpp>
 #include <slideio/processor/storage/types.hpp>
 
@@ -120,6 +121,13 @@ public:
      * @throws std::bad_alloc When memory is exhausted.
      */
     void setProvenance(const Provenance& provenance);
+
+    /**
+     * @brief Returns the event journal of this store.
+     * @return The journal, valid while this store lives. Usable until close().
+     * @throws Nothing.
+     */
+    EventJournal& events() noexcept;
 
     /**
      * @brief Flushes pending batches and releases every connection and the writer
