@@ -342,7 +342,8 @@ TEST_F(ObjectWriterTest, MeasurementsAndLabelRoundTrip) {
     EXPECT_FALSE(objects().get(ObjectId::fromAnchor(cells, Point64{1, 1}), out));
 }
 
-// A writer and a cursor are handed out as shared_ptrs and may outlive the Store.
+// A writer and a cursor are handed out as shared_ptrs and may outlive the Store. Closing
+// the store commits what live writers hold pending (SDS 03 §3.2).
 TEST(ObjectHandleLifetime, WriterAndCursorOutliveTheirStore) {
     StoreFilesGuard files("objectlife");
     Configuration config;
@@ -352,13 +353,45 @@ TEST(ObjectHandleLifetime, WriterAndCursorOutliveTheirStore) {
     ObjectWriterPtr writer = store->objects().writerForStage(a);
     writer->emit(rec(cells, 0, 0, 4));
     writer->flush();
-    writer->emit(rec(cells, 10, 0, 4));
+    writer->emit(rec(cells, 10, 0, 4));  // pending when the store goes
     CursorPtr cursor = store->objects().query(ObjectQuery().visibility(StageVisibility::IncludeInFlight));
     store.reset();
     EXPECT_THROW(cursor->next(), IoError);
-    EXPECT_THROW(writer->flush(), IoError);  // the pending batch is dropped
-    EXPECT_EQ(writer->emittedCount(), 1);
+    EXPECT_EQ(writer->emittedCount(), 2);  // close() committed the pending record
+    writer->flush();                       // nothing pending: a no-op
     EXPECT_THROW(writer->emit(rec(cells, 20, 0, 4)), IoError);
+    EXPECT_EQ(writer->emittedCount(), 2);
     cursor.reset();
     writer.reset();  // nothing pending: destroying it afterwards is clean
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->objects().totalObjectCount(), 2);
+    EXPECT_EQ(store->events().eventCount(), 3);  // LayerDeclared and two ObjectsAdded
+}
+
+// close() flushes every live writer, reports the first failure after trying them all, and
+// leaves the store closed.
+TEST(ObjectHandleLifetime, CloseFlushesEveryWriterAndReportsTheFirstFailure) {
+    StoreFilesGuard files("objectclose");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
+    const StageId a = store->stageStateWriter().declare("a", "");
+    ObjectWriterPtr first = store->objects().writerForStage(a);
+    first->emit(rec(cells, 0, 0, 4));
+    first->flush();
+    first->emit(rec(cells, 0, 0, 4));  // collides with the committed object at close
+    ObjectWriterPtr second = store->objects().writerForStage(a);
+    second->emit(rec(cells, 10, 0, 4));
+    const std::string message = invalidArgumentMessage([&] { store->close(); });
+    EXPECT_NE(message.find("(0, 0)"), std::string::npos) << message;
+    EXPECT_THROW(store->objects().totalObjectCount(), IoError);  // closed all the same
+    store->close();                                               // idempotent, nothing left to report
+    EXPECT_EQ(first->emittedCount(), 1);
+    EXPECT_EQ(second->emittedCount(), 1);
+    first.reset();
+    second.reset();
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->objects().totalObjectCount(), 2);  // the second writer's object was committed
 }

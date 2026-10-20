@@ -57,11 +57,11 @@ struct LayerSummary {
     int64_t minX = 0, minY = 0, maxX = 0, maxY = 0;
 };
 
-} // namespace
-
-class ObjectWriter::Impl {
+// The state of one ObjectWriter, shared with the store gate so that Store::close() can
+// commit what it holds pending (SDS 03 §3.2).
+class WriterCore final : public detail::GateClient {
 public:
-    Impl(std::shared_ptr<detail::StoreGate> g, StageId s, int64_t batch)
+    WriterCore(std::shared_ptr<detail::StoreGate> g, StageId s, int64_t batch)
         : gate(std::move(g)), stage(s), batchSize(std::max<int64_t>(1, batch)) {}
 
     // Returns the layer's name, after checking it may hold objects. Validated layers are
@@ -249,20 +249,36 @@ public:
     int64_t committed = 0;
     std::unordered_map<int32_t, std::string> layerNames;  // validated layers
     std::unordered_set<int32_t> heldLabels;
+
+    // Store::close() commits the pending batch while the store is still open.
+    void flushBeforeClose() override {
+        std::lock_guard<std::mutex> guard(mutex);
+        commitLocked("Store::close");
+    }
+};
+
+} // namespace
+
+class ObjectWriter::Impl {
+public:
+    std::shared_ptr<WriterCore> core;
 };
 
 ObjectWriter::ObjectWriter(std::shared_ptr<detail::StoreGate> gate, StageId stage, int64_t batchSize)
-    : impl_(std::make_unique<Impl>(std::move(gate), stage, batchSize)) {}
+    : impl_(std::make_unique<Impl>()) {
+    impl_->core = std::make_shared<WriterCore>(gate, stage, batchSize);
+    gate->track(impl_->core);
+}
 
 ObjectWriter::~ObjectWriter() {
     try {
         flush();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "ObjectWriter: flushing stage %d to '%s' failed: %s", impl_->stage.value(),
-                   impl_->gate->path().c_str(), e.what());
+        logMessage(LogLevel::Error, "ObjectWriter: flushing stage %d to '%s' failed: %s", impl_->core->stage.value(),
+                   impl_->core->gate->path().c_str(), e.what());
     } catch (...) {
-        logMessage(LogLevel::Error, "ObjectWriter: flushing stage %d to '%s' failed", impl_->stage.value(),
-                   impl_->gate->path().c_str());
+        logMessage(LogLevel::Error, "ObjectWriter: flushing stage %d to '%s' failed", impl_->core->stage.value(),
+                   impl_->core->gate->path().c_str());
     }
 }
 
@@ -288,10 +304,10 @@ void ObjectWriter::emit(const ObjectRecord& record) {
         }
     }
 
-    std::lock_guard<std::mutex> guard(impl_->mutex);
+    std::lock_guard<std::mutex> guard(impl_->core->mutex);
     // A writer that outlived its store, or whose store closed, refuses at once.
-    impl_->gate->with(kOperation, [&](detail::StoreImpl& store) { store.checkWritable(kOperation); });
-    const std::string& layerName = impl_->requireLayer(kOperation, layer);
+    impl_->core->gate->with(kOperation, [&](detail::StoreImpl& store) { store.checkWritable(kOperation); });
+    const std::string& layerName = impl_->core->requireLayer(kOperation, layer);
     if (geometry.isEmpty()) throwInvalid(kOperation, "an object in layer '" + layerName + "' has empty geometry");
     if (!id.isValid()) {
         throwInvalid(kOperation, "the anchor " + anchorText(geometry.anchor()) + " of an object in layer '" + layerName +
@@ -299,35 +315,35 @@ void ObjectWriter::emit(const ObjectRecord& record) {
     }
     if (record.hasLabel()) {
         object.label = record.label().value();
-        impl_->requireLabel(kOperation, record.label());
+        impl_->core->requireLabel(kOperation, record.label());
     }
-    if (!impl_->pendingKeys.insert({object.layer, object.anchor}).second) {
+    if (!impl_->core->pendingKeys.insert({object.layer, object.anchor}).second) {
         throwInvalid(kOperation, "an object with anchor " + anchorText(object.anchorPoint) +
                                      " is already pending in layer '" + layerName +
                                      "'; objects in one layer may not share an anchor");
     }
     try {
-        impl_->pending.push_back(std::move(object));
+        impl_->core->pending.push_back(std::move(object));
     } catch (...) {
-        impl_->pendingKeys.erase({object.layer, object.anchor});
+        impl_->core->pendingKeys.erase({object.layer, object.anchor});
         throw;
     }
-    if (static_cast<int64_t>(impl_->pending.size()) >= impl_->batchSize.load(std::memory_order_relaxed)) {
-        impl_->commitLocked(kOperation);
+    if (static_cast<int64_t>(impl_->core->pending.size()) >= impl_->core->batchSize.load(std::memory_order_relaxed)) {
+        impl_->core->commitLocked(kOperation);
     }
 }
 
 void ObjectWriter::flush() {
-    std::lock_guard<std::mutex> guard(impl_->mutex);
-    impl_->commitLocked("ObjectWriter::flush");
+    std::lock_guard<std::mutex> guard(impl_->core->mutex);
+    impl_->core->commitLocked("ObjectWriter::flush");
 }
 
 int64_t ObjectWriter::emittedCount() const {
-    std::lock_guard<std::mutex> guard(impl_->mutex);
-    return impl_->committed + static_cast<int64_t>(impl_->pending.size());
+    std::lock_guard<std::mutex> guard(impl_->core->mutex);
+    return impl_->core->committed + static_cast<int64_t>(impl_->core->pending.size());
 }
 
-int64_t ObjectWriter::batchSizeObjects() const noexcept { return impl_->batchSize.load(std::memory_order_relaxed); }
+int64_t ObjectWriter::batchSizeObjects() const noexcept { return impl_->core->batchSize.load(std::memory_order_relaxed); }
 
 void ObjectWriter::setBatchSizeObjects(int64_t size) {
     if (size < 1) {
@@ -335,9 +351,9 @@ void ObjectWriter::setBatchSizeObjects(int64_t size) {
             "ObjectWriter::setBatchSizeObjects: the batch size " + std::to_string(size) + " is less than 1";
         throw InvalidArgumentError(message.c_str());
     }
-    impl_->batchSize.store(size, std::memory_order_relaxed);
+    impl_->core->batchSize.store(size, std::memory_order_relaxed);
 }
 
-StageId ObjectWriter::stage() const noexcept { return impl_->stage; }
+StageId ObjectWriter::stage() const noexcept { return impl_->core->stage; }
 
 } // namespace slideio::processor

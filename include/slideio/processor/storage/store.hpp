@@ -180,8 +180,13 @@ public:
      * @brief Flushes pending batches and releases every connection and the writer
      * lock. Idempotent.
      *
-     * Errors during teardown are reported here rather than in the destructor.
-     * @throws IoError When releasing the store fails.
+     * Every live ObjectWriter first commits what it holds pending, as by flush(); a
+     * writer used afterwards throws IoError. The store is closed even when a flush
+     * fails: every writer is tried, and the first failure is then reported. Errors
+     * during teardown are reported here rather than in the destructor, which logs them.
+     * @throws InvalidArgumentError When a writer's pending batch collides with a
+     * committed object's anchor; that batch is rolled back and dropped.
+     * @throws IoError When a writer's commit or releasing the store fails.
      */
     void close();
 

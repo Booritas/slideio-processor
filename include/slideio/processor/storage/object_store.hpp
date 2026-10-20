@@ -48,8 +48,9 @@ using ObjectWriterPtr = std::shared_ptr<ObjectWriter>;
  * emit() or flush() that triggered the commit throws InvalidArgumentError naming the
  * layer and the anchor.
  *
- * A writer that outlives its Store, or is used after Store::close(), throws IoError
- * containing "store is closed" from every member that touches the store.
+ * Store::close() (and so the Store's destruction) commits what a live writer holds
+ * pending. A writer used after that, by emit() or by a flush() with something pending,
+ * throws IoError containing "store is closed".
  * @par Thread-safety
  * emit(), emittedCount(), batchSizeObjects(), setBatchSizeObjects() and stage() are
  * ThreadSafe. flush() requires exclusive access: no emit() may run concurrently with

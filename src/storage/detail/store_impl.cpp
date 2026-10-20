@@ -322,7 +322,11 @@ void CommitWaiter::wait(int32_t timeoutMs) const {
 void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
 
 void StoreImpl::close() {
-    if (!open_.exchange(false, std::memory_order_acq_rel)) return;
+    if (!isOpen()) return;
+    // Live writers commit what they hold pending while the store is still open; the
+    // first failure is reported once the store is closed all the same.
+    const std::exception_ptr flushError = gate_->flushClients();
+    if (!open_.exchange(false, std::memory_order_acq_rel)) return;  // another close() won
     gate_->detach();  // waits for writer calls in flight; they then fail "store is closed"
     pool_->close();
     {
@@ -330,6 +334,7 @@ void StoreImpl::close() {
         writeConnection_.close();
     }
     writerLock_.release();
+    if (flushError) std::rethrow_exception(flushError);
 }
 
 Provenance parseProvenanceJson(const std::string& json, const std::string& storePath) {

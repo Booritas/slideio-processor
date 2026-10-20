@@ -18,6 +18,7 @@
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/types.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <exception>
@@ -71,11 +72,21 @@ public:
 
 class StoreImpl;
 
+// A handle holding writes that close() must commit before the store goes (a writer's
+// pending batch, SDS 03 §3.2).
+class GateClient {
+public:
+    virtual ~GateClient() = default;
+    // Commits what is pending. Called by StoreImpl::close() while the store is still
+    // open, holding no store lock; it reaches the store through the gate as usual.
+    virtual void flushBeforeClose() = 0;
+};
+
 // The route by which a handle that may outlive its Store (an ObjectWriterPtr) reaches
-// the StoreImpl. Shared (shared_ptr) between the store and such handles. close()
-// detaches it, waiting for calls already inside with() to return; from then on with()
-// throws IoError "<operation>: store is closed ('<path>')" and never touches the
-// StoreImpl again.
+// the StoreImpl. Shared (shared_ptr) between the store and such handles. close() first
+// flushes the live clients, then detaches the gate, waiting for calls already inside
+// with() to return; from then on with() throws IoError "<operation>: store is closed
+// ('<path>')" and never touches the StoreImpl again.
 class StoreGate {
 public:
     StoreGate(StoreImpl* store, std::string path) : store_(store), path_(std::move(path)) {}
@@ -86,6 +97,38 @@ public:
     // fn must not call with() again on this gate.
     template <class Fn>
     auto with(const char* operation, Fn&& fn) -> decltype(fn(std::declval<StoreImpl&>()));
+
+    // Remembers a client, weakly, for flushClients. Throws std::bad_alloc.
+    void track(const std::shared_ptr<GateClient>& client) {
+        std::lock_guard<std::mutex> guard(clientsMutex_);
+        clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
+                                      [](const std::weak_ptr<GateClient>& c) { return c.expired(); }),
+                       clients_.end());
+        clients_.push_back(client);
+    }
+
+    // Calls flushBeforeClose on every live client, in registration order, and returns the
+    // first exception thrown (null when none), after trying them all.
+    std::exception_ptr flushClients() noexcept {
+        std::vector<std::shared_ptr<GateClient>> live;
+        std::exception_ptr first;
+        try {
+            std::lock_guard<std::mutex> guard(clientsMutex_);
+            for (const std::weak_ptr<GateClient>& c : clients_) {
+                if (std::shared_ptr<GateClient> client = c.lock()) live.push_back(std::move(client));
+            }
+        } catch (...) {
+            first = std::current_exception();
+        }
+        for (const std::shared_ptr<GateClient>& client : live) {
+            try {
+                client->flushBeforeClose();
+            } catch (...) {
+                if (!first) first = std::current_exception();
+            }
+        }
+        return first;
+    }
 
     void detach() noexcept {
         std::unique_lock<std::shared_mutex> guard(mutex_);
@@ -98,6 +141,8 @@ private:
     std::shared_mutex mutex_;
     StoreImpl* store_;
     const std::string path_;
+    std::mutex clientsMutex_;
+    std::vector<std::weak_ptr<GateClient>> clients_;
 };
 
 class StoreImpl {
@@ -159,7 +204,10 @@ public:
     // The waiter event cursors share; outlives this object while a cursor holds it.
     std::shared_ptr<CommitWaiter> commitWaiter() const noexcept { return waiter_; }
 
-    // Releases every connection and the writer lock. Idempotent. Throws IoError when
+    // Flushes every live writer (GateClient), then releases every connection and the
+    // writer lock. Idempotent. The store is closed even when a flush fails; the first
+    // flush failure is then rethrown (InvalidArgumentError for an anchor collision,
+    // IoError for SQLite). Throws IoError when
     // the write connection fails to close.
     void close();
 
