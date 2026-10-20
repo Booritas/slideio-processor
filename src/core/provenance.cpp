@@ -70,7 +70,8 @@ const char* Provenance::slideId() const noexcept { return impl_ ? impl_->slideId
 
 int32_t Provenance::sceneIndex() const noexcept { return impl_ ? impl_->sceneIndex : 0; }
 
-const char* Provenance::libraryVersion() const noexcept { return impl_ ? impl_->libraryVersion.c_str() : slideio::processor::libraryVersion();
+const char* Provenance::libraryVersion() const noexcept {
+    return impl_ ? impl_->libraryVersion.c_str() : slideio::processor::libraryVersion();
 }
 
 int64_t Provenance::createdAtUnixMs() const noexcept { return impl_ ? impl_->createdAtUnixMs : 0; }
