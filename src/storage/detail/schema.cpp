@@ -115,6 +115,19 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     pixel.bindInt64(3, static_cast<int64_t>(LayerKind::Semantic));
     pixel.run();
 
+    // The ten standard labels, ids 1..10. The table is authoritative for names from here on.
+    const StandardVocabulary& standard = StandardVocabulary::instance();
+    Statement label(db, "INSERT INTO labels(id, name, origin, ontology_ref) VALUES (?, ?, ?, ?)");
+    for (int32_t i = 0; i < standard.labelCount(); ++i) {
+        const LabelId id = standard.labelAt(i);
+        label.bindInt64(1, id.value());
+        label.bindText(2, standard.labelName(id));
+        label.bindInt64(3, static_cast<int64_t>(LabelOrigin::Standard));
+        label.bindText(4, standard.ontologyRef(id));
+        label.run();
+        label.reset();
+    }
+
     StoreImpl::setMetaInt64(db, kMetaFormatVersion, storeFormatVersion());
     StoreImpl::setMetaInt64(db, kMetaVocabularyVersion, standardVocabularyVersion());
     StoreImpl::setMetaText(db, kMetaProvenance, provenanceJson);

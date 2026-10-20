@@ -5,8 +5,10 @@ add_library(slideio-processor-storage OBJECT
     stage_state_writer.cpp
     store.cpp
     store_format.cpp
+    vocabulary_registry.cpp
     detail/event_log.cpp
     detail/geometry_codec.cpp
+    detail/label_aliases.cpp
     detail/schema.cpp
     detail/sqlite.cpp
     detail/store_impl.cpp

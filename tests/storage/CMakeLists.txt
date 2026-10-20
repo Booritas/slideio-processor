@@ -8,9 +8,11 @@ add_executable(slideio_processor_storage_tests
     test_store.cpp
     test_store_impl.cpp
     test_types.cpp
+    test_vocabulary_registry.cpp
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp

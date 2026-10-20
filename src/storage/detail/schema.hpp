@@ -21,6 +21,10 @@ inline constexpr const char* kMetaStoreUuid = "store_uuid";
 inline constexpr int32_t kPixelLayerId = 1;
 inline constexpr const char* kPixelLayerName = "pixel";
 
+// Workspace-local labels number from here upward; ids 1..65535 belong to the standard
+// vocabulary (ruling S5).
+inline constexpr int32_t kFirstLocalLabelId = 65536;
+
 // Creates every plan-A table and index, the pixel layer (id 1) and the initial meta
 // rows. Runs inside the caller's write transaction on `db`. `provenanceJson` is the
 // initial meta.provenance, `storeUuid` the initial meta.store_uuid. Throws IoError.

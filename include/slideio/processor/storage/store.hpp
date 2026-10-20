@@ -15,6 +15,7 @@
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
 #include <slideio/processor/storage/types.hpp>
+#include <slideio/processor/storage/vocabulary_registry.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -140,6 +141,15 @@ public:
     LayerRegistry& layers() noexcept;
     /** @copydoc layers() */
     const LayerRegistry& layers() const noexcept;
+    /**
+     * @brief Returns the vocabulary registry of this store.
+     * @return The registry, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every query and refuses additions.
+     * @throws Nothing.
+     */
+    VocabularyRegistry& vocabulary() noexcept;
+    /** @copydoc vocabulary() */
+    const VocabularyRegistry& vocabulary() const noexcept;
     /**
      * @brief Returns the stage state reader of this store.
      * @return The reader, valid while this store lives. Usable until close(); a
