@@ -28,6 +28,7 @@ if(OpenCV_VERSION VERSION_LESS 4)
 endif()
 find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 enable_testing()
 add_subdirectory(src)
