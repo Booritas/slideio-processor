@@ -87,3 +87,43 @@ TEST(WriterLock, LockOnAnUnlinkedLockFileRetriesOnTheFileThePathNames) {
     lockFile += "-writer.lock";
     EXPECT_EQ(readFile(lockFile), currentPidText());
 }
+
+namespace {
+
+// lockForCreateNew is what CreateNew runs after its pre-check found the path free; a
+// store present by then was made by a creator that won the race.
+void expectAlreadyExists(const std::string& path) {
+    try {
+        detail::WriterLock lock = detail::lockForCreateNew(path);
+        ADD_FAILURE() << "the lock for an existing store was taken";
+    } catch (const IoError& e) {
+        EXPECT_NE(std::string(e.what()).find("already exists"), std::string::npos) << e.what();
+    }
+}
+
+void expectStoreAndLockFileExist(const StoreFilesGuard& files) {
+    std::filesystem::path lockFile = files.path();
+    lockFile += "-writer.lock";
+    EXPECT_TRUE(std::filesystem::exists(files.path()));
+    EXPECT_TRUE(std::filesystem::exists(lockFile));
+}
+
+} // namespace
+
+TEST(StoreImpl, CreateNewLosingToALiveCreatorReportsTheExistingStore) {
+    StoreFilesGuard files;
+    detail::StoreImpl winner(files.utf8().c_str(), OpenMode::CreateNew, Configuration());
+    expectAlreadyExists(files.utf8());
+    expectStoreAndLockFileExist(files);
+    winner.close();
+}
+
+TEST(StoreImpl, CreateNewLosingToAClosedCreatorReportsTheExistingStoreAndReleasesTheLock) {
+    StoreFilesGuard files;
+    detail::StoreImpl(files.utf8().c_str(), OpenMode::CreateNew, Configuration()).close();
+    expectAlreadyExists(files.utf8());
+    expectStoreAndLockFileExist(files);
+    // The lock was released, and the store opens for writing.
+    detail::StoreImpl reopened(files.utf8().c_str(), OpenMode::ReadWrite, Configuration());
+    reopened.close();
+}

@@ -192,12 +192,35 @@ void StoreImpl::openExisting() {
     configureWriteConnection();
 }
 
-void StoreImpl::createNew() {
-    writerLock_ = WriterLock::acquire(path_);
-    std::error_code ec;
-    if (std::filesystem::exists(std::filesystem::u8path(path_), ec)) {
-        throwIo("Store::open: '" + path_ + "' already exists; CreateNew needs a new path");
+WriterLock lockForCreateNew(const std::string& path) {
+    const auto storeExists = [&path] {
+        std::error_code ec;
+        return std::filesystem::exists(std::filesystem::u8path(path), ec);
+    };
+    const auto throwExists = [&path] {
+        throwIo("Store::open: '" + path + "' already exists; CreateNew needs a new path");
+    };
+    WriterLock lock;
+    try {
+        lock = WriterLock::acquire(path);
+    } catch (const IoError&) {
+        // A creator that won the race may still hold the lock: its store is the answer.
+        if (storeExists()) throwExists();
+        throw;
     }
+    if (storeExists()) {
+        // A creator that won the race has made the store and released the lock. The lock
+        // file now belongs to that store, so it is released and left in place (never
+        // removeFileAndRelease), and the store's files are never removed: they are the
+        // other creator's store.
+        lock.release();
+        throwExists();
+    }
+    return lock;
+}
+
+void StoreImpl::createNew() {
+    writerLock_ = lockForCreateNew(path_);
     try {
         openWriteConnection(SQLITE_OPEN_CREATE);
         configureWriteConnection();

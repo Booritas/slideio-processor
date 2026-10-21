@@ -263,6 +263,13 @@ auto StoreGate::with(const char* operation, Fn&& fn) -> decltype(fn(std::declval
     return fn(*store_);
 }
 
+// Takes the writer lock for creating a store at `path` (UTF-8), which the caller found
+// free; another creator may have taken it since. Throws IoError "Store::open: '<path>'
+// already exists; CreateNew needs a new path" when the store exists by then, whether
+// its creator still holds the lock or not, and leaves that store and its lock file
+// untouched; otherwise throws as WriterLock::acquire.
+WriterLock lockForCreateNew(const std::string& path);
+
 // Returns Provenance::toJson as a string, the form meta.provenance holds. Throws
 // InternalError and std::bad_alloc, as toJson does.
 std::string provenanceToJson(const Provenance& provenance);
