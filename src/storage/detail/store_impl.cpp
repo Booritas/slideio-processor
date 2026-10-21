@@ -283,6 +283,11 @@ void StoreImpl::checkWritable(const char* operation) const {
     if (isReadOnly()) throwIo(std::string(operation) + ": the store '" + path_ + "' is read-only");
 }
 
+void StoreImpl::checkAcceptingObjects(const char* operation) const {
+    checkWritable(operation);
+    if (closing_.load(std::memory_order_acquire)) ConnectionPool::throwClosed(operation, path_);
+}
+
 ReadLease StoreImpl::acquireRead(const char* operation) const {
     checkOpen(operation);
     return ReadLease(pool_, pool_->acquire(operation));
@@ -377,6 +382,9 @@ void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
 
 void StoreImpl::close() {
     if (!isOpen()) return;
+    // From here every emit() is refused (checkAcceptingObjects), so none can queue an
+    // object behind its writer's flush below.
+    closing_.store(true, std::memory_order_release);
     // Live writers commit what they hold pending while the store is still open; the
     // first failure is reported once the store is closed all the same.
     const std::exception_ptr flushError = gate_->flushClients();

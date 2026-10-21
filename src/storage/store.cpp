@@ -100,4 +100,6 @@ StageStateWriter& Store::stageStateWriter() noexcept { return impl_->stageWriter
 
 void Store::close() { impl_->core.close(); }
 
+std::shared_ptr<detail::StoreGate> detail::StoreAccess::gate(Store& store) { return store.impl_->core.gate(); }
+
 } // namespace slideio::processor

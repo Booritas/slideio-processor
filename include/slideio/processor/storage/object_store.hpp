@@ -80,8 +80,9 @@ public:
      * @throws InvalidArgumentError When the record is refused (see the class
      * description), or when the commit it triggered found an anchor collision; the
      * batch is then dropped.
-     * @throws IoError When the store is closed, or when SQLite fails during a commit;
-     * the batch is then dropped.
+     * @throws IoError When the store is closed or Store::close() has begun (the record
+     * is not accepted), or when SQLite fails during a commit; the batch is then
+     * dropped.
      * @throws std::bad_alloc When memory is exhausted.
      */
     void emit(const ObjectRecord& record) override;

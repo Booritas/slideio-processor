@@ -1,4 +1,5 @@
 // Requirements: UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-5, UR-STG-6, UR-OBS-2, UR-OBS-4, UR-QA-3
+#include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -10,8 +11,10 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -394,4 +397,49 @@ TEST(ObjectHandleLifetime, CloseFlushesEveryWriterAndReportsTheFirstFailure) {
 
     store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
     EXPECT_EQ(store->objects().totalObjectCount(), 2);  // the second writer's object was committed
+}
+
+namespace {
+
+// Tracked on the gate after `writer`, so close() calls it once the writer is flushed and
+// before the store is closed: it emits into the writer in that window.
+class LateEmitter final : public detail::GateClient {
+public:
+    LateEmitter(ObjectWriter& writer, ObjectRecord record) : writer_(writer), record_(std::move(record)) {}
+    void flushBeforeClose() override {
+        try {
+            writer_.emit(record_);
+        } catch (const IoError& e) {
+            refusal = e.what();
+        }
+    }
+    std::string refusal;  // empty when the emit was accepted
+
+private:
+    ObjectWriter& writer_;
+    const ObjectRecord record_;
+};
+
+} // namespace
+
+// An emit() accepted during close() must be committed; one too late to be is refused.
+TEST(ObjectHandleLifetime, EmitDuringCloseIsRefusedNotDropped) {
+    StoreFilesGuard files("objectlate");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
+    const StageId a = store->stageStateWriter().declare("a", "");
+    ObjectWriterPtr writer = store->objects().writerForStage(a);
+    writer->setBatchSizeObjects(1000);
+    writer->emit(rec(cells, 0, 0, 4));  // pending; close() commits it
+    const auto late = std::make_shared<LateEmitter>(*writer, rec(cells, 10, 0, 4));
+    detail::StoreAccess::gate(*store)->track(late);
+    store->close();
+    EXPECT_NE(late->refusal.find("store is closed"), std::string::npos) << "refusal: '" << late->refusal << "'";
+    EXPECT_EQ(writer->emittedCount(), 1);
+    writer.reset();
+    store.reset();
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->objects().totalObjectCount(), 1);
 }

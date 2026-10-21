@@ -16,6 +16,7 @@
 
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/types.hpp>
 
@@ -32,6 +33,10 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+namespace slideio::processor {
+class Store;
+} // namespace slideio::processor
 
 namespace slideio::processor::detail {
 
@@ -177,6 +182,11 @@ public:
     // checkOpen, then throws IoError "<operation>: the store '<path>' is read-only" on a
     // ReadOnly store.
     void checkWritable(const char* operation) const;
+    // checkWritable, then throws IoError "<operation>: store is closed ('<path>')" once
+    // close() has begun: a new object accepted then might be queued after its writer's
+    // flush and lost. For ObjectWriter::emit only; commits (close's own flush among them)
+    // use checkWritable.
+    void checkAcceptingObjects(const char* operation) const;
 
     // Runs fn(sqlite3* writeConnection) inside BEGIN IMMEDIATE ... COMMIT, holding the
     // write mutex, and returns its result. Rolls back and rethrows when fn throws; a
@@ -245,6 +255,7 @@ private:
     int32_t formatVersion_ = 0;
     std::string storeUuid_;  // meta.store_uuid; names the wake-up signal
     std::atomic<bool> open_{false};
+    std::atomic<bool> closing_{false};  // set once close() begins; never cleared
     WriterLock writerLock_;
     mutable std::mutex writeMutex_;
     Connection writeConnection_;
@@ -262,6 +273,13 @@ auto StoreGate::with(const char* operation, Fn&& fn) -> decltype(fn(std::declval
     }
     return fn(*store_);
 }
+
+// Test access to an open Store's internals, for detail tests that need to act inside
+// Store::close() (a GateClient tracked on the gate). Exported, as a Store lives in the
+// library; nothing in the library calls it.
+struct SLIDEIO_PROCESSOR_DATA_EXPORTS StoreAccess {
+    static std::shared_ptr<StoreGate> gate(Store& store);
+};
 
 // Takes the writer lock for creating a store at `path` (UTF-8), which the caller found
 // free; another creator may have taken it since. Throws IoError "Store::open: '<path>'

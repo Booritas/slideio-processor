@@ -305,8 +305,14 @@ void ObjectWriter::emit(const ObjectRecord& record) {
     }
 
     std::lock_guard<std::mutex> guard(impl_->core->mutex);
-    // A writer that outlived its store, or whose store closed, refuses at once.
-    impl_->core->gate->with(kOperation, [&](detail::StoreImpl& store) { store.checkWritable(kOperation); });
+    // A writer that outlived its store, or whose store closed, refuses at once; so does one
+    // whose store is closing. Every accepted object is therefore committed by close():
+    // this check runs under `mutex`, and close() sets its closing flag before
+    // flushBeforeClose takes the same mutex. An emit holding the mutex first queues its
+    // object ahead of that flush; one taking it after the flush sees the flag and
+    // refuses. A writer missing from close()'s list of clients was tracked after the
+    // list was taken, so after the flag was set, and refuses too.
+    impl_->core->gate->with(kOperation, [&](detail::StoreImpl& store) { store.checkAcceptingObjects(kOperation); });
     const std::string& layerName = impl_->core->requireLayer(kOperation, layer);
     if (geometry.isEmpty()) throwInvalid(kOperation, "an object in layer '" + layerName + "' has empty geometry");
     if (!id.isValid()) {

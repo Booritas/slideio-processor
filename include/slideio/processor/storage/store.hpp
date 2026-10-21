@@ -23,6 +23,10 @@
 
 namespace slideio::processor {
 
+namespace detail {
+struct StoreAccess;
+} // namespace detail
+
 class Store;
 /** @brief Shared ownership of an open Store. */
 using StorePtr = std::shared_ptr<Store>;
@@ -191,6 +195,7 @@ public:
     void close();
 
 private:
+    friend struct detail::StoreAccess;  // library-internal test access
     class Impl;
     explicit Store(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
