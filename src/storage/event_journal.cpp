@@ -283,8 +283,7 @@ EventCursorPtr EventJournal::subscribe(int64_t fromSequence) {
                                     std::to_string(kFromNow) + ")";
         throw InvalidArgumentError(message.c_str());
     }
-    store.checkOpen("EventJournal::subscribe");
-    detail::ReadLease lease = store.acquireRead("EventJournal::subscribe");
+    detail::ReadLease lease = store.acquireRead("EventJournal::subscribe");  // checks the store is open
     int64_t start = 0;
     {
         sqlite3* db = lease.get();
@@ -296,6 +295,15 @@ EventCursorPtr EventJournal::subscribe(int64_t fromSequence) {
             start = newestOn(db);
         } else {
             throwIfTruncated(db, fromSequence);
+            // A position past the newest event belongs to another store (or to this path
+            // before it was recreated); starting there would skip the events up to it.
+            const int64_t newest = newestOn(db);
+            if (fromSequence > newest) {
+                const std::string message = "EventJournal::subscribe: position " + std::to_string(fromSequence) +
+                                            " is beyond the newest event " + std::to_string(newest) + " of '" +
+                                            store.path() + "'; a position must come from position() on this store";
+                throw InvalidArgumentError(message.c_str());
+            }
             start = fromSequence;
         }
         transaction.commit();

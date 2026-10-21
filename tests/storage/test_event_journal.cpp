@@ -204,6 +204,27 @@ TEST_F(EventJournalTest, TruncatingEverythingKeepsSequencesAndStartsAfterNewest)
     EXPECT_EQ(c->current().sequence(), 4);
 }
 
+// A position beyond the newest event came from another store, or from this path before
+// it was recreated; starting there would skip the events up to it once they are written.
+TEST_F(EventJournalTest, PositionBeyondTheNewestEventIsRefused) {
+    EventJournal& j = store().events();
+    ASSERT_EQ(j.newestSequence(), 0);
+    try {
+        j.subscribe(1);
+        FAIL() << "subscribe(1) on an empty journal should throw";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find("position 1 is beyond the newest event 0"), std::string::npos) << message;
+        EXPECT_NE(message.find(pathUtf8()), std::string::npos) << message;
+    }
+    EXPECT_NO_THROW(j.subscribe(0));
+
+    appendFromAnotherProcess(simpleEvents(1, 1));
+    auto c = j.subscribe(1);  // the newest event itself is a valid position
+    EXPECT_EQ(c->position(), 1);
+    EXPECT_THROW(j.subscribe(2), InvalidArgumentError);
+}
+
 TEST_F(EventJournalTest, WaitHonoursTimeoutAndArguments) {
     EventJournal& j = store().events();
     auto c = j.subscribe(EventJournal::kFromBeginning);

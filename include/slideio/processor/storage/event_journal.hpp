@@ -236,8 +236,9 @@ public:
      * kFromBeginning, or kFromNow.
      * @return The cursor, positioned before its first event.
      * @throws InvalidArgumentError When `fromSequence` is negative and neither
-     * kFromBeginning nor kFromNow; or when events above it were truncated away (the
-     * message names both positions).
+     * kFromBeginning nor kFromNow; when events above it were truncated away (the
+     * message names both positions); or when it is beyond newestSequence(), as a
+     * position from another store is (the message names both sequences and the store).
      * @throws IoError When the store is closed, or when SQLite fails.
      * @throws std::bad_alloc When memory is exhausted.
      */
