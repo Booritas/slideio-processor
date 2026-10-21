@@ -193,10 +193,6 @@ void StoreImpl::openExisting() {
 }
 
 WriterLock lockForCreateNew(const std::string& path) {
-    const auto storeExists = [&path] {
-        std::error_code ec;
-        return std::filesystem::exists(std::filesystem::u8path(path), ec);
-    };
     const auto throwExists = [&path] {
         throwIo("Store::open: '" + path + "' already exists; CreateNew needs a new path");
     };
@@ -205,10 +201,20 @@ WriterLock lockForCreateNew(const std::string& path) {
         lock = WriterLock::acquire(path);
     } catch (const IoError&) {
         // A creator that won the race may still hold the lock: its store is the answer.
-        if (storeExists()) throwExists();
+        // A path that cannot be inspected counts as taken too.
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::u8path(path), ec) || ec) throwExists();
         throw;
     }
-    if (storeExists()) {
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(std::filesystem::u8path(path), ec);
+    if (ec) {
+        // Unknown whether another creator's store is there: creating, or cleaning up after
+        // a failed create, could destroy it.
+        lock.release();
+        throwIo("Store::open: cannot inspect '" + path + "'", ec.message().c_str());
+    }
+    if (exists) {
         // A creator that won the race has made the store and released the lock. The lock
         // file now belongs to that store, so it is released and left in place (never
         // removeFileAndRelease), and the store's files are never removed: they are the

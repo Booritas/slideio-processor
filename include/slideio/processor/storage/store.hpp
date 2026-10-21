@@ -185,9 +185,11 @@ public:
      * lock. Idempotent.
      *
      * Every live ObjectWriter first commits what it holds pending, as by flush(); a
-     * writer used afterwards throws IoError. The store is closed even when a flush
-     * fails: every writer is tried, and the first failure is then reported. Errors
-     * during teardown are reported here rather than in the destructor, which logs them.
+     * writer used afterwards throws IoError, and an ObjectWriter::emit() racing close()
+     * is refused with IoError "store is closed" rather than accepted and lost. The
+     * store is closed even when a flush fails: every writer is tried, and the first
+     * failure is then reported. Errors during teardown are reported here rather than
+     * in the destructor, which logs them.
      * @throws InvalidArgumentError When a writer's pending batch collides with a
      * committed object's anchor; that batch is rolled back and dropped.
      * @throws IoError When a writer's commit or releasing the store fails.
@@ -195,7 +197,7 @@ public:
     void close();
 
 private:
-    friend struct detail::StoreAccess;  // library-internal test access
+    friend struct detail::StoreAccess;  // test seam, not API: library-internal test access only
     class Impl;
     explicit Store(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

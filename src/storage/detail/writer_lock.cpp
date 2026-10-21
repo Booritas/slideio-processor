@@ -36,7 +36,14 @@ std::string lockPathOf(const std::string& storePath) { return storePath + "-writ
 // before the removal can lock the removed file while a later opener creates and locks a
 // new one. A lock therefore counts only when the path still names the locked file, and
 // while a counted lock is held the path keeps naming its file: only its holder removes
-// it. So no two acquires succeed at once, and each retry follows a fresh removal.
+// it. So no two acquires succeed at once, and each retry follows a fresh removal. A
+// refusal counts the same way: a lock found held on a file the path no longer names
+// belongs to a holder removing it, so acquire retries rather than reports a writer.
+// On Windows without POSIX delete semantics (FAT, Windows before 10 1809) a removed
+// lock file stays delete-pending while open; reopening it fails, so acquire throws
+// "cannot open", which fails safe and never yields two writers. The check relies on
+// local-filesystem file identity (inode, volume serial and file index): the writer
+// lock does not support stores on network shares.
 constexpr int kLockAttempts = 8;
 
 // The holder's pid from the lock file's text, or "" when it does not parse.
@@ -153,6 +160,10 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
                 CloseHandle(h);
                 throwLockFileError(lockPath, "lock", std::system_category().message(static_cast<int>(error)));
             }
+            if (!namesFile(h, wide)) {  // locked by a holder that is removing it; no writer's
+                CloseHandle(h);
+                continue;
+            }
             char buffer[32] = {};
             DWORD read = 0;
             const BOOL ok = ReadFile(h, buffer, sizeof(buffer) - 1, &read, nullptr);
@@ -213,6 +224,10 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
             if (error != EWOULDBLOCK) {
                 ::close(fd);
                 throwLockFileError(lockPath, "lock", std::strerror(error));
+            }
+            if (!namesFile(fd, lockPath)) {  // locked by a holder that is removing it; no writer's
+                ::close(fd);
+                continue;
             }
             char buffer[32] = {};
             const ssize_t n = ::pread(fd, buffer, sizeof(buffer) - 1, 0);

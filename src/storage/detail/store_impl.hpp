@@ -285,7 +285,8 @@ struct SLIDEIO_PROCESSOR_DATA_EXPORTS StoreAccess {
 // free; another creator may have taken it since. Throws IoError "Store::open: '<path>'
 // already exists; CreateNew needs a new path" when the store exists by then, whether
 // its creator still holds the lock or not, and leaves that store and its lock file
-// untouched; otherwise throws as WriterLock::acquire.
+// untouched; IoError "Store::open: cannot inspect '<path>'" when, with the lock taken,
+// the path cannot be inspected; otherwise throws as WriterLock::acquire.
 WriterLock lockForCreateNew(const std::string& path);
 
 // Returns Provenance::toJson as a string, the form meta.provenance holds. Throws

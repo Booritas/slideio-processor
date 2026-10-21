@@ -88,6 +88,23 @@ TEST(WriterLock, LockOnAnUnlinkedLockFileRetriesOnTheFileThePathNames) {
     EXPECT_EQ(readFile(lockFile), currentPidText());
 }
 
+TEST(WriterLock, LockHeldOnAnUnlinkedLockFileDoesNotRefuseTheNextWriter) {
+    StoreFilesGuard files;
+    const std::string store = files.utf8();
+    std::filesystem::path lockFile = files.path();
+    lockFile += "-writer.lock";
+    detail::WriterLock first = detail::WriterLock::acquire(store);
+    // `second` opens the lock file, which is then removed while `first` still holds it:
+    // the instant inside removeFileAndRelease before the release. The file `second`
+    // finds locked is no longer the one the path names, so it is no writer's.
+    detail::WriterLock second = detail::WriterLock::acquire(store, [&] { std::filesystem::remove(lockFile); });
+    EXPECT_TRUE(second.held());
+    first.release();
+
+    EXPECT_THROW(detail::WriterLock::acquire(store), IoError);
+    EXPECT_EQ(readFile(lockFile), currentPidText());
+}
+
 namespace {
 
 // lockForCreateNew is what CreateNew runs after its pre-check found the path free; a
