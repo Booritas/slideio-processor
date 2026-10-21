@@ -6,6 +6,7 @@
 // flock(LOCK_EX | LOCK_NB) on POSIX. Both lock per handle, so a second acquire in the
 // same process fails as one from another process does.
 
+#include <functional>
 #include <string>
 
 namespace slideio::processor::detail {
@@ -22,8 +23,14 @@ public:
     // Takes the lock for the store at `storePath` (UTF-8), without waiting. Throws
     // IoError naming the store path and, when the lock file's text parses,
     // "process <pid>" when another handle holds it; IoError naming the lock file when
-    // it cannot be created or written.
+    // it cannot be created or written. A lock on a lock file that was removed while it was
+    // being locked (see removeFileAndRelease) does not count: acquire reopens the path and
+    // tries again, and throws IoError naming the lock file after 8 such attempts.
     static WriterLock acquire(const std::string& storePath);
+    // acquire, running afterOpen (when not empty) between opening the lock file and
+    // locking it, on the first attempt only: a test seam for the race with
+    // removeFileAndRelease.
+    static WriterLock acquire(const std::string& storePath, const std::function<void()>& afterOpen);
 
     bool held() const noexcept;
     // Releases the lock; a no-op when it is not held. The file is left in place:

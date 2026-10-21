@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -20,6 +21,7 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -28,6 +30,14 @@ namespace slideio::processor::detail {
 namespace {
 
 std::string lockPathOf(const std::string& storePath) { return storePath + "-writer.lock"; }
+
+// How often acquire reopens the lock file after locking an orphan. A holder removes the
+// lock file only while it holds the lock (removeFileAndRelease), so a handle opened just
+// before the removal can lock the removed file while a later opener creates and locks a
+// new one. A lock therefore counts only when the path still names the locked file, and
+// while a counted lock is held the path keeps naming its file: only its holder removes
+// it. So no two acquires succeed at once, and each retry follows a fresh removal.
+constexpr int kLockAttempts = 8;
 
 // The holder's pid from the lock file's text, or "" when it does not parse.
 std::string parsePid(const std::string& text) {
@@ -91,6 +101,8 @@ WriterLock& WriterLock::operator=(WriterLock&& other) noexcept {
 
 WriterLock::~WriterLock() { release(); }
 
+WriterLock WriterLock::acquire(const std::string& storePath) { return acquire(storePath, std::function<void()>()); }
+
 #ifdef _WIN32
 
 namespace {
@@ -102,42 +114,63 @@ void lockRegion(OVERLAPPED& region) {
 }
 
 std::string lastErrorText() { return std::system_category().message(static_cast<int>(GetLastError())); }
+
+// True when `h` is the file `path` names now; false when the path is missing or names
+// another file, because the file `h` holds was removed after it was opened.
+bool namesFile(HANDLE h, const std::filesystem::path& path) {
+    BY_HANDLE_FILE_INFORMATION held{};
+    if (!GetFileInformationByHandle(h, &held)) return false;
+    // No access rights and full sharing: this open never conflicts with another handle.
+    HANDLE named = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (named == INVALID_HANDLE_VALUE) return false;
+    BY_HANDLE_FILE_INFORMATION current{};
+    const BOOL ok = GetFileInformationByHandle(named, &current);
+    CloseHandle(named);
+    return ok && held.dwVolumeSerialNumber == current.dwVolumeSerialNumber &&
+           held.nFileIndexHigh == current.nFileIndexHigh && held.nFileIndexLow == current.nFileIndexLow;
+}
 } // namespace
 
-WriterLock WriterLock::acquire(const std::string& storePath) {
+WriterLock WriterLock::acquire(const std::string& storePath, const std::function<void()>& afterOpen) {
     const std::string lockPath = lockPathOf(storePath);
     const std::filesystem::path wide = std::filesystem::u8path(lockPath);
-    HANDLE h = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) throwLockFileError(lockPath, "open", lastErrorText());
-    WriterLock lock;
-    lock.handle_ = h;  // closed by ~WriterLock on every failure below
+    for (int attempt = 0; attempt < kLockAttempts; ++attempt) {
+        HANDLE h = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) throwLockFileError(lockPath, "open", lastErrorText());
+        WriterLock lock;
+        lock.handle_ = h;  // closed by ~WriterLock on every failure and retry below
+        if (attempt == 0 && afterOpen) afterOpen();
 
-    OVERLAPPED region;
-    lockRegion(region);
-    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &region)) {
-        const DWORD error = GetLastError();
-        lock.handle_ = nullptr;
-        if (error != ERROR_LOCK_VIOLATION && error != ERROR_IO_PENDING) {
+        OVERLAPPED region;
+        lockRegion(region);
+        if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &region)) {
+            const DWORD error = GetLastError();
+            lock.handle_ = nullptr;
+            if (error != ERROR_LOCK_VIOLATION && error != ERROR_IO_PENDING) {
+                CloseHandle(h);
+                throwLockFileError(lockPath, "lock", std::system_category().message(static_cast<int>(error)));
+            }
+            char buffer[32] = {};
+            DWORD read = 0;
+            const BOOL ok = ReadFile(h, buffer, sizeof(buffer) - 1, &read, nullptr);
             CloseHandle(h);
-            throwLockFileError(lockPath, "lock", std::system_category().message(static_cast<int>(error)));
+            throwHeld(storePath, ok ? std::string(buffer, read) : std::string());
         }
-        char buffer[32] = {};
-        DWORD read = 0;
-        const BOOL ok = ReadFile(h, buffer, sizeof(buffer) - 1, &read, nullptr);
-        CloseHandle(h);
-        throwHeld(storePath, ok ? std::string(buffer, read) : std::string());
+        if (!namesFile(h, wide)) continue;  // an orphan (see kLockAttempts); released here
+        // Lock held: replace the text with this process's id.
+        const std::string pid = std::to_string(currentPid());
+        LARGE_INTEGER zero{};
+        DWORD written = 0;
+        if (!SetFilePointerEx(h, zero, nullptr, FILE_BEGIN) || !SetEndOfFile(h) ||
+            !WriteFile(h, pid.data(), static_cast<DWORD>(pid.size()), &written, nullptr) || written != pid.size()) {
+            throwLockFileError(lockPath, "write", lastErrorText());
+        }
+        return lock;
     }
-    // Lock held: replace the text with this process's id.
-    const std::string pid = std::to_string(currentPid());
-    LARGE_INTEGER zero{};
-    DWORD written = 0;
-    if (!SetFilePointerEx(h, zero, nullptr, FILE_BEGIN) || !SetEndOfFile(h) ||
-        !WriteFile(h, pid.data(), static_cast<DWORD>(pid.size()), &written, nullptr) || written != pid.size()) {
-        throwLockFileError(lockPath, "write", lastErrorText());
-    }
-    return lock;
+    throwLockFileError(lockPath, "lock", "the lock file was replaced while it was being locked");
 }
 
 bool WriterLock::held() const noexcept { return handle_ != nullptr; }
@@ -154,31 +187,47 @@ void WriterLock::release() noexcept {
 
 #else
 
-WriterLock WriterLock::acquire(const std::string& storePath) {
-    const std::string lockPath = lockPathOf(storePath);
-    const int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    if (fd < 0) throwLockFileError(lockPath, "open", std::strerror(errno));
-    WriterLock lock;
-    lock.fd_ = fd;  // closed by ~WriterLock on every failure below
+namespace {
+// True when `fd` is the file `path` names now; false when the path is missing or names
+// another file, because the file `fd` holds was removed after it was opened.
+bool namesFile(int fd, const std::string& path) {
+    struct stat held {};
+    struct stat current {};
+    if (::fstat(fd, &held) != 0 || ::stat(path.c_str(), &current) != 0) return false;
+    return held.st_dev == current.st_dev && held.st_ino == current.st_ino;
+}
+} // namespace
 
-    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        const int error = errno;
-        lock.fd_ = -1;
-        if (error != EWOULDBLOCK) {
+WriterLock WriterLock::acquire(const std::string& storePath, const std::function<void()>& afterOpen) {
+    const std::string lockPath = lockPathOf(storePath);
+    for (int attempt = 0; attempt < kLockAttempts; ++attempt) {
+        const int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+        if (fd < 0) throwLockFileError(lockPath, "open", std::strerror(errno));
+        WriterLock lock;
+        lock.fd_ = fd;  // closed by ~WriterLock on every failure and retry below
+        if (attempt == 0 && afterOpen) afterOpen();
+
+        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            const int error = errno;
+            lock.fd_ = -1;
+            if (error != EWOULDBLOCK) {
+                ::close(fd);
+                throwLockFileError(lockPath, "lock", std::strerror(error));
+            }
+            char buffer[32] = {};
+            const ssize_t n = ::pread(fd, buffer, sizeof(buffer) - 1, 0);
             ::close(fd);
-            throwLockFileError(lockPath, "lock", std::strerror(error));
+            throwHeld(storePath, n > 0 ? std::string(buffer, static_cast<size_t>(n)) : std::string());
         }
-        char buffer[32] = {};
-        const ssize_t n = ::pread(fd, buffer, sizeof(buffer) - 1, 0);
-        ::close(fd);
-        throwHeld(storePath, n > 0 ? std::string(buffer, static_cast<size_t>(n)) : std::string());
+        if (!namesFile(fd, lockPath)) continue;  // an orphan (see kLockAttempts); released here
+        const std::string pid = std::to_string(currentPid());
+        if (::ftruncate(fd, 0) != 0 ||
+            ::pwrite(fd, pid.data(), pid.size(), 0) != static_cast<ssize_t>(pid.size())) {
+            throwLockFileError(lockPath, "write", std::strerror(errno));
+        }
+        return lock;
     }
-    const std::string pid = std::to_string(currentPid());
-    if (::ftruncate(fd, 0) != 0 ||
-        ::pwrite(fd, pid.data(), pid.size(), 0) != static_cast<ssize_t>(pid.size())) {
-        throwLockFileError(lockPath, "write", std::strerror(errno));
-    }
-    return lock;
+    throwLockFileError(lockPath, "lock", "the lock file was replaced while it was being locked");
 }
 
 bool WriterLock::held() const noexcept { return fd_ >= 0; }
