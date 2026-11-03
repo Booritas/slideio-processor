@@ -11,6 +11,18 @@ largest public surface in the library.
 
 Conventions in [00-conventions.md](00-conventions.md).
 
+**The module ships in three parts.** The first delivers the store file, the
+layer and vocabulary registries, objects, stage state and the journal (3.1–3.5,
+3.9, 3.10, 3.10a). The second adds edges, annotations, GeoJSON import,
+primitive-layer drop and the effective-label raster source (3.6, 3.7, 3.11);
+the third adds rasters (3.8). `Store` declares only the accessors whose classes
+exist, so `edges()`, `annotations()` and `rasters()` arrive with their parts.
+**The v1 format is not frozen until the third part lands.** Each part adds its
+tables to the same creation DDL and `format_version` stays 1 throughout; a
+store written before then is a development artefact and nothing migrates it.
+Freezing earlier would have meant designing the later tables before their
+designs existed.
+
 ---
 
 ## 3.1 Enumerations — `storage/types.hpp`
@@ -19,7 +31,7 @@ Conventions in [00-conventions.md](00-conventions.md).
 enum class OpenMode : int32_t {
     ReadOnly,        // no writer; safe alongside another process's writer
     ReadWrite,       // exclusive writer; readers may attach concurrently
-    CreateNew        // fails if the path exists
+    CreateNew        // creates the store; fails if the path exists
 };
 
 enum class LayerKind     : int32_t { Semantic, Primitive };
@@ -34,6 +46,11 @@ enum class EventKind : int32_t {
 };
 ```
 
+Every enumerator value is persisted in the store file, so none is ever
+renumbered and new enumerators are appended only at the end. `EventKind`
+already lists the kinds of all three parts, so the journal's encoding does not
+change when edges and rasters arrive.
+
 ## 3.2 Store — `storage/store.hpp`
 
 ```cpp
@@ -42,112 +59,205 @@ using StorePtr = std::shared_ptr<Store>;
 
 class Store {
 public:
-    static StorePtr open(const char* path, OpenMode, const Configuration&);
-    ~Store();
+    static StorePtr open(const char* path, OpenMode mode,
+                         const Configuration& configuration);
+    ~Store();                                  // calls close(); logs and swallows
+    Store(const Store&) = delete;
+    Store& operator=(const Store&) = delete;
 
+    // These four still answer after close().
     const char* path() const noexcept;
-    int32_t formatVersion() const noexcept;
-    OpenMode mode() const noexcept;
-    bool     isReadOnly() const noexcept;
-
-    LayerRegistry&       layers() noexcept;
-    const LayerRegistry& layers() const noexcept;
-    VocabularyRegistry&  vocabulary() noexcept;
-    ObjectStore&         objects() noexcept;
-    EdgeStore&           edges() noexcept;
-    AnnotationStore&     annotations() noexcept;
-    RasterRegistry&      rasters() noexcept;
-    EventJournal&        events() noexcept;
-    StageStateReader&    stageStates() noexcept;
+    int32_t     formatVersion() const noexcept;
+    OpenMode    mode() const noexcept;
+    bool        isReadOnly() const noexcept;
 
     Provenance provenance() const;
-    void       setProvenance(const Provenance&);
+    void       setProvenance(const Provenance& provenance);
 
-    /// Flushes pending batches and releases the connection. Idempotent.
-    /// Errors during teardown are reported here rather than in the destructor.
+    EventJournal&             events() noexcept;
+    LayerRegistry&            layers() noexcept;
+    const LayerRegistry&      layers() const noexcept;
+    VocabularyRegistry&       vocabulary() noexcept;
+    const VocabularyRegistry& vocabulary() const noexcept;
+    ObjectStore&              objects() noexcept;
+    StageStateReader&         stageStates() noexcept;
+    StageStateWriter&         stageStateWriter() noexcept;   // 3.10a
+
+    // Added with their parts: EdgeStore& edges() noexcept (3.6),
+    // AnnotationStore& annotations() noexcept (3.7),
+    // RasterRegistry& rasters() noexcept (3.8).
+
+    /// Flushes pending batches and releases every connection and the writer
+    /// lock. Idempotent. Errors during teardown are reported here rather than
+    /// in the destructor.
     void close();
 };
 
-int32_t storeFormatVersion() noexcept;
+int32_t storeFormatVersion() noexcept;   // storage/store_format.hpp; returns 1
 ```
 
 **Thread-safety:** ThreadSafe. All methods callable from any thread with no
-external locking. Sub-object references remain valid until `close()`.
-**Requirements:** UR-RES-12, UR-BLD-5, UR-OBS-1, decision 4.
+external locking. Sub-object references remain valid while the store lives and
+usable until `close()`.
+**Requirements:** UR-RES-12, UR-BLD-5, UR-OBS-1, UR-RES-11, decision 4.
 
 `open` gates on the format version and throws `StoreFormatError` naming both
 the store's version and the library's when they are incompatible, rather than
-misreading the file (UR-RES-12).
+misreading the file (UR-RES-12). A file that is not a SQLite database, or has
+no `meta` table, is refused the same way with store version 0.
 
-**`provenance()` must restore what `core::Provenance` cannot.** The shipped
-`Provenance` is write-side only: `libraryVersion()` is the running library's
-and `createdAtUnixMs()` the object's construction time, with no setter for
-either (`01-core.md` 1.13). A `Provenance` built here from the stored row would
-therefore report the reading library's version and the time of the read, not
-the store's. `storage` must provide a route that returns the persisted version
-and creation time — a restoring constructor or factory in `core`, or a
-store-side record type — and until it does, the persisted JSON is the source of
-truth for them (UR-RES-11).
+**Modes.** `CreateNew` creates the file and throws `IoError` if the path
+exists. `ReadWrite` and `ReadOnly` require an existing file and throw `IoError`
+naming the path if it is missing. `mode()` returns the mode passed in, and
+`isReadOnly()` is true only for `ReadOnly`. A null or empty path, or a value
+outside `OpenMode`, throws `InvalidArgumentError`. Every mutating call on a
+`ReadOnly` store throws `IoError` naming the path and the word `read-only`.
 
-Opened in WAL mode with one connection per accessing thread. That is what makes
-UR-OBS-1 achievable: a `ReadOnly` store in a viewer process reads concurrently
-with a `ReadWrite` store in a script process, neither blocking the other, each
-reader seeing a consistent snapshot rather than a partially applied transaction.
+**After `close()`**, `path()`, `formatVersion()`, `mode()` and `isReadOnly()`
+still answer, and every throwing member throws `IoError` containing `store is
+closed`. **The `noexcept` members of the registries are the exception**:
+`count()`, `find()`, `exists()`, `isDropped()`, `isRecognised()`,
+`coarsestAnalysisLevel()`, `recordedStandardVersion()` and `importPolicy()`
+cannot throw, so on a closed store, or when SQLite fails, they return the
+documented fallback — 0, `false` or the default — instead. Each header states
+its fallback. Dropping `noexcept` instead would have changed every one of these
+signatures for a state a caller reaches only by misuse.
 
-`ReadWrite` takes an exclusive writer lock. A second `ReadWrite` open throws
-`IoError` naming the holding process where the platform allows it — concurrent
-writers remain out of scope (Assumption 6, §15).
+**`close()` flushes live writers before it closes.** Every live
+`ObjectWriter` commits what it holds pending, as by its own `flush()`; every
+writer is tried and the first failure is then reported, and the store is closed
+either way. From the moment `close()` begins, `ObjectWriter::emit` is refused
+with `IoError` "store is closed" rather than accepted and silently lost behind
+the final flush. A writer or cursor used afterwards throws `IoError`. The
+destructor calls `close()`, logs any error at `Error`, and swallows it.
+
+**`provenance()` returns the stored record, not the reader's.** `meta`
+holds `Provenance::toJson`, written at creation from a default `Provenance()`
+— so it carries the creating library's version and the creation time — and
+replaced by `setProvenance`. `provenance()` parses it and returns
+`Provenance::restored(...)` (`01-core.md` 1.13), so the library version and
+creation time are the persisted ones rather than the reading library's and the
+time of the read (UR-RES-11). An unreadable record throws `InternalError`
+naming the store path, the parse offset and the record size, but never the
+record's text, which carries the slide identifier.
+
+**Connections.** WAL mode, `synchronous=NORMAL`, `foreign_keys=ON`,
+`busy_timeout=5000`. There is one write connection, guarded by a mutex, and
+every write transaction runs on it. Read connections come from a pool: a point
+read checks one out for the call, and an object cursor checks one out for its
+lifetime and holds one read transaction, so it sees a single snapshot and never
+a partially applied batch. That is what makes UR-OBS-1 achievable: a `ReadOnly`
+store in a viewer process reads concurrently with a `ReadWrite` store in a
+script process, neither blocking the other. SQLite is linked privately and
+never exported; on Linux its symbols are hidden from the shared library, so it
+cannot interpose on the copy SlideIO's converter carries, or be interposed by it.
+
+### The writer lock
+
+`ReadWrite` and `CreateNew` take an exclusive writer lock: a file at
+`<path>-writer.lock` holding the owner's process id as decimal text, locked
+with `LockFileEx` on Windows and `flock(LOCK_EX | LOCK_NB)` on POSIX, and held
+until `close()`. A second writer throws `IoError` naming the path and, when
+the lock file's text parses, `process <pid>` — concurrent writers remain out of
+scope (Assumption 6, §15). Both platforms lock per handle, so a second
+`ReadWrite` open in the same process fails the same way. `ReadOnly` takes no
+lock.
+
+- **A lock counts only on the file the path still names.** A handle opened
+  just before another holder removed its lock file could otherwise lock the
+  removed file while a later opener locks a new one. `open` therefore checks
+  the locked file's identity (inode, or volume serial and file index) against
+  the path and retries, up to eight times; a refusal on a file the path no
+  longer names is retried the same way rather than reported as a writer.
+- **The lock file is not removed on a normal close.** Removing it would race
+  with a process that has just opened it. Only a failed `CreateNew` removes
+  its own lock file, while still holding the lock.
+- **`CreateNew` racing another creator reports "already exists"** and leaves
+  that store and its lock file untouched. Whichever creator takes the lock
+  rechecks the path; a creator that finds the store already made, or cannot
+  inspect the path, never removes files, because they may be the other
+  creator's store.
+- **Stores on network shares are not supported for writing.** The identity
+  check relies on local-filesystem file identity. On a Windows volume without
+  POSIX delete semantics a removed lock file stays delete-pending; reopening it
+  fails and `open` throws, which fails safe and never yields two writers.
+
+**Error messages name the store path**, as C-6 requires, and paths therefore
+appear in exceptions and logs. Callers should not put patient identifiers in
+store paths or file names, since anything there reaches error reports and log
+files (HIPAA, GDPR).
 
 ## 3.3 Layer registry — `storage/layer_registry.hpp`
 
 ```cpp
 class LayerRegistry {
 public:
+    ~LayerRegistry();
+    LayerRegistry(const LayerRegistry&) = delete;
+    LayerRegistry& operator=(const LayerRegistry&) = delete;
+
     /// Declares a semantic layer beneath `parent`. Pass pixelLayer() for a
     /// layer rooted directly at the pixel layer. Branching is permitted.
     LayerId declareSemantic(const char* name, LayerId parent);
     LayerId declarePrimitive(const char* name);
 
-    LayerId pixelLayer() const noexcept;
+    LayerId pixelLayer() const noexcept;                 // LayerId(1)
 
     int32_t count() const noexcept;
     LayerId at(int32_t index) const;
     bool    find(const char* name, LayerId& out) const noexcept;
 
-    const char* name(LayerId) const;
-    LayerKind   kind(LayerId) const;
-    bool        exists(LayerId) const noexcept;
+    const char* name(LayerId layer) const;
+    LayerKind   kind(LayerId layer) const;
+    bool        exists(LayerId layer) const noexcept;
 
     // Semantic hierarchy. Throw InvalidArgumentError for primitive layers.
-    LayerId parent(LayerId) const;
-    int32_t depth(LayerId) const;
-    int32_t childCount(LayerId) const;
-    LayerId childAt(LayerId, int32_t index) const;
+    LayerId parent(LayerId layer) const;
+    int32_t depth(LayerId layer) const;
+    int32_t childCount(LayerId layer) const;
+    LayerId childAt(LayerId layer, int32_t index) const;
 
-    /// True if `descendant` lies strictly above `ancestor` in the hierarchy,
-    /// at any distance. The predicate UR-RES-14 edges are validated against.
+    /// True if `ancestor` is a proper ancestor of `descendant` — that is, if
+    /// `descendant` lies strictly above `ancestor` in the hierarchy, at any
+    /// distance. The predicate UR-RES-14 edges are validated against.
     bool isAbove(LayerId descendant, LayerId ancestor) const;
 
-    bool isDropped(LayerId) const noexcept;
+    bool isDropped(LayerId layer) const noexcept;
 
     /// Stages declared to write this layer, queryable before any stage runs.
-    int32_t writerStageCount(LayerId) const;
-    StageId writerStageAt(LayerId, int32_t index) const;
+    int32_t writerStageCount(LayerId layer) const;
+    StageId writerStageAt(LayerId layer, int32_t index) const;
 
-    /// The coarsest pyramid level any completed stage used to write this
-    /// layer; 0 for a layer written only at full resolution, by import, or
-    /// not yet written. Geometry in this layer carries level-0 coordinates
-    /// whose precision is that of this level.
-    int32_t coarsestAnalysisLevel(LayerId) const noexcept;
+    /// The coarsest pyramid level any stage used to write this layer; 0 for a
+    /// layer written only at full resolution, by import, or not yet written.
+    /// Geometry in this layer carries level-0 coordinates whose precision is
+    /// that of this level.
+    int32_t coarsestAnalysisLevel(LayerId layer) const noexcept;
 
     /// Records the level a stage analysed at. Called by the framework when a
     /// writing stage completes; keeps the maximum over all writers.
-    void recordAnalysisLevel(LayerId, int32_t level);
+    void recordAnalysisLevel(LayerId layer, int32_t level);
 };
 ```
 
-**Thread-safety:** ThreadSafe. **Requirements:** UR-STG-10, UR-RES-13,
-UR-RES-14, UR-STG-12, UR-SEG-4, UR-IMG-4.
+**Thread-safety:** ThreadSafe; declarations are serialised with every other
+write. **Requirements:** UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-SEG-4,
+UR-IMG-4.
+
+**Ids and names.** `pixelLayer()` is `LayerId(1)`, named `pixel`, semantic,
+depth 0, with an invalid parent; it exists from the moment the store is
+created. Declared layers number from 2 upward in declaration order, and `at`
+lists them in ascending id. Names are unique across all layers and compared
+exactly, with no case folding. A null or empty name, a duplicate, or `pixel`
+throws `InvalidArgumentError` naming it, and `declareSemantic` requires an
+existing, semantic, undropped parent. `at`, `name`, `kind` and `parent` on an
+unknown id throw `InvalidArgumentError`, and so does `isAbove` when either
+layer is primitive or unknown. `writerStageAt` lists stages in ascending id.
+A `ReadOnly` store sees layers a writer in another process declares later.
+
+`isDropped` reads a stored flag. Nothing drops a layer until primitive-layer
+drop arrives with edges (3.6), so until then layers are never removed and ids
+and positions are stable.
 
 Semantic layers form a branching tree rooted at the pixel layer — `vessels` and
 `glands` may both sit above `tissue` without relating to each other.
@@ -180,6 +290,10 @@ This records precision; it does not improve it. A level-4 contour mapped to
 level 0 is a staircase with 16-pixel treads, and no later stage can recover
 what was never sampled.
 
+`recordAnalysisLevel` throws `InvalidArgumentError` for a negative level or an
+unknown layer. `coarsestAnalysisLevel` of an unknown layer is 0, like that of
+an unwritten one.
+
 Writing an object to an undeclared layer throws `InvalidArgumentError` naming
 the layer, per UR-STG-10's acceptance criterion.
 
@@ -193,8 +307,12 @@ future external tool, so it lives with the data.
 ```cpp
 class VocabularyRegistry {
 public:
+    ~VocabularyRegistry();
+    VocabularyRegistry(const VocabularyRegistry&) = delete;
+    VocabularyRegistry& operator=(const VocabularyRegistry&) = delete;
+
     /// The standard vocabulary version this store was written against, which
-    /// may be older or newer than the linked library's.
+    /// may be older or newer than the linked library's. Fixed at creation.
     int32_t recordedStandardVersion() const noexcept;
 
     /// Adds a workspace-local label. Legal at any time, including after
@@ -202,23 +320,36 @@ public:
     LabelId addLocal(const char* name);
 
     bool        find(const char* name, LabelId& out) const noexcept;
-    const char* name(LabelId) const;
-    LabelOrigin origin(LabelId) const;
+    const char* name(LabelId label) const;
+    LabelOrigin origin(LabelId label) const;
 
     /// False for a label from a newer standard vocabulary than this library
     /// knows. Its identifier and string are still returned intact.
-    bool isRecognised(LabelId) const noexcept;
+    bool isRecognised(LabelId label) const noexcept;
 
     int32_t count() const noexcept;
     LabelId at(int32_t index) const;
 
-    ImportPolicy importPolicy() const noexcept;
-    void         setImportPolicy(ImportPolicy);
+    ImportPolicy importPolicy() const noexcept;          // default Strict
+    void         setImportPolicy(ImportPolicy policy);
 };
 ```
 
-**Thread-safety:** ThreadSafe. **Requirements:** UR-RES-17, UR-RES-18,
-UR-RES-19.
+**Thread-safety:** ThreadSafe; additions are serialised with every other
+write. **Requirements:** UR-RES-17, UR-RES-18, UR-RES-19.
+
+**Ids.** A store is created holding the ten standard labels, ids 1 to 10.
+**Ids 1 to 65535 are reserved for the standard vocabulary, and workspace-local
+labels number from 65536 upward**, so a later standard version can append ids
+without colliding with a local id already written. `at` lists labels in
+ascending id — standard, then local. The store's own table is authoritative for
+`name()`: a label of a newer standard version keeps the identifier and string
+it was written with.
+
+**`isRecognised` is computed, not stored.** It is false for an id in 1..65535
+above the reading library's `StandardVocabulary::labelCount()`, and true for
+every other held label. A stored flag would be wrong the moment a newer library
+opened the store, so the `labels` table has none (3.12).
 
 Labels are stored as integer identifiers, never as strings on the object row —
 UR-RES-17 requires the per-object cost of a label not scale with the length of
@@ -239,17 +370,25 @@ convenient.** The standard vocabulary is spelled in British English, as the
 requirements are — `tumour` — while QuPath emits `Tumor`. UR-RES-8's acceptance
 criterion is a QuPath round trip, so a case- and spelling-sensitive lookup
 would send an ordinary exported file down the `Strict` rejection path for a
-reason that has nothing to do with the user's data. Matching folds case and
-consults a small alias table shipped with the vocabulary; `name()` always
-returns the canonical spelling, so nothing downstream sees the variant.
+reason that has nothing to do with the user's data. Matching folds ASCII case
+and then consults a fixed alias table shipped with the vocabulary —
+`tumor`→`tumour`, `artifact`→`artefact`, `immune cells`→`immune`,
+`ignore*`→`ignore`, where the `*` is an ordinary character, not a wildcard.
+`name()` always returns the canonical spelling, so nothing downstream sees the
+variant. A null or empty name is not found.
 
-`addLocal` appends a `LabelAdded` event and does not touch any previously
-written object, which is what lets a label added after the `nuclei` stage
-completed be applied by a later stage with the existing nuclei unchanged
-(UR-RES-18).
+`addLocal` returns the existing id, adding no row and no event, when `find`
+already resolves the name, aliases included. Otherwise it stores the name as
+given with origin `WorkspaceLocal` and appends a `LabelAdded` event carrying
+the label id, in the same transaction. A null or empty name throws
+`InvalidArgumentError`. It does not touch any previously written object, which
+is what lets a label added after the `nuclei` stage completed be applied by a
+later stage with the existing nuclei unchanged (UR-RES-18).
 
-`ImportPolicy` governs GeoJSON import only (3.11). Both the policy in force and
-its outcome are recoverable from the store, per UR-RES-19.
+`ImportPolicy` governs GeoJSON import only (3.11). It defaults to `Strict`,
+persists in `meta`, and is read from the store on every call, so a change made
+through another handle is seen. Both the policy in force and its outcome are
+recoverable from the store, per UR-RES-19.
 
 ## 3.5 Object store and writer — `storage/object_store.hpp`
 
@@ -259,17 +398,19 @@ using ObjectWriterPtr = std::shared_ptr<ObjectWriter>;
 
 class ObjectWriter : public ObjectSink {
 public:
-    ~ObjectWriter() override;
+    ~ObjectWriter() override;                  // flushes; logs and swallows
+    ObjectWriter(const ObjectWriter&) = delete;
+    ObjectWriter& operator=(const ObjectWriter&) = delete;
 
     /// Writes the record with this writer's `stage()` as its provenance. The
     /// record's own `stage()` is not read and cannot override it; the layer,
     /// geometry, label and measurements come from the record.
-    void emit(const ObjectRecord&) override;
+    void emit(const ObjectRecord& record) override;
     void flush() override;
     int64_t emittedCount() const override;
 
     int64_t batchSizeObjects() const noexcept;
-    void    setBatchSizeObjects(int64_t);
+    void    setBatchSizeObjects(int64_t size);
 
     /// The stage every object emitted through this writer is attributed to.
     StageId stage() const noexcept;
@@ -277,27 +418,35 @@ public:
 
 class ObjectStore : public ObjectSource {
 public:
+    ~ObjectStore() override;
+    ObjectStore(const ObjectStore&) = delete;
+    ObjectStore& operator=(const ObjectStore&) = delete;
+
     /// A writer that attributes everything it emits to `stage`. Any number may
     /// be held concurrently, from any threads; writes are serialised internally
     /// into batched transactions.
-    ObjectWriterPtr writerForStage(StageId);
+    ObjectWriterPtr writerForStage(StageId stage);
 
-    CursorPtr query(const ObjectQuery&) override;
-    int64_t   count(const ObjectQuery&) const override;
-    bool      get(ObjectId, ObjectRecord& out) const override;
+    CursorPtr query(const ObjectQuery& query) override;
+    int64_t   count(const ObjectQuery& query) const override;
+    bool      get(ObjectId id, ObjectRecord& out) const override;
 
     /// Removes every object a stage wrote. Used by re-run and by failure
     /// handling; appends StageDiscarded.
-    void discardStage(StageId);
+    void discardStage(StageId stage);
 
     int64_t totalObjectCount() const;
-    int64_t objectCountInLayer(LayerId) const;
+    int64_t objectCountInLayer(LayerId layer) const;
 };
 ```
 
-**Thread-safety:** ThreadSafe. Returned `CursorPtr` is ThreadConfined.
-**Requirements:** UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-6, decisions
-4, 5, 6, 8.
+**Thread-safety:** `ObjectStore` is ThreadSafe and a returned `CursorPtr` is
+ThreadConfined. `ObjectWriter` is ThreadSafe for `emit`, `emittedCount`, the
+batch-size pair and `stage`; `flush` requires exclusive access — the split
+`EdgeWriter` and `AnnotationWriter` have (3.6, 3.7). Any number of writers may
+be used concurrently; their commits are serialised.
+**Requirements:** UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-5, UR-STG-6,
+UR-OBS-2, UR-OBS-4, UR-QA-3, decisions 4, 5, 6, 8.
 
 **The write path is the whole point of this class.** One `emit` call inserts
 nothing by itself. Objects accumulate until `batchSizeObjects` is reached, then
@@ -308,9 +457,18 @@ one transaction inserts the object rows, the R\*Tree rows, and a single
 BEGIN
   INSERT INTO objects      ... (batch)
   INSERT INTO object_rtree ... (batch)
-  INSERT INTO events       ... (one row: layer, stage, count, union bbox)
+  INSERT INTO measurements ... (batch)
+  INSERT INTO events       ... (one row per distinct layer: layer, stage,
+                                count, union bbox; ascending layer id)
 COMMIT
 ```
+
+Objects are inserted in arrival order; 3.12 measured per-batch sorting at 18%
+slower. The batch size defaults to `Configuration::objectBatchSize()` and
+`setBatchSizeObjects` (at least 1) takes effect at the next `emit`.
+`emittedCount()` counts accepted records, pending and committed; a batch
+dropped at commit no longer counts. The destructor flushes, logs a failure at
+`Error`, and swallows it.
 
 That atomicity is what makes the journal usable as a source of truth (UR-OBS-2):
 a subscriber can never see an event for objects that are not yet queryable, and
@@ -324,8 +482,13 @@ whenever it is ready. No reorder buffer, no scan-order frontier, no head-of-line
 stalling, and identifiers identical across worker counts and tile sizes
 (decision 8, UR-QA-3).
 
-`emit` throws `InvalidArgumentError` if the record names an undeclared layer,
-an unknown label, or carries empty geometry.
+`emit` validates each record and throws `InvalidArgumentError`, adding
+nothing, for: an undeclared or dropped layer, or the pixel layer; empty
+geometry; an anchor outside the identifiable range (the message names the
+anchor); a label the store does not hold; and an anchor already pending in the
+same writer's batch for the same layer. `writerForStage` throws
+`InvalidArgumentError` for an unknown stage and `IoError` on a `ReadOnly`
+store.
 
 **Objects within one layer may not overlap at their anchor, and `emit`
 enforces it.** An anchor is the topmost-then-leftmost pixel of a shape
@@ -333,7 +496,12 @@ enforces it.** An anchor is the topmost-then-leftmost pixel of a shape
 `ObjectId` — which is not a near-miss but a collision of the identity the
 entire re-run, provenance and export story rests on. `emit` therefore throws
 `InvalidArgumentError` naming both the layer and the anchor rather than
-silently replacing, dropping or duplicating.
+silently replacing, dropping or duplicating. A collision inside one writer's
+pending batch is caught at `emit`. One with a committed row — from this
+writer, another writer or another stage — is caught at commit by the
+`UNIQUE(layer_id, anchor_id)` index: the whole batch is rolled back, its
+pending objects are dropped, and the `emit` or `flush` that triggered the
+commit throws. No partial batch is ever committed.
 
 This is stated because nothing previously stated it and a benchmark found it:
 a spike run placing ten million anchors at random produced an 0.81%
@@ -367,19 +535,52 @@ An object read from the store and emitted again is attributed to the emitting
 stage, not the original one. That is the required behaviour, not a caveat: the
 new row is this stage's output and must be discarded with it.
 
-**Stamping the read side is this module's to build.** `core` stores the stage
-field on `ObjectRecord` but exposes no member that writes it, and in the
-shipped `core` `stage()` returns an invalid id on every record (`01-core.md`
-1.6). `storage` must add the route by which `Cursor::current()` and
-`ObjectStore::get` deliver records whose `stage()` is the producing stage —
-without a public setter, which would reopen the two-sources-of-truth problem
-1.6 closes. Until it exists, nothing a store returns can answer "which stage
-produced this object" through the record.
+**The read side is stamped through `ObjectRecord::restored`.** `core` exposes
+no setter for the stage field (`01-core.md` 1.6); `Cursor::current()` and
+`ObjectStore::get` deliver `ObjectRecord::restored(record, stage)`, a copy
+whose `stage()` is the producing stage. That is not a setter in disguise:
+`emit` ignores a record's stage, so a producer that calls `restored` with
+another stage's id still writes under its own writer's stage, and the
+two-sources-of-truth problem 1.6 closes stays closed.
 
 `query` honours the `StageVisibility` of the query: `CompletedOnly` — the
-default — filters to objects of completed stages, so a later stage never sees
-another's partial output and UR-STG-5 holds by query filter rather than by
-rollback. `IncludeInFlight` is the observer's opt-in (UR-OBS-4).
+default — admits objects whose stage status is `Complete`, stale or not, so a
+later stage never sees another's partial output and UR-STG-5 holds by query
+filter rather than by rollback. `IncludeInFlight` is the observer's opt-in
+(UR-OBS-4). **`get` honours `CompletedOnly` too** — it is the default view, so
+UR-STG-5 holds for point reads; an observer wanting an in-flight object uses
+`query` with `IncludeInFlight`.
+
+**Query semantics.** Results come in ascending `ObjectId` order — by layer,
+then packed anchor — whatever the arrival order (UR-QA-3). A cursor holds one
+read transaction for its lifetime, so it sees the snapshot taken by `query`:
+objects committed later are not returned, and no batch is ever seen in part.
+`Cursor::position()` is the zero-based index of the current record.
+
+- A **rectangle** filter admits an object whose bounding box shares at least
+  one pixel with the rectangle, edges half-open. The R\*Tree is SQLite's float
+  `rtree`, which rounds outward, so it yields no false negatives even for
+  coordinates beyond float precision; every candidate is then rechecked
+  against the exact `int64` bounding box held in `objects`.
+- A **polygon** filter tests the object's exact geometry in C++ on 64-bit
+  integer coordinates. `Intersects` admits an object whose closed region meets
+  the polygon's, touching included; `ContainedBy` admits one whose closed
+  region lies inside or on the polygon's. Both are exact and implemented
+  in-house — no clipping library, since a new third-party dependency in the
+  viewer library would be a design change of its own.
+- **Measurement bounds** test the producing stage's `measurements`; an object
+  without the named measurement fails the bound. **Label filters** test the
+  row label, which is the whole effective set until annotations arrive (3.7),
+  and **attachment** filters see no parent edge until edges arrive (3.6), so
+  `AttachedOnly` matches nothing and `UnattachedOnly` everything. Both become
+  joins when those tables exist.
+- Polygon filters and `limit` are applied in the cursor loop, after the exact
+  checks, so `limit` counts records actually returned.
+
+`totalObjectCount` and `objectCountInLayer` count every stored row, whatever
+its stage's status; the latter is 0 for an unknown layer. `discardStage`
+removes a stage's objects and their measurements and appends a
+`StageDiscarded` event carrying the number removed, in one transaction.
 
 No method returns all objects at once. UR-RES-6 permits materialisation only as
 an explicit, filter-bounded call, and it is provided by `reporting`.
@@ -889,6 +1090,13 @@ copying the file intended.
 ```cpp
 class Event {
 public:
+    Event() noexcept;                      // reads as no event: sequence 0
+    Event(const Event& other);
+    Event(Event&& other) noexcept;
+    Event& operator=(const Event& other);
+    Event& operator=(Event&& other) noexcept;
+    ~Event();
+
     int64_t   sequence() const noexcept;
     EventKind kind() const noexcept;
     int64_t   timestampUnixMs() const noexcept;
@@ -897,7 +1105,8 @@ public:
     LayerId layer() const noexcept;
     LabelId label() const noexcept;
 
-    int64_t objectCount() const noexcept;  // ObjectsAdded / EdgesAsserted
+    int64_t objectCount() const noexcept;  // ObjectsAdded / EdgesAsserted /
+                                           // StageDiscarded; otherwise 0
     Rect64  boundingBox() const noexcept;  // union bbox of the batch
     StageStatus stageStatus() const noexcept;  // StageStateChanged
 };
@@ -919,8 +1128,12 @@ using EventCursorPtr = std::shared_ptr<EventCursor>;
 
 class EventJournal {
 public:
-    static const int64_t kFromBeginning;   // replay everything retained
-    static const int64_t kFromNow;         // only events after subscribing
+    static const int64_t kFromBeginning;   // -1: replay everything retained
+    static const int64_t kFromNow;         // -2: only events after subscribing
+
+    ~EventJournal();
+    EventJournal(const EventJournal&) = delete;
+    EventJournal& operator=(const EventJournal&) = delete;
 
     int64_t oldestSequence() const;
     int64_t newestSequence() const;
@@ -939,7 +1152,32 @@ public:
 ```
 
 **Thread-safety:** `EventJournal` is ThreadSafe; `EventCursor` is
-ThreadConfined. **Requirements:** UR-OBS-2 to UR-OBS-7, decision 6.
+ThreadConfined; `Event` is ThreadCompatible. **Requirements:** UR-OBS-2 to
+UR-OBS-7, decision 6.
+
+**Positions.** Sequences start at 1 and are never reused (`AUTOINCREMENT`).
+`newestSequence()` is the last sequence ever assigned, or 0, and truncation
+does not lower it. `oldestSequence()` is the smallest retained sequence, or
+`newestSequence() + 1` when none is retained. `subscribe(f)` for `f >= 0`
+throws `InvalidArgumentError` when `f + 1` is below the truncation watermark,
+and when `f` is beyond `newestSequence()`; any negative `f` other than the two
+constants throws too. A cursor's `position()` is the sequence last returned,
+or the resolved start before the first `next()`. `next(t)` with `t < -1`
+throws.
+
+**Truncation.** `truncateBelow(s)` deletes every event below `s` and records
+the watermark in `meta`, in one transaction. The watermark only rises, and **a
+value beyond `newestSequence() + 1` is clamped to `newestSequence() + 1`**:
+recording it as given would make `kFromBeginning` and later subscriptions skip
+events that had not yet been assigned. A cursor already open is not moved past
+a truncated range silently either — its next `next()` throws
+`InvalidArgumentError` naming its position and the new start (UR-OBS-7).
+
+**What an event carries.** A batch kind carries its count and union bounding
+box; `StageDiscarded` carries the number of objects removed; every other kind
+carries a count of 0 and an empty bounding box. `LayerDeclared` names the
+layer, `LabelAdded` the label, and `StageStateChanged` the stage and the status
+it entered.
 
 Events are rows in the store, not messages sent to subscribers. Subscription is
 a cursor over `seq` — a subscriber holds one integer and asks for events above
@@ -958,32 +1196,62 @@ A subscriber falling behind a fast writer causes no backpressure and no drops.
 Its next `next()` simply has more rows waiting, which it may coalesce — a
 thousand `ObjectsAdded` events for one layer become one redraw.
 
+An event cursor holds one connection for its lifetime and reads the journal in
+pages, each page in its own read transaction, so events committed meanwhile
+become visible to it. It may outlive its `Store`; `next()` then throws
+`IoError`.
+
 `next(timeoutMs)` waits on the local signal when `eventSignalEnabled` and falls
 back to the poll interval otherwise. **Correctness never depends on the
-signal**: a missed signal makes a subscriber late, never wrong, and a
-polling-only subscriber observes the identical sequence (UR-OBS-6). The
-transport is local to the machine — a named semaphore on Windows, an eventfd
-or Unix domain socket on POSIX — and the library opens no network socket.
+signal**: a cursor re-reads the journal after every wait and no wait exceeds
+`eventPollIntervalMs`, so a missed signal makes a subscriber late by at most
+one interval, never wrong, and a polling-only subscriber observes the
+identical sequence (UR-OBS-6). The transport is local to the machine and the
+library opens no network socket:
+
+- The signal is named from a random 128-bit `store_uuid` written to `meta` at
+  creation, never from the path.
+- **Windows:** a manual-reset named event, `Local\slideio-processor-<uuid>`,
+  set by the writer after every commit that appends an event and reset by a
+  waiter that wakes. It wakes every waiter. Every handle creates or opens it,
+  and the system destroys it with its last handle.
+- **Linux:** a POSIX named semaphore, `/slideio-processor-<uuid>`, mode 0600,
+  posted after every such commit; waiters use `sem_timedwait` and drain with
+  `sem_trywait`. **Only the writer creates the name**, and unlinks it on
+  close; a reader only opens an existing name, retrying at most once per wait
+  until a writer appears, so a reader never leaves a semaphore behind.
+  **Known limitation:** one post wakes one waiter, so when several cursors
+  wait on one store, the others fall back to their poll interval for that
+  commit.
+- **macOS:** no signal, since `sem_timedwait` does not exist there;
+  subscribers poll at `eventPollIntervalMs`.
+
+A signal that cannot be opened is logged at `Warning` and never thrown; the
+cursor polls.
 
 ## 3.10 Stage state reader — `storage/stage_state_reader.hpp`
 
 ```cpp
 class StageStateReader {
 public:
+    ~StageStateReader();
+    StageStateReader(const StageStateReader&) = delete;
+    StageStateReader& operator=(const StageStateReader&) = delete;
+
     int32_t count() const noexcept;
     StageId at(int32_t index) const;
     bool    find(const char* name, StageId& out) const noexcept;
 
-    const char* name(StageId) const;
-    StageStatus status(StageId) const;
-    bool        isStale(StageId) const;
-    const char* configuration(StageId) const;     // JSON, "" if none
-    int64_t     completedAtUnixMs(StageId) const; // 0 if never completed
+    const char* name(StageId stage) const;
+    StageStatus status(StageId stage) const;
+    bool        isStale(StageId stage) const;
+    const char* configuration(StageId stage) const;     // JSON, "" if none
+    int64_t     completedAtUnixMs(StageId stage) const; // 0 if never completed
 
-    int32_t dependencyCount(StageId) const;
-    StageId dependencyAt(StageId, int32_t index) const;
-    int32_t writtenLayerCount(StageId) const;
-    LayerId writtenLayerAt(StageId, int32_t index) const;
+    int32_t dependencyCount(StageId stage) const;
+    StageId dependencyAt(StageId stage, int32_t index) const;
+    int32_t writtenLayerCount(StageId stage) const;
+    LayerId writtenLayerAt(StageId stage, int32_t index) const;
 };
 ```
 
@@ -991,12 +1259,71 @@ public:
 UR-STG-10.
 
 Read side only. Declaring, running and invalidating stages belong to
-`workspace`; this exists so an observer can report "nuclei: complete, cells:
-running" without linking `slideio-processor-engine` and therefore without
-loading OpenCV (design 5.1).
+`workspace`, which writes through `StageStateWriter` (3.10a); this exists so an
+observer can report "nuclei: complete, cells: running" without linking
+`slideio-processor-engine` and therefore without loading OpenCV (design 5.1).
 
 UR-STG-4 requires stage state be queryable without running anything, which this
 satisfies directly — a `ReadOnly` store answers every method here.
+
+Stages are listed in ascending `StageId`, dependencies in ascending dependency
+id, and written layers in ascending `LayerId`. `find` compares names exactly.
+Members taking a stage throw `InvalidArgumentError` for an unknown one.
+
+**`configuration` returns a pointer that stays valid while the reader lives**,
+and always holds the value that call read: a later change is seen by a later
+call, which returns a different pointer. The reader therefore retains every
+distinct configuration value it has read until it is destroyed. That growth is
+bounded by the number of configuration changes a long-running viewer observes,
+and is a known cost of returning `const char*` from a value another process can
+change.
+
+## 3.10a Stage state writer — `storage/stage_state_writer.hpp`
+
+```cpp
+class StageStateWriter {
+public:
+    ~StageStateWriter();
+    StageStateWriter(const StageStateWriter&) = delete;
+    StageStateWriter& operator=(const StageStateWriter&) = delete;
+
+    /// Adds a stage in status Pending, not stale, never completed.
+    StageId declare(const char* name, const char* configurationJson);
+    /// Sets the status and appends StageStateChanged.
+    void setStatus(StageId stage, StageStatus status);
+    void setStale(StageId stage, bool stale);
+    void setConfiguration(StageId stage, const char* configurationJson);
+    void addDependency(StageId stage, StageId dependsOn);
+    void clearDependencies(StageId stage);
+    void addWrittenLayer(StageId stage, LayerId layer);
+};
+```
+
+Returned by `Store::stageStateWriter()`.
+**Thread-safety:** ThreadSafe; writes are serialised. **Requirements:**
+UR-STG-4, UR-STG-2, UR-OBS-5.
+
+**The write side of 3.10 is public, and `workspace` writes stage rows only
+through it.** Declaring, running and invalidating stages stay `workspace`'s
+decisions (`04-workspace.md`); this class is only how they reach the store, so
+that `workspace` never touches the store's tables directly.
+
+Every member is one write transaction. Every member throws `IoError` on a
+closed or `ReadOnly` store — on a `ReadOnly` store the writer exists and
+refuses everything — and `InvalidArgumentError` for an unknown stage.
+
+- `declare` numbers stages from 1. Names are unique and compared exactly; a
+  null, empty or duplicate name throws. A null configuration is stored as
+  `""`. **No event is appended**: a stage that has not changed status has
+  nothing to report.
+- `setStatus` appends `StageStateChanged` in the same transaction. **Entering
+  `Complete` sets `completedAtUnixMs` to now, and re-entering it refreshes the
+  time**; no other transition changes it. **An unchanged status still appends
+  an event**: every `setStatus` call is a transition the journal records.
+- `setStale` and `setConfiguration` append no event.
+- `addDependency` and `addWrittenLayer` are idempotent. A stage cannot depend
+  on itself, and the pixel layer cannot be written. `clearDependencies`
+  removes every dependency of a stage.
 
 ## 3.11 GeoJSON import — `storage/geojson_import.hpp`
 
@@ -1053,32 +1380,35 @@ with no measurements and no diagnostic (`01-core.md` 1.14). If import is to
 support those files, `storage` must handle that form itself — through a
 reader extension or a pre-pass — or at least report the skipped measurements in
 `ImportResult`. Second, the reader does not expose a file's `provenance`
-member, and `core::Provenance` cannot hold a stored version or creation time
-(3.2); if import is to preserve the provenance of the file it reads, restoring
-it is this module's obligation, by the same route 3.2 requires.
+member; if import is to preserve the provenance of the file it reads,
+restoring it is this module's obligation, through `Provenance::restored` as
+3.2 does.
 
 ## 3.12 Schema and format
 
-Written for reference; the DDL itself belongs to the implementation plan.
+Written for reference; the DDL itself lives in the implementation. The first
+part creates every table below down to `measurements`, plus `events`; the
+edge, annotation and raster tables are added to the same creation DDL by their
+parts, under the same `format_version` (see the note at the top).
 
 | Table | Holds |
 |---|---|
-| `meta` | Store format version, vocabulary version, provenance |
-| `layers` | Name, kind, parent, depth, dropped flag |
-| `labels` | Name, origin, recognised flag, `ontology_ref` (reserved, empty in v1 — 02 §2.2) |
+| `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid` |
+| `layers` | Name, kind, parent, depth, dropped flag, coarsest analysis level |
+| `labels` | Name, origin, `ontology_ref` (reserved, empty in v1 — 02 §2.2). No recognised flag: `isRecognised` is computed (3.4) |
 | `stages` | Name, status, stale flag, configuration, completion time |
-| `stage_deps` | Declared dependencies |
-| `stage_layers` | Declared written layers |
-| `objects` | Monotonic rowid key, unique index on `(layer_id, anchor_id)`, stage, geometry, bbox, label |
+| `stage_deps` | Declared dependencies, keyed `(stage_id, depends_on_id)` |
+| `stage_layers` | Layers each stage writes, keyed `(layer_id, stage_id)` |
+| `objects` | Monotonic rowid key, unique index on `(layer_id, anchor_id)`, stage (indexed), label, exact `int64` half-open bbox, geometry blob |
 | `object_rtree` | R\*Tree index over bounding boxes |
-| `measurements` | Per-object interned name, value and unit, from the producing stage |
+| `measurements` | Per-object ordinal, interned name, value and unit, from the producing stage — `WITHOUT ROWID`, keyed `(object_rowid, ordinal)` |
 | `measurement_names` | Interned measurement names, shared by `measurements` and `measurement_assertions` (3.7) |
 | `label_assertions` | Object, asserting stage, label — `WITHOUT ROWID`; labels attached after the object was written (3.7) |
 | `measurement_assertions` | Object, asserting stage, interned name, value, unit — `WITHOUT ROWID` (3.7) |
 | `parent_edges` | Child, parent, asserting stage |
 | `derived_from` | Derived, primitive, asserting stage |
 | `rasters` | Name, data type, plane count, writing stage, level, file path, bytes, populated flag (3.8) |
-| `events` | Sequence, kind, stage, layer, count, bbox, timestamp |
+| `events` | Sequence (`AUTOINCREMENT`), kind, stage, layer, label, count, bbox, stage status, timestamp |
 
 **The identifier a caller sees and the key the table is ordered by are not the
 same thing.** `ObjectId` stays exactly what decision 8 defines — layer plus
@@ -1152,10 +1482,26 @@ The realistic write order — tiles completed out of sequence, objects contiguou
 within a tile — has since been measured at **36.6 seconds**, which is the
 ascending case rather than the shuffled one. The budget holds with room.
 
-Open question 5 in `requirements.md` — how geometry is encoded, WKB versus a
-compact custom encoding versus simplified contours — is unresolved and drives
-store size, query cost and export speed at ten million objects. It does not
-affect any signature here.
+**Geometry encoding.** Open question 5 in `requirements.md` — how geometry is encoded, WKB versus a
+compact custom encoding versus simplified contours — is **closed: a compact
+delta-varint encoding**, lossless, with no simplification. It affects no
+signature here. Each object's geometry is one BLOB, private to the store and
+covered by the format version:
+
+- Byte 0 is the encoding version, `1`. Then a varint ring count, then for each
+  ring a varint `(pointCount << 1) | isHole` followed by its points.
+- A ring's first point is stored as zigzag-varint absolute `x` and `y`. Each
+  later point is stored as zigzag-varint deltas from the previous point,
+  computed in wrapping `uint64_t` arithmetic, so every `int64_t` pair
+  round-trips exactly.
+- Varints are unsigned LEB128 of at most 10 bytes.
+
+A contour traced at unit steps — the common case for segmentation output —
+costs about two bytes per point rather than WKB's sixteen. A blob that is
+truncated, has trailing bytes, an unknown version, an over-long varint, a ring
+of fewer than 3 points, or a ring `Polygon::addRing` refuses throws
+`InternalError` naming the object: a stored blob that `core` refuses is
+corruption, not caller error.
 
 Open question 4 — whether SQLite with R\*Tree sustains the reference object
 count — is **closed yes**, conditional on the physical-key scheme above. The
