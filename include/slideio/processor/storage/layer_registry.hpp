@@ -171,8 +171,8 @@ public:
      *
      * The predicate edges are validated against (UR-RES-14). A layer is not above
      * itself, and siblings are not above one another.
-     * @param descendant The candidate lower layer.
-     * @param ancestor The candidate higher layer.
+     * @param descendant The candidate upper layer, further from the pixel layer.
+     * @param ancestor The candidate lower layer, nearer the pixel layer.
      * @return True when ancestor is a proper ancestor of descendant.
      * @throws InvalidArgumentError When either layer is unknown or primitive.
      * @throws IoError When the store is closed, or when SQLite fails.

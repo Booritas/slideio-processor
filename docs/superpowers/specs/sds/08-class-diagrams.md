@@ -778,7 +778,8 @@ classDiagram
 
 Every sub-object is **owned by the `Store` and handed out by reference**,
 valid until `close()` (C-8). A `Store` is `ThreadSafe` throughout: WAL mode,
-one connection per accessing thread, which is what lets a `ReadOnly` store in
+one mutex-guarded write connection and a pool of read connections (03 §3.2),
+which is what lets a `ReadOnly` store in
 a viewer process read while a `ReadWrite` store in a script process writes —
 UR-OBS-1, measured in the [spike](../2026-10-07-spike-q3-q4-findings.md) §2.3.
 
