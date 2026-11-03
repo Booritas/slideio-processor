@@ -18,12 +18,14 @@ namespace slideio::processor {
 class Provenance::Impl {
 public:
     Impl()
-        : createdAtUnixMs(std::chrono::duration_cast<std::chrono::milliseconds>(
+        : libraryVersion(slideio::processor::libraryVersion()),
+          createdAtUnixMs(std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::system_clock::now().time_since_epoch())
                               .count()) {}
 
     std::string slideId;
     int32_t sceneIndex = 0;
+    std::string libraryVersion;
     int64_t createdAtUnixMs;
 };
 
@@ -54,11 +56,23 @@ Provenance& Provenance::operator=(Provenance&& other) noexcept {
 
 Provenance::~Provenance() = default;
 
+Provenance Provenance::restored(const char* slideId, int32_t sceneIndex, const char* libraryVersion,
+                                int64_t createdAtUnixMs) {
+    Provenance p;
+    p.impl_->slideId = slideId != nullptr ? slideId : "";
+    p.impl_->sceneIndex = sceneIndex;
+    p.impl_->libraryVersion = libraryVersion != nullptr ? libraryVersion : "";
+    p.impl_->createdAtUnixMs = createdAtUnixMs;
+    return p;
+}
+
 const char* Provenance::slideId() const noexcept { return impl_ ? impl_->slideId.c_str() : ""; }
 
 int32_t Provenance::sceneIndex() const noexcept { return impl_ ? impl_->sceneIndex : 0; }
 
-const char* Provenance::libraryVersion() const noexcept { return slideio::processor::libraryVersion(); }
+const char* Provenance::libraryVersion() const noexcept {
+    return impl_ ? impl_->libraryVersion.c_str() : slideio::processor::libraryVersion();
+}
 
 int64_t Provenance::createdAtUnixMs() const noexcept { return impl_ ? impl_->createdAtUnixMs : 0; }
 

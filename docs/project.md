@@ -84,6 +84,11 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   eight TDD tasks delivering the SlideIO half, **delivered** as SlideIO PR #86
   (merged 2026-10-17). Excludes `Pipeline::asScene()`,
   which waits on the `pipeline` module existing.
+- [Storage implementation plan A](superpowers/plans/2026-10-20-storage-a.md) —
+  plan A of three for the `storage` module: the SQLite store file and its schema,
+  the layer and vocabulary registries, the object writer and queries, stage
+  state and the event journal with cross-process observation. Edges, annotations,
+  GeoJSON import and rasters follow in plans B and C.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

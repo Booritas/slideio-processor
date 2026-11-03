@@ -89,10 +89,10 @@ public:
     /**
      * @brief Returns the stage that produced this object.
      *
-     * Read-only: stamped on emission, never set by the producer. In this
-     * release the stamping route does not exist yet (storage module), so the
-     * id is always invalid.
-     * @return An invalid id.
+     * Read-only: stamped on emission, never set by the producer. It is invalid
+     * on a record a producer builds, and valid on a record a store reads back,
+     * which gets it through restored().
+     * @return The producing stage; invalid until restored().
      * @throws Nothing.
      */
     StageId stage() const noexcept;
@@ -167,6 +167,20 @@ public:
      * @throws Nothing.
      */
     void reset() noexcept;
+
+    /**
+     * @brief Returns a copy of a record stamped with the stage that produced it.
+     *
+     * For `ObjectSource` implementations, which fill the stage on a record they
+     * read back. It is not a setter: emission ignores a record's stage, so a
+     * producer cannot use this to claim another stage's attribution. Every other
+     * field is copied unchanged.
+     * @param record The record to copy; not modified.
+     * @param stage The stage to stamp.
+     * @return A copy of record whose stage() is stage.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    static ObjectRecord restored(const ObjectRecord& record, StageId stage);
 
 private:
     class Impl;

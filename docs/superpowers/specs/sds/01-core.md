@@ -438,9 +438,9 @@ public:
     LayerId layer() const noexcept;
 
     /// The stage that produced this object. Read-only: it is stamped on
-    /// emission, never set by the producer. The stamping route belongs to
-    /// `storage` and does not exist yet, so in this release it is always
-    /// invalid (see below).
+    /// emission, never set by the producer. Invalid on a record a producer
+    /// builds; valid on a record a store reads back, through `restored`
+    /// (see below).
     StageId stage() const noexcept;
 
     const Polygon& geometry() const noexcept;
@@ -461,6 +461,10 @@ public:
     void setLabel(LabelId label);
     void clearLabel() noexcept;
     void reset() noexcept;
+
+    /// A copy of `record` stamped with `stage`. For `ObjectSource`
+    /// implementations; not a setter (see below).
+    static ObjectRecord restored(const ObjectRecord& record, StageId stage);
 };
 ```
 
@@ -503,11 +507,19 @@ is meant to read valid on every record obtained from a `Cursor` or
 emitting it again — gets the emitting stage's id on the new row, not the
 original's, which is what re-running a stage over another's objects must do.
 
-**Stamping is deferred to `storage`.** `core` holds the field, but no public
-member can write it, and the route by which a store fills it on a record it
-reads back is `storage`'s to add (`03-storage.md` 3.5). Until then `stage()`
-returns an invalid id on every record. The alternative — a public setter as a
-stopgap — would reopen the two-sources-of-truth problem above.
+**Stamping goes through a factory, not a setter.** `core` holds the field, and
+the one public route that writes it is `ObjectRecord::restored(record, stage)`,
+which returns a copy of `record` whose `stage()` is `stage` and leaves every
+other field as it was. It is documented as being for `ObjectSource`
+implementations: a store fills the stage on each record it reads back
+(`03-storage.md` 3.5, "Stamping the read side"), and that obligation, which this
+section placed on `storage`, now has its route. It is not a setter in effect
+because `emit` ignores a record's stage and attributes the object to the stage
+its writer was opened for. A producer that called `restored` with another
+stage's id would therefore change nothing that is persisted, so it cannot forge
+attribution, and the two-sources-of-truth problem above does not return. The
+source record is untouched, copies of a stamped record carry its stage, and
+`reset()` clears it. `restored` throws `std::bad_alloc` only.
 
 A moved-from record is a default record (C-8): empty geometry, invalid layer,
 stage and label, no measurements.
@@ -1176,6 +1188,10 @@ public:
     void setSlideId(const char* slideId);
     void setSceneIndex(int32_t sceneIndex);
     int32_t toJson(char* buffer, int32_t capacity) const;
+
+    /// Rebuilds a record from stored values. Null strings read as `""`.
+    static Provenance restored(const char* slideId, int32_t sceneIndex,
+                               const char* libraryVersion, int64_t createdAtUnixMs);
 };
 ```
 
@@ -1185,15 +1201,19 @@ Per-stage configuration is recorded against the stage by `workspace`, not here;
 this is the slide-level record. UR-RES-11 requires both be recoverable from the
 store alone, without the code that produced them.
 
-**`Provenance` is write-side only.** `libraryVersion()` is the running
-library's version, not a stored field, and `createdAtUnixMs()` is the time the
-object was constructed; there is no setter for either. A `Provenance`
-therefore cannot represent a record read back from a store written by another
-version or at another time, and restoring those values on import is deferred
-to `storage` (`03-storage.md` 3.2); until then, code reading a store treats the
-persisted JSON as the source of truth. `toJson` writes compact JSON with the
-keys `slideId`, `sceneIndex`, `libraryVersion`, `createdAtUnixMs` in that
-order.
+**A default `Provenance` is write-side; `restored` reads back.** A
+default-constructed `Provenance` reports the running library's version and the
+time it was constructed, and there is no setter for either. A record read from
+a store, possibly written by another version at another time, is rebuilt with
+`Provenance::restored(slideId, sceneIndex, libraryVersion, createdAtUnixMs)`,
+which reads back exactly those values; a null string reads as `""`. The object
+holds its own copy of the version, so `libraryVersion()` is valid while the
+object lives rather than being a static string. `restored` is not a setter in
+effect: it is a factory that only reproduces stored values, so it cannot change
+an existing record, and a store uses it to return the version and time it
+persisted (`03-storage.md` 3.2). `toJson` of a restored record carries the
+restored version and time. `toJson` writes compact JSON with the keys
+`slideId`, `sceneIndex`, `libraryVersion`, `createdAtUnixMs` in that order.
 
 Because the creation time is taken at construction, **byte-identical export
 (UR-QA-3) holds when the same `Provenance` instance is used** — or a copy,

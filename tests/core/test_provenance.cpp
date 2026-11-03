@@ -113,3 +113,17 @@ TEST(Provenance, CopyAndMoveSet) {
     Provenance& self = e; e = self;
     EXPECT_STREQ(e.slideId(), "s");
 }
+
+TEST(Provenance, RestoredReadsBackStoredValues) {
+    const Provenance p = Provenance::restored("slide-1", 2, "0.9.1", 1700000000123);
+    EXPECT_STREQ(p.slideId(), "slide-1"); EXPECT_EQ(p.sceneIndex(), 2);
+    EXPECT_STREQ(p.libraryVersion(), "0.9.1"); EXPECT_EQ(p.createdAtUnixMs(), 1700000000123);
+    Provenance q = p; EXPECT_STREQ(q.libraryVersion(), "0.9.1");
+    const Provenance n = Provenance::restored(nullptr, 0, nullptr, 0);
+    EXPECT_STREQ(n.slideId(), ""); EXPECT_STREQ(n.libraryVersion(), "");
+    // toJson of a restored provenance carries the restored version and time
+    const std::string expect = "{\"slideId\":\"slide-1\",\"sceneIndex\":2,\"libraryVersion\":\"0.9.1\","
+                               "\"createdAtUnixMs\":1700000000123}";
+    const int32_t len = p.toJson(nullptr, 0); EXPECT_EQ(len, (int32_t)expect.size());
+    std::string buf(len + 1, '\0'); p.toJson(buf.data(), len + 1); EXPECT_EQ(buf.c_str(), expect);
+}

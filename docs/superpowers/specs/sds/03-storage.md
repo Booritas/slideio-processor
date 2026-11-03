@@ -926,7 +926,9 @@ public:
     int64_t newestSequence() const;
 
     /// Begins at the first event with sequence > fromSequence. Throws
-    /// InvalidArgumentError naming both positions if it has been truncated away.
+    /// InvalidArgumentError naming both positions if it has been truncated away,
+    /// and naming it, newestSequence() and the store if it is beyond the newest
+    /// event (a position from another store, or from a recreated one).
     EventCursorPtr subscribe(int64_t fromSequence);
 
     /// Discards events below `sequence`. Objects, edges and stage state are

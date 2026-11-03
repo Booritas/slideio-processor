@@ -75,3 +75,20 @@ TEST(ObjectRecord, MoveAssignLeavesTheSourceDefaultNeverSwaps) {
     // And usable: a setter re-initialises it.
     src.setLayer(LayerId(4)); EXPECT_EQ(src.layer(), LayerId(4));
 }
+
+namespace {
+Polygon square(int64_t x, int64_t y, int64_t side) {
+    Point64 v[] = {{x, y}, {x + side, y}, {x + side, y + side}, {x, y + side}};
+    Polygon p; p.addRing(v, 4, false); return p;
+}
+} // namespace
+
+TEST(ObjectRecord, RestoredStampsStageAndKeepsTheRest) {
+    ObjectRecord r; r.setLayer(LayerId(2)); r.setGeometry(square(10, 20, 5)); r.setLabel(LabelId(3));
+    r.measurements().set("area", 25.0, MeasurementUnit::SquarePixels);
+    const ObjectRecord s = ObjectRecord::restored(r, StageId(7));
+    EXPECT_EQ(s.stage(), StageId(7)); EXPECT_FALSE(r.stage().isValid());   // source untouched
+    EXPECT_EQ(s.id(), r.id()); EXPECT_EQ(s.label(), LabelId(3)); EXPECT_EQ(s.measurements().count(), 1);
+    ObjectRecord t = s; EXPECT_EQ(t.stage(), StageId(7));                   // copies keep it
+    t.reset(); EXPECT_FALSE(t.stage().isValid());
+}

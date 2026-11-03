@@ -28,6 +28,9 @@ if(OpenCV_VERSION VERSION_LESS 4)
 endif()
 find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
+find_package(SQLite3 REQUIRED)
+# The storage wake-up signal uses sem_*, in libpthread on glibc before 2.34.
+find_package(Threads REQUIRED)
 
 enable_testing()
 add_subdirectory(src)
