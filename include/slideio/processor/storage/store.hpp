@@ -26,7 +26,9 @@ namespace slideio::processor {
 class Store;
 
 namespace detail {
+/** @brief Library-internal; not API. */
 class GateClient;
+/** @brief Test seam, not API: library-internal test access to Store::close(). */
 SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client);
 } // namespace detail
 /** @brief Shared ownership of an open Store. */
