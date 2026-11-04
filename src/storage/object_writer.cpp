@@ -1,7 +1,9 @@
 #include <slideio/processor/storage/object_store.hpp>
 
+#include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/geometry_codec.hpp"
+#include "storage/detail/measurement_names.hpp"
 #include "storage/detail/query_builder.hpp"
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
@@ -24,11 +26,6 @@
 namespace slideio::processor {
 
 namespace {
-
-[[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
-    const std::string message = std::string(operation) + ": " + what;
-    throw InvalidArgumentError(message.c_str());
-}
 
 std::string anchorText(Point64 anchor) {
     return "(" + std::to_string(anchor.x) + ", " + std::to_string(anchor.y) + ")";
@@ -71,7 +68,7 @@ public:
         const auto cached = layerNames.find(layer.value());
         if (cached != layerNames.end()) return cached->second;
         if (layer.value() == detail::kPixelLayerId) {
-            throwInvalid(operation, "the pixel layer holds no objects; emit into a declared layer");
+            detail::throwInvalid(operation, "the pixel layer holds no objects; emit into a declared layer");
         }
         struct Row {
             bool found = false;
@@ -91,8 +88,8 @@ public:
                 return r;
             });
         });
-        if (!row.found) throwInvalid(operation, "there is no layer " + std::to_string(layer.value()));
-        if (row.dropped) throwInvalid(operation, "layer '" + row.name + "' is dropped");
+        if (!row.found) detail::throwInvalid(operation, "there is no layer " + std::to_string(layer.value()));
+        if (row.dropped) detail::throwInvalid(operation, "layer '" + row.name + "' is dropped");
         return layerNames.emplace(layer.value(), row.name).first->second;
     }
 
@@ -107,7 +104,7 @@ public:
                 return select.step();
             });
         });
-        if (!held) throwInvalid(operation, "the store holds no label " + std::to_string(label.value()));
+        if (!held) detail::throwInvalid(operation, "the store holds no label " + std::to_string(label.value()));
         heldLabels.insert(label.value());
     }
 
@@ -130,11 +127,9 @@ public:
                                        "INSERT INTO objects(layer_id, anchor_id, stage_id, label_id, min_x, min_y, "
                                        "max_x, max_y, geometry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         detail::Statement insertBox(db, "INSERT INTO object_rtree(rowid, min_x, max_x, min_y, max_y) VALUES (?, ?, ?, ?, ?)");
-        detail::Statement internName(db, "INSERT OR IGNORE INTO measurement_names(name) VALUES (?)");
-        detail::Statement selectName(db, "SELECT id FROM measurement_names WHERE name = ?");
         detail::Statement insertMeasurement(
             db, "INSERT INTO measurements(object_rowid, ordinal, name_id, value, unit) VALUES (?, ?, ?, ?, ?)");
-        std::unordered_map<std::string, int64_t> nameIds;
+        detail::MeasurementNameInterner nameIds(db);
         std::map<int32_t, LayerSummary> layers;  // ascending layer id: the event order
 
         for (const PendingObject& o : batch) {
@@ -154,7 +149,7 @@ public:
             const int rc = sqlite3_step(insertObject.get());
             if (rc != SQLITE_DONE) {
                 if (sqlite3_extended_errcode(db) == SQLITE_CONSTRAINT_UNIQUE) {
-                    throwInvalid(operation, "layer '" + layerNames.at(o.layer) + "' already holds an object with anchor " +
+                    detail::throwInvalid(operation, "layer '" + layerNames.at(o.layer) + "' already holds an object with anchor " +
                                                 anchorText(o.anchorPoint) +
                                                 "; objects in one layer may not share an anchor. The batch of " +
                                                 std::to_string(batch.size()) + " objects was rolled back");
@@ -174,19 +169,9 @@ public:
 
             int64_t ordinal = 0;
             for (const PendingMeasurement& m : o.measurements) {
-                auto id = nameIds.find(m.name);
-                if (id == nameIds.end()) {
-                    internName.bindText(1, m.name);
-                    internName.run();
-                    internName.reset();
-                    selectName.bindText(1, m.name);
-                    if (!selectName.step()) throw InternalError("ObjectWriter: an interned measurement name vanished");
-                    id = nameIds.emplace(m.name, selectName.columnInt64(0)).first;
-                    selectName.reset();
-                }
                 insertMeasurement.bindInt64(1, rowid);
                 insertMeasurement.bindInt64(2, ordinal++);
-                insertMeasurement.bindInt64(3, id->second);
+                insertMeasurement.bindInt64(3, nameIds.idOf(m.name));
                 insertMeasurement.bindDouble(4, m.value);
                 insertMeasurement.bindInt64(5, m.unit);
                 insertMeasurement.run();
@@ -213,7 +198,7 @@ public:
         for (const auto& entry : layers) {
             dropped.bindInt64(1, entry.first);
             if (dropped.step() && dropped.columnInt64(0) != 0) {
-                throwInvalid(operation, "layer '" + layerNames.at(entry.first) + "' was dropped; the batch of " +
+                detail::throwInvalid(operation, "layer '" + layerNames.at(entry.first) + "' was dropped; the batch of " +
                                             std::to_string(batch.size()) + " objects was rolled back");
             }
             dropped.reset();
@@ -314,9 +299,9 @@ void ObjectWriter::emit(const ObjectRecord& record) {
     // list was taken, so after the flag was set, and refuses too.
     impl_->core->gate->with(kOperation, [&](detail::StoreImpl& store) { store.checkAcceptingObjects(kOperation); });
     const std::string& layerName = impl_->core->requireLayer(kOperation, layer);
-    if (geometry.isEmpty()) throwInvalid(kOperation, "an object in layer '" + layerName + "' has empty geometry");
+    if (geometry.isEmpty()) detail::throwInvalid(kOperation, "an object in layer '" + layerName + "' has empty geometry");
     if (!id.isValid()) {
-        throwInvalid(kOperation, "the anchor " + anchorText(geometry.anchor()) + " of an object in layer '" + layerName +
+        detail::throwInvalid(kOperation, "the anchor " + anchorText(geometry.anchor()) + " of an object in layer '" + layerName +
                                      "' is outside the identifiable range 0 <= x < 2^31, 0 <= y < 2^32");
     }
     if (record.hasLabel()) {
@@ -324,7 +309,7 @@ void ObjectWriter::emit(const ObjectRecord& record) {
         impl_->core->requireLabel(kOperation, record.label());
     }
     if (!impl_->core->pendingKeys.insert({object.layer, object.anchor}).second) {
-        throwInvalid(kOperation, "an object with anchor " + anchorText(object.anchorPoint) +
+        detail::throwInvalid(kOperation, "an object with anchor " + anchorText(object.anchorPoint) +
                                      " is already pending in layer '" + layerName +
                                      "'; objects in one layer may not share an anchor");
     }

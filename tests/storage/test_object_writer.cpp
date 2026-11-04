@@ -433,7 +433,7 @@ TEST(ObjectHandleLifetime, EmitDuringCloseIsRefusedNotDropped) {
     writer->setBatchSizeObjects(1000);
     writer->emit(rec(cells, 0, 0, 4));  // pending; close() commits it
     const auto late = std::make_shared<LateEmitter>(*writer, rec(cells, 10, 0, 4));
-    detail::StoreAccess::gate(*store)->track(late);
+    detail::trackForCloseTesting(*store, late);
     store->close();
     EXPECT_NE(late->refusal.find("store is closed"), std::string::npos) << "refusal: '" << late->refusal << "'";
     EXPECT_EQ(writer->emittedCount(), 1);

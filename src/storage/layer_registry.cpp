@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/layer_registry.hpp>
 
+#include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
@@ -17,19 +18,14 @@ namespace slideio::processor {
 
 namespace {
 
-[[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
-    const std::string message = std::string(operation) + ": " + what;
-    throw InvalidArgumentError(message.c_str());
-}
-
 [[noreturn]] void throwUnknown(const char* operation, LayerId layer) {
-    throwInvalid(operation, "there is no layer " + std::to_string(layer.value()));
+    detail::throwInvalid(operation, "there is no layer " + std::to_string(layer.value()));
 }
 
 void validateName(const char* operation, const char* name) {
-    if (name == nullptr || *name == '\0') throwInvalid(operation, "the layer name is null or empty");
+    if (name == nullptr || *name == '\0') detail::throwInvalid(operation, "the layer name is null or empty");
     if (std::string(name) == detail::kPixelLayerName) {
-        throwInvalid(operation, "the layer name 'pixel' is reserved for the pixel layer");
+        detail::throwInvalid(operation, "the layer name 'pixel' is reserved for the pixel layer");
     }
 }
 
@@ -110,7 +106,7 @@ public:
 
     static void requireSemantic(const char* operation, const Row& row) {
         if (row.kind != LayerKind::Semantic) {
-            throwInvalid(operation, "layer '" + row.name + "' is primitive and has no place in the hierarchy");
+            detail::throwInvalid(operation, "layer '" + row.name + "' is primitive and has no place in the hierarchy");
         }
     }
 
@@ -121,7 +117,7 @@ public:
         {
             detail::Statement existing(db, "SELECT 1 FROM layers WHERE name = ?");
             existing.bindText(1, layerName);
-            if (existing.step()) throwInvalid(operation, "a layer named '" + layerName + "' already exists");
+            if (existing.step()) detail::throwInvalid(operation, "a layer named '" + layerName + "' already exists");
         }
         detail::Statement insert(db, "INSERT INTO layers(name, kind, parent_id, depth) VALUES (?, ?, ?, ?)");
         insert.bindText(1, layerName);
@@ -159,11 +155,11 @@ LayerId LayerRegistry::declareSemantic(const char* name, LayerId parent) {
         const std::string parentText = std::to_string(parent.value());
         detail::Statement select(db, "SELECT kind, depth, dropped FROM layers WHERE id = ?");
         select.bindInt64(1, parent.value());
-        if (!select.step()) throwInvalid(kOperation, "the parent layer " + parentText + " does not exist");
+        if (!select.step()) detail::throwInvalid(kOperation, "the parent layer " + parentText + " does not exist");
         if (static_cast<LayerKind>(select.columnInt64(0)) != LayerKind::Semantic) {
-            throwInvalid(kOperation, "the parent layer " + parentText + " is primitive");
+            detail::throwInvalid(kOperation, "the parent layer " + parentText + " is primitive");
         }
-        if (select.columnInt64(2) != 0) throwInvalid(kOperation, "the parent layer " + parentText + " is dropped");
+        if (select.columnInt64(2) != 0) detail::throwInvalid(kOperation, "the parent layer " + parentText + " is dropped");
         const int32_t parentDepth = static_cast<int32_t>(select.columnInt64(1));
         return Impl::insertLayer(db, kOperation, name, LayerKind::Semantic, parent, parentDepth + 1);
     });
@@ -198,7 +194,7 @@ LayerId LayerRegistry::at(int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refresh(kOperation);
     if (index < 0 || static_cast<size_t>(index) >= impl_->rows.size()) {
-        throwInvalid(kOperation, "index " + std::to_string(index) + " is out of range");
+        detail::throwInvalid(kOperation, "index " + std::to_string(index) + " is out of range");
     }
     return impl_->rows[static_cast<size_t>(index)].id;
 }
@@ -252,7 +248,7 @@ LayerId LayerRegistry::childAt(LayerId layer, int32_t index) const {
     constexpr const char* kOperation = "LayerRegistry::childAt";
     return impl_->withSemanticRow(kOperation, layer, [&](const Impl::Row& row) {
         if (index < 0 || static_cast<size_t>(index) >= row.children.size()) {
-            throwInvalid(kOperation,
+            detail::throwInvalid(kOperation,
                          "index " + std::to_string(index) + " is out of range for layer '" + row.name + "'");
         }
         return row.children[static_cast<size_t>(index)];
@@ -310,7 +306,7 @@ StageId LayerRegistry::writerStageAt(LayerId layer, int32_t index) const {
         select.bindInt64(2, index);
         if (!select.step() || select.columnInt64(0) == 0) throwUnknown(kOperation, layer);
         if (index < 0 || select.columnIsNull(1)) {
-            throwInvalid(kOperation,
+            detail::throwInvalid(kOperation,
                          "index " + std::to_string(index) + " is out of range for layer " + std::to_string(layer.value()));
         }
         return StageId(static_cast<int32_t>(select.columnInt64(1)));
@@ -332,7 +328,7 @@ int32_t LayerRegistry::coarsestAnalysisLevel(LayerId layer) const noexcept {
 void LayerRegistry::recordAnalysisLevel(LayerId layer, int32_t level) {
     constexpr const char* kOperation = "LayerRegistry::recordAnalysisLevel";
     impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
-        if (level < 0) throwInvalid(kOperation, "the analysis level " + std::to_string(level) + " is negative");
+        if (level < 0) detail::throwInvalid(kOperation, "the analysis level " + std::to_string(level) + " is negative");
         detail::Statement update(db, "UPDATE layers SET analysis_level = MAX(analysis_level, ?) WHERE id = ?");
         update.bindInt64(1, level);
         update.bindInt64(2, layer.value());

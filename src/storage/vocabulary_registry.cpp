@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/vocabulary_registry.hpp>
 
+#include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/label_aliases.hpp"
 #include "storage/detail/schema.hpp"
@@ -22,13 +23,8 @@ namespace slideio::processor {
 
 namespace {
 
-[[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
-    const std::string message = std::string(operation) + ": " + what;
-    throw InvalidArgumentError(message.c_str());
-}
-
 [[noreturn]] void throwUnknown(const char* operation, LabelId label) {
-    throwInvalid(operation, "there is no label " + std::to_string(label.value()));
+    detail::throwInvalid(operation, "there is no label " + std::to_string(label.value()));
 }
 
 // The id of the lowest-numbered label whose name equals `folded` once ASCII case is
@@ -135,7 +131,7 @@ int32_t VocabularyRegistry::recordedStandardVersion() const noexcept {
 
 LabelId VocabularyRegistry::addLocal(const char* name) {
     constexpr const char* kOperation = "VocabularyRegistry::addLocal";
-    if (name == nullptr || *name == '\0') throwInvalid(kOperation, "the label name is null or empty");
+    if (name == nullptr || *name == '\0') detail::throwInvalid(kOperation, "the label name is null or empty");
     bool added = false;
     const LabelId id = impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         // Resolve against the table inside the write transaction, so a label another
@@ -220,7 +216,7 @@ LabelId VocabularyRegistry::at(int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refresh(kOperation);
     if (index < 0 || static_cast<size_t>(index) >= impl_->order.size()) {
-        throwInvalid(kOperation, "index " + std::to_string(index) + " is out of range");
+        detail::throwInvalid(kOperation, "index " + std::to_string(index) + " is out of range");
     }
     return impl_->order[static_cast<size_t>(index)];
 }
@@ -240,7 +236,7 @@ void VocabularyRegistry::setImportPolicy(ImportPolicy policy) {
     constexpr const char* kOperation = "VocabularyRegistry::setImportPolicy";
     impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         if (policy != ImportPolicy::Strict && policy != ImportPolicy::Permissive) {
-            throwInvalid(kOperation, "the import policy " + std::to_string(static_cast<int32_t>(policy)) +
+            detail::throwInvalid(kOperation, "the import policy " + std::to_string(static_cast<int32_t>(policy)) +
                                          " is not an ImportPolicy");
         }
         detail::StoreImpl::setMetaInt64(db, detail::kMetaImportPolicy, static_cast<int64_t>(policy));

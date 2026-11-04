@@ -23,11 +23,12 @@
 
 namespace slideio::processor {
 
-namespace detail {
-struct StoreAccess;
-} // namespace detail
-
 class Store;
+
+namespace detail {
+class GateClient;
+SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client);
+} // namespace detail
 /** @brief Shared ownership of an open Store. */
 using StorePtr = std::shared_ptr<Store>;
 
@@ -197,7 +198,8 @@ public:
     void close();
 
 private:
-    friend struct detail::StoreAccess;  // test seam, not API: library-internal test access only
+    // Test seam, not API: library-internal test access only.
+    friend void detail::trackForCloseTesting(Store& store, const std::shared_ptr<detail::GateClient>& client);
     class Impl;
     explicit Store(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

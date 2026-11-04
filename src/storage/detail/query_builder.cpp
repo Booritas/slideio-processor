@@ -1,5 +1,7 @@
 #include "storage/detail/query_builder.hpp"
 
+#include "storage/detail/errors.hpp"
+
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/storage/types.hpp>
 
@@ -9,11 +11,6 @@
 namespace slideio::processor::detail {
 
 namespace {
-
-[[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
-    const std::string message = std::string(operation) + ": " + what;
-    throw InvalidArgumentError(message.c_str());
-}
 
 int64_t saturatingAdd(int64_t a, int64_t b) noexcept {
     if (b > 0 && a > std::numeric_limits<int64_t>::max() - b) return std::numeric_limits<int64_t>::max();
