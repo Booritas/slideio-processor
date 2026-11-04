@@ -8,13 +8,14 @@
  * slideio/processor/storage/ individually. It currently covers types.hpp,
  * store_format.hpp, store.hpp, event_journal.hpp, stage_state_reader.hpp,
  * stage_state_writer.hpp, layer_registry.hpp, vocabulary_registry.hpp,
- * object_store.hpp and edge_store.hpp. The annotation, GeoJSON-import and raster
- * parts of the module will add annotation_store.hpp, geojson_import.hpp and
- * raster_store.hpp, and this header will include them too.
+ * object_store.hpp, edge_store.hpp and annotation_store.hpp. The GeoJSON-import and
+ * raster parts of the module will add geojson_import.hpp and raster_store.hpp, and
+ * this header will include them too.
  *
  * Thread-safety: not applicable (declarations only).
  */
 
+#include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>

@@ -51,7 +51,8 @@ public:
     /**
      * @brief Returns the measurement name.
      * @return A UTF-8 string, never null. It stays valid until the owning
-     * MeasurementSet is next modified or destroyed.
+     * MeasurementSet is next modified or destroyed; for a measurement returned by
+     * storage's AnnotationStore, until that Store is destroyed.
      * @throws Nothing.
      */
     const char* name() const noexcept;
@@ -77,6 +78,7 @@ public:
 
 private:
     friend class MeasurementSet;
+    friend class AnnotationStore;  // storage: names pooled for the Store's lifetime
     Measurement(const char* name, double value, MeasurementUnit unit) noexcept;
 
     const char* name_;

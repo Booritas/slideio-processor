@@ -1,4 +1,6 @@
 add_library(slideio-processor-storage OBJECT
+    annotation_store.cpp
+    annotation_writer.cpp
     edge_store.cpp
     edge_writer.cpp
     event_journal.cpp

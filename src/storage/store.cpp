@@ -15,7 +15,7 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry) {}
+        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core) {}
 
     detail::StoreImpl core;
     EventJournal journal;
@@ -25,6 +25,7 @@ public:
     StageStateWriter stageWriter;
     ObjectStore objectStore;
     EdgeStore edgeStore;
+    AnnotationStore annotationStore;
 };
 
 Store::Store(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -96,6 +97,8 @@ const VocabularyRegistry& Store::vocabulary() const noexcept { return impl_->voc
 ObjectStore& Store::objects() noexcept { return impl_->objectStore; }
 
 EdgeStore& Store::edges() noexcept { return impl_->edgeStore; }
+
+AnnotationStore& Store::annotations() noexcept { return impl_->annotationStore; }
 
 StageStateReader& Store::stageStates() noexcept { return impl_->stageReader; }
 

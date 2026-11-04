@@ -129,7 +129,7 @@ public:
         detail::Statement insertBox(db, "INSERT INTO object_rtree(rowid, min_x, max_x, min_y, max_y) VALUES (?, ?, ?, ?, ?)");
         detail::Statement insertMeasurement(
             db, "INSERT INTO measurements(object_rowid, ordinal, name_id, value, unit) VALUES (?, ?, ?, ?, ?)");
-        detail::MeasurementNameInterner nameIds(db);
+        detail::MeasurementNameInterner nameIds(db, "ObjectWriter");
         std::map<int32_t, LayerSummary> layers;  // ascending layer id: the event order
 
         for (const PendingObject& o : batch) {

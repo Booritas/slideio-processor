@@ -12,7 +12,7 @@ namespace slideio::processor::detail {
 namespace {
 
 // Bounding boxes are int64 and half-open: [min_x, max_x) x [min_y, max_y).
-// Annotation and raster tables belong to later tasks of plans B and C.
+// Raster tables belong to plan C.
 constexpr const char* kDdl = R"sql(
 CREATE TABLE meta(
     key   TEXT PRIMARY KEY,
@@ -106,6 +106,23 @@ CREATE TABLE derived_from(
     PRIMARY KEY(derived_layer, derived_anchor, primitive_layer, primitive_anchor, stage_id)
 ) WITHOUT ROWID;
 CREATE INDEX derived_from_primitive ON derived_from(primitive_layer, primitive_anchor);
+
+-- Labels and measurements asserted about existing objects (ruling S22).
+CREATE TABLE label_assertions(
+    object_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id),
+    label_id     INTEGER NOT NULL REFERENCES labels(id),
+    PRIMARY KEY(object_rowid, stage_id, label_id)
+) WITHOUT ROWID;
+
+CREATE TABLE measurement_assertions(
+    object_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id),
+    name_id      INTEGER NOT NULL REFERENCES measurement_names(id),
+    value        REAL    NOT NULL,
+    unit         INTEGER NOT NULL,
+    PRIMARY KEY(object_rowid, stage_id, name_id)
+) WITHOUT ROWID;
 
 CREATE TABLE events(
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,

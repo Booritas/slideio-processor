@@ -14,6 +14,7 @@ else()
 endif()
 
 add_executable(slideio_processor_storage_tests
+    test_annotation_store.cpp
     test_cross_process.cpp
     test_edge_store.cpp
     test_event_journal.cpp
