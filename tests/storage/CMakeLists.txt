@@ -15,6 +15,7 @@ endif()
 
 add_executable(slideio_processor_storage_tests
     test_cross_process.cpp
+    test_edge_store.cpp
     test_event_journal.cpp
     test_stage_state.cpp
     test_geometry_codec.cpp

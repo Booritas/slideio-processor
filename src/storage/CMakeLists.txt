@@ -1,4 +1,6 @@
 add_library(slideio-processor-storage OBJECT
+    edge_store.cpp
+    edge_writer.cpp
     event_journal.cpp
     layer_registry.cpp
     object_cursor.cpp
@@ -14,6 +16,7 @@ add_library(slideio-processor-storage OBJECT
     detail/geometry_codec.cpp
     detail/label_aliases.cpp
     detail/measurement_names.cpp
+    detail/object_lookup.cpp
     detail/polygon_predicates.cpp
     detail/query_builder.cpp
     detail/schema.cpp

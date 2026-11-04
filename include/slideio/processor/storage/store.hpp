@@ -9,6 +9,7 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
@@ -167,6 +168,14 @@ public:
      */
     ObjectStore& objects() noexcept;
     /**
+     * @brief Returns the edge store of this store.
+     * @return The edge store, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every read and refuses writers and discards. A writer it
+     * returned throws IoError once the store is closed or destroyed.
+     * @throws Nothing.
+     */
+    EdgeStore& edges() noexcept;
+    /**
      * @brief Returns the stage state reader of this store.
      * @return The reader, valid while this store lives. Usable until close(); a
      * ReadOnly store answers every member.
@@ -187,14 +196,16 @@ public:
      * @brief Flushes pending batches and releases every connection and the writer
      * lock. Idempotent.
      *
-     * Every live ObjectWriter first commits what it holds pending, as by flush(); a
-     * writer used afterwards throws IoError, and an ObjectWriter::emit() racing close()
-     * is refused with IoError "store is closed" rather than accepted and lost. The
+     * Every live ObjectWriter and EdgeWriter first commits what it holds pending, as by
+     * flush(); a writer used afterwards throws IoError, and an emit() or assert racing
+     * close() is refused with IoError "store is closed" rather than accepted and lost. The
      * store is closed even when a flush fails: every writer is tried, and the first
      * failure is then reported. Errors during teardown are reported here rather than
      * in the destructor, which logs them.
      * @throws InvalidArgumentError When a writer's pending batch collides with a
-     * committed object's anchor; that batch is rolled back and dropped.
+     * committed object's anchor, or holds an edge whose endpoint does not exist or
+     * that conflicts with a committed parent edge; that batch is rolled back and
+     * dropped.
      * @throws IoError When a writer's commit or releasing the store fails.
      */
     void close();

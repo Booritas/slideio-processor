@@ -25,7 +25,7 @@ inline constexpr const char* kPixelLayerName = "pixel";
 // vocabulary (ruling S5).
 inline constexpr int32_t kFirstLocalLabelId = 65536;
 
-// Creates every plan-A table and index, the pixel layer (id 1) and the initial meta
+// Creates every table and index, the pixel layer (id 1) and the initial meta
 // rows. Runs inside the caller's write transaction on `db`. `provenanceJson` is the
 // initial meta.provenance, `storeUuid` the initial meta.store_uuid. Throws IoError.
 void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid);

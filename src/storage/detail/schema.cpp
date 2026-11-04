@@ -12,7 +12,7 @@ namespace slideio::processor::detail {
 namespace {
 
 // Bounding boxes are int64 and half-open: [min_x, max_x) x [min_y, max_y).
-// Edge, annotation and raster tables belong to plans B and C.
+// Annotation and raster tables belong to later tasks of plans B and C.
 constexpr const char* kDdl = R"sql(
 CREATE TABLE meta(
     key   TEXT PRIMARY KEY,
@@ -87,6 +87,25 @@ CREATE TABLE measurements(
     unit         INTEGER NOT NULL,
     PRIMARY KEY(object_rowid, ordinal)
 ) WITHOUT ROWID;
+
+-- One parent per child, store-wide (ruling S18).
+CREATE TABLE parent_edges(
+    child_rowid  INTEGER PRIMARY KEY REFERENCES objects(rowid),
+    parent_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id)
+) WITHOUT ROWID;
+CREATE INDEX parent_edges_parent ON parent_edges(parent_rowid);
+
+-- Keyed by ObjectId, not rowid: rows outlive a dropped primitive layer (ruling S18).
+CREATE TABLE derived_from(
+    derived_layer    INTEGER NOT NULL,
+    derived_anchor   INTEGER NOT NULL,
+    primitive_layer  INTEGER NOT NULL,
+    primitive_anchor INTEGER NOT NULL,
+    stage_id         INTEGER NOT NULL REFERENCES stages(id),
+    PRIMARY KEY(derived_layer, derived_anchor, primitive_layer, primitive_anchor, stage_id)
+) WITHOUT ROWID;
+CREATE INDEX derived_from_primitive ON derived_from(primitive_layer, primitive_anchor);
 
 CREATE TABLE events(
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
