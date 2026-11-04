@@ -1,4 +1,4 @@
-// Requirements: UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-5, UR-STG-6, UR-OBS-2, UR-OBS-4, UR-QA-3
+// Requirements: UR-RES-1, UR-RES-2, UR-RES-3, UR-RES-4, UR-RES-5, UR-EXE-7, UR-STG-5, UR-STG-6, UR-OBS-2, UR-OBS-4, UR-QA-3
 #include "storage/detail/polygon_predicates.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -6,6 +6,8 @@
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_query.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/object_store.hpp>
 #include <slideio/processor/storage/store.hpp>
 
@@ -83,6 +85,12 @@ protected:
         EXPECT_EQ(objects().count(q), yielded);
         return yielded;
     }
+    // The ids query(q) yields; count(q) must agree.
+    std::set<ObjectId> agreedIds(const ObjectQuery& q) {
+        const std::set<ObjectId> ids = idsOf(drain(objects().query(q)));
+        EXPECT_EQ(objects().count(q), static_cast<int64_t>(ids.size()));
+        return ids;
+    }
 
     LayerId cells;
     LayerId nuclei;
@@ -90,7 +98,7 @@ protected:
     StageId b;
 };
 
-const ObjectQuery inFlight() { return ObjectQuery().visibility(StageVisibility::IncludeInFlight); }
+ObjectQuery inFlight() { return ObjectQuery().visibility(StageVisibility::IncludeInFlight); }
 
 // ---- Brute-force references for a convex polygon against axis-aligned squares -------------
 
@@ -242,6 +250,101 @@ TEST_F(ObjectQueryTest, FiltersComposeAndCountAgrees) {
     EXPECT_THROW(objects().count(ObjectQuery().limit(-1)), InvalidArgumentError);
     EXPECT_THROW(objects().query(ObjectQuery().labelFilter(static_cast<LabelFilter>(7))), InvalidArgumentError);
     EXPECT_THROW(objects().count(ObjectQuery().visibility(static_cast<StageVisibility>(-1))), InvalidArgumentError);
+}
+
+TEST_F(ObjectQueryTest, LabelFiltersSeeAssertedLabelsByVisibility) {  // Review Focus 2, UR-RES-5
+    ObjectRecord labelled = rec(cells, 0, 0, 4);
+    labelled.setLabel(LabelId(1));
+    write(a, {labelled, rec(cells, 10, 0, 4), rec(cells, 20, 0, 4)});
+    const ObjectId o1 = labelled.id(), o2 = rec(cells, 10, 0, 4).id(), o3 = rec(cells, 20, 0, 4).id();
+    setStatus(a, StageStatus::Complete);
+    const StageId c = store().stageStateWriter().declare("c", "");
+    setStatus(c, StageStatus::Running);
+    AnnotationWriterPtr wc = store().annotations().writerForStage(c);
+    wc->assertLabel(o2, LabelId(2));
+    wc->flush();
+
+    using Ids = std::set<ObjectId>;
+    const ObjectQuery labelledOnly = ObjectQuery().labelFilter(LabelFilter::LabelledOnly);
+    const ObjectQuery unlabelledOnly = ObjectQuery().labelFilter(LabelFilter::UnlabelledOnly);
+    // The running annotator's label is not seen by default.
+    EXPECT_EQ(agreedIds(ObjectQuery().label(LabelId(2))), Ids{});
+    EXPECT_EQ(agreedIds(labelledOnly), Ids{o1});
+    EXPECT_EQ(agreedIds(unlabelledOnly), (Ids{o2, o3}));
+    // The observer's opt-in sees it.
+    EXPECT_EQ(agreedIds(inFlight().label(LabelId(2))), Ids{o2});
+    EXPECT_EQ(agreedIds(inFlight().labelFilter(LabelFilter::LabelledOnly)), (Ids{o1, o2}));
+    EXPECT_EQ(agreedIds(inFlight().labelFilter(LabelFilter::UnlabelledOnly)), Ids{o3});
+    EXPECT_EQ(agreedIds(inFlight().label(LabelId(1))), Ids{o1});  // the row label still counts
+
+    setStatus(c, StageStatus::Complete);
+    EXPECT_EQ(agreedIds(ObjectQuery().label(LabelId(2))), Ids{o2});
+    EXPECT_EQ(agreedIds(labelledOnly), (Ids{o1, o2}));
+    EXPECT_EQ(agreedIds(unlabelledOnly), Ids{o3});
+    EXPECT_EQ(agreedIds(ObjectQuery().labelFilter(LabelFilter::LabelledOnly).label(LabelId(2))), Ids{o2});
+}
+
+TEST_F(ObjectQueryTest, MeasurementBoundsAreExistentialAcrossStages) {  // Review Focus 2, UR-RES-4
+    ObjectRecord measured = rec(cells, 0, 0, 4);
+    measured.measurements().set("area", 10.0, MeasurementUnit::SquarePixels);
+    write(a, {measured, rec(cells, 10, 0, 4)});
+    const ObjectId o = measured.id();
+    setStatus(a, StageStatus::Complete);
+    const StageId c = store().stageStateWriter().declare("c", "");
+    setStatus(c, StageStatus::Running);
+    AnnotationWriterPtr wc = store().annotations().writerForStage(c);
+    wc->assertMeasurement(o, "area", 50.0, MeasurementUnit::SquarePixels);
+    wc->flush();
+
+    using Ids = std::set<ObjectId>;
+    const ObjectQuery atLeast = ObjectQuery().measurementAtLeast("area", 40);
+    const ObjectQuery atMost = ObjectQuery().measurementAtMost("area", 20);
+    EXPECT_EQ(agreedIds(atLeast), Ids{});  // c is running: its 50 is not seen
+    EXPECT_EQ(agreedIds(atMost), Ids{o});
+    EXPECT_EQ(agreedIds(inFlight().measurementAtLeast("area", 40)), Ids{o});
+
+    setStatus(c, StageStatus::Complete);
+    EXPECT_EQ(agreedIds(atLeast), Ids{o});
+    EXPECT_EQ(agreedIds(atMost), Ids{o});  // the producer's 10 still satisfies it
+    // Each bound is existential on its own: 10 <= 20 and 50 >= 40 both hold.
+    EXPECT_EQ(agreedCount(ObjectQuery().measurementAtLeast("area", 40).measurementAtMost("area", 20)), 1);
+    EXPECT_EQ(agreedCount(ObjectQuery().measurementAtLeast("area", 60)), 0);
+}
+
+TEST_F(ObjectQueryTest, AttachmentIsARealJoin) {
+    // The parent's own stage stays Running: attachment ignores the parent's visibility.
+    const StageId c = store().stageStateWriter().declare("c", "");
+    const StageId p = store().stageStateWriter().declare("parents", "");
+    setStatus(p, StageStatus::Running);
+    write(p, {rec(cells, 0, 0, 100)});
+    const ObjectId cell = rec(cells, 0, 0, 100).id();
+    write(a, {rec(nuclei, 10, 10, 4), rec(nuclei, 20, 10, 4), rec(nuclei, 30, 10, 4)});
+    const ObjectId n1 = rec(nuclei, 10, 10, 4).id(), n2 = rec(nuclei, 20, 10, 4).id(),
+                   n3 = rec(nuclei, 30, 10, 4).id();
+    setStatus(a, StageStatus::Complete);
+    {
+        EdgeWriterPtr wb = store().edges().writerForStage(b);
+        wb->assertParent(n1, cell);
+        wb->flush();
+    }
+    setStatus(b, StageStatus::Complete);
+    setStatus(c, StageStatus::Running);
+    {
+        EdgeWriterPtr wc = store().edges().writerForStage(c);
+        wc->assertParent(n2, cell);
+        wc->flush();
+    }
+
+    using Ids = std::set<ObjectId>;
+    EXPECT_EQ(agreedIds(ObjectQuery().attachment(AttachmentFilter::AttachedOnly)), Ids{n1});
+    EXPECT_EQ(agreedIds(inFlight().attachment(AttachmentFilter::AttachedOnly).layer(nuclei)), (Ids{n1, n2}));
+    EXPECT_EQ(agreedIds(ObjectQuery().attachment(AttachmentFilter::UnattachedOnly)), (Ids{n2, n3}));
+    EXPECT_EQ(agreedIds(inFlight().attachment(AttachmentFilter::UnattachedOnly).layer(nuclei)), Ids{n3});
+    EXPECT_EQ(agreedIds(ObjectQuery().attachment(AttachmentFilter::Any)), (Ids{n1, n2, n3}));
+
+    setStatus(c, StageStatus::Complete);
+    EXPECT_EQ(agreedIds(ObjectQuery().attachment(AttachmentFilter::AttachedOnly)), (Ids{n1, n2}));
+    EXPECT_EQ(agreedIds(ObjectQuery().attachment(AttachmentFilter::UnattachedOnly)), Ids{n3});
 }
 
 TEST_F(ObjectQueryTest, RectAndPolygonPredicates) {

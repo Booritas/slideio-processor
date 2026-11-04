@@ -102,12 +102,25 @@ void ObjectStore::discardStage(StageId stage) {
             count.bindInt64(1, stage.value());
             if (count.step()) removed = count.columnInt64(0);
         }
-        // Measurements reference objects, so they go first; plan B adds edges and
-        // annotations to the cascade.
-        for (const char* sql : {"DELETE FROM measurements WHERE object_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?)",
-                                "DELETE FROM object_rtree WHERE rowid IN (SELECT rowid FROM objects WHERE stage_id = ?)",
-                                "DELETE FROM objects WHERE stage_id = ?"}) {
+        // Everything about the stage's objects, by any stage, goes with them (ruling S25),
+        // child rows first so the declared foreign keys never fire.
+        for (const char* sql : {"DELETE FROM label_assertions WHERE object_rowid IN "
+                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
+                                "DELETE FROM measurement_assertions WHERE object_rowid IN "
+                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
+                                "DELETE FROM parent_edges WHERE child_rowid IN "
+                                "(SELECT rowid FROM objects WHERE stage_id = ?1) OR parent_rowid IN "
+                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
+                                // Keyed by ObjectId: a kept row would re-attach to a re-run's
+                                // object at a coincident anchor.
+                                "DELETE FROM derived_from WHERE (derived_layer, derived_anchor) IN "
+                                "(SELECT layer_id, anchor_id FROM objects WHERE stage_id = ?1) OR "
+                                "(primitive_layer, primitive_anchor) IN "
+                                "(SELECT layer_id, anchor_id FROM objects WHERE stage_id = ?1)",
+                                "DELETE FROM measurements WHERE object_rowid IN "
+                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
+                                "DELETE FROM object_rtree WHERE rowid IN (SELECT rowid FROM objects WHERE stage_id = ?1)",
+                                "DELETE FROM objects WHERE stage_id = ?1"}) {
             detail::Statement remove(db, sql);
             remove.bindInt64(1, stage.value());
             remove.run();

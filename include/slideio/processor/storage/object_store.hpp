@@ -148,11 +148,16 @@ private:
  * with the rectangle (half-open edges). A polygon filter tests the object's exact
  * geometry on 64-bit integer coordinates: Intersects admits an object whose closed
  * region meets the polygon's, touching included; ContainedBy admits an object whose
- * closed region lies inside or on the polygon's. Measurement bounds test the
- * producing stage's measurements; an object without the named measurement fails the
- * bound. Label filters test the object's label. No parent edge exists in this
- * version, so AttachmentFilter::AttachedOnly matches nothing and UnattachedOnly
- * matches everything. A limit applies after every other filter.
+ * closed region lies inside or on the polygon's. A measurement bound is existential:
+ * it admits an object when the producing stage's measurement or any measurement
+ * asserted on it satisfies the bound; an object without the named measurement fails
+ * it. Label filters test the effective label set: the object's row label plus every
+ * asserted label. AttachmentFilter::AttachedOnly admits an object that has a parent
+ * edge, whatever the parent's own visibility, and UnattachedOnly one that has none.
+ * An asserted label or measurement, and a parent edge, count only when the stage
+ * that asserted it is visible under the query's StageVisibility: Complete, stale or
+ * not, under CompletedOnly; any status under IncludeInFlight. A limit applies after
+ * every other filter.
  *
  * Every member throws IoError on a closed store, and every mutating member also on a
  * ReadOnly store.
@@ -222,11 +227,17 @@ public:
     bool get(ObjectId id, ObjectRecord& out) const override;
 
     /**
-     * @brief Removes every object a stage wrote, with its measurements, and appends
-     * a StageDiscarded event carrying the number removed, in one transaction.
+     * @brief Removes every object a stage wrote, with everything about those objects,
+     * and appends a StageDiscarded event carrying the number of objects removed, in
+     * one transaction.
      *
-     * Used by re-run and by failure handling (UR-STG-6). Objects of other stages are
-     * untouched.
+     * Used by re-run and by failure handling (UR-STG-6). Besides the objects it
+     * removes their measurements, the label and measurement assertions on them made
+     * by any stage, and the parent edges and derived-from edges with either endpoint
+     * among them, asserted by any stage, so nothing re-attaches to a re-run's objects.
+     * Objects of other stages are untouched, and so are the stage's own assertions
+     * and edges about them: EdgeStore::discardEdgesOfStage() and
+     * AnnotationStore::discardAnnotationsOfStage() remove those.
      * @param stage A declared stage.
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the store is closed or read-only, or when SQLite fails.

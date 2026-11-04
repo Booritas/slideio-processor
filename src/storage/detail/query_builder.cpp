@@ -31,7 +31,7 @@ int compareFloat(float f, int64_t v) noexcept {
 
 class SqlBuilder {
 public:
-    void where(const char* clause) {
+    void where(const std::string& clause) {
         sql_ += " AND ";
         sql_ += clause;
     }
@@ -59,6 +59,19 @@ private:
     std::string sql_;
     std::vector<QueryValue> values_;
 };
+
+// EXISTS over `from`, an assertion or edge table aliased t, matching `condition`. A row
+// counts only when its asserting stage is visible (ruling S24): under CompletedOnly the
+// clause joins that stage and ends with a status parameter, to which the caller binds
+// Complete; under IncludeInFlight every row counts.
+std::string existsVisible(const char* from, const char* condition, bool completedOnly) {
+    std::string clause = std::string("EXISTS (SELECT 1 FROM ") + from;
+    if (completedOnly) clause += " JOIN stages sa ON sa.id = t.stage_id";
+    clause += " WHERE ";
+    clause += condition;
+    if (completedOnly) clause += " AND sa.status = ?";
+    return clause + ")";
+}
 
 void validate(const ObjectQuery& query, const char* operation) {
     const auto inRange = [](auto value, auto last) {
@@ -161,24 +174,52 @@ BuiltQuery buildObjectQuery(const ObjectQuery& query, const char* operation) {
         b.where("o.stage_id = ?");
         b.bind(query.stageValue().value());
     }
+    // Each clause over an assertion or edge table ends with its visibility parameter.
+    const bool completedOnly = query.visibilityValue() == StageVisibility::CompletedOnly;
+    const auto bindVisibility = [&] {
+        if (completedOnly) b.bind(static_cast<int64_t>(StageStatus::Complete));
+    };
     if (query.hasLabel()) {
-        b.where("o.label_id = ?");
+        b.where("(o.label_id = ? OR " +
+                existsVisible("label_assertions t", "t.object_rowid = o.rowid AND t.label_id = ?", completedOnly) +
+                ")");
         b.bind(query.labelValue().value());
+        b.bind(query.labelValue().value());
+        bindVisibility();
     }
-    // The row label is the whole effective label set until label assertions exist.
-    if (query.labelFilterValue() == LabelFilter::LabelledOnly) b.where("o.label_id IS NOT NULL");
-    if (query.labelFilterValue() == LabelFilter::UnlabelledOnly) b.where("o.label_id IS NULL");
-    // No parent edge exists before edges are stored: nothing is attached.
-    if (query.attachmentValue() == AttachmentFilter::AttachedOnly) b.where("0");
+    if (query.labelFilterValue() != LabelFilter::Any) {
+        const std::string labelled = "(o.label_id IS NOT NULL OR " +
+                                     existsVisible("label_assertions t", "t.object_rowid = o.rowid", completedOnly) +
+                                     ")";
+        b.where(query.labelFilterValue() == LabelFilter::LabelledOnly ? labelled : "NOT " + labelled);
+        bindVisibility();
+    }
+    if (query.attachmentValue() != AttachmentFilter::Any) {
+        // The edge alone decides: the parent object's own visibility is not consulted (S20).
+        const std::string attached = existsVisible("parent_edges t", "t.child_rowid = o.rowid", completedOnly);
+        b.where(query.attachmentValue() == AttachmentFilter::AttachedOnly ? attached : "NOT " + attached);
+        bindVisibility();
+    }
     for (int32_t i = 0; i < query.measurementBoundCount(); ++i) {
+        // Existential across the producer's measurements and the visible asserted ones.
         const MeasurementBound bound = query.measurementBoundAt(i);
-        b.where(bound.isLowerBound
-                    ? "EXISTS (SELECT 1 FROM measurements m JOIN measurement_names n ON n.id = m.name_id "
-                      "WHERE m.object_rowid = o.rowid AND n.name = ? AND m.value >= ?)"
-                    : "EXISTS (SELECT 1 FROM measurements m JOIN measurement_names n ON n.id = m.name_id "
-                      "WHERE m.object_rowid = o.rowid AND n.name = ? AND m.value <= ?)");
+        const char* produced =
+            bound.isLowerBound
+                ? "EXISTS (SELECT 1 FROM measurements m JOIN measurement_names n ON n.id = m.name_id "
+                  "WHERE m.object_rowid = o.rowid AND n.name = ? AND m.value >= ?)"
+                : "EXISTS (SELECT 1 FROM measurements m JOIN measurement_names n ON n.id = m.name_id "
+                  "WHERE m.object_rowid = o.rowid AND n.name = ? AND m.value <= ?)";
+        const char* asserted = bound.isLowerBound ? "t.object_rowid = o.rowid AND n.name = ? AND t.value >= ?"
+                                                  : "t.object_rowid = o.rowid AND n.name = ? AND t.value <= ?";
+        b.where(std::string("(") + produced + " OR " +
+                existsVisible("measurement_assertions t JOIN measurement_names n ON n.id = t.name_id", asserted,
+                              completedOnly) +
+                ")");
         b.bindText(bound.name);
         b.bindReal(bound.value);
+        b.bindText(bound.name);
+        b.bindReal(bound.value);
+        bindVisibility();
     }
 
     built.hasLimit = query.hasLimit();
