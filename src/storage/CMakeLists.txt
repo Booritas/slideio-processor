@@ -4,6 +4,7 @@ add_library(slideio-processor-storage OBJECT
     edge_store.cpp
     edge_writer.cpp
     event_journal.cpp
+    label_raster_source.cpp
     layer_registry.cpp
     object_cursor.cpp
     object_store.cpp

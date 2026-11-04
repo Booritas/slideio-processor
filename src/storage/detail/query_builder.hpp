@@ -14,6 +14,7 @@
 #include <slideio/processor/core/object_record.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -82,5 +83,13 @@ CursorPtr openObjectCursor(std::string path, ReadLease&& lease, BuiltQuery&& bui
 // The number of rows `built` yields with its polygon predicate and limit applied, read in
 // one read transaction on `lease`. Throws IoError, InternalError, std::bad_alloc.
 int64_t countWithPolygon(std::string path, ReadLease&& lease, BuiltQuery&& built);
+
+// ---- Defined in label_raster_source.cpp ---------------------------------------------
+
+// The Label raster source of AnnotationStore::layerRasterSource (ruling S15) over the
+// objects of `layer`, which the caller has validated. It reaches the store through
+// `gate` on every fillTile, so a fill after Store::close() throws IoError "store is
+// closed". Throws std::bad_alloc.
+TileRasterSourcePtr makeLabelRasterSource(std::shared_ptr<StoreGate> gate, LayerId layer);
 
 } // namespace slideio::processor::detail

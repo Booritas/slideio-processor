@@ -3,10 +3,13 @@
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/object_lookup.hpp"
+#include "storage/detail/query_builder.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/storage/layer_registry.hpp>
+#include <slideio/processor/storage/object_store.hpp>
 
 #include <mutex>
 #include <set>
@@ -45,7 +48,7 @@ constexpr const char* kAssertedMeasurements =
 
 class AnnotationStore::Impl {
 public:
-    explicit Impl(detail::StoreImpl& s) : store(s) {}
+    Impl(detail::StoreImpl& s, const LayerRegistry& l, ObjectStore& o) : store(s), layers(l), objects(o) {}
 
     // Runs `sql` (one of the WITH prefixes above plus a SELECT) for `object`, binding
     // ?1..?3, then `bindMore(statement)`, and returns read(db, statement). An invalid id
@@ -109,11 +112,14 @@ public:
     }
 
     detail::StoreImpl& store;
+    const LayerRegistry& layers;
+    ObjectStore& objects;  // the source of core's Membership and ObjectAnchor rasters
     mutable std::mutex poolMutex;
     mutable std::set<std::string> namePool;
 };
 
-AnnotationStore::AnnotationStore(detail::StoreImpl& store) : impl_(std::make_unique<Impl>(store)) {}
+AnnotationStore::AnnotationStore(detail::StoreImpl& store, const LayerRegistry& layers, ObjectStore& objects)
+    : impl_(std::make_unique<Impl>(store, layers, objects)) {}
 
 AnnotationStore::~AnnotationStore() = default;
 
@@ -210,6 +216,28 @@ int64_t AnnotationStore::labelAnnotationCount() const {
 
 int64_t AnnotationStore::measurementAnnotationCount() const {
     return impl_->total("AnnotationStore::measurementAnnotationCount", "SELECT COUNT(*) FROM measurement_assertions");
+}
+
+TileRasterSourcePtr AnnotationStore::layerRasterSource(LayerId layer, LayerRasterContent content) const {
+    constexpr const char* kOperation = "AnnotationStore::layerRasterSource";
+    detail::StoreImpl& store = impl_->store;
+    store.checkOpen(kOperation);
+    if (!layer.isValid() || !impl_->layers.exists(layer)) {
+        detail::throwInvalid(kOperation, "layer " + std::to_string(layer.value()) + " is unknown");
+    }
+    if (layer == impl_->layers.pixelLayer()) {
+        detail::throwInvalid(kOperation, "the pixel layer holds no objects");
+    }
+    switch (content) {
+    case LayerRasterContent::Label:
+        return detail::makeLabelRasterSource(store.gate(), layer);
+    case LayerRasterContent::Membership:
+    case LayerRasterContent::ObjectAnchor:
+        // Neither reads a label, so core's source over the object store is the answer (S15).
+        return makeLayerRasterSource(impl_->objects, layer, content);
+    }
+    detail::throwInvalid(kOperation,
+                         "content " + std::to_string(static_cast<int32_t>(content)) + " is not a LayerRasterContent");
 }
 
 } // namespace slideio::processor

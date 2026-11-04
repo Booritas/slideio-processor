@@ -15,7 +15,7 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core) {}
+        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core, layerRegistry, objectStore) {}
 
     detail::StoreImpl core;
     EventJournal journal;

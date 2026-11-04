@@ -23,6 +23,8 @@ class StoreGate;
 } // namespace detail
 
 class AnnotationWriter;
+class LayerRegistry;
+class ObjectStore;
 /** @brief Shared ownership of an AnnotationWriter. */
 using AnnotationWriterPtr = std::shared_ptr<AnnotationWriter>;
 
@@ -304,9 +306,46 @@ public:
      */
     int64_t measurementAnnotationCount() const;
 
+    /**
+     * @brief Makes a raster source backed by the objects of one layer, whose Label
+     * content is the effective label.
+     *
+     * Takes makeLayerRasterSource()'s parameters minus the ObjectSource, because the
+     * store is the source; it takes every content, so a caller cannot reach core's
+     * row-label-only Label by mistake. Membership and ObjectAnchor are exactly
+     * makeLayerRasterSource(Store::objects(), layer, content).
+     *
+     * For Label, each fillTile() reads, in one read transaction, the objects of `layer`
+     * visible under StageVisibility::CompletedOnly that intersect the tile's rasterised
+     * grid, grown by one level-0 pixel on each side so that rounding never drops a
+     * sliver, as makeLayerRasterSource() queries. Each object's value is the first
+     * member of its effective label set (see labelCount()): its row label when it has
+     * one, otherwise the smallest visible asserted label, otherwise 0. The values are
+     * rasterised into plane 0 at the tile's own level, 0 where no object covers a
+     * pixel; where objects overlap, the smallest ObjectId wins. planeType() is Int32
+     * and planeCount() is 1. A dropped layer yields background.
+     *
+     * The Label source's fillTile() throws InvalidArgumentError when the view lacks
+     * plane 0 of type Int32, or its scale, origin or level-0 query extent is unusable;
+     * IoError once the Store is closed ("store is closed") or when SQLite fails;
+     * InternalError when a stored geometry is corrupt; std::bad_alloc.
+     * @param layer The layer to read: a declared layer other than the pixel layer.
+     * @param content What to write.
+     * @return The raster source. The store is borrowed (C-8).
+     * @throws InvalidArgumentError When `layer` is invalid, unknown or the pixel layer,
+     * or `content` is not a LayerRasterContent.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe; the returned source is ThreadSafe.
+     * @par Requirements
+     * UR-RES-4, UR-STG-5, UR-EXT-4, UR-QA-3
+     */
+    TileRasterSourcePtr layerRasterSource(LayerId layer, LayerRasterContent content) const;
+
 private:
     friend class Store;
-    explicit AnnotationStore(detail::StoreImpl& store);
+    AnnotationStore(detail::StoreImpl& store, const LayerRegistry& layers, ObjectStore& objects);
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
