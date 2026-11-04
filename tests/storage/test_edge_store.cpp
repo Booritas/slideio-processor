@@ -180,13 +180,13 @@ TEST_F(EdgeStoreTest, FlushRejectsMissingEndpointWholeBatch) {
     const ObjectId c1 = pendingCell.id();
 
     EdgeWriterPtr w = edges().writerForStage(b);
-    w->assertParent(c1, t);
     w->assertParent(c2, t);
+    w->assertParent(c1, t);
     EXPECT_EQ(w->assertedCount(), 2);
     const std::string message = invalidArgumentMessage([&] { w->flush(); });
     EXPECT_TRUE(contains(message, "EdgeWriter::flush: child cells/")) << message;
     EXPECT_TRUE(contains(message, "does not exist")) << message;
-    EXPECT_EQ(edges().parentEdgeCount(), 0);  // c2's edge rolled back with c1's
+    EXPECT_EQ(edges().parentEdgeCount(), 0);  // c2's edge, inserted first, rolled back with c1's
     EXPECT_EQ(w->assertedCount(), 0);         // the batch was dropped
     EXPECT_TRUE(eventsOfKind(store(), EventKind::EdgesAsserted).empty());
     w->flush();  // nothing pending any more
@@ -211,6 +211,50 @@ TEST_F(EdgeStoreTest, FlushRejectsMissingEndpointWholeBatch) {
     EXPECT_TRUE(contains(invalidArgumentMessage([&] { w->flush(); }), "primitive sp/"));
     EXPECT_EQ(edges().parentEdgeCount(), 2);
     EXPECT_EQ(edges().derivedFromEdgeCount(), 0);
+}
+
+// Rows a batch inserted before its failing edge are rolled back with it.
+TEST_F(EdgeStoreTest, FailingBatchRollsBackRowsAlreadyInserted) {
+    const std::vector<ObjectId> ids =
+        commit(a, {rec(tissue, 0, 0, 100), rec(tissue, 200, 0, 100), rec(nuclei, 10, 10, 4), rec(nuclei, 30, 10, 4),
+                   rec(sp, 50, 50, 4)});
+    const ObjectId t = ids[0], t2 = ids[1], n1 = ids[2], n2 = ids[3], s = ids[4];
+
+    // Valid parent and derived-from edges first, then a derived-from row whose primitive is missing.
+    EdgeWriterPtr w = edges().writerForStage(b);
+    w->assertParent(n1, t);
+    w->assertParent(n2, t);
+    w->assertDerivedFrom(t, s);
+    w->assertDerivedFrom(t2, rec(sp, 90, 90, 4).id());
+    EXPECT_TRUE(contains(invalidArgumentMessage([&] { w->flush(); }), "primitive sp/"));
+    EXPECT_EQ(edges().parentEdgeCount(), 0);
+    EXPECT_EQ(edges().derivedFromEdgeCount(), 0);
+    EXPECT_TRUE(eventsOfKind(store(), EventKind::EdgesAsserted).empty());
+    EXPECT_EQ(w->assertedCount(), 0);
+
+    w->assertParent(n1, t);
+    w->flush();
+    EXPECT_EQ(edges().parentEdgeCount(), 1);
+    ASSERT_EQ(eventsOfKind(store(), EventKind::EdgesAsserted).size(), 1u);
+
+    // A new, valid edge first, then one conflicting with the committed (n1, t) by stage-b.
+    EdgeWriterPtr other = edges().writerForStage(c);
+    other->assertParent(n2, t2);
+    other->assertDerivedFrom(t2, s);
+    other->assertParent(n1, t2);
+    const std::string message = invalidArgumentMessage([&] { other->flush(); });
+    EXPECT_TRUE(contains(message, "stage-b")) << message;
+    EXPECT_EQ(edges().parentEdgeCount(), 1);
+    EXPECT_EQ(edges().derivedFromEdgeCount(), 0);
+    EXPECT_EQ(eventsOfKind(store(), EventKind::EdgesAsserted).size(), 1u);
+    EXPECT_EQ(other->assertedCount(), 0);
+    ObjectId parent;
+    complete(a);
+    complete(b);
+    complete(c);
+    EXPECT_FALSE(edges().isAttached(n2));
+    ASSERT_TRUE(edges().parentOf(n1, parent));
+    EXPECT_EQ(parent, t);
 }
 
 TEST_F(EdgeStoreTest, OneParentPerChild) {
