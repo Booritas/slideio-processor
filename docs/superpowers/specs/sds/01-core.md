@@ -1242,6 +1242,8 @@ public:
     const char* propertyName(int32_t index) const;
     const char* propertyValue(int32_t index) const;
     int64_t featuresRead() const noexcept;
+    bool provenance(Provenance& out) const;   // false until the member is read
+    int64_t featuresSkipped() const noexcept;
 };
 
 class GeoJsonWriter {
@@ -1268,8 +1270,8 @@ public:
 };
 ```
 
-**Thread-safety:** ThreadConfined. **Requirements:** UR-RES-8, UR-RES-15,
-UR-RES-18.
+**Thread-safety:** ThreadConfined. **Requirements:** UR-RES-8, UR-RES-11,
+UR-RES-15, UR-RES-18.
 
 One codec, used from both directions by different modules: `storage` holds the
 reader for import (decision 3), `reporting` holds the writer for export. That
@@ -1305,9 +1307,32 @@ feature, but leaves the reader usable: the next call continues with the
 following feature. Properties are the scalar members of `properties` other
 than `classification` and `layer`, then the scalar members of
 `properties.measurements` as `measurements.<key>`; nulls,
-arrays and nested objects are skipped. That includes the array form of
-`measurements` that QuPath wrote before 0.3, which therefore yields no
-measurement properties (`03-storage.md` 3.11).
+arrays and nested objects are skipped. QuPath before 0.3 wrote
+`measurements` as an array of `{"name": s, "value": v}` objects instead; each
+entry with a string `name` and a non-null scalar `value` becomes
+`measurements.<name>`, in array order, after the top-level properties, and
+any other entry is skipped. The object form keeps its document order.
+
+**What it reports about the file.** `provenance(out)` returns true once a
+FeatureCollection's top-level `provenance` object member has been read: by the
+first `next()` when the member precedes `features`, as the writer puts it, and
+by the time `next()` returns false when it follows, because the reader only
+sees the member as the stream passes it. It then sets `out` through
+`Provenance::restored` (1.13), reading a missing or mistyped member, or a
+number that is not an integer in range, as `""` or 0. It is false for a
+top-level array, a single Feature, or a member that is not an object, and
+leaves `out` unchanged. `featuresSkipped()` counts the features skipped with a
+warning for null, missing, empty or unsupported geometry; a feature whose
+`next()` threw is not counted. A moved-from reader reports false and 0. No
+message the reader logs or throws names a provenance field or a property
+value, since either may carry a patient identifier.
+
+The array form and the provenance are the "two things `core::GeoJsonReader`
+leaves to this module" of `03-storage.md` 3.11. They are now `core`'s, with
+the skip count, so the importer reads all three through this reader
+([storage plan B](../../plans/2026-11-03-storage-b.md), ruling S17). Whether
+a file's provenance may replace a store's is `storage`'s decision, not the
+reader's.
 
 **Holes get an owner on the way out.** `Polygon` deliberately has none (1.3),
 but GeoJSON's MultiPolygon nests each hole inside one polygon. A polygon with

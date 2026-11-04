@@ -34,10 +34,17 @@ namespace slideio::processor {
  *
  * Properties are the feature's scalar "properties" members other than
  * "classification" and "layer", in document order, followed by the scalar
- * members of "properties.measurements", named "measurements.<key>". Values are
- * text: strings as their content, numbers exactly as written in the file,
+ * members of "properties.measurements", named "measurements.<key>". QuPath
+ * before 0.3 wrote "measurements" as an array of {"name": ..., "value": ...}
+ * objects; each entry with a string name and a non-null scalar value becomes
+ * "measurements.<name>", in array order, and other entries are skipped. Values
+ * are text: strings as their content, numbers exactly as written in the file,
  * booleans as "true" or "false". Nulls, arrays and other nested objects are
  * skipped.
+ *
+ * A FeatureCollection's top-level "provenance" object is read as the stream
+ * passes it and reported by provenance(); featuresSkipped() counts the
+ * features skipped for their geometry.
  *
  * Feature indices in messages are 0-based positions in the feature list,
  * counting skipped features. A geometry error (a ring with fewer than 3
@@ -53,12 +60,13 @@ namespace slideio::processor {
  * Before the first successful next(), and after next() returns false or
  * throws, the accessors report an empty feature.
  *
- * The reader is move-only. A moved-from reader reports an empty feature, and
- * its next() throws InvalidArgumentError.
+ * The reader is move-only. A moved-from reader reports an empty feature, no
+ * provenance and no skipped features, and its next() throws
+ * InvalidArgumentError.
  * @par Thread-safety
  * ThreadConfined.
  * @par Requirements
- * UR-RES-8, UR-RES-13, UR-RES-15
+ * UR-RES-8, UR-RES-11, UR-RES-13, UR-RES-15
  */
 class SLIDEIO_PROCESSOR_DATA_EXPORTS GeoJsonReader {
 public:
@@ -157,6 +165,29 @@ public:
      * @throws Nothing.
      */
     int64_t featuresRead() const noexcept;
+    /**
+     * @brief Returns the file's provenance record, once it has been read.
+     *
+     * True once a FeatureCollection's top-level "provenance" object member has
+     * been read: by the first next() when the member precedes "features", and
+     * by the time next() returns false when it follows. Each value is read
+     * through Provenance::restored(); a member that is missing or of another
+     * type reads as "" or 0, as does a number that is not an integer in range.
+     * @param out Receives the record when the result is true; unchanged otherwise.
+     * @return False before the member is read, for a top-level array or a single
+     * Feature, when the member is not an object, and on a moved-from reader.
+     * @throws std::bad_alloc When memory is exhausted; out is unchanged.
+     */
+    bool provenance(Provenance& out) const;
+    /**
+     * @brief Returns the number of features skipped with a warning because their
+     * geometry is null, missing, empty or of an unsupported type.
+     * @return The count so far; features whose next() threw, and elements of the
+     * feature list that are not objects, are not counted. 0 on a moved-from
+     * reader.
+     * @throws Nothing.
+     */
+    int64_t featuresSkipped() const noexcept;
 
 private:
     class Impl;

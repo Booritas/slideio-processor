@@ -1,4 +1,4 @@
-// Requirements: UR-RES-8, UR-RES-13, UR-RES-15
+// Requirements: UR-RES-8, UR-RES-11, UR-RES-13, UR-RES-15
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geojson.hpp>
 #include <slideio/processor/core/log.hpp>
@@ -542,4 +542,125 @@ TEST(GeoJsonReader, CollinearAndOverwideRingsNameTheFeature) {
             EXPECT_NE(messageOf(e).find("feature 0"), std::string::npos) << e.what();
         }
     }
+}
+
+TEST(GeoJsonReader, QuPathPre03ArrayMeasurements) {
+    auto path = uniqueTempPath("qp02", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"([{"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(},
+      "properties":{"name":"a","measurements":[{"name":"Area","value":12.5},{"name":"bad"},
+        {"name":"Perimeter","value":14}]}},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(5) + R"(},
+      "properties":{"measurements":[5,"s",[{"name":"inner","value":1}],{"name":7,"value":1},{"name":"obj","value":{"x":1}},
+        {"name":"arr","value":[1]},{"name":"nil","value":null},{"value":true,"name":"Flag","extra":{"k":[1]}},
+        {"name":"Text","value":"high"}],"k":2}}])");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    std::vector<std::pair<std::string, std::string>> want = {
+        {"name", "a"}, {"measurements.Area", "12.5"}, {"measurements.Perimeter", "14"}};
+    ASSERT_EQ(r.propertyCount(), static_cast<int32_t>(want.size()));
+    for (int32_t i = 0; i < r.propertyCount(); ++i) {
+        EXPECT_EQ(r.propertyName(i), want[static_cast<size_t>(i)].first);
+        EXPECT_EQ(r.propertyValue(i), want[static_cast<size_t>(i)].second);
+    }
+    ASSERT_TRUE(r.next());                                             // top-level first, whatever the order
+    want = {{"k", "2"}, {"measurements.Flag", "true"}, {"measurements.Text", "high"}};
+    ASSERT_EQ(r.propertyCount(), static_cast<int32_t>(want.size()));
+    for (int32_t i = 0; i < r.propertyCount(); ++i) {
+        EXPECT_EQ(r.propertyName(i), want[static_cast<size_t>(i)].first);
+        EXPECT_EQ(r.propertyValue(i), want[static_cast<size_t>(i)].second);
+    }
+    EXPECT_FALSE(r.next());
+    EXPECT_EQ(r.featuresRead(), 2);
+}
+
+TEST(GeoJsonReader, ProvenanceBeforeAndAfterFeatures) {
+    const std::string feature =
+        R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + "}}";
+    auto path = uniqueTempPath("prov", ".geojson");
+    TempFileGuard guard(path);
+    {   // the writer puts "provenance" before "features"
+        Polygon p;
+        Point64 v[] = {{0, 0}, {4, 0}, {4, 4}};
+        p.addRing(v, 3, false);
+        ObjectRecord rec;
+        rec.setGeometry(p);
+        rec.setLayer(LayerId(1));
+        GeoJsonWriter w(path.u8string().c_str());
+        w.begin(Provenance::restored("s-1", 2, "0.9.1", 1700000000123));
+        w.writeFeature(rec, "cells", nullptr, nullptr, 0);
+        w.end();
+    }
+    {
+        GeoJsonReader r(path.u8string().c_str());
+        Provenance out;
+        EXPECT_FALSE(r.provenance(out));                               // nothing parsed yet
+        ASSERT_TRUE(r.next());
+        ASSERT_TRUE(r.provenance(out));
+        EXPECT_STREQ(out.slideId(), "s-1");
+        EXPECT_EQ(out.sceneIndex(), 2);
+        EXPECT_STREQ(out.libraryVersion(), "0.9.1");
+        EXPECT_EQ(out.createdAtUnixMs(), 1700000000123);
+        GeoJsonReader moved(std::move(r));
+        EXPECT_TRUE(moved.provenance(out));
+        EXPECT_FALSE(r.provenance(out));                               // NOLINT(bugprone-use-after-move)
+    }
+    writeFile(path, R"({"type":"FeatureCollection","features":[)" + feature + R"(],
+      "provenance":{"slideId":"after","sceneIndex":"2","libraryVersion":3,"createdAtUnixMs":1.5,"extra":{"a":[1]}}})");
+    {
+        GeoJsonReader r(path.u8string().c_str());
+        Provenance out = Provenance::restored("untouched", 9, "v", 1);
+        ASSERT_TRUE(r.next());
+        EXPECT_FALSE(r.provenance(out));                               // the member follows "features"
+        EXPECT_STREQ(out.slideId(), "untouched");
+        EXPECT_FALSE(r.next());
+        ASSERT_TRUE(r.provenance(out));
+        EXPECT_STREQ(out.slideId(), "after");
+        EXPECT_EQ(out.sceneIndex(), 0);                                // mistyped members read as 0 or ""
+        EXPECT_STREQ(out.libraryVersion(), "");
+        EXPECT_EQ(out.createdAtUnixMs(), 0);
+    }
+    const std::string notCollections[] = {
+        "[" + feature + "]",
+        R"({"type":"Feature","provenance":{"slideId":"f"},"geometry":{"type":"Polygon","coordinates":)" +
+            square(0) + "}}",
+        R"({"type":"FeatureCollection","provenance":5,"features":[)" + feature + "]}",
+        R"({"type":"FeatureCollection","features":[{"type":"Feature","provenance":{"slideId":"inner"},)"
+        R"("geometry":{"type":"Polygon","coordinates":)" + square(0) + "}}]}",
+    };
+    for (const std::string& doc : notCollections) {
+        writeFile(path, doc);
+        GeoJsonReader r(path.u8string().c_str());
+        Provenance out;
+        ASSERT_TRUE(r.next()) << doc;
+        EXPECT_FALSE(r.next()) << doc;
+        EXPECT_FALSE(r.provenance(out)) << doc;
+    }
+}
+
+TEST(GeoJsonReader, SkippedFeaturesAreCounted) {
+    auto path = uniqueTempPath("skipped", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection","features":[
+      {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]}},
+      {"type":"Feature","geometry":null},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(}},
+      {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1,1]]}}]})");
+    GeoJsonReader r(path.u8string().c_str());
+    EXPECT_EQ(r.featuresSkipped(), 0);
+    ASSERT_TRUE(r.next());
+    EXPECT_EQ(r.featuresSkipped(), 2);
+    EXPECT_FALSE(r.next());
+    EXPECT_EQ(r.featuresSkipped(), 3);
+    EXPECT_EQ(r.featuresRead(), 1);
+    GeoJsonReader moved(std::move(r));
+    EXPECT_EQ(moved.featuresSkipped(), 3);
+    EXPECT_EQ(r.featuresSkipped(), 0);                                 // NOLINT(bugprone-use-after-move)
+
+    writeFile(path, R"([{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[0,0]]]}}])");
+    GeoJsonReader bad(path.u8string().c_str());
+    EXPECT_THROW(bad.next(), InvalidArgumentError);                    // a 2-point ring is an error, not a skip
+    EXPECT_FALSE(bad.next());
+    EXPECT_EQ(bad.featuresSkipped(), 0);
+    EXPECT_EQ(bad.featuresRead(), 0);
 }

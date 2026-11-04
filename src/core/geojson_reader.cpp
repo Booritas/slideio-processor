@@ -249,6 +249,13 @@ Coordinate parseCoordinate(const char* text, size_t len) {
     return c;
 }
 
+// The JSON number `text` as an int64_t when it is a plain integer that fits,
+// otherwise 0.
+int64_t parseInteger(const char* text, size_t len) {
+    const Coordinate c = parseCoordinate(text, len);
+    return c.isInteger ? c.integer : 0;
+}
+
 // Opens the file in binary mode and skips a leading UTF-8 byte order mark,
 // reporting its length in `bomSize`.
 std::ifstream openInput(const std::string& path, size_t& bomSize) {
@@ -274,14 +281,39 @@ void warnSkipped(const std::string& path, int64_t index, const std::string& reas
 // content; geometry is checked after the feature closes, outside the parser.
 class Handler : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>, Handler> {
 public:
-    enum class Ctx { TopArray, Features, Feature, Geometry, Coords, Properties, Classification, Measurements };
+    enum class Ctx {
+        TopArray,
+        Features,
+        Feature,
+        Geometry,
+        Coords,
+        Properties,
+        Classification,
+        Measurements,     // the object form
+        MeasurementList,  // the array form QuPath wrote before 0.3
+        MeasurementEntry, // one {"name": ..., "value": ...} of the array form
+        Provenance,       // the root's "provenance" member
+    };
     enum class Scalar { Null, Bool, String, Number };
 
     explicit Handler(const std::string& path) : path_(path) {}
 
+    // The root's "provenance" object member, as read; mistyped members read as "" or 0.
+    struct FileProvenance {
+        bool read = false; // set when the member's closing brace is consumed
+        std::string slideId;
+        std::string libraryVersion;
+        int32_t sceneIndex = 0;
+        int64_t createdAtUnixMs = 0;
+    };
+
     PendingFeature pending;
+    FileProvenance provenance;
     bool featureComplete = false; // set when a feature's closing brace is consumed
     bool notGeoJson = false;      // the top-level value is a scalar
+
+    // True once the root object has turned out to be a FeatureCollection.
+    bool isCollection() const { return rootIsCollection_; }
 
     bool Null() { return scalar(Scalar::Null, "", 0); }
     bool Bool(bool b) { return b ? scalar(Scalar::Bool, "true", 4) : scalar(Scalar::Bool, "false", 5); }
@@ -311,6 +343,10 @@ private:
     std::vector<Ctx> stack_;
     std::vector<CoordArray> coords_;
     std::string key_;
+    std::string entryName_;  // the current MeasurementEntry's string "name"
+    std::string entryValue_; // and its scalar "value", as text
+    bool entryHasName_ = false;
+    bool entryHasValue_ = false;
     int64_t skip_ = 0;          // depth of the value being skipped; 0 when not skipping
     int64_t nextIndex_ = 0;     // index of the next element of the feature list
     bool rootIsCollection_ = false;
@@ -347,7 +383,10 @@ private:
             }
             break;
         case Ctx::Feature:
-            if (atRoot() && rootIsCollection_) {
+            if (isObject && atRoot() && key_ == "provenance") {
+                provenance = FileProvenance(); // reported only when the root is a collection
+                push(Ctx::Provenance);
+            } else if (atRoot() && rootIsCollection_) {
                 skip_ = 1; // the collection's own members other than "features"
             } else if (isObject && key_ == "geometry") {
                 pending.resetGeometry();
@@ -385,12 +424,25 @@ private:
                 push(Ctx::Classification);
             } else if (isObject && key_ == "measurements") {
                 push(Ctx::Measurements);
+            } else if (!isObject && key_ == "measurements") {
+                push(Ctx::MeasurementList);
+            } else {
+                skip_ = 1;
+            }
+            break;
+        case Ctx::MeasurementList:
+            if (isObject) {
+                entryHasName_ = false;
+                entryHasValue_ = false;
+                push(Ctx::MeasurementEntry);
             } else {
                 skip_ = 1;
             }
             break;
         case Ctx::Classification:
         case Ctx::Measurements:
+        case Ctx::MeasurementEntry:
+        case Ctx::Provenance:
             skip_ = 1;
             break;
         }
@@ -416,6 +468,13 @@ private:
                 pending.positionDepth = depth;
                 pending.positions.push_back({a.x, a.y});
             }
+        } else if (ctx == Ctx::MeasurementEntry) {
+            if (entryHasName_ && entryHasValue_) {
+                property(pending.measurementNames, pending.measurementValues, "measurements." + entryName_,
+                         entryValue_.data(), entryValue_.size());
+            }
+        } else if (ctx == Ctx::Provenance) {
+            provenance.read = true;
         } else if (ctx == Ctx::Feature) {
             // The root object closing as a collection ends the document without a feature.
             if (!(stack_.empty() && rootIsCollection_)) {
@@ -423,6 +482,23 @@ private:
             }
         }
         return true;
+    }
+
+    // Reads one scalar member of the provenance object; a mistyped one reads as "" or 0.
+    void provenanceMember(Scalar kind, const char* s, size_t len) {
+        const bool isString = kind == Scalar::String;
+        const int64_t number = kind == Scalar::Number ? parseInteger(s, len) : 0;
+        if (key_ == "slideId") {
+            provenance.slideId.assign(isString ? s : "", isString ? len : 0);
+        } else if (key_ == "libraryVersion") {
+            provenance.libraryVersion.assign(isString ? s : "", isString ? len : 0);
+        } else if (key_ == "sceneIndex") {
+            const bool fits =
+                number >= std::numeric_limits<int32_t>::min() && number <= std::numeric_limits<int32_t>::max();
+            provenance.sceneIndex = fits ? static_cast<int32_t>(number) : 0;
+        } else if (key_ == "createdAtUnixMs") {
+            provenance.createdAtUnixMs = number;
+        }
     }
 
     static void property(std::vector<std::string>& names, std::vector<std::string>& values, std::string name,
@@ -491,6 +567,20 @@ private:
                 property(pending.measurementNames, pending.measurementValues, "measurements." + key_, s, len);
             }
             break;
+        case Ctx::MeasurementList:
+            break; // a scalar entry is skipped
+        case Ctx::MeasurementEntry:
+            if (key_ == "name" && kind == Scalar::String) {
+                entryName_.assign(s, len);
+                entryHasName_ = true;
+            } else if (key_ == "value" && kind != Scalar::Null) {
+                entryValue_.assign(s, len);
+                entryHasValue_ = true;
+            }
+            break;
+        case Ctx::Provenance:
+            provenanceMember(kind, s, len);
+            break;
         }
         return true;
     }
@@ -519,6 +609,7 @@ public:
     std::string failure; // non-empty once a parse or read error ended reading
     bool done = false;
     int64_t read = 0;
+    int64_t skipped = 0; // features finish() skipped with a warning
 
     InvalidArgumentError geometryError(const std::string& reason) const {
         return InvalidArgumentError(("GeoJsonReader: feature " + std::to_string(handler.pending.index) + " of " +
@@ -556,6 +647,7 @@ public:
         PendingFeature& f = handler.pending;
         if (!f.hasGeometry) {
             warnSkipped(path, f.index, "the geometry is null or missing");
+            ++skipped;
             return false;
         }
         const bool multi = f.geometryType == "MultiPolygon";
@@ -563,10 +655,12 @@ public:
             warnSkipped(path, f.index,
                         "geometry type '" + (f.geometryType.empty() ? std::string("(none)") : f.geometryType) +
                             "' is not supported");
+            ++skipped;
             return false;
         }
         if (f.positions.empty() && !f.coordsMalformed) {
             warnSkipped(path, f.index, "the " + f.geometryType + " has no coordinates");
+            ++skipped;
             return false;
         }
         const int ringDepth = multi ? 3 : 2;
@@ -723,5 +817,16 @@ const char* GeoJsonReader::propertyValue(int32_t index) const {
 }
 
 int64_t GeoJsonReader::featuresRead() const noexcept { return impl_ ? impl_->read : 0; }
+
+bool GeoJsonReader::provenance(Provenance& out) const {
+    if (!impl_ || !impl_->handler.provenance.read || !impl_->handler.isCollection()) {
+        return false;
+    }
+    const Handler::FileProvenance& p = impl_->handler.provenance;
+    out = Provenance::restored(p.slideId.c_str(), p.sceneIndex, p.libraryVersion.c_str(), p.createdAtUnixMs);
+    return true;
+}
+
+int64_t GeoJsonReader::featuresSkipped() const noexcept { return impl_ ? impl_->skipped : 0; }
 
 } // namespace slideio::processor
