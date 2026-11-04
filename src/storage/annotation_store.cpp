@@ -151,9 +151,8 @@ Measurement AnnotationStore::assertedMeasurementAt(ObjectId object, int32_t inde
     return impl_->at("AnnotationStore::assertedMeasurementAt", object, index, kAssertedMeasurements,
                      "SELECT name, value, unit FROM asserted ORDER BY name, stage_id LIMIT 1 OFFSET ?4",
                      [this](detail::Statement& s) {
-                         // Measurement befriends AnnotationStore for this constructor.
-                         return Measurement(impl_->pooledName(s.columnText(0)), s.columnDouble(1),
-                                            static_cast<MeasurementUnit>(s.columnInt64(2)));
+                         return Measurement::restored(impl_->pooledName(s.columnText(0)), s.columnDouble(1),
+                                                      static_cast<MeasurementUnit>(s.columnInt64(2)));
                      });
 }
 
@@ -178,7 +177,8 @@ bool AnnotationStore::assertedMeasurement(ObjectId object, const char* name, Sta
         },
         [&](sqlite3*, detail::Statement& s) {
             if (!s.step()) return false;
-            out = Measurement(impl_->pooledName(name), s.columnDouble(0), static_cast<MeasurementUnit>(s.columnInt64(1)));
+            out = Measurement::restored(impl_->pooledName(name), s.columnDouble(0),
+                                        static_cast<MeasurementUnit>(s.columnInt64(1)));
             return true;
         });
 }

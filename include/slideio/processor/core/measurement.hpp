@@ -51,8 +51,8 @@ public:
     /**
      * @brief Returns the measurement name.
      * @return A UTF-8 string, never null. It stays valid until the owning
-     * MeasurementSet is next modified or destroyed; for a measurement returned by
-     * storage's AnnotationStore, until that Store is destroyed.
+     * MeasurementSet is next modified or destroyed; for one built by restored(), as
+     * long as the name passed to it.
      * @throws Nothing.
      */
     const char* name() const noexcept;
@@ -76,9 +76,22 @@ public:
      */
     bool isCalibrated() const noexcept;
 
+    /**
+     * @brief Builds a measurement over a name the caller keeps alive.
+     *
+     * For sources that read measurements back from storage and return them outside a
+     * MeasurementSet. The name is not copied: it must outlive the returned measurement
+     * and every copy of it.
+     * @param name The UTF-8 name; null is read as "".
+     * @param value The value.
+     * @param unit The unit.
+     * @return The measurement.
+     * @throws Nothing.
+     */
+    static Measurement restored(const char* name, double value, MeasurementUnit unit) noexcept;
+
 private:
     friend class MeasurementSet;
-    friend class AnnotationStore;  // storage: names pooled for the Store's lifetime
     Measurement(const char* name, double value, MeasurementUnit unit) noexcept;
 
     const char* name_;

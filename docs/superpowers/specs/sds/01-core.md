@@ -388,6 +388,9 @@ public:
     double value() const noexcept;
     MeasurementUnit unit() const noexcept;
     bool isCalibrated() const noexcept;
+
+    static Measurement restored(const char* name, double value,
+                                MeasurementUnit unit) noexcept;
 };
 
 class MeasurementSet {
@@ -412,7 +415,12 @@ public:
 **Thread-safety:** ThreadCompatible. **Requirements:** UR-SEG-5, UR-SEG-6.
 
 `Measurement` has a public default constructor so a caller can declare the
-`out` argument of `find`; populated instances come only from a set. The set
+`out` argument of `find`; populated instances come from a set, or from
+`Measurement::restored(name, value, unit)` for a source that reads measurements
+back outside a set, such as `AnnotationStore` (`03-storage.md` 3.7). `restored`
+does not copy the name, which must outlive the measurement and every copy
+(null reads as ""), and it lets `core` serve storage without naming a storage
+class ([storage plan B](../../plans/2026-11-03-storage-b.md), Task 4 ruling). The set
 has the full copy and move set, keeps insertion order, and `set` on an
 existing name replaces its value and unit in place.
 
