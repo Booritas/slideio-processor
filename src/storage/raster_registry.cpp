@@ -271,7 +271,11 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
     impl_->store.checkWritable(kOperation);
     detail::RasterWriterSetup setup;
     {
+        // Both locks, so the ownership check and joining the live set are one step: a
+        // writer of another stage either is still live here, or has committed before this
+        // refresh. This is the early refusal; the publish transaction re-checks (S47).
         std::lock_guard<std::mutex> guard(impl_->mutex);
+        std::lock_guard<std::mutex> liveGuard(impl_->live->mutex);
         impl_->refresh(kOperation);
         const auto found = impl_->byId.find(raster.value());
         if (found == impl_->byId.end()) throwUnknown(kOperation, raster);
@@ -294,6 +298,18 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
             detail::throwInvalid(kOperation, "raster '" + row.name + "' was written by stage " + writerText +
                                                  "; only that stage may write it until it is discarded");
         }
+        if (impl_->live->byRaster.count(raster.value()) != 0) {
+            detail::throwInvalid(kOperation, "raster '" + row.name +
+                                                 "' already has a live writer; a raster has one writer at a time");
+        }
+
+        std::error_code error;
+        std::filesystem::create_directories(impl_->directoryPath, error);
+        if (error) {
+            detail::throwIo(std::string(kOperation) + ": cannot create the raster directory '" + impl_->directory +
+                                "'",
+                            error.message());
+        }
         setup.gate = impl_->store.gate();
         setup.live = impl_->live;
         setup.stage = stage;
@@ -302,20 +318,6 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
         setup.description = row.description;
         setup.format = detail::RasterFormat{row.type, row.planeCount, row.compression};
         setup.directory = impl_->directoryPath;
-    }
-
-    std::error_code error;
-    std::filesystem::create_directories(impl_->directoryPath, error);
-    if (error) {
-        detail::throwIo(std::string(kOperation) + ": cannot create the raster directory '" + impl_->directory + "'",
-                        error.message());
-    }
-    {
-        std::lock_guard<std::mutex> guard(impl_->live->mutex);
-        if (impl_->live->byRaster.count(raster.value()) != 0) {
-            detail::throwInvalid(kOperation, "raster '" + setup.name +
-                                                 "' already has a live writer; a raster has one writer at a time");
-        }
         const std::string stem = detail::generateRasterFileStem();
         setup.files = detail::LiveRasterFiles{stem + ".spool", stem + ".tif"};
         impl_->live->byRaster.emplace(raster.value(), setup.files);

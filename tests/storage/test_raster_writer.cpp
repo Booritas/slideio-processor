@@ -113,6 +113,17 @@ protected:
         return count;
     }
 
+    // Runs `sql` on a connection of its own, as a foreign writer would; false on failure.
+    bool rawExec(const std::string& sql) {
+        sqlite3* db = nullptr;
+        bool ok = false;
+        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK) {
+            ok = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
+        }
+        sqlite3_close(db);
+        return ok;
+    }
+
     // The raster row's file_name, read on a connection of its own; "" for NULL.
     std::string rowFileName(RasterId raster) {
         sqlite3* db = nullptr;
@@ -409,6 +420,68 @@ TEST_F(RasterWriterTest, FailedFlushLeavesTheRasterAsItWas) {
     EXPECT_NO_THROW(w->flush());
     EXPECT_THROW(w->writeTile(tile->view), InvalidArgumentError);
     EXPECT_NO_THROW(R.writerForStage(a, p));
+}
+
+// Publication re-checks ownership in its own transaction (ruling S47, fix round 1). The
+// race it closes: writerForStage(a, p) reads a cache that predates b's publication of p,
+// and b has left the live set by the time a joins it. The test makes the cache stale on
+// purpose: b publishes, then a foreign connection winds meta.rasters_revision back, so
+// the registry never re-reads the row.
+TEST_F(RasterWriterTest, PublishRefusesARasterAnotherStageOwns) {
+    RasterRegistry& R = store().rasters();
+    const auto tile = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 1, 1.0);
+    RasterWriterPtr byB = R.writerForStage(b, p);  // the cache is loaded here: p unpopulated
+    byB->writeTile(tile->view);
+    byB->flush();
+    const std::string ownedByB = rowFileName(p);
+    ASSERT_FALSE(ownedByB.empty());
+    ASSERT_TRUE(rawExec("UPDATE meta SET value = value - 1 WHERE key = 'rasters_revision';"));
+
+    RasterWriterPtr byA;
+    ASSERT_NO_THROW(byA = R.writerForStage(a, p));  // the stale cache lets a in
+    byA->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 1, 2.0)->view);
+    const std::string refused = messageOf([&] { byA->flush(); });
+    EXPECT_TRUE(contains(refused, "probability")) << refused;
+    EXPECT_TRUE(contains(refused, "classify")) << refused;
+
+    EXPECT_EQ(rowFileName(p), ownedByB);
+    EXPECT_TRUE(std::filesystem::exists(directory() / std::filesystem::u8path(ownedByB)));
+    const std::vector<std::string> tifs = filesEndingIn(".tif");
+    ASSERT_EQ(tifs.size(), 1u);
+    EXPECT_EQ(tifs[0], ownedByB);
+    EXPECT_TRUE(filesEndingIn(".spool").empty());
+    EXPECT_EQ(eventsOfKind(store(), EventKind::RasterWritten).size(), 1u);
+    EXPECT_EQ(readPage(directory() / tifs[0], 0, 0).at(0, 0), 1.0);
+}
+
+// A publish transaction that fails after the TIFF is built leaves the raster as it was.
+// A trigger installed by a foreign connection makes every UPDATE of rasters abort.
+TEST_F(RasterWriterTest, FailedPublishTransactionLeavesTheRasterAsItWas) {
+    RasterRegistry& R = store().rasters();
+    const auto tile = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 1, 1.0);
+    {
+        RasterWriterPtr w = R.writerForStage(a, p);
+        w->writeTile(tile->view);
+        w->flush();
+    }
+    const std::string v1 = rowFileName(p);
+    ASSERT_FALSE(v1.empty());
+
+    RasterWriterPtr w = R.writerForStage(a, p);
+    w->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 1, 2.0)->view);
+    ASSERT_TRUE(rawExec("CREATE TRIGGER refuse BEFORE UPDATE ON rasters BEGIN SELECT RAISE(ABORT, 'refused'); END;"));
+    EXPECT_THROW(w->flush(), IoError);
+
+    EXPECT_EQ(rowFileName(p), v1);
+    EXPECT_TRUE(std::filesystem::exists(directory() / std::filesystem::u8path(v1)));
+    const std::vector<std::string> tifs = filesEndingIn(".tif");
+    ASSERT_EQ(tifs.size(), 1u);
+    EXPECT_EQ(tifs[0], v1);
+    EXPECT_TRUE(filesEndingIn(".spool").empty());
+    EXPECT_EQ(eventsOfKind(store(), EventKind::RasterWritten).size(), 1u);
+    EXPECT_TRUE(R.isPopulated(p));
+    EXPECT_NO_THROW(R.writerForStage(a, p));  // the failed writer is no longer live
+    ASSERT_TRUE(rawExec("DROP TRIGGER refuse;"));
 }
 
 TEST_F(RasterWriterTest, UnknownIdsAndReadOnly) {

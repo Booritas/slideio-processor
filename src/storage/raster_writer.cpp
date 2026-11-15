@@ -265,14 +265,27 @@ public:
     }
 
     // Points the row at the new file and appends RasterWritten (ruling S49). Returns the
-    // file the row named before, or "".
+    // file the row named before, or "". This is the authoritative ownership check:
+    // writerForStage refuses early from the registry's cache, but another stage may have
+    // published since, so a raster populated by another stage is refused here, in the
+    // transaction that would overwrite it.
     std::string publish(sqlite3* db, const PyramidInfo& info, const PyramidMetadata& metadata, int64_t bytes,
                         const EventRow& event) {
         std::string oldFile;
         {
-            Statement select(db, "SELECT file_name FROM rasters WHERE id = ?");
+            Statement select(db, "SELECT file_name, writer_stage_id, populated FROM rasters WHERE id = ?");
             select.bindInt64(1, setup.raster.value());
             if (!select.step()) throw InternalError((std::string(kFlush) + ": the raster row is gone").c_str());
+            const int64_t owner = select.columnInt64(1);  // NULL reads 0
+            if (select.columnInt64(2) != 0 && owner != setup.stage.value()) {
+                Statement stage(db, "SELECT name FROM stages WHERE id = ?");
+                stage.bindInt64(1, owner);
+                const std::string id = std::to_string(owner);
+                const std::string ownerText = stage.step() ? "'" + stage.columnText(0) + "' (id " + id + ")" : id;
+                detail::throwInvalid(kFlush, rasterText() + " was published by stage " + ownerText +
+                                                 " while this writer ran; only that stage may write it until it is "
+                                                 "discarded. Nothing was published");
+            }
             if (!select.columnIsNull(0)) oldFile = select.columnText(0);
         }
         Statement update(db,
