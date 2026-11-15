@@ -6,6 +6,7 @@
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
+#include "storage/detail/vocabulary_import.hpp"
 
 #include <slideio/processor/config/standard_vocabulary.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -42,6 +43,40 @@ std::optional<int32_t> resolveInTable(sqlite3* db, const char* name) {
     if (const std::optional<int32_t> id = lookupFolded(db, folded)) return id;
     if (const char* canonical = detail::canonicalForAlias(folded)) return lookupFolded(db, canonical);
     return std::nullopt;
+}
+
+// Returns the label the table already resolves `name` to; otherwise stores `name` as given
+// with `origin`, numbered from kFirstLocalLabelId, and appends LabelAdded in the same
+// transaction. `added` tells which.
+LabelId addLabel(detail::StoreImpl& store, const char* operation, const char* name, LabelOrigin origin,
+                 bool& added) {
+    if (name == nullptr || *name == '\0') detail::throwInvalid(operation, "the label name is null or empty");
+    added = false;
+    const LabelId id = store.withWriteTransaction(operation, [&](sqlite3* db) {
+        // Resolve against the table inside the write transaction, so a label another
+        // handle has just added is found rather than duplicated.
+        if (const std::optional<int32_t> existing = resolveInTable(db, name)) return LabelId(*existing);
+        int64_t next = detail::kFirstLocalLabelId;
+        {
+            detail::Statement max(db, "SELECT COALESCE(MAX(id), 0) FROM labels");
+            if (max.step()) next = std::max<int64_t>(next, max.columnInt64(0) + 1);
+        }
+        {
+            detail::Statement insert(db, "INSERT INTO labels(id, name, origin) VALUES (?, ?, ?)");
+            insert.bindInt64(1, next);
+            insert.bindText(2, name);
+            insert.bindInt64(3, static_cast<int64_t>(origin));
+            insert.run();
+        }
+        detail::EventRow event;
+        event.kind = EventKind::LabelAdded;
+        event.labelId = static_cast<int32_t>(next);
+        detail::appendEvent(db, event);
+        added = true;
+        return LabelId(static_cast<int32_t>(next));
+    });
+    if (added) store.notifyCommitted();
+    return id;
 }
 
 } // namespace
@@ -130,34 +165,12 @@ int32_t VocabularyRegistry::recordedStandardVersion() const noexcept {
 }
 
 LabelId VocabularyRegistry::addLocal(const char* name) {
-    constexpr const char* kOperation = "VocabularyRegistry::addLocal";
-    if (name == nullptr || *name == '\0') detail::throwInvalid(kOperation, "the label name is null or empty");
     bool added = false;
-    const LabelId id = impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
-        // Resolve against the table inside the write transaction, so a label another
-        // handle has just added is found rather than duplicated.
-        if (const std::optional<int32_t> existing = resolveInTable(db, name)) return LabelId(*existing);
-        int64_t next = detail::kFirstLocalLabelId;
-        {
-            detail::Statement max(db, "SELECT COALESCE(MAX(id), 0) FROM labels");
-            if (max.step()) next = std::max<int64_t>(next, max.columnInt64(0) + 1);
-        }
-        {
-            detail::Statement insert(db, "INSERT INTO labels(id, name, origin) VALUES (?, ?, ?)");
-            insert.bindInt64(1, next);
-            insert.bindText(2, name);
-            insert.bindInt64(3, static_cast<int64_t>(LabelOrigin::WorkspaceLocal));
-            insert.run();
-        }
-        detail::EventRow event;
-        event.kind = EventKind::LabelAdded;
-        event.labelId = static_cast<int32_t>(next);
-        detail::appendEvent(db, event);
-        added = true;
-        return LabelId(static_cast<int32_t>(next));
-    });
-    if (added) impl_->store.notifyCommitted();
-    return id;
+    return addLabel(impl_->store, "VocabularyRegistry::addLocal", name, LabelOrigin::WorkspaceLocal, added);
+}
+
+LabelId detail::registerImportedLabel(StoreImpl& store, const char* name, bool& added) {
+    return addLabel(store, "GeoJsonImporter::import", name, LabelOrigin::ImportRegistered, added);
 }
 
 bool VocabularyRegistry::find(const char* name, LabelId& out) const noexcept {

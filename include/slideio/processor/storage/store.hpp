@@ -32,6 +32,10 @@ namespace detail {
 class GateClient;
 /** @brief Test seam, not API: library-internal test access to Store::close(). */
 SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client);
+/** @brief Library-internal; not API. */
+class StoreImpl;
+/** @brief Library-internal, not API and not exported: the shared core of an open Store. */
+StoreImpl& storeImplOf(Store& store) noexcept;
 } // namespace detail
 /** @brief Shared ownership of an open Store. */
 using StorePtr = std::shared_ptr<Store>;
@@ -224,6 +228,8 @@ public:
 private:
     // Test seam, not API: library-internal test access only.
     friend void detail::trackForCloseTesting(Store& store, const std::shared_ptr<detail::GateClient>& client);
+    // Library-internal: GeoJsonImporter reaches the store core through it.
+    friend detail::StoreImpl& detail::storeImplOf(Store& store) noexcept;
     class Impl;
     explicit Store(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

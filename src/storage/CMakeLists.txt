@@ -3,6 +3,7 @@ add_library(slideio-processor-storage OBJECT
     annotation_writer.cpp
     edge_store.cpp
     edge_writer.cpp
+    geojson_import.cpp
     event_journal.cpp
     label_raster_source.cpp
     layer_registry.cpp

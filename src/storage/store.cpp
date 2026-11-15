@@ -106,6 +106,8 @@ StageStateWriter& Store::stageStateWriter() noexcept { return impl_->stageWriter
 
 void Store::close() { impl_->core.close(); }
 
+detail::StoreImpl& detail::storeImplOf(Store& store) noexcept { return store.impl_->core; }
+
 void detail::trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client) {
     store.impl_->core.gate()->track(client);
 }
