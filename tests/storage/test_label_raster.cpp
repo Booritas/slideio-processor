@@ -55,6 +55,28 @@ std::vector<uint8_t> fill(TileRasterSource& source) {
     return bytes;
 }
 
+// The rectangle [x0, x1) x [y0, y1) as a labelled record of `layer`.
+ObjectRecord box(LayerId layer, int64_t x0, int64_t y0, int64_t x1, int64_t y1, LabelId label) {
+    const Point64 points[] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+    ObjectRecord record;
+    record.setLayer(layer);
+    Polygon polygon;
+    polygon.addRing(points, 4, false);
+    record.setGeometry(polygon);
+    if (label.isValid()) record.setLabel(label);
+    return record;
+}
+
+// Fills a 64x64 view at `level` over `slideRect` from `source`, and returns its bytes.
+std::vector<uint8_t> fillView(TileRasterSource& source, Rect64 slideRect, int32_t level) {
+    const int64_t pixelBytes = dataTypeSizeBytes(source.planeType());
+    std::vector<uint8_t> bytes(static_cast<size_t>(kSide * kSide * pixelBytes), 0xAB);
+    BlockPlane plane{bytes.data(), source.planeType(), kSide * pixelBytes, 0};
+    BlockView view(kSide, kSide, slideRect, level, &plane, 1);
+    source.fillTile(view);
+    return bytes;
+}
+
 // The Int32 pixel (x, y) of a Label fill.
 int32_t labelAt(const std::vector<uint8_t>& bytes, int64_t x, int64_t y) {
     int32_t value = 0;
@@ -164,6 +186,46 @@ TEST_F(LabelRaster, DiscardedProducerLeavesNoStaleLabel) {  // Review Focus 3
     const std::vector<uint8_t> rerun = fill(*label);
     EXPECT_EQ(labelAt(rerun, 10, 10), 0);
     EXPECT_EQ(labelAt(rerun, 23, 23), 0);
+}
+
+// With row labels only, the effective label is the row label, so the store's Label source
+// must agree byte for byte with core's over store().objects(): same grid, same query
+// extent, same order. The views exercise the rounded grid and the padding.
+TEST_F(LabelRaster, RowLabelsOnlyMatchCoreByteForByte) {
+    commit(a, {
+                  // View 1: slideRect {3,30,100,100} at level 0, pixel 1.5625; its grid is
+                  // [3.125, 103.125) x [29.6875, 129.6875).
+                  box(cells, 10, 20, 30, 30, LabelId(7)),   // edge y=30 inside grid row 0
+                  box(cells, 103, 65, 120, 85, LabelId(8)), // edge x=103 inside the last column
+                  box(cells, 20, 45, 80, 105, LabelId(3)),
+                  box(cells, 50, 75, 90, 115, LabelId(6)),
+                  box(cells, 30, 85, 45, 120, LabelId()),
+                  // View 2: slideRect {1000,2001,256,256} at level 2, pixel 4; its grid is
+                  // [1000, 1256) x [2000, 2256).
+                  box(cells, 1010, 1990, 1030, 2001, LabelId(1)), // edge y=2001 inside row 0
+                  box(cells, 990, 2100, 1001, 2120, LabelId(2)),  // a quarter of column 0
+                  box(cells, 1255, 2050, 1300, 2070, LabelId(4)), // a quarter of column 63
+                  box(cells, 1100, 2256, 1120, 2300, LabelId(5)), // touches the grid's bottom
+                  box(cells, 1050, 2050, 1200, 2200, LabelId(9)),
+                  box(cells, 1100, 2100, 1250, 2250, LabelId()),
+              });
+    complete(a);
+
+    TileRasterSourcePtr ours = annotations().layerRasterSource(cells, LayerRasterContent::Label);
+    TileRasterSourcePtr core = makeLayerRasterSource(store().objects(), cells, LayerRasterContent::Label);
+
+    const Rect64 view1{3, 30, 100, 100};
+    const std::vector<uint8_t> first = fillView(*ours, view1, 0);
+    EXPECT_EQ(first, fillView(*core, view1, 0));
+    EXPECT_EQ(labelAt(first, 10, 0), 7);   // the slivers are drawn, so the comparison is not vacuous
+    EXPECT_EQ(labelAt(first, 63, 29), 8);
+
+    const Rect64 view2{1000, 2001, 256, 256};
+    const std::vector<uint8_t> second = fillView(*ours, view2, 2);
+    EXPECT_EQ(second, fillView(*core, view2, 2));
+    EXPECT_EQ(labelAt(second, 5, 0), 1);
+    EXPECT_EQ(labelAt(second, 0, 27), 2);
+    EXPECT_EQ(labelAt(second, 63, 15), 4);
 }
 
 TEST_F(LabelRaster, OtherContentsDelegateAndErrors) {

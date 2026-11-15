@@ -87,7 +87,9 @@ int64_t countWithPolygon(std::string path, ReadLease&& lease, BuiltQuery&& built
 // ---- Defined in label_raster_source.cpp ---------------------------------------------
 
 // The Label raster source of AnnotationStore::layerRasterSource (ruling S15) over the
-// objects of `layer`, which the caller has validated. It reaches the store through
+// objects of `layer`, which the caller has validated: core's layer raster source over
+// the store's objects with each record's label replaced by its effective label, so it
+// shares core's grid, query extent and drawing order. It reaches the store through
 // `gate` on every fillTile, so a fill after Store::close() throws IoError "store is
 // closed". Throws std::bad_alloc.
 TileRasterSourcePtr makeLabelRasterSource(std::shared_ptr<StoreGate> gate, LayerId layer);

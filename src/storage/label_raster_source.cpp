@@ -5,166 +5,136 @@
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
-#include <slideio/processor/core/raster_mask.hpp>
+#include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/storage/types.hpp>
 
-#include <algorithm>
-#include <cmath>
-#include <cstring>
-#include <limits>
+#include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace slideio::processor::detail {
 
 namespace {
 
-constexpr const char* kOperation = "AnnotationStore::layerRasterSource: fillTile";
+constexpr const char* kOperation = "AnnotationStore::layerRasterSource";
 
 // The effective label (ruling S15): the first member of the effective set that
 // annotation_store.cpp defines, the row label, else the smallest asserted label whose
-// stage has the bound status, else 0. Spliced in after kObjectColumns, so its one
-// parameter is the statement's first.
+// stage has the bound status. NULL when neither exists, which recordFromRow reads as no
+// label. It takes the place of kObjectColumns' o.label_id.
+constexpr const char* kRowLabelColumn = "o.label_id";
 constexpr const char* kEffectiveLabelColumn =
-    ", COALESCE(o.label_id, (SELECT MIN(a.label_id) FROM label_assertions a JOIN stages sa ON sa.id = a.stage_id "
-    "WHERE a.object_rowid = o.rowid AND sa.status = ?), 0)";
-constexpr int kEffectiveLabelIndex = 6;  // after the six kObjectColumns
+    "COALESCE(o.label_id, (SELECT MIN(a.label_id) FROM label_assertions a JOIN stages sa ON sa.id = a.stage_id "
+    "WHERE a.object_rowid = o.rowid AND sa.status = ?))";
 
-// The grid, the query extent and the padding below repeat core's layer raster source
-// (layer_sources.cpp), so this source reads exactly the objects core's would. core's
-// gridOfView is private to core (design 4.1), so the grid is recomputed here from the
-// view's public geometry, as rasteriseInto(BlockView&, ...) derives it.
-
-constexpr double kMaxExtent = 9.2e18;  // safely inside int64
-
-int64_t toInt64Floor(double v) {
-    const double f = std::floor(v);
-    if (!(f >= -kMaxExtent && f <= kMaxExtent)) {
-        throw InvalidArgumentError("layer source: tile extent is outside the supported range");
+// kObjectColumns with the row label replaced by the effective label. Its one parameter
+// precedes every other in a statement that starts with these columns.
+std::string effectiveColumns() {
+    std::string columns = kObjectColumns;
+    const std::string::size_type at = columns.find(kRowLabelColumn);
+    if (at == std::string::npos) {
+        throw InternalError("AnnotationStore::layerRasterSource: the object columns hold no row label");
     }
-    return static_cast<int64_t>(f);
+    columns.replace(at, std::char_traits<char>::length(kRowLabelColumn), kEffectiveLabelColumn);
+    return columns;
 }
 
-int64_t toInt64Ceil(double v) {
-    const double f = std::ceil(v);
-    if (!(f >= -kMaxExtent && f <= kMaxExtent)) {
-        throw InvalidArgumentError("layer source: tile extent is outside the supported range");
-    }
-    return static_cast<int64_t>(f);
+QueryValue completeStatus() {
+    QueryValue value;
+    value.integer = static_cast<int64_t>(StageStatus::Complete);
+    return value;
 }
 
-// [x0, x1) x [y0, y1) grown by one level-0 pixel on each side, saturating at the int64
-// limits; an extent whose width or height does not fit int64 is rejected.
-Rect64 paddedQuery(int64_t x0, int64_t y0, int64_t x1, int64_t y1) {
-    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
-    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
-    x0 = x0 > kMin ? x0 - 1 : x0;
-    y0 = y0 > kMin ? y0 - 1 : y0;
-    x1 = x1 < kMax ? x1 + 1 : x1;
-    y1 = y1 < kMax ? y1 + 1 : y1;
-    if ((x0 < 0 && x1 > kMax + x0) || (y0 < 0 && y1 > kMax + y0)) {
-        throw InvalidArgumentError("layer source: query extent overflows int64");
-    }
-    return Rect64{x0, y0, x1 - x0, y1 - y0};
-}
-
-// The level-0 rectangle covered by the grid rasteriseInto draws `view` on: pixel size
-// slideRect / size, origin llround(slideRect.x / pixelW) (likewise y), so the query
-// covers what is rasterised even where the rounded grid extends past slideRect.
-Rect64 queryOfView(const BlockView& view) {
-    const Rect64 rect = view.slideRect();
-    const double sx = static_cast<double>(rect.width) / static_cast<double>(view.width());
-    const double sy = static_cast<double>(rect.height) / static_cast<double>(view.height());
-    constexpr double kMinLevelScale = 1e-6;  // as rasteriseInto
-    if (!std::isfinite(sx) || !std::isfinite(sy) || !(sx >= kMinLevelScale) || !(sy >= kMinLevelScale)) {
-        throw InvalidArgumentError("fillTile: view scale must be finite and at least 1e-6");
-    }
-    const double ox = std::round(static_cast<double>(rect.x) / sx);
-    const double oy = std::round(static_cast<double>(rect.y) / sy);
-    constexpr double kOriginLimit = 4611686018427387904.0;  // 2^62
-    if (!(std::fabs(ox) < kOriginLimit) || !(std::fabs(oy) < kOriginLimit)) {
-        throw InvalidArgumentError("fillTile: view origin does not fit");
-    }
-    const int64_t originX = static_cast<int64_t>(ox), originY = static_cast<int64_t>(oy);
-    if (originX > std::numeric_limits<int64_t>::max() - view.width() ||
-        originY > std::numeric_limits<int64_t>::max() - view.height()) {
-        throw InvalidArgumentError("fillTile: view origin does not fit");
-    }
-    return paddedQuery(toInt64Floor(static_cast<double>(originX) * sx), toInt64Floor(static_cast<double>(originY) * sy),
-                       toInt64Ceil(static_cast<double>(originX + view.width()) * sx),
-                       toInt64Ceil(static_cast<double>(originY + view.height()) * sy));
-}
-
-// One object to rasterise.
-struct LabelledShape {
-    ObjectId id;
-    Polygon geometry;
-    int64_t label = 0;
-};
-
-class LabelRasterSource final : public TileRasterSource {
+// The store's objects as core sees them, except that each record's label is its
+// effective label. core's layer raster source runs over it, so the Label raster shares
+// core's grid, query extent and drawing order. It reaches the store through the gate on
+// every call, so a call after Store::close() throws IoError "store is closed".
+class EffectiveLabelObjects final : public ObjectSource {
 public:
-    LabelRasterSource(std::shared_ptr<StoreGate> gate, LayerId layer) : gate_(std::move(gate)), layer_(layer) {}
+    explicit EffectiveLabelObjects(std::shared_ptr<StoreGate> gate) : gate_(std::move(gate)) {}
 
-    void fillTile(BlockView& out) override {
-        if (out.isNull() || out.planeCount() < 1 || out.planeType(0) != DataType::Int32) {
-            throw InvalidArgumentError("fillTile: view needs plane 0 of the source's plane type");
-        }
-        ObjectQuery query;
-        query.layer(layer_).intersecting(queryOfView(out)).visibility(StageVisibility::CompletedOnly);
+    CursorPtr query(const ObjectQuery& query) override {
         BuiltQuery built = buildObjectQuery(query, kOperation);
         const std::string select = std::string("SELECT ") + kObjectColumns;
         if (built.rowsSql.compare(0, select.size(), select) != 0) {
             throw InternalError("AnnotationStore::layerRasterSource: unexpected object query");
         }
-        built.rowsSql.insert(select.size(), kEffectiveLabelColumn);
-        QueryValue complete;
-        complete.integer = static_cast<int64_t>(StageStatus::Complete);
-        built.values.insert(built.values.begin(), std::move(complete));
+        built.rowsSql.replace(0, select.size(), "SELECT " + effectiveColumns());
+        built.values.insert(built.values.begin(), completeStatus());
+        built.countSql.clear();  // its parameters no longer line up with values
+        return gate_->with(kOperation, [&](StoreImpl& store) {
+            ReadLease lease = store.acquireRead(kOperation);
+            return openObjectCursor(store.path(), std::move(lease), std::move(built));
+        });
+    }
 
-        std::vector<LabelledShape> shapes = gate_->with(kOperation, [&](StoreImpl& store) {
+    // The label plays no part in a count, so it is the object store's.
+    int64_t count(const ObjectQuery& query) const override {
+        BuiltQuery built = buildObjectQuery(query, kOperation);
+        return gate_->with(kOperation, [&](StoreImpl& store) {
+            if (built.hasPolygon) {
+                return countWithPolygon(store.path(), store.acquireRead(kOperation), std::move(built));
+            }
+            return store.withReadConnection(kOperation, [&built](sqlite3* db) {
+                Statement select(db, built.countSql.c_str());
+                bindValues(select, built.values);
+                return select.step() ? select.columnInt64(0) : int64_t(0);
+            });
+        });
+    }
+
+    bool get(ObjectId id, ObjectRecord& out) const override {
+        return gate_->with(kOperation, [&](StoreImpl& store) {
+            if (!id.isValid()) return false;
             return store.withReadConnection(kOperation, [&](sqlite3* db) {
-                // One snapshot; the pool rolls the transaction back if anything throws.
+                // The object and its measurements from one snapshot; the pool rolls the
+                // transaction back if anything below throws.
                 exec(db, "BEGIN");
-                std::vector<LabelledShape> rows;
+                bool found = false;
+                ObjectRecord record;
                 {
-                    Statement statement(db, built.rowsSql.c_str());
-                    bindValues(statement, built.values);
-                    while (statement.step()) {
-                        LabelledShape shape;
-                        decodeRowGeometry(statement, shape.geometry);
-                        shape.id = ObjectId::fromAnchor(layer_, shape.geometry.anchor());
-                        shape.label = statement.columnInt64(kEffectiveLabelIndex);
-                        rows.push_back(std::move(shape));
+                    const std::string sql = "SELECT " + effectiveColumns() +
+                                            " FROM objects o JOIN stages s ON s.id = o.stage_id "
+                                            "WHERE o.layer_id = ? AND o.anchor_id = ? AND s.status = ?";
+                    Statement select(db, sql.c_str());
+                    select.bindInt64(1, static_cast<int64_t>(StageStatus::Complete));
+                    select.bindInt64(2, id.layer().value());
+                    select.bindInt64(3, id.anchorPacked());
+                    select.bindInt64(4, static_cast<int64_t>(StageStatus::Complete));
+                    if (select.step()) {
+                        Polygon geometry;
+                        decodeRowGeometry(select, geometry);
+                        Statement measurements(db, kMeasurementSelect);
+                        record = recordFromRow(select, geometry, measurements);
+                        found = true;
                     }
                 }
                 exec(db, "COMMIT");
-                return rows;
+                if (found) out = std::move(record);
+                return found;
             });
         });
-
-        const size_t rowBytes = static_cast<size_t>(out.width()) * sizeof(int32_t);
-        auto* base = static_cast<uint8_t*>(out.planeData(0));
-        const int64_t stride = out.planeRowStrideBytes(0);
-        for (int64_t y = 0; y < out.height(); ++y) {
-            std::memset(base + y * stride, 0, rowBytes);
-        }
-        // Descending id: the smallest id is written last and wins, as in core.
-        std::stable_sort(shapes.begin(), shapes.end(),
-                         [](const LabelledShape& a, const LabelledShape& b) { return b.id < a.id; });
-        for (const LabelledShape& shape : shapes) {
-            rasteriseInto(out, 0, shape.geometry, shape.label);
-        }
     }
-
-    DataType planeType() const override { return DataType::Int32; }
-
-    int32_t planeCount() const override { return 1; }
 
 private:
     std::shared_ptr<StoreGate> gate_;  // the store is borrowed (C-8) and reached through the gate
-    LayerId layer_;
+};
+
+// core's Label source over the effective-label objects, which it owns.
+class LabelRasterSource final : public TileRasterSource {
+public:
+    LabelRasterSource(std::shared_ptr<StoreGate> gate, LayerId layer)
+        : objects_(std::move(gate)), source_(makeLayerRasterSource(objects_, layer, LayerRasterContent::Label)) {}
+
+    void fillTile(BlockView& out) override { source_->fillTile(out); }
+
+    DataType planeType() const override { return source_->planeType(); }
+
+    int32_t planeCount() const override { return source_->planeCount(); }
+
+private:
+    EffectiveLabelObjects objects_;  // declared first: source_ borrows it
+    TileRasterSourcePtr source_;
 };
 
 } // namespace
