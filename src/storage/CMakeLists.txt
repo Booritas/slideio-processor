@@ -26,6 +26,7 @@ add_library(slideio-processor-storage OBJECT
     detail/schema.cpp
     detail/sqlite.cpp
     detail/store_impl.cpp
+    detail/tiff_io.cpp
     detail/writer_lock.cpp
 )
 # The wake-up signal (ruling S13): a named event on Windows; elsewhere a POSIX named
@@ -41,6 +42,8 @@ set_target_properties(slideio-processor-storage PROPERTIES POSITION_INDEPENDENT_
 target_compile_definitions(slideio-processor-storage PRIVATE SLIDEIO_PROCESSOR_DATA_API)
 # SQLite is linked PRIVATE and never exported from the library.
 target_link_libraries(slideio-processor-storage PRIVATE SQLite::SQLite3 rapidjson)
+# libtiff is linked PRIVATE and never exported either (ruling S40).
+target_link_libraries(slideio-processor-storage PRIVATE TIFF::TIFF ZLIB::ZLIB)
 target_include_directories(slideio-processor-storage
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${PROJECT_SOURCE_DIR}/src)

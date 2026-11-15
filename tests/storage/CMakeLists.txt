@@ -27,6 +27,7 @@ add_executable(slideio_processor_storage_tests
     test_object_writer.cpp
     test_store.cpp
     test_store_impl.cpp
+    test_tiff_io.cpp
     test_types.cpp
     test_umbrella.cpp
     test_vocabulary_registry.cpp
@@ -39,11 +40,13 @@ add_executable(slideio_processor_storage_tests
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_io.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/writer_lock.cpp
 )
-# SQLite is linked directly to probe the R*Tree module of the Conan build.
+# SQLite is linked directly to probe the R*Tree module of the Conan build, and libtiff
+# for the tiff_io wrapper compiled in above.
 target_link_libraries(slideio_processor_storage_tests PRIVATE
-    slideio-processor-data SQLite::SQLite3 rapidjson Threads::Threads GTest::gtest_main)
+    slideio-processor-data SQLite::SQLite3 rapidjson TIFF::TIFF Threads::Threads GTest::gtest_main)
 target_include_directories(slideio_processor_storage_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
