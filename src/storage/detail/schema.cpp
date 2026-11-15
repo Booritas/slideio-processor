@@ -12,7 +12,6 @@ namespace slideio::processor::detail {
 namespace {
 
 // Bounding boxes are int64 and half-open: [min_x, max_x) x [min_y, max_y).
-// Raster tables belong to plan C.
 constexpr const char* kDdl = R"sql(
 CREATE TABLE meta(
     key   TEXT PRIMARY KEY,
@@ -127,6 +126,27 @@ CREATE TABLE measurement_assertions(
     PRIMARY KEY(object_rowid, stage_id, name_id)
 ) WITHOUT ROWID;
 
+-- A raster row names its file, never a path (ruling S44). Every column from
+-- writer_stage_id on describes the published file, and is cleared with it.
+CREATE TABLE rasters(
+    id              INTEGER PRIMARY KEY,
+    name            TEXT    NOT NULL UNIQUE,
+    data_type       INTEGER NOT NULL,
+    plane_count     INTEGER NOT NULL,
+    compression     INTEGER NOT NULL,
+    description     TEXT    NOT NULL DEFAULT '',
+    writer_stage_id INTEGER REFERENCES stages(id),
+    level           INTEGER NOT NULL DEFAULT 0,
+    scale_x         REAL    NOT NULL DEFAULT 0,
+    scale_y         REAL    NOT NULL DEFAULT 0,
+    width           INTEGER NOT NULL DEFAULT 0,
+    height          INTEGER NOT NULL DEFAULT 0,
+    file_name       TEXT,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    populated       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX rasters_writer ON rasters(writer_stage_id);
+
 CREATE TABLE events(
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind         INTEGER NOT NULL,
@@ -139,7 +159,8 @@ CREATE TABLE events(
     max_x        INTEGER NOT NULL DEFAULT 0,
     max_y        INTEGER NOT NULL DEFAULT 0,
     stage_status INTEGER,
-    timestamp_ms INTEGER NOT NULL
+    timestamp_ms INTEGER NOT NULL,
+    raster_id    INTEGER
 );
 )sql";
 
@@ -175,12 +196,21 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     StoreImpl::setMetaInt64(db, kMetaJournalTruncatedBelow, 1);
     StoreImpl::setMetaText(db, kMetaStoreUuid, storeUuid);
     StoreImpl::setMetaInt64(db, kMetaLayersRevision, 0);
+    StoreImpl::setMetaInt64(db, kMetaRastersRevision, 0);
 }
 
-void bumpLayersRevision(sqlite3* db) {
+namespace {
+
+void bumpRevision(sqlite3* db, const char* key) {
     Statement bump(db, "INSERT INTO meta(key, value) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET value = value + 1");
-    bump.bindText(1, kMetaLayersRevision);
+    bump.bindText(1, key);
     bump.run();
 }
+
+} // namespace
+
+void bumpLayersRevision(sqlite3* db) { bumpRevision(db, kMetaLayersRevision); }
+
+void bumpRastersRevision(sqlite3* db) { bumpRevision(db, kMetaRastersRevision); }
 
 } // namespace slideio::processor::detail

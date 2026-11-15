@@ -15,11 +15,12 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core, layerRegistry, objectStore) {}
+        : core(path, mode, configuration), journal(core), layerRegistry(core), rasterRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core, layerRegistry, objectStore) {}
 
     detail::StoreImpl core;
     EventJournal journal;
     LayerRegistry layerRegistry;
+    RasterRegistry rasterRegistry;
     VocabularyRegistry vocabularyRegistry;
     StageStateReader stageReader;
     StageStateWriter stageWriter;
@@ -89,6 +90,8 @@ EventJournal& Store::events() noexcept { return impl_->journal; }
 LayerRegistry& Store::layers() noexcept { return impl_->layerRegistry; }
 
 const LayerRegistry& Store::layers() const noexcept { return impl_->layerRegistry; }
+RasterRegistry& Store::rasters() noexcept { return impl_->rasterRegistry; }
+const RasterRegistry& Store::rasters() const noexcept { return impl_->rasterRegistry; }
 
 VocabularyRegistry& Store::vocabulary() noexcept { return impl_->vocabularyRegistry; }
 

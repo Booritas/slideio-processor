@@ -10,6 +10,8 @@ add_library(slideio-processor-storage OBJECT
     object_cursor.cpp
     object_store.cpp
     object_writer.cpp
+    raster_declaration.cpp
+    raster_registry.cpp
     stage_state_reader.cpp
     stage_state_writer.cpp
     store.cpp
@@ -23,6 +25,7 @@ add_library(slideio-processor-storage OBJECT
     detail/object_lookup.cpp
     detail/polygon_predicates.cpp
     detail/query_builder.cpp
+    detail/raster_files.cpp
     detail/schema.cpp
     detail/sqlite.cpp
     detail/store_impl.cpp

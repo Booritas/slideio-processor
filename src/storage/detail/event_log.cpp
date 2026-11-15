@@ -19,7 +19,7 @@ void bindOptionalId(Statement& statement, int index, int32_t id) {
 int64_t appendEvent(sqlite3* writeConnection, const EventRow& row) {
     Statement insert(writeConnection,
                      "INSERT INTO events(kind, stage_id, layer_id, label_id, object_count, min_x, min_y, max_x, "
-                     "max_y, stage_status, timestamp_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                     "max_y, stage_status, timestamp_ms, raster_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     insert.bindInt64(1, static_cast<int64_t>(row.kind));
     bindOptionalId(insert, 2, row.stageId);
     bindOptionalId(insert, 3, row.layerId);
@@ -41,6 +41,7 @@ int64_t appendEvent(sqlite3* writeConnection, const EventRow& row) {
                         .count();
     }
     insert.bindInt64(11, timestamp);
+    bindOptionalId(insert, 12, row.rasterId);
     insert.run();
     return sqlite3_last_insert_rowid(writeConnection);
 }

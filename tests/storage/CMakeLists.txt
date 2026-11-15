@@ -25,6 +25,7 @@ add_executable(slideio_processor_storage_tests
     test_layer_registry.cpp
     test_object_query.cpp
     test_object_writer.cpp
+    test_raster_registry.cpp
     test_store.cpp
     test_store_impl.cpp
     test_tiff_io.cpp
@@ -37,6 +38,7 @@ add_executable(slideio_processor_storage_tests
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/polygon_predicates.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/raster_files.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp

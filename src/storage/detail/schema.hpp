@@ -19,6 +19,10 @@ inline constexpr const char* kMetaStoreUuid = "store_uuid";
 // Bumped by every change to the layers table, in its transaction, so a LayerRegistry
 // cache sees declarations and drops alike (ruling S28).
 inline constexpr const char* kMetaLayersRevision = "layers_revision";
+// Bumped by every change to the rasters table, in its transaction, so a RasterRegistry
+// cache sees declarations, publications and discards alike; a raster's row changes
+// without the row count changing.
+inline constexpr const char* kMetaRastersRevision = "rasters_revision";
 
 // The pixel layer, created with the store (ruling S5); declared layers number from 2.
 inline constexpr int32_t kPixelLayerId = 1;
@@ -36,5 +40,9 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
 // Adds one to meta.layers_revision. Runs inside the caller's write transaction, which
 // has just changed the layers table. Throws IoError.
 void bumpLayersRevision(sqlite3* db);
+
+// Adds one to meta.rasters_revision. Runs inside the caller's write transaction, which
+// has just changed the rasters table. Throws IoError.
+void bumpRastersRevision(sqlite3* db);
 
 } // namespace slideio::processor::detail

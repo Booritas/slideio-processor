@@ -126,6 +126,13 @@ public:
      * @throws Nothing.
      */
     StageStatus stageStatus() const noexcept;
+    /**
+     * @brief Returns the raster concerned.
+     * @return The raster of a RasterDeclared, RasterWritten or RasterDropped event; an
+     * invalid id for any other kind.
+     * @throws Nothing.
+     */
+    RasterId raster() const noexcept;
 
 private:
     friend struct detail::EventAccess;

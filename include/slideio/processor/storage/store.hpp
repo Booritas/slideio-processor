@@ -14,6 +14,7 @@
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
@@ -155,6 +156,16 @@ public:
     LayerRegistry& layers() noexcept;
     /** @copydoc layers() */
     const LayerRegistry& layers() const noexcept;
+    /**
+     * @brief Returns the raster registry of this store.
+     * @return The registry, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every query and refuses declarations, writers and
+     * discards.
+     * @throws Nothing.
+     */
+    RasterRegistry& rasters() noexcept;
+    /** @copydoc rasters() */
+    const RasterRegistry& rasters() const noexcept;
     /**
      * @brief Returns the vocabulary registry of this store.
      * @return The registry, valid while this store lives. Usable until close(); a
