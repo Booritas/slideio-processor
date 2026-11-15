@@ -1297,7 +1297,7 @@ module never links SlideIO and never links OpenCV. The installed SlideIO
 libraries embed OpenCV statically, so linking them would put OpenCV into the
 viewer's data library, against design 5.1; that is the reason the raster code is
 not built on SlideIO. The files are nevertheless standard tiled pyramidal
-BigTIFFs (below), so SlideIO and any GDAL-based reader opens them. The two
+BigTIFFs (below), so SlideIO and any GDAL-based reader is expected to open them (untested, S54). The two
 libtiff copies, ours and SlideIO's, are both static and private, so their
 versions need not match. The alternative placement was `reporting`, and it fails
 on the same point `makeLayerRasterSource` failed on — `workspace` does not
@@ -1309,9 +1309,9 @@ results to consumers.
 `lzma`, `zstd`, `webp`, `libdeflate` and `cxx` off; the recipe has no `lerc`
 option, so LERC is always off. It is linked `PRIVATE` as `TIFF::TIFF`, beside
 `ZLIB::ZLIB`, and `zlib/1.3.2` is a direct requirement because the writer's spool
-uses zlib itself. A guard in `src/CMakeLists.txt` fails the configure if the data
-library or one of its modules ever lists a `slideio::` target or OpenCV among its
-link libraries. Every
+uses zlib itself. A guard in `src/CMakeLists.txt` fails the configure if
+`slideio-processor-config`, `-storage` or `-data` lists a `slideio::` target or
+OpenCV among its link libraries. Every
 handle is opened through `TIFFClientOpenExt` over the module's own `std::FILE*`,
 with the path taken through `std::filesystem::u8path` so non-ASCII paths work on
 every platform, and with its own error and warning handlers. A libtiff failure
@@ -1387,7 +1387,7 @@ spools the **whole call**: its raw `slideRect` and size, with each plane
 compressed as its own zlib stream at level 1 outside any lock but a shared
 lifecycle lock; the streams are then appended to the `.spool` file under the
 writer's mutex, which also guards a memory-resident index entry
-(`detail::SpoolEntry`, about 48 bytes per call). Nothing is cut at that point,
+(`detail::SpoolEntry`, about 80 bytes per call, plus 8 bytes per plane). Nothing is cut at that point,
 because where a call lies depends on the scale, which is final only at `flush`.
 At `flush` the spool cuts the calls along the 512 grid: each call is decoded at
 most once per grid tile it touches, row by row and only as far as that tile
@@ -1422,8 +1422,8 @@ when tiles were abandoned: a stage that fails must leave a declared, unpopulated
 raster (`04-workspace.md` 4.4), so publishing from a destructor would be wrong.
 The writer is a client of the store's gate, and **`Store::close` abandons it the
 same way**, so closing never builds a pyramid. Once the store is closing,
-`writeTile` is refused as `ObjectWriter::emit` is, and afterwards every writer
-call throws `IoError` with `store is closed`.
+`writeTile` is refused as `ObjectWriter::emit` is, and afterwards `writeTile` and
+`flush` throw `IoError` with `store is closed`.
 
 **Declarations and registry reads (S48).** `declare` throws
 `InvalidArgumentError` for: a null or empty name; a duplicate name (rasters have
@@ -1450,7 +1450,7 @@ read-only behaviour is that of the other registries (3.2).
 source is bound to the file named in the row at the moment `sourceFor` is called,
 and it keeps that file open while it lives; a later re-run or discard does not
 move it. `sourceFor` validates the file against the row and the layout above —
-its pages, sample type, plane count and tiling — and throws `IoError` on a
+its pages, sample type, plane count and that it is tiled — and throws `IoError` on a
 mismatch, which is stricter than the row alone would require. `planeType()` and
 `planeCount()` are the declared ones. `fillTile(view)` throws
 `InvalidArgumentError` unless the view has exactly `planeCount()` planes of
@@ -1564,14 +1564,14 @@ public:
     StageId stage() const noexcept;        // invalid where not applicable
     LayerId layer() const noexcept;
     LabelId label() const noexcept;
-    RasterId raster() const noexcept;      // RasterDeclared / RasterWritten /
-                                           // RasterDropped; otherwise invalid
 
     int64_t objectCount() const noexcept;  // ObjectsAdded / EdgesAsserted /
                                            // RasterWritten (tiles) /
                                            // StageDiscarded; otherwise 0
     Rect64  boundingBox() const noexcept;  // union bbox of the batch
     StageStatus stageStatus() const noexcept;  // StageStateChanged
+    RasterId raster() const noexcept;      // RasterDeclared / RasterWritten /
+                                           // RasterDropped; otherwise invalid
 };
 
 class EventCursor {
