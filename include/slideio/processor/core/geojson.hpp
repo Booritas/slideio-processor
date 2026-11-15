@@ -30,7 +30,9 @@ namespace slideio::processor {
  * halves away from zero. A leading UTF-8 byte order mark is skipped; byte
  * offsets in messages still count it. A feature whose geometry is null, missing,
  * empty, or of any other type is skipped with a LogLevel::Warning message
- * naming its index and type.
+ * naming its index and, when it is one of the seven RFC 7946 geometry names,
+ * its type; any other type is logged as "an unrecognised geometry type",
+ * because file text may carry a patient identifier.
  *
  * Properties are the feature's scalar "properties" members other than
  * "classification" and "layer", in document order, followed by the scalar
@@ -172,7 +174,8 @@ public:
      * been read: by the first next() when the member precedes "features", and
      * by the time next() returns false when it follows. Each value is read
      * through Provenance::restored(); a member that is missing or of another
-     * type reads as "" or 0, as does a number that is not an integer in range.
+     * type reads as "" or 0, as does a number that is not an integer in range
+     * and a negative sceneIndex.
      * @param out Receives the record when the result is true; unchanged otherwise.
      * @return False before the member is read, for a top-level array or a single
      * Feature, when the member is not an object, and on a moved-from reader.

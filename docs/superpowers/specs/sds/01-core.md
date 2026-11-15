@@ -1305,7 +1305,10 @@ away from zero.
 missing, empty, or of any type other than Polygon or MultiPolygon is skipped
 with a `LogLevel::Warning` message naming its index and type, because one
 feature the library cannot represent should not stop the rest of the file
-being read. Malformed JSON, or a top-level value that
+being read. The type is named only when it is one of the seven RFC 7946
+geometry types (Point, MultiPoint, LineString, MultiLineString, Polygon,
+MultiPolygon, GeometryCollection); any other `type` is reported as "an
+unrecognised geometry type", because it is file text. Malformed JSON, or a top-level value that
 is neither an object nor an array, throws `InvalidArgumentError` naming the
 path and byte offset, and is final: every later `next()` throws again. A
 feature with an invalid ring — fewer than 3 distinct points after rounding,
@@ -1326,14 +1329,17 @@ FeatureCollection's top-level `provenance` object member has been read: by the
 first `next()` when the member precedes `features`, as the writer puts it, and
 by the time `next()` returns false when it follows, because the reader only
 sees the member as the stream passes it. It then sets `out` through
-`Provenance::restored` (1.13), reading a missing or mistyped member, or a
-number that is not an integer in range, as `""` or 0. It is false for a
+`Provenance::restored` (1.13), reading a missing or mistyped member, a
+number that is not an integer in range, or a negative `sceneIndex` (which
+`setSceneIndex` refuses), as `""` or 0. It is false for a
 top-level array, a single Feature, or a member that is not an object, and
 leaves `out` unchanged. `featuresSkipped()` counts the features skipped with a
 warning for null, missing, empty or unsupported geometry; a feature whose
 `next()` threw is not counted. A moved-from reader reports false and 0. No
-message the reader logs or throws names a provenance field or a property
-value, since either may carry a patient identifier.
+message the reader logs or throws copies text from the file other than an
+RFC 7946 geometry type name: none names a provenance field, a property value
+or an unrecognised geometry type, since any of them may carry a patient
+identifier.
 
 The array form and the provenance are the "two things `core::GeoJsonReader`
 leaves to this module" of `03-storage.md` 3.11. They are now `core`'s, with

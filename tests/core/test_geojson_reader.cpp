@@ -664,3 +664,35 @@ TEST(GeoJsonReader, SkippedFeaturesAreCounted) {
     EXPECT_EQ(bad.featuresSkipped(), 0);
     EXPECT_EQ(bad.featuresRead(), 0);
 }
+
+TEST(GeoJsonReader, UnrecognisedGeometryTypeIsNotLogged) {
+    auto path = uniqueTempPath("secret_type", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection","features":[
+      {"type":"Feature","geometry":{"type":"SECRET-X","coordinates":[1,2]}},
+      {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1,1]]}},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(}}]})");
+    LogCapture log;
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    EXPECT_EQ(r.featuresSkipped(), 2);
+    ASSERT_EQ(log.messages().size(), 2u);
+    for (const auto& m : log.messages()) {
+        EXPECT_EQ(m.second.find("SECRET-X"), std::string::npos) << m.second;   // file text may carry PHI
+    }
+    EXPECT_NE(log.messages()[0].second.find("an unrecognised geometry type"), std::string::npos);
+    EXPECT_NE(log.messages()[1].second.find("LineString"), std::string::npos);  // RFC 7946 names are kept
+}
+
+TEST(GeoJsonReader, NegativeProvenanceSceneIndexReadsAsZero) {
+    auto path = uniqueTempPath("prov_neg", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection","provenance":{"slideId":"s","sceneIndex":-3},"features":[)"
+                    R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + "}}]}");
+    GeoJsonReader r(path.u8string().c_str());
+    ASSERT_TRUE(r.next());
+    Provenance out;
+    ASSERT_TRUE(r.provenance(out));
+    EXPECT_STREQ(out.slideId(), "s");
+    EXPECT_EQ(out.sceneIndex(), 0);                                    // setSceneIndex rejects negatives
+}

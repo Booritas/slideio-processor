@@ -276,6 +276,22 @@ void warnSkipped(const std::string& path, int64_t index, const std::string& reas
                static_cast<long long>(index), path.c_str(), reason.c_str());
 }
 
+// Names an unsupported geometry type for a warning. Only the RFC 7946 names
+// are copied: any other "type" is file text, which may carry an identifier.
+std::string describeGeometryType(const std::string& type) {
+    static const char* const kGeometryTypes[] = {"Point", "MultiPoint", "LineString", "MultiLineString",
+                                                 "Polygon", "MultiPolygon", "GeometryCollection"};
+    if (type.empty()) {
+        return "geometry type '(none)'";
+    }
+    for (const char* known : kGeometryTypes) {
+        if (type == known) {
+            return "geometry type '" + type + "'";
+        }
+    }
+    return "an unrecognised geometry type";
+}
+
 // SAX handler: a state machine over the key path. Values the reader does not
 // use are skipped whole by counting their nesting depth. It never throws on
 // content; geometry is checked after the feature closes, outside the parser.
@@ -484,7 +500,8 @@ private:
         return true;
     }
 
-    // Reads one scalar member of the provenance object; a mistyped one reads as "" or 0.
+    // Reads one scalar member of the provenance object; a mistyped one reads as "" or 0,
+    // and so does a negative sceneIndex, which Provenance::setSceneIndex refuses.
     void provenanceMember(Scalar kind, const char* s, size_t len) {
         const bool isString = kind == Scalar::String;
         const int64_t number = kind == Scalar::Number ? parseInteger(s, len) : 0;
@@ -493,8 +510,7 @@ private:
         } else if (key_ == "libraryVersion") {
             provenance.libraryVersion.assign(isString ? s : "", isString ? len : 0);
         } else if (key_ == "sceneIndex") {
-            const bool fits =
-                number >= std::numeric_limits<int32_t>::min() && number <= std::numeric_limits<int32_t>::max();
+            const bool fits = number >= 0 && number <= std::numeric_limits<int32_t>::max();
             provenance.sceneIndex = fits ? static_cast<int32_t>(number) : 0;
         } else if (key_ == "createdAtUnixMs") {
             provenance.createdAtUnixMs = number;
@@ -652,9 +668,7 @@ public:
         }
         const bool multi = f.geometryType == "MultiPolygon";
         if (!multi && f.geometryType != "Polygon") {
-            warnSkipped(path, f.index,
-                        "geometry type '" + (f.geometryType.empty() ? std::string("(none)") : f.geometryType) +
-                            "' is not supported");
+            warnSkipped(path, f.index, describeGeometryType(f.geometryType) + " is not supported");
             ++skipped;
             return false;
         }
