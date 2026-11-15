@@ -266,9 +266,7 @@ TEST_F(RasterRegistryTest, PopulatedIsTheRowAndItsFile) {
 
 TEST_F(RasterRegistryTest, LaterMembersAreNotYetImplemented) {
     RasterRegistry& R = store().rasters();
-    const RasterId p = R.declare(RasterDeclaration("probability", DataType::Float32, 1));
     const StageId stage = store().stageStateWriter().declare("segment", "{}");
-    EXPECT_THROW(R.sourceFor(p), InternalError);
     EXPECT_THROW(R.discardRasterOfStage(stage), InternalError);
     EXPECT_THROW(R.removeUnreferencedFiles(), InternalError);
 }

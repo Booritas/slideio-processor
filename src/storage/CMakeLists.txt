@@ -12,6 +12,7 @@ add_library(slideio-processor-storage OBJECT
     object_writer.cpp
     raster_declaration.cpp
     raster_registry.cpp
+    raster_source.cpp
     raster_writer.cpp
     stage_state_reader.cpp
     stage_state_writer.cpp
@@ -34,6 +35,7 @@ add_library(slideio-processor-storage OBJECT
     detail/sqlite.cpp
     detail/store_impl.cpp
     detail/tiff_io.cpp
+    detail/tiff_raster_reader.cpp
     detail/tile_spool.cpp
     detail/writer_lock.cpp
 )

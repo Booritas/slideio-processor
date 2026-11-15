@@ -8,6 +8,7 @@
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
+#include "storage/detail/tiff_raster_reader.hpp"
 
 #include <slideio/processor/core/error.hpp>
 
@@ -73,6 +74,10 @@ public:
         std::string description;
         StageId writer;
         int32_t level = 0;
+        double scaleX = 0.0;  // level-0 pixels per page-0 pixel, fixed at flush
+        double scaleY = 0.0;
+        int64_t width = 0;  // page 0's size
+        int64_t height = 0;
         std::string fileName;
         int64_t bytes = 0;
         bool populated = false;  // the row's flag; isPopulated() also needs the file
@@ -92,7 +97,8 @@ public:
             if (revision && *revision == stored) return;
             detail::Statement select(db,
                                      "SELECT id, name, data_type, plane_count, writer_stage_id, level, file_name, "
-                                     "bytes, populated, compression, description FROM rasters ORDER BY id");
+                                     "bytes, populated, compression, description, scale_x, scale_y, width, height "
+                                     "FROM rasters ORDER BY id");
             while (select.step()) {
                 const int32_t id = static_cast<int32_t>(select.columnInt64(0));
                 auto known = byId.find(id);
@@ -115,6 +121,10 @@ public:
                 row.fileName = select.columnIsNull(6) ? std::string() : select.columnText(6);
                 row.bytes = select.columnInt64(7);
                 row.populated = select.columnInt64(8) != 0;
+                row.scaleX = select.columnDouble(11);
+                row.scaleY = select.columnDouble(12);
+                row.width = select.columnInt64(13);
+                row.height = select.columnInt64(14);
             }
             revision = stored;
         });
@@ -326,7 +336,28 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
     return RasterWriter::Impl::open(std::move(setup));
 }
 
-TileRasterSourcePtr RasterRegistry::sourceFor(RasterId) const { throwNotImplemented("RasterRegistry::sourceFor"); }
+TileRasterSourcePtr RasterRegistry::sourceFor(RasterId raster) const {
+    constexpr const char* kOperation = "RasterRegistry::sourceFor";
+    for (;;) {
+        // The row as it stands now (ruling S50): the source is bound to its file, and a
+        // later re-run does not move it.
+        const Impl::Row row = impl_->withRow(kOperation, raster, [](const Impl::Row& found) { return found; });
+        const detail::RasterFormat format{row.type, row.planeCount, row.compression};
+        if (!impl_->isPopulated(row)) return detail::makeZeroRasterSource(format);
+        try {
+            auto reader = std::make_shared<detail::TiffRasterReader>(
+                impl_->directoryPath / std::filesystem::u8path(row.fileName), format, row.scaleX, row.scaleY,
+                row.width, row.height);
+            return detail::makeFileRasterSource(std::move(reader), format);
+        } catch (const IoError&) {
+            // A re-run or discard may have committed and deleted the file since the row
+            // was read: try again with the row as it is now, unless it still names this file.
+            const std::string now =
+                impl_->withRow(kOperation, raster, [](const Impl::Row& found) { return found.fileName; });
+            if (now == row.fileName) throw;
+        }
+    }
+}
 
 void RasterRegistry::discardRasterOfStage(StageId) { throwNotImplemented("RasterRegistry::discardRasterOfStage"); }
 

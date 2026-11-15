@@ -357,11 +357,22 @@ public:
      * The same interface a layer rasterises through, so a consumer cannot tell whether
      * the coarse product it reads was pixels or objects. An unpopulated raster reads as
      * zero.
+     *
+     * The source is bound to the file the raster's row names now: a later re-run or
+     * discard does not move it, and it keeps that file open while it lives. Its
+     * planeType() and planeCount() are the declared ones. Its fillTile() reads the
+     * coarsest pyramid page no coarser than the view (page 0 when the view is finer
+     * than the raster was written), sampled nearest at the view's pixel centres; pixels
+     * outside the raster's extent read 0. Only the view's geometry counts, not its
+     * level() number. fillTile() throws InvalidArgumentError unless the view has exactly
+     * planeCount() planes of planeType() and a non-empty size and slideRect, and IoError
+     * naming the file when it cannot be read. The source is ThreadSafe, needs nothing
+     * of the store once made, and may outlive it.
      * @param raster The raster.
      * @return The source.
      * @throws InvalidArgumentError When the raster is unknown.
-     * @throws IoError When the store is closed, or when the file cannot be opened.
-     * @throws InternalError Until raster reading is implemented.
+     * @throws IoError When the store is closed, or when the file cannot be opened or is
+     * not the raster its row describes.
      */
     TileRasterSourcePtr sourceFor(RasterId raster) const;
 
