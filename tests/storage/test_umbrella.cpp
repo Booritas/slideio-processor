@@ -24,6 +24,10 @@ TEST(Umbrella, ExposesTheWholeModule) {
         const StageId stage = store->stageStateWriter().declare("umbrella", "{}");
         EXPECT_EQ(store->stageStates().count(), 1);
         EXPECT_STREQ(store->stageStates().name(stage), "umbrella");
+        EXPECT_EQ(store->edges().parentEdgeCount(), 0);
+        EXPECT_EQ(store->annotations().labelAnnotationCount(), 0);
+        const LayerId layer = store->layers().declarePrimitive("umbrella_layer");
+        GeoJsonImporter importer(*store, layer, stage);
         store->close();
     }
     std::error_code ec;

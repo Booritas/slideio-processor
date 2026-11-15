@@ -16,12 +16,25 @@ layer and vocabulary registries, objects, stage state and the journal (3.1–3.5
 3.9, 3.10, 3.10a). The second adds edges, annotations, GeoJSON import,
 primitive-layer drop and the effective-label raster source (3.6, 3.7, 3.11);
 the third adds rasters (3.8). `Store` declares only the accessors whose classes
-exist, so `edges()`, `annotations()` and `rasters()` arrive with their parts.
+exist, so `edges()` and `annotations()` arrived with the second part and
+`rasters()` arrives with the third.
 **The v1 format is not frozen until the third part lands.** Each part adds its
-tables to the same creation DDL and `format_version` stays 1 throughout; a
-store written before then is a development artefact and nothing migrates it.
-Freezing earlier would have meant designing the later tables before their
-designs existed.
+tables to the same creation DDL and `format_version` stays 1 throughout.
+**A store created before the second part lacks its tables and the two new
+`layers` columns, and one created before the third will lack the raster tables.
+Such a store is a development artefact and is unsupported: its `format_version`
+is still 1, so `open` does not refuse it, and nothing migrates it.** Freezing earlier would have meant designing the later tables
+before their designs existed.
+
+**Rulings of the second part.** Where this document states a rule that the
+second part's design settled, the rule is stated under the section it affects:
+the label raster (3.7), primitive-layer drop (3.3), the edge and annotation
+tables, cardinality, validation, visibility and events (3.6, 3.7), what each
+delete removes (3.7), the query filters over the new tables (3.5), GeoJSON
+import (3.11) and the schema (3.12). Two seams are library-internal and not
+API: `detail::trackForCloseTesting`, a test-only exported function, and
+`detail::storeImplOf`, which is not exported and which `GeoJsonImporter` uses
+to register imported labels. Both are befriended by `Store`.
 
 ---
 
@@ -82,10 +95,10 @@ public:
     ObjectStore&              objects() noexcept;
     StageStateReader&         stageStates() noexcept;
     StageStateWriter&         stageStateWriter() noexcept;   // 3.10a
+    EdgeStore&                edges() noexcept;              // 3.6
+    AnnotationStore&          annotations() noexcept;        // 3.7
 
-    // Added with their parts: EdgeStore& edges() noexcept (3.6),
-    // AnnotationStore& annotations() noexcept (3.7),
-    // RasterRegistry& rasters() noexcept (3.8).
+    // Added with its part: RasterRegistry& rasters() noexcept (3.8).
 
     /// Flushes pending batches and releases every connection and the writer
     /// lock. Idempotent. Errors during teardown are reported here rather than
@@ -224,6 +237,17 @@ public:
 
     bool isDropped(LayerId layer) const noexcept;
 
+    /// Drops a primitive layer: deletes its objects, keeps the layer (3.3).
+    /// InvalidArgumentError for a semantic, pixel or unknown layer; IoError on
+    /// a ReadOnly store. Dropping a dropped layer is a no-op with no event.
+    void dropPrimitive(LayerId layer);
+
+    /// True once any ObjectWriter commit put a row in the layer; never cleared.
+    bool wasEverPopulated(LayerId layer) const noexcept;
+
+    /// How many objects dropPrimitive() deleted; 0 for a layer never dropped.
+    int64_t droppedObjectCount(LayerId layer) const noexcept;
+
     /// Stages declared to write this layer, queryable before any stage runs.
     int32_t writerStageCount(LayerId layer) const;
     StageId writerStageAt(LayerId layer, int32_t index) const;
@@ -255,9 +279,47 @@ unknown id throw `InvalidArgumentError`, and so does `isAbove` when either
 layer is primitive or unknown. `writerStageAt` lists stages in ascending id.
 A `ReadOnly` store sees layers a writer in another process declares later.
 
-`isDropped` reads a stored flag. Nothing drops a layer until primitive-layer
-drop arrives with edges (3.6), so until then layers are never removed and ids
-and positions are stable.
+`isDropped` reads a stored flag. Only a primitive layer is ever dropped, and a
+drop keeps the layer row, so ids and positions stay stable and the name pointers
+`name` returns stay valid.
+
+**Primitive-layer drop (UR-STG-12, UR-RES-16).** `dropPrimitive` runs one write
+transaction that deletes the layer's `measurements`, `label_assertions`,
+`measurement_assertions`, `object_rtree` and `objects` rows, sets
+`layers.dropped = 1` and `layers.dropped_object_count = n`, and appends a
+`LayerDropped` event (layer set; count 0 and an empty bounding box, as for every
+kind but the batch kinds, 3.9). A primitive layer has no parent edges, since 3.6
+forbids them, so none is deleted.
+
+- **`derived_from` rows are kept.** `EdgeStore::originsOf` inner-joins existing
+  objects, so a derived object reports no origins, and `derivedFromEdgeCount()`
+  still counts the rows. They can never resolve again, because `emit` refuses a
+  dropped layer. `EdgeStore::derivedFrom(p)` for a primitive `p` that no longer
+  exists is empty, symmetric with `originsOf`: a query about a deleted object
+  does not answer as if it existed.
+- **Nothing is marked stale.** Derived objects stay complete and queryable.
+- **Errors.** `InvalidArgumentError` naming the layer for a semantic, pixel or
+  unknown layer; `IoError` on a `ReadOnly` store. Dropping a dropped layer is a
+  no-op with no event.
+- **Populated tracking.** `wasEverPopulated` reads `layers.ever_populated`, which
+  an `ObjectWriter` commit sets, in its own transaction, for each layer that
+  received at least one row. `discardStage` never clears it. `droppedObjectCount`
+  is the number of objects the drop deleted. Both return false or 0 for an
+  unknown layer.
+- **Pending writes.** An `ObjectWriter` holding pending objects for the layer
+  fails at commit with `InvalidArgumentError` naming the dropped layer, and
+  nothing reappears (3.5).
+- **Not yet delegated.** `workspace`'s `LayerLifecycle` is not built yet, so
+  nothing in the library yet calls `dropPrimitive` on a user's behalf; the three
+  methods are the storage half. The acceptance at the reference object count
+  (10 million superpixels) is a manual performance check, not a unit test, and
+  has not been run; the unit tests drop 50,000 objects.
+
+**The layer cache is keyed on a revision counter.** `meta.layers_revision` is
+bumped, inside the transaction, by every mutation of `layers` (declaration,
+level recording, populated tracking and drop), and the registry reloads its
+cache when the stored value differs from the one it loaded. A row count would
+miss a drop, which changes no count.
 
 Semantic layers form a branching tree rooted at the pixel layer — `vessels` and
 `glands` may both sit above `tissue` without relating to each other.
@@ -568,19 +630,37 @@ objects committed later are not returned, and no batch is ever seen in part.
   region lies inside or on the polygon's. Both are exact and implemented
   in-house — no clipping library, since a new third-party dependency in the
   viewer library would be a design change of its own.
-- **Measurement bounds** test the producing stage's `measurements`; an object
-  without the named measurement fails the bound. **Label filters** test the
-  row label, which is the whole effective set until annotations arrive (3.7),
-  and **attachment** filters see no parent edge until edges arrive (3.6), so
-  `AttachedOnly` matches nothing and `UnattachedOnly` everything. Both become
-  joins when those tables exist.
+- **Filters over edges and annotations.** Each `EXISTS` clause over an assertion
+  or edge table joins `stages sa ON sa.id = <table>.stage_id`, and under
+  `CompletedOnly` adds `AND sa.status = Complete`; under `IncludeInFlight` the
+  join is omitted, so an observer sees a running annotator's assertions and a
+  default query does not (UR-STG-5, UR-OBS-4).
+  - **`label(L)`** admits an object whose row label is `L` or that has a visible
+    asserted label `L`.
+  - **`LabelledOnly` / `UnlabelledOnly`** admit an object with a row label or at
+    least one visible asserted label, and its negation.
+  - **A measurement bound** is existential across the producing stage's
+    `measurements` and the object's visible `measurement_assertions`, as
+    `object_query.hpp` documents; an object with no measurement of that name
+    fails the bound.
+  - **`AttachedOnly` / `UnattachedOnly`** admit an object with a visible
+    `parent_edges` row as child, and its negation. Attachment ignores the parent
+    object's own visibility, since the edge is authoritative (3.6).
 - Polygon filters and `limit` are applied in the cursor loop, after the exact
   checks, so `limit` counts records actually returned.
 
 `totalObjectCount` and `objectCountInLayer` count every stored row, whatever
 its stage's status; the latter is 0 for an unknown layer. `discardStage`
-removes a stage's objects and their measurements and appends a
-`StageDiscarded` event carrying the number removed, in one transaction.
+removes a stage's objects and everything *about* them, in one transaction: their
+measurements and R*Tree rows, the label and measurement assertions on them by
+any stage, and the parent edges and derived-from rows with either endpoint among
+them, by any stage. It appends a `StageDiscarded` event carrying the number of
+objects removed. The reason is in 3.7, "What each delete removes".
+
+**A commit into a dropped layer fails.** An `ObjectWriter` holding pending
+objects for a layer that `dropPrimitive` (3.3) has since dropped fails at its
+commit with `InvalidArgumentError` naming the layer, drops the batch, and
+nothing reappears; a later `emit` into the layer is refused the same way.
 
 No method returns all objects at once. UR-RES-6 permits materialisation only as
 an explicit, filter-bounded call, and it is provided by `reporting`.
@@ -593,11 +673,13 @@ using EdgeWriterPtr = std::shared_ptr<EdgeWriter>;
 
 class EdgeWriter : public EdgeSink {
 public:
-    ~EdgeWriter() override;
+    ~EdgeWriter() override;                    // flushes; logs and swallows
+    EdgeWriter(const EdgeWriter&) = delete;
+    EdgeWriter& operator=(const EdgeWriter&) = delete;
 
     /// Asserts that `child` is contained by `parent`. Both must lie in
-    /// semantic layers, with parent strictly lower. Neither object is
-    /// modified. Legal in either creation order.
+    /// semantic layers, with the parent's layer a proper ancestor of the
+    /// child's. Neither object is modified. Legal in either creation order.
     void assertParent(ObjectId child, ObjectId parent) override;
 
     /// Many-to-many, optional, valid when empty. One primitive may contribute
@@ -608,7 +690,7 @@ public:
     int64_t assertedCount() const override;
 
     int64_t batchSizeEdges() const noexcept;
-    void    setBatchSizeEdges(int64_t);
+    void    setBatchSizeEdges(int64_t size);       // size < 1 throws
 
     /// The stage every edge asserted through this writer is attributed to.
     StageId stage() const noexcept;
@@ -616,10 +698,14 @@ public:
 
 class EdgeStore {
 public:
+    ~EdgeStore();
+    EdgeStore(const EdgeStore&) = delete;
+    EdgeStore& operator=(const EdgeStore&) = delete;
+
     /// A writer that attributes every edge it asserts to `stage`. Any number
     /// may be held concurrently, from any threads; writes are serialised
     /// internally into batched transactions.
-    EdgeWriterPtr writerForStage(StageId);
+    EdgeWriterPtr writerForStage(StageId stage);
 
     bool      parentOf(ObjectId child, ObjectId& out) const;
     CursorPtr childrenOf(ObjectId parent) const;
@@ -629,7 +715,7 @@ public:
 
     /// Removes only the edges a stage asserted. Objects are untouched,
     /// including objects of other stages that this stage had attached.
-    void discardEdgesOfStage(StageId);
+    void discardEdgesOfStage(StageId stage);
 
     int64_t parentEdgeCount() const;
     int64_t derivedFromEdgeCount() const;
@@ -638,7 +724,8 @@ public:
 
 **Thread-safety:** `EdgeStore` is ThreadSafe; `EdgeWriter` is ThreadSafe for
 `assertParent` and `assertDerivedFrom`, and `flush` requires exclusive access.
-**Requirements:** UR-RES-5, UR-RES-14, UR-RES-16, UR-STG-4, UR-STG-6.
+**Requirements:** UR-RES-5, UR-RES-14, UR-RES-16, UR-STG-4, UR-STG-6,
+UR-OBS-2.
 
 Edges are first-class records of the form *(child, parent, asserting stage)*,
 never a property of the object. That is what lets a `nuclei` stage run before
@@ -722,6 +809,64 @@ deferred: the object it names may still be sitting in an unflushed object
 batch, so checking it eagerly would reject edges that are perfectly valid by
 the time they commit.
 
+**One parent per child, store-wide.** `parent_edges` is keyed by the child, so a
+child has at most one parent, whatever the stage. Re-asserting the identical
+edge from the same stage is a no-op. Any other assertion on an attached child,
+another parent or the same parent from another stage, is a conflict:
+`InvalidArgumentError` naming the child, the existing parent and its stage, at
+the call when the edge is pending in the same writer and otherwise at flush.
+
+**`assertParent` validation.** It throws `InvalidArgumentError` at the call when
+either id is invalid, when either layer is unknown or primitive (the message
+names both layers), or when the parent's layer is not an ancestor of the
+child's, that is when `!layers.isAbove(childLayer, parentLayer)`, which covers a
+same-layer, higher or other-branch parent. `assertDerivedFrom` throws at the
+call when either id is invalid, `derived` is not in a semantic layer, `primitive`
+is not in a primitive layer (naming both layers) or the primitive's layer is
+dropped.
+
+**The flush endpoint check.** Inside the batch transaction each endpoint is
+resolved through the `UNIQUE(layer_id, anchor_id)` index, whatever its stage's
+status. A missing endpoint throws `InvalidArgumentError` with the message
+`EdgeWriter::flush: <role> <layer name>/<anchor> does not exist`, where role is
+`child`, `parent`, `derived` or `primitive`. The whole batch rolls back and its
+pending edges are dropped. `assertedCount()` counts accepted calls, pending and
+committed. `setBatchSizeEdges(n)` throws for `n < 1`, and the default is
+`Configuration::objectBatchSize()`. `writerForStage` throws
+`InvalidArgumentError` for an unknown stage and `IoError` on a `ReadOnly` store.
+
+**Tables.** `parent_edges(child_rowid INTEGER PRIMARY KEY, parent_rowid NOT
+NULL, stage_id NOT NULL) WITHOUT ROWID`, with an index on `parent_rowid`.
+`derived_from(derived_layer, derived_anchor, primitive_layer, primitive_anchor,
+stage_id, PRIMARY KEY(all five)) WITHOUT ROWID`, with an index on
+`(primitive_layer, primitive_anchor)`. `derived_from` is keyed by `ObjectId`, not
+by rowid, because its rows outlive a dropped primitive (3.3) and `objects.rowid`
+(no `AUTOINCREMENT`) may be reused. Two stages asserting the same pair make two
+rows, and reads are `DISTINCT`. No B table has a stage index: the 3.7
+measurements were taken without one, and a discard scans the table once per
+re-run.
+
+**Reads and visibility.** Reads use the default view, `CompletedOnly`: an edge is
+visible when its asserting stage is `Complete`, stale or not. `parentOf` and
+`isAttached` look at the edge alone, since the edge is authoritative, so the
+parent object's own visibility is not consulted; an unknown child is
+unattached. `childrenOf`, `originsOf` and `derivedFrom` return the records that
+are visible under `CompletedOnly` and joined through a visible edge, in
+ascending `ObjectId`, each stamped by `ObjectRecord::restored`. `originsOf`
+inner-joins `objects`, so dropped primitives yield nothing, and `derivedFrom(p)`
+is empty once `p` no longer exists. `parentEdgeCount` and `derivedFromEdgeCount`
+count every stored row, whatever its visibility. `discardEdgesOfStage` deletes
+both tables' rows for that stage and throws `InvalidArgumentError` for an
+unknown stage.
+
+**Events.** One `EdgesAsserted` event per committed batch, appended only when
+the batch inserted at least one new row: the writer's stage, the number of new
+parent-edge and derived-from rows as the count, the union of the child and
+derived objects' boxes, and their layer when all share one, otherwise invalid.
+`discardEdgesOfStage` appends `StageDiscarded(stage, count 0)`, which is
+truthful, since it removes no objects, and lets an observer learn of the
+retraction (UR-OBS-4).
+
 ## 3.7 Annotation store — `storage/annotation_store.hpp`
 
 ```cpp
@@ -730,27 +875,29 @@ using AnnotationWriterPtr = std::shared_ptr<AnnotationWriter>;
 
 class AnnotationWriter : public AnnotationSink {
 public:
-    ~AnnotationWriter() override;
+    ~AnnotationWriter() override;              // flushes; logs and swallows
+    AnnotationWriter(const AnnotationWriter&) = delete;
+    AnnotationWriter& operator=(const AnnotationWriter&) = delete;
 
     /// Attaches `label` to an object that already exists, attributed to this
     /// writer's `stage()`. The object row is not touched: the label it
     /// carries, if any, remains the producing stage's own assertion
     /// (`01-core.md` 1.6). Idempotent — the same stage asserting the same
     /// label on the same object twice is one row, not two.
-    void assertLabel(ObjectId, LabelId) override;
+    void assertLabel(ObjectId object, LabelId label) override;
 
     /// Attaches a named measurement, attributed to this writer's `stage()`.
     /// Idempotent for an identical value; asserting the same name twice with
     /// different values throws `InvalidArgumentError` rather than letting
     /// arrival order decide (UR-QA-3).
-    void assertMeasurement(ObjectId, const char* name, double value,
-                           MeasurementUnit) override;
+    void assertMeasurement(ObjectId object, const char* name, double value,
+                           MeasurementUnit unit) override;
 
     void flush() override;
     int64_t assertedCount() const override;
 
     int64_t batchSizeAnnotations() const noexcept;
-    void    setBatchSizeAnnotations(int64_t);
+    void    setBatchSizeAnnotations(int64_t size);   // size < 1 throws
 
     /// The stage every annotation asserted through this writer is attributed to.
     StageId stage() const noexcept;
@@ -758,49 +905,63 @@ public:
 
 class AnnotationStore {
 public:
+    ~AnnotationStore();
+    AnnotationStore(const AnnotationStore&) = delete;
+    AnnotationStore& operator=(const AnnotationStore&) = delete;
+
     /// A writer that attributes every annotation it asserts to `stage`. Any
     /// number may be held concurrently, from any threads; writes are
     /// serialised internally into batched transactions.
-    AnnotationWriterPtr writerForStage(StageId);
+    AnnotationWriterPtr writerForStage(StageId stage);
 
     /// The object's **effective label set**: the producing stage's label from
     /// the object row first, when it has one, then every asserted label in
     /// ascending `LabelId` order. The order is fixed rather than insertion
     /// order because annotations arrive from workers in no particular
     /// sequence and exports must be byte-identical across runs (UR-QA-3).
-    int32_t labelCount(ObjectId) const;
-    LabelId labelAt(ObjectId, int32_t index) const;
+    int32_t labelCount(ObjectId object) const;
+    LabelId labelAt(ObjectId object, int32_t index) const;
 
     /// Who asserted the label at `index` — the producing stage for the row
-    /// label, the annotating stage for the rest.
-    StageId labelAssertedBy(ObjectId, int32_t index) const;
+    /// label, the annotating stage for the rest (the smallest stage id among
+    /// those that asserted that label).
+    StageId labelAssertedBy(ObjectId object, int32_t index) const;
 
     /// Measurements asserted by stages other than the producer. The
     /// producer's own stay on the record (`01-core.md` 1.6); these are the
-    /// additions, in ascending name order.
-    int32_t     assertedMeasurementCount(ObjectId) const;
-    Measurement assertedMeasurementAt(ObjectId, int32_t index) const;
-    StageId     measurementAssertedBy(ObjectId, int32_t index) const;
+    /// additions, ordered by name and then by stage id. The returned
+    /// `Measurement`'s name is interned by the store and valid until the
+    /// `Store` is destroyed.
+    int32_t     assertedMeasurementCount(ObjectId object) const;
+    Measurement assertedMeasurementAt(ObjectId object, int32_t index) const;
+    StageId     measurementAssertedBy(ObjectId object, int32_t index) const;
 
     /// Resolves the one thing the effective sets leave ambiguous: two stages
     /// asserting the same measurement name on one object. False when that
     /// stage asserted no measurement of that name.
-    bool assertedMeasurement(ObjectId, const char* name, StageId,
+    bool assertedMeasurement(ObjectId object, const char* name, StageId stage,
                              Measurement& out) const;
 
     /// Removes only the annotations a stage asserted. Objects are untouched,
     /// including the objects of other stages that this stage had annotated.
-    void discardAnnotationsOfStage(StageId);
+    void discardAnnotationsOfStage(StageId stage);
 
     int64_t labelAnnotationCount() const;
     int64_t measurementAnnotationCount() const;
+
+    /// A raster source over `layer` whose Label content carries the effective
+    /// label. Takes `core::makeLayerRasterSource`'s parameters minus the
+    /// `ObjectSource&`, because the store is the source.
+    TileRasterSourcePtr layerRasterSource(LayerId layer,
+                                          LayerRasterContent content) const;
 };
 ```
 
 **Thread-safety:** `AnnotationStore` is ThreadSafe; `AnnotationWriter` is
 ThreadSafe for `assertLabel` and `assertMeasurement`, and `flush` requires
 exclusive access — exactly `EdgeWriter`'s split, for exactly its reason.
-**Requirements:** UR-RES-4, UR-RES-17, UR-RES-18, UR-STG-4, UR-STG-6, UR-QA-3.
+**Requirements:** UR-RES-4, UR-RES-17, UR-RES-18, UR-STG-4, UR-STG-6, UR-QA-3,
+UR-STG-5, UR-EXT-4.
 
 **An annotation is an assertion about an object, not a part of it.** This is
 the same move 3.6 makes for containment, applied to classification: a record of
@@ -828,34 +989,65 @@ because none of them overrides another. What changed is the cardinality a
 *consumer* sees — `hasLabel()` on a record still answers for the producer
 alone, and the effective set is what queries and exports use.
 
-**The effective set must reach raster sources too.** `core`'s
+**The effective set reaches raster sources through the store.** `core`'s
 `makeLayerRasterSource` with `LayerRasterContent::Label` writes each record's
 own row label, because an `ObjectSource` delivers `ObjectRecord`s and the
-effective set is not reachable through that interface (`01-core.md` 1.9). A
-label asserted by annotation therefore never appears in a label raster built
-from a store. `storage` must close that gap — by a store-backed raster source
-that reads `AnnotationStore`, or by an extension of `ObjectSource` that carries
-the effective set — and must keep the rule that the smallest `ObjectId` wins
-where objects overlap, and a fixed choice among an object's several labels,
-so the raster stays identical across runs (UR-QA-3).
+effective set is not reachable through that interface (`01-core.md` 1.9), so a
+label asserted by annotation would never appear in a label raster built from a
+store. `AnnotationStore::layerRasterSource(layer, content)` closes that gap. It
+lives on `AnnotationStore` because the source reads annotations, it takes every
+content, so a caller cannot reach `core`'s row-label-only `Label` by mistake, and
+it needs no change to `core`.
 
-**Two deletes, and they are deliberately not symmetric.** `discardStage`
-(3.5) removes a stage's objects, and annotations on a removed object go with
-it: the claim has no subject any more. `discardAnnotationsOfStage` removes a
-stage's claims and leaves every object in place. A re-run of an annotating
-stage takes the second path and disturbs nothing it did not write. A re-run of
-a *producing* stage takes the first, which destroys the annotations downstream
+- **Membership and ObjectAnchor** return `core::makeLayerRasterSource(
+  store.objects(), layer, content)` unchanged.
+- **Label** wraps `core`'s own source rather than copying its grid arithmetic. A
+  storage-private `ObjectSource` serves the objects of the layer visible under
+  `CompletedOnly` and replaces each record's row label by the **effective
+  label**, the first member of the effective set: `COALESCE(o.label_id,
+  (SELECT MIN(a.label_id) FROM label_assertions a JOIN stages s ON s.id =
+  a.stage_id WHERE a.object_rowid = o.rowid AND s.status = Complete))`, or no
+  label when both are null (rasterised as 0). `core`'s source then does the
+  padded tile query and the rasterisation, so where objects overlap the smallest
+  `ObjectId` wins, and the choice among an object's several labels is fixed
+  (ascending `LabelId`), so the raster is identical across runs (UR-QA-3). Each
+  `fillTile` runs one read transaction. The cost, one extra annotation lookup per
+  row, is the price of keeping the grid code in one place.
+- **Type and lifetime.** `planeType()` is `Int32` and `planeCount()` is 1. The
+  store is borrowed (C-8) and the Label source reaches it through the store's
+  gate, so `fillTile` after `close()` throws `IoError` `store is closed`. A
+  dropped layer yields background.
+- **Throws** `InvalidArgumentError` for an unknown layer, the pixel layer or an
+  out-of-range content.
+
+**Three deletes, and they are deliberately not symmetric.** `discardStage`
+(3.5) removes a stage's objects and everything *about* them, in one transaction:
+their measurements and R\*Tree rows, the label and measurement assertions on
+them by any stage, and the parent edges and derived-from rows with either
+endpoint among them, by any stage. It does not remove the stage's own assertions
+about other stages' objects; that is `discardEdgesOfStage` (3.6) and
+`discardAnnotationsOfStage`, which delete rows only, leave every object in
+place, and append `StageDiscarded(stage, count 0)`. `StageRunner`
+(`04-workspace.md` 4.4) calls whichever it needs. Derived-from rows go with a
+discard but are kept by a drop (3.3) because a discarded stage's layer can be
+repopulated, and a kept row would re-attach to new geometry with a coincident
+anchor, while a dropped layer never can. A re-run of an annotating
+stage takes `discardAnnotationsOfStage` and disturbs nothing it did not write.
+A re-run of a *producing* stage takes `discardStage`, which destroys the annotations downstream
 stages had attached — and that is correct rather than a loss, because those
 stages read the layer and are therefore already stale by the `LayerRead` path
 (`04-workspace.md` 4.5), so each must re-run and re-assert. The alternative —
 orphaned annotations waiting for identical geometry to reappear — would make a
 stale annotation indistinguishable from a current one.
 
-**Validation mirrors `emit`.** `assertLabel` throws `InvalidArgumentError` for
-an unknown label and for an object that does not exist; the latter is a foreign
-key on `(layer_id, anchor_id)`, so it costs an indexed lookup inside the batch
-transaction rather than a separate round trip. A stage may only annotate layers
-it declared with `annotatesLayer` (`04-workspace.md` 4.2), checked by
+**Validation mirrors `emit`.** `assertLabel` throws `InvalidArgumentError` at
+the call for an invalid id or a label the store does not hold. `assertMeasurement`
+throws at the call for an invalid id, a null or empty name, a non-finite value or
+a unit out of range. Object existence is checked at flush, as for edges (3.6): the
+object is resolved through `UNIQUE(layer_id, anchor_id)` inside the batch
+transaction, and a missing one fails the batch, which rolls back and drops its
+pending rows, with an `InvalidArgumentError` naming the object. A stage may only
+annotate layers it declared with `annotatesLayer` (`04-workspace.md` 4.2), checked by
 `StageRunner` before the run so the failure arrives before the work does — the
 same two-place treatment `writesLayer` already gets.
 
@@ -872,10 +1064,37 @@ Batched and journalled like everything else here: one transaction inserts the
 annotation rows and a single `ObjectsAnnotated` event, so UR-OBS-2's guarantee
 that no event outruns its data holds for this path too.
 
+One event per committed batch, appended only when the batch inserted at least
+one new row: `ObjectsAnnotated` with the writer's stage, the number of distinct
+objects that gained at least one new row as the count, the union of their boxes,
+their layer when all share one (otherwise invalid) and an invalid label.
+
+**Idempotency and conflicts.** An identical label, or an identical `(name,
+value, unit)` compared with `==`, is one row. A different value or unit for the
+same `(object, stage, name)` throws `InvalidArgumentError` naming the object and
+the name: at the call when both are pending in one writer, otherwise at flush.
+`assertedCount()` counts accepted calls. The batch default is
+`Configuration::objectBatchSize()`, and `setBatchSizeAnnotations(n)` throws for
+`n < 1`. Names are interned through the same `measurement_names` table as
+`measurements`, and `assertedMeasurementAt` returns a `Measurement` built by
+`Measurement::restored` (`01-core.md` 1.5), whose name the store interns and
+keeps valid until the `Store` is destroyed.
+
+**Reads and visibility.** The default view is `CompletedOnly`: an asserted label
+or measurement is visible when its asserting stage is `Complete`, stale or not,
+and the row label is part of the set when the object is visible. An object that
+is missing or not visible has `labelCount` and `assertedMeasurementCount` equal
+to 0 and `assertedMeasurement` returns false. The effective set is ordered row
+label first, then asserted labels ascending by `LabelId`, deduplicated across
+stages, and `labelAssertedBy` names the smallest stage id among the stages that
+asserted that label. Asserted measurements are ordered by name, then by stage
+id. An indexed accessor with an out-of-range index throws
+`InvalidArgumentError`, and each call is its own snapshot.
+
 **Both annotation tables are `WITHOUT ROWID`, keyed by their natural key, and
 measurement names are interned.** `label_assertions` is keyed
-`(object_id, stage_id, label_id)`; `measurement_assertions` is keyed
-`(object_id, stage_id, name_id)`, where `name_id` references a
+`(object_rowid, stage_id, label_id)`; `measurement_assertions` is keyed
+`(object_rowid, stage_id, name_id)`, where `name_id` references a
 `measurement_names` table instead of the name being repeated on every row.
 
 **That is the opposite of what 3.12 concludes for `objects`, and the inversion
@@ -1330,21 +1549,36 @@ refuses everything — and `InvalidArgumentError` for an unknown stage.
 ```cpp
 class ImportResult {
 public:
+    ImportResult() noexcept;                   // reads as an import of nothing
+    ImportResult(const ImportResult&);
+    ImportResult(ImportResult&&) noexcept;
+    ImportResult& operator=(const ImportResult&);
+    ImportResult& operator=(ImportResult&&) noexcept;
+    ~ImportResult();
+
     int64_t objectsImported() const noexcept;
     int32_t labelsRegistered() const noexcept;
     int32_t featuresSkipped() const noexcept;
     ImportPolicy policyApplied() const noexcept;
+
+    /// True when the file was a FeatureCollection with a "provenance" object.
+    bool hasSourceProvenance() const noexcept;
+    /// The file's record, via Provenance::restored(); a default Provenance
+    /// when hasSourceProvenance() is false.
+    const Provenance& sourceProvenance() const noexcept;
 };
 
 class GeoJsonImporter {
 public:
-    GeoJsonImporter(Store&, LayerId targetLayer, StageId assertingStage);
+    GeoJsonImporter(Store& store, LayerId targetLayer, StageId assertingStage);
     ~GeoJsonImporter();
+    GeoJsonImporter(const GeoJsonImporter&) = delete;
+    GeoJsonImporter& operator=(const GeoJsonImporter&) = delete;
 
     ImportResult import(const char* path);
     ImportResult import(const char* path,
-                        ProgressObserver*,
-                        const CancellationToken&);
+                        ProgressObserver* observer,
+                        const CancellationToken& token);
 };
 
 /// Reads the first polygon of a GeoJSON file as a processing ROI. No store
@@ -1373,28 +1607,89 @@ though no stage produced them (UR-RES-13).
 `importRoiPolygon` is the UR-IMG-5 path: a QuPath-exported annotation becomes a
 processing ROI without any store being involved.
 
-**Two things `core::GeoJsonReader` leaves to this module.** First, QuPath
-before 0.3 wrote `properties.measurements` as an array of `{name, value}`
-objects rather than an object; the reader skips arrays, so such a file imports
-with no measurements and no diagnostic (`01-core.md` 1.14). If import is to
-support those files, `storage` must handle that form itself — through a
-reader extension or a pre-pass — or at least report the skipped measurements in
-`ImportResult`. Second, the reader does not expose a file's `provenance`
-member; if import is to preserve the provenance of the file it reads,
-restoring it is this module's obligation, through `Provenance::restored` as
-3.2 does.
+**What `core::GeoJsonReader` now provides, and what import does with it.** The
+reader gained three things for this module (`01-core.md` 1.14). It reads
+QuPath's pre-0.3 array-form `properties.measurements` as `measurements.<name>`
+properties, so such a file imports its measurements. It exposes the file's
+`provenance` member through `provenance(Provenance&)`. And it counts, in
+`featuresSkipped()`, the features it skipped with a warning for null, missing,
+empty or unsupported geometry.
+
+**Import never writes the store's provenance.** A store's provenance describes
+the slide it analyses, and the file's may describe another slide or scene; only
+the caller can tell. Overwriting it, or guessing "fresh store", would be silent.
+`ImportResult` instead carries `hasSourceProvenance()` and `sourceProvenance()`,
+restored through `Provenance::restored` as 3.2 does, and a default
+`Provenance` when the file has none. Diagnostics never copy a provenance field.
+
+**The importer.** The constructor throws `InvalidArgumentError` for an unknown,
+pixel or dropped target layer or an unknown stage, and `IoError` on a `ReadOnly`
+store. Both layer kinds are accepted. `import` reads the file twice.
+
+- **Pre-pass.** It counts the features, for progress. Under `Strict` it also
+  resolves every non-empty classification through `vocabulary().find`, and
+  throws `InvalidArgumentError` naming the first unresolvable label and its
+  feature index **before anything is written**.
+- **Import pass.** It emits through `objects().writerForStage(stage)`, so every
+  `emit` check applies (3.5). Each object gets the target layer, whatever the
+  feature's own `layer` says; its geometry; the label from `classification()`,
+  where empty means unlabelled and, under `Permissive`, an unresolved label is
+  registered with origin `ImportRegistered` and appends `LabelAdded`; and every
+  `measurements.<name>` property parsed locale-independently as a finite double
+  with unit `Dimensionless`, since GeoJSON carries no unit. A non-numeric value
+  skips that measurement with a Warning naming the feature index and the
+  measurement name. Other properties and the `labels` array are not imported.
+- **Skipped features.** `featuresSkipped` is `reader.featuresSkipped()` plus the
+  features whose `next()` threw a geometry error, each skipped with a Warning
+  naming its index. A geometry error is told from a parse error by the reader's
+  message prefix (`GeoJsonReader: feature `), a coupling that a test pins. A
+  parse or read error ends the import.
+- **Feature indices** are 0-based among the feature objects of the file; a
+  non-object entry of a `features` list is neither counted nor skipped. The
+  reader's own skip warnings appear once per pass, so twice per import.
+- **Anchor collisions are fatal**, never silently dropped (3.5).
+- **Progress and cancellation.** Progress is reported after each committed batch
+  and at the end, as `onProgress(stage name, done / total, done, total)` in
+  features. Cancellation is checked per feature in both passes and throws
+  `CancelledError` after flushing.
+- **Partial writes.** Any failure after the pre-pass leaves the committed batches
+  attributed to the stage. The import never changes stage state, so the caller's
+  failure handling, `discardStage`, removes them.
+- **Registering labels.** `GeoJsonImporter` reaches the vocabulary's registration
+  through `detail::storeImplOf`, a library-internal function that is not
+  exported and sits beside the test seam `detail::trackForCloseTesting`; both
+  are befriended by `Store`.
+
+`ImportResult` holds `objectsImported` (objects committed), `labelsRegistered`
+(labels newly registered, always 0 under `Strict`), `featuresSkipped` (as
+above, saturated at the `int32_t` maximum), `policyApplied`
+(`vocabulary().importPolicy()` at call time) and the provenance members.
+
+**`importRoiPolygon`** returns the full geometry, every ring and hole, of the
+**first feature with supported geometry**. A geometry error on that feature
+propagates as `InvalidArgumentError`; it does not fall through to a later
+feature. It throws `InvalidArgumentError` for a null path and for a file with no
+such feature (`importRoiPolygon: '<path>' holds no polygon`), and `IoError` when
+the file cannot be opened.
+
+**What import does not do.** It places every feature in one target layer and
+imports no parent edges, so a hierarchy exported by `reporting` does not
+round-trip through import (UR-RES-15, a Should). That is left for `reporting`
+and `workspace`.
 
 ## 3.12 Schema and format
 
-Written for reference; the DDL itself lives in the implementation. The first
-part creates every table below down to `measurements`, plus `events`; the
-edge, annotation and raster tables are added to the same creation DDL by their
-parts, under the same `format_version` (see the note at the top).
+Written for reference; the DDL itself lives in the implementation (`src/storage/detail/schema.cpp`). The first
+part created every table below down to `measurements`, plus `events`; the second
+added the edge and annotation tables and two `layers` columns; the raster table
+is added to the same creation DDL by the third part, under the same
+`format_version` (see the note at the top). A store created before the second
+part lacks the added tables and columns and is unsupported; nothing migrates it.
 
 | Table | Holds |
 |---|---|
-| `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid` |
-| `layers` | Name, kind, parent, depth, dropped flag, coarsest analysis level |
+| `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid`, `layers_revision` (bumped by every `layers` mutation; the registry cache key, 3.3) |
+| `layers` | Name, kind, parent, depth, dropped flag, coarsest analysis level, `ever_populated` (set by an `ObjectWriter` commit, never cleared; 3.3) and `dropped_object_count` (objects deleted by `dropPrimitive`; 3.3) |
 | `labels` | Name, origin, `ontology_ref` (reserved, empty in v1 — 02 §2.2). No recognised flag: `isRecognised` is computed (3.4) |
 | `stages` | Name, status, stale flag, configuration, completion time |
 | `stage_deps` | Declared dependencies, keyed `(stage_id, depends_on_id)` |
@@ -1403,10 +1698,10 @@ parts, under the same `format_version` (see the note at the top).
 | `object_rtree` | R\*Tree index over bounding boxes |
 | `measurements` | Per-object ordinal, interned name, value and unit, from the producing stage — `WITHOUT ROWID`, keyed `(object_rowid, ordinal)` |
 | `measurement_names` | Interned measurement names, shared by `measurements` and `measurement_assertions` (3.7) |
-| `label_assertions` | Object, asserting stage, label — `WITHOUT ROWID`; labels attached after the object was written (3.7) |
-| `measurement_assertions` | Object, asserting stage, interned name, value, unit — `WITHOUT ROWID` (3.7) |
-| `parent_edges` | Child, parent, asserting stage |
-| `derived_from` | Derived, primitive, asserting stage |
+| `label_assertions` | `object_rowid`, `stage_id`, `label_id` — `WITHOUT ROWID`, primary key on all three; labels attached after the object was written (3.7) |
+| `measurement_assertions` | `object_rowid`, `stage_id`, `name_id`, `value` (`NOT NULL`), `unit` — `WITHOUT ROWID`, primary key `(object_rowid, stage_id, name_id)` (3.7) |
+| `parent_edges` | `child_rowid` (primary key, so one parent per child), `parent_rowid` (indexed), `stage_id` — `WITHOUT ROWID` (3.6) |
+| `derived_from` | `derived_layer`, `derived_anchor`, `primitive_layer`, `primitive_anchor`, `stage_id` — `WITHOUT ROWID`, primary key on all five, index on `(primitive_layer, primitive_anchor)`; keyed by `ObjectId` so rows outlive a dropped primitive (3.6) |
 | `rasters` | Name, data type, plane count, writing stage, level, file path, bytes, populated flag (3.8) |
 | `events` | Sequence (`AUTOINCREMENT`), kind, stage, layer, label, count, bbox, stage status, timestamp |
 
