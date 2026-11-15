@@ -170,6 +170,34 @@ TEST_F(EdgeStoreTest, HierarchyViolationsNameBothLayers) {
     EXPECT_EQ(w->assertedCount(), 2);
 }
 
+// An endpoint in the pixel layer is refused at the call, so it never fails a batch at flush.
+TEST_F(EdgeStoreTest, PixelLayerEndpointIsRefusedAtTheCall) {
+    const std::vector<ObjectId> ids = commit(a, {rec(tissue, 0, 0, 100), rec(cells, 10, 10, 4), rec(sp, 30, 0, 4)});
+    const ObjectId region = ids[0], cell = ids[1], primitive = ids[2];
+    complete(a);
+    const ObjectId pixelObject = rec(store().layers().pixelLayer(), 0, 0, 200).id();
+    EdgeWriterPtr w = edges().writerForStage(b);
+    w->assertParent(cell, region);
+
+    const std::string parentMessage = invalidArgumentMessage([&] { w->assertParent(region, pixelObject); });
+    EXPECT_TRUE(contains(parentMessage, "tissue")) << parentMessage;
+    EXPECT_TRUE(contains(parentMessage, "pixel")) << parentMessage;
+    const std::string childMessage = invalidArgumentMessage([&] { w->assertParent(pixelObject, region); });
+    EXPECT_TRUE(contains(childMessage, "tissue")) << childMessage;
+    EXPECT_TRUE(contains(childMessage, "pixel")) << childMessage;
+    const std::string derivedMessage = invalidArgumentMessage([&] { w->assertDerivedFrom(pixelObject, primitive); });
+    EXPECT_TRUE(contains(derivedMessage, "pixel")) << derivedMessage;
+    EXPECT_TRUE(contains(derivedMessage, "sp")) << derivedMessage;
+    EXPECT_EQ(w->assertedCount(), 1);
+
+    w->flush();  // the rest of the batch commits
+    complete(b);
+    EXPECT_EQ(edges().parentEdgeCount(), 1);
+    EXPECT_EQ(edges().derivedFromEdgeCount(), 0);
+    EXPECT_TRUE(edges().isAttached(cell));
+}
+
+
 // Review Focus 1: an edge naming an object still pending in an unflushed ObjectWriter.
 TEST_F(EdgeStoreTest, FlushRejectsMissingEndpointWholeBatch) {
     const std::vector<ObjectId> ids = commit(a, {rec(tissue, 0, 0, 100), rec(cells, 20, 20, 4)});

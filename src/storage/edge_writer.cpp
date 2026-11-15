@@ -3,6 +3,7 @@
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/object_lookup.hpp"
+#include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
 
@@ -289,6 +290,9 @@ void EdgeWriter::assertParent(ObjectId child, ObjectId parent) {
     if (childInfo->kind == LayerKind::Primitive || parentInfo->kind == LayerKind::Primitive) {
         detail::throwInvalid(kOperation, layers + ": a primitive layer has no position in the hierarchy");
     }
+    if (child.layer().value() == detail::kPixelLayerId || parent.layer().value() == detail::kPixelLayerId) {
+        detail::throwInvalid(kOperation, layers + ": the pixel layer holds no objects");
+    }
     const bool above = core.gate->with(
         kOperation, [&](detail::StoreImpl&) { return core.layers.isAbove(child.layer(), parent.layer()); });
     if (!above) {
@@ -328,12 +332,15 @@ void EdgeWriter::assertDerivedFrom(ObjectId derived, ObjectId primitive) {
     if (!primitive.isValid()) detail::throwInvalid(kOperation, "the primitive id is invalid");
     const LayerInfo* derivedInfo = core.layerInfo(kOperation, derived.layer());
     const LayerInfo* primitiveInfo = core.layerInfo(kOperation, primitive.layer());
+    const std::string layers = EdgeWriterCore::bothLayers("derived object", derived.layer(), derivedInfo,
+                                                          "primitive", primitive.layer(), primitiveInfo);
     if (derivedInfo == nullptr || primitiveInfo == nullptr || derivedInfo->kind != LayerKind::Semantic ||
         primitiveInfo->kind != LayerKind::Primitive) {
-        detail::throwInvalid(kOperation, EdgeWriterCore::bothLayers("derived object", derived.layer(), derivedInfo,
-                                                                    "primitive", primitive.layer(), primitiveInfo) +
-                                             ": the derived object must lie in a semantic layer and the primitive "
-                                             "in a primitive layer");
+        detail::throwInvalid(kOperation, layers + ": the derived object must lie in a semantic layer and the "
+                                                  "primitive in a primitive layer");
+    }
+    if (derived.layer().value() == detail::kPixelLayerId) {
+        detail::throwInvalid(kOperation, layers + ": the pixel layer holds no objects");
     }
     const bool dropped =
         core.gate->with(kOperation, [&](detail::StoreImpl&) { return core.layers.isDropped(primitive.layer()); });

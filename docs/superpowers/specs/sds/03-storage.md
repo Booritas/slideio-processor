@@ -823,7 +823,9 @@ child's, that is when `!layers.isAbove(childLayer, parentLayer)`, which covers a
 same-layer, higher or other-branch parent. `assertDerivedFrom` throws at the
 call when either id is invalid, `derived` is not in a semantic layer, `primitive`
 is not in a primitive layer (naming both layers) or the primitive's layer is
-dropped.
+dropped. Either call also refuses an endpoint in the pixel layer, naming both
+layers: that layer holds no objects, so the edge could only fail the whole batch
+at flush.
 
 **The flush endpoint check.** Inside the batch transaction each endpoint is
 resolved through the `UNIQUE(layer_id, anchor_id)` index, whatever its stage's
@@ -1694,7 +1696,7 @@ part lacks the added tables and columns and is unsupported; nothing migrates it.
 | `stages` | Name, status, stale flag, configuration, completion time |
 | `stage_deps` | Declared dependencies, keyed `(stage_id, depends_on_id)` |
 | `stage_layers` | Layers each stage writes, keyed `(layer_id, stage_id)` |
-| `objects` | Monotonic rowid key, unique index on `(layer_id, anchor_id)`, stage (indexed), label, exact `int64` half-open bbox, geometry blob |
+| `objects` | Rowid key (not `AUTOINCREMENT`, so reused after the highest rows are deleted), unique index on `(layer_id, anchor_id)`, stage (indexed), label, exact `int64` half-open bbox, geometry blob |
 | `object_rtree` | R\*Tree index over bounding boxes |
 | `measurements` | Per-object ordinal, interned name, value and unit, from the producing stage — `WITHOUT ROWID`, keyed `(object_rowid, ordinal)` |
 | `measurement_names` | Interned measurement names, shared by `measurements` and `measurement_assertions` (3.7) |
@@ -1709,7 +1711,8 @@ part lacks the added tables and columns and is unsupported; nothing migrates it.
 same thing.** `ObjectId` stays exactly what decision 8 defines — layer plus
 geometry-derived anchor, stable across tile sizes and worker counts, the only
 identifier ever exported or compared (UR-QA-3). The `objects` table is ordered
-by a **monotonic rowid**, with a unique index on `(layer_id, anchor_id)`
+by **rowid** (not `AUTOINCREMENT`, so reused after the highest rows are deleted;
+new rows still append at the end), with a unique index on `(layer_id, anchor_id)`
 carrying the logical identity.
 
 That split is a schedule requirement, not a refinement. Inserting ten million

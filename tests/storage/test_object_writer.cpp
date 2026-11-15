@@ -79,18 +79,26 @@ protected:
     ObjectStore& objects() { return store().objects(); }
     void complete(StageId stage) { store().stageStateWriter().setStatus(stage, StageStatus::Complete); }
     // The rowid SQLite gave an object, read on a connection of its own; -1 when absent.
+    // A failure to open or prepare is a test failure, so -1 never stands in for a rowid.
     int64_t rowidOf(ObjectId id) {
         sqlite3* db = nullptr;
         int64_t rowid = -1;
-        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
-            sqlite3_stmt* select = nullptr;
-            sqlite3_prepare_v2(db, "SELECT rowid FROM objects WHERE layer_id = ? AND anchor_id = ?", -1, &select,
-                               nullptr);
-            sqlite3_bind_int64(select, 1, id.layer().value());
-            sqlite3_bind_int64(select, 2, id.anchorPacked());
-            if (sqlite3_step(select) == SQLITE_ROW) rowid = sqlite3_column_int64(select, 0);
-            sqlite3_finalize(select);
+        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+            ADD_FAILURE() << "rowidOf: cannot open the store: " << sqlite3_errmsg(db);
+            sqlite3_close(db);
+            return rowid;
         }
+        sqlite3_stmt* select = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT rowid FROM objects WHERE layer_id = ? AND anchor_id = ?", -1, &select,
+                               nullptr) != SQLITE_OK) {
+            ADD_FAILURE() << "rowidOf: " << sqlite3_errmsg(db);
+            sqlite3_close(db);
+            return rowid;
+        }
+        sqlite3_bind_int64(select, 1, id.layer().value());
+        sqlite3_bind_int64(select, 2, id.anchorPacked());
+        if (sqlite3_step(select) == SQLITE_ROW) rowid = sqlite3_column_int64(select, 0);
+        sqlite3_finalize(select);
         sqlite3_close(db);
         return rowid;
     }
@@ -404,6 +412,7 @@ TEST_F(ObjectWriterTest, NothingReattachesToAReusedRowid) {  // Review Focus 3, 
         wa->flush();
     }
     const int64_t rowids[] = {rowidOf(c1), rowidOf(c2), rowidOf(t2)};
+    for (int64_t rowid : rowids) ASSERT_GT(rowid, 0);  // else the reuse below proves nothing
     {
         EdgeWriterPtr eb = store().edges().writerForStage(b);
         eb->assertParent(c1, t);

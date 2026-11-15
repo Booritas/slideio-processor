@@ -331,7 +331,11 @@ public:
      * InternalError when a stored geometry is corrupt; std::bad_alloc.
      * @param layer The layer to read: a declared layer other than the pixel layer.
      * @param content What to write.
-     * @return The raster source. The store is borrowed (C-8).
+     * @return The raster source. The store is borrowed (C-8), and the two kinds of
+     * source differ in how. A Membership or ObjectAnchor source holds a reference to
+     * Store::objects() and must not be used after the Store is destroyed. A Label
+     * source holds the Store's shared gate instead, so after Store::close() or the
+     * Store's destruction its fillTile() throws IoError ("store is closed").
      * @throws InvalidArgumentError When `layer` is invalid, unknown or the pixel layer,
      * or `content` is not a LayerRasterContent.
      * @throws IoError When the store is closed, or when SQLite fails.

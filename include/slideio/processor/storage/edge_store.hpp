@@ -84,11 +84,11 @@ public:
      * @param child The contained object.
      * @param parent The containing object.
      * @throws InvalidArgumentError When either id is invalid; when either layer is
-     * unknown or primitive, or the parent's layer is not below the child's in its
-     * branch (the message names both layers); when the child already has another
-     * parent pending in this writer (the message names the child, that parent and the
-     * stage); or when the commit this call triggered failed (see the class
-     * description).
+     * unknown, primitive or the pixel layer, or the parent's layer is not below the
+     * child's in its branch (the message names both layers); when the child already
+     * has another parent pending in this writer (the message names the child, that
+     * parent and the stage); or when the commit this call triggered failed (see the
+     * class description).
      * @throws IoError When the store is closed or Store::close() has begun (the edge is
      * not accepted), or when SQLite fails during a commit; the batch is then dropped.
      * @throws std::bad_alloc When memory is exhausted.
@@ -104,9 +104,9 @@ public:
      * @param derived An object in a semantic layer.
      * @param primitive An object in a primitive layer that is not dropped.
      * @throws InvalidArgumentError When either id is invalid; when derived is not in a
-     * semantic layer or primitive is not in a primitive layer (the message names both
-     * layers); when the primitive's layer is dropped; or when the commit this call
-     * triggered failed.
+     * semantic layer other than the pixel layer, or primitive is not in a primitive
+     * layer (the message names both layers); when the primitive's layer is dropped;
+     * or when the commit this call triggered failed.
      * @throws IoError As for assertParent().
      * @throws std::bad_alloc When memory is exhausted.
      */
