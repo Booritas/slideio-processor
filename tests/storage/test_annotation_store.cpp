@@ -443,7 +443,7 @@ std::string measurementName(int i) {
 
 } // namespace
 
-TEST(AnnotationHandleLifetime, ConcurrentAssertsReadsAndCloseFlushes) {
+TEST(AnnotationStoreLifetime, ConcurrentAssertsReadsAndCloseFlushes) {
     constexpr int kThreads = 4;
     constexpr int kReaders = 3;
     constexpr int kPerThread = 500;
