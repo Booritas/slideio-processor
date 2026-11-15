@@ -3,6 +3,10 @@
 // snapshot, which catches drift in new stores, additive drift included; and the checked-in
 // golden store, written by v1, must still open and read back its content, which catches a
 // change that would leave existing stores unreadable. The disabled generator rewrites both.
+// The v1 fixtures are never regenerated once v1 is frozen: a version 2 gets store-v2.* fixtures
+// of its own and keeps the v1 golden store as the input its migration is tested on. Only a
+// SQLite upgrade may change the snapshot, and only its three rtree shadow-table sql lines
+// (object_rtree_node, _parent and _rowid); regenerate the snapshot then, deliberately.
 #include "common/temp_path.hpp"
 #include "storage/raster_test_util.hpp"
 #include "storage/store_fixture.hpp"
@@ -339,8 +343,9 @@ TEST(StoreFormatV1, GoldenStoreStillOpens) {
     }
 }
 
-// Rewrites both fixtures in SLIDEIO_PROCESSOR_TEST_DATA_DIR. Run it only to freeze a new
-// format version: --gtest_also_run_disabled_tests --gtest_filter=StoreFormatV1.DISABLED_GenerateFixtures
+// Rewrites both v1 fixtures in SLIDEIO_PROCESSOR_TEST_DATA_DIR. Never run it while v1 is frozen
+// (see the top of this file); a version 2 copies and adapts this generator to write store-v2.*
+// files. Run: --gtest_also_run_disabled_tests --gtest_filter=StoreFormatV1.DISABLED_GenerateFixtures
 TEST(StoreFormatV1, DISABLED_GenerateFixtures) {
     writeFile(kDataDir / kSchemaFile, freshSchemaDump());
 

@@ -58,7 +58,8 @@ Reinstall SlideIO after moving the pin.
 
 Conan 2 is required. On this Windows setup the executable is not on `PATH`;
 call it by its full path. SlideIO must already be installed to the local prefix
-(see above).
+(see above). libtiff comes in through Conan and is linked privately into
+`slideio-processor-data`; the data library links neither SlideIO nor OpenCV.
 
 ```sh
 conan install . -of build/conan -s build_type=Release -s compiler.cppstd=17 --build=missing

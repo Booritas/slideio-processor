@@ -17,14 +17,29 @@ layer and vocabulary registries, objects, stage state and the journal (3.1–3.5
 primitive-layer drop and the effective-label raster source (3.6, 3.7, 3.11);
 the third adds rasters (3.8). `Store` declares only the accessors whose classes
 exist, so `edges()` and `annotations()` arrived with the second part and
-`rasters()` arrives with the third.
-**The v1 format is not frozen until the third part lands.** Each part adds its
-tables to the same creation DDL and `format_version` stays 1 throughout.
+`rasters()` with the third.
+
+**The module is complete, and format v1 is frozen.** Each part added its tables
+to the same creation DDL and `format_version` stayed 1 throughout; the third part
+closed it. Any schema change from here on, additive ones included, needs
+`format_version` 2 and a migration. Two checked-in fixtures under
+`tests/storage/data/` hold v1 (ruling S53). `store-v1.schema.sql` is a snapshot of
+every `sqlite_master` row and of the `meta` keys, which a fresh store must match;
+it catches drift in new stores. `store-v1.golden.store`, with its
+`store-v1.golden.store-rasters/` directory, is a store written by v1 that must
+still open `ReadOnly` and `ReadWrite` and read back its content; it catches a
+change that would leave stores already written unreadable. The v1 fixtures are
+never regenerated: a version 2 gets `store-v2.*` fixtures of its own and keeps the
+v1 golden store as the input its migration is tested on. A SQLite upgrade may
+change the three R\*Tree shadow-table `sql` lines of the snapshot
+(`object_rtree_node`, `_parent` and `_rowid`); the snapshot is then regenerated,
+deliberately.
 **A store created before the second part lacks its tables and the two new
-`layers` columns, and one created before the third will lack the raster tables.
-Such a store is a development artefact and is unsupported: its `format_version`
-is still 1, so `open` does not refuse it, and nothing migrates it.** Freezing earlier would have meant designing the later tables
-before their designs existed.
+`layers` columns, and one created before the third lacks the raster tables, the
+`events.raster_id` column and the `rasters_revision` meta key. Such a store is a
+development artefact and is unsupported: its `format_version` is still 1, so
+`open` does not refuse it, and nothing migrates it.** Freezing earlier would have
+meant designing the later tables before their designs existed.
 
 **Rulings of the second part.** Where this document states a rule that the
 second part's design settled, the rule is stated under the section it affects:
@@ -90,6 +105,8 @@ public:
     EventJournal&             events() noexcept;
     LayerRegistry&            layers() noexcept;
     const LayerRegistry&      layers() const noexcept;
+    RasterRegistry&           rasters() noexcept;            // 3.8
+    const RasterRegistry&     rasters() const noexcept;
     VocabularyRegistry&       vocabulary() noexcept;
     const VocabularyRegistry& vocabulary() const noexcept;
     ObjectStore&              objects() noexcept;
@@ -97,8 +114,6 @@ public:
     StageStateWriter&         stageStateWriter() noexcept;   // 3.10a
     EdgeStore&                edges() noexcept;              // 3.6
     AnnotationStore&          annotations() noexcept;        // 3.7
-
-    // Added with its part: RasterRegistry& rasters() noexcept (3.8).
 
     /// Flushes pending batches and releases every connection and the writer
     /// lock. Idempotent. Errors during teardown are reported here rather than
@@ -139,7 +154,9 @@ signatures for a state a caller reaches only by misuse.
 **`close()` flushes live writers before it closes.** Every live
 `ObjectWriter` commits what it holds pending, as by its own `flush()`; every
 writer is tried and the first failure is then reported, and the store is closed
-either way. From the moment `close()` begins, `ObjectWriter::emit` is refused
+either way. **A live `RasterWriter` is the exception: `close()` abandons it,
+deleting its spool and any partial file and publishing nothing (3.8).** From the
+moment `close()` begins, `ObjectWriter::emit` is refused
 with `IoError` "store is closed" rather than accepted and silently lost behind
 the final flush. A writer or cursor used afterwards throws `IoError`. The
 destructor calls `close()`, logs any error at `Error`, and swallows it.
@@ -1156,12 +1173,27 @@ enum class RasterCompression : int32_t { None, Lzw, Deflate };
 
 /// Declared before anything runs, like a layer (UR-STG-10): the dependency
 /// graph must resolve before the first stage starts, and a reader declared
-/// ahead of its writer must have something to name.
+/// ahead of its writer must have something to name. The constructor and the
+/// setters never validate; `RasterRegistry::declare` does.
 class RasterDeclaration {
 public:
     RasterDeclaration(const char* name, DataType, int32_t planeCount);
+    RasterDeclaration(const RasterDeclaration&);
+    RasterDeclaration(RasterDeclaration&&) noexcept;
+    RasterDeclaration& operator=(const RasterDeclaration&);
+    RasterDeclaration& operator=(RasterDeclaration&&) noexcept;
+    ~RasterDeclaration();
+
     RasterDeclaration& compression(RasterCompression);   // default Deflate
     RasterDeclaration& description(const char*);
+
+    // Read-only getters. Their names avoid the fluent setters', which
+    // already take `compression` and `description`.
+    const char*       name() const noexcept;
+    DataType          planeType() const noexcept;
+    int32_t           planeCount() const noexcept;
+    RasterCompression compressionValue() const noexcept;
+    const char*       descriptionText() const noexcept;     // never null
 };
 
 class RasterWriter;
@@ -1169,6 +1201,7 @@ using RasterWriterPtr = std::shared_ptr<RasterWriter>;
 
 class RasterWriter : public RasterSink {
 public:
+    /// Abandons any tiles not yet flushed; never publishes.
     ~RasterWriter() override;
 
     /// Accumulates one tile at the run's analysis level. Tiles may arrive in
@@ -1177,7 +1210,8 @@ public:
 
     /// Completes the raster: builds the pyramid down from the written level
     /// and publishes it. Until this returns, the raster is not readable and
-    /// `RasterRegistry::isPopulated` is false.
+    /// `RasterRegistry::isPopulated` is false. Terminal: a second call is a
+    /// no-op. With no tile written it publishes nothing and appends no event.
     void flush() override;
     int64_t tilesWritten() const override;
 
@@ -1195,8 +1229,9 @@ public:
     int32_t     planeCount(RasterId) const;
     bool        exists(RasterId) const noexcept;
 
-    /// False until some stage has written and flushed it. A raster that was
-    /// declared and never written is legal and reads as zero.
+    /// False until some stage has written and flushed it, and its file is
+    /// present. A raster that was declared and never written is legal and
+    /// reads as zero.
     bool    isPopulated(RasterId) const noexcept;
     StageId writerStage(RasterId) const;
     int32_t writtenAtLevel(RasterId) const;
@@ -1213,13 +1248,21 @@ public:
     /// coarse product it reads was pixels or objects.
     TileRasterSourcePtr sourceFor(RasterId) const;
 
-    /// Removes the raster a stage wrote: deletes the file and clears the
-    /// population state. The declaration survives, as a layer's does.
+    /// Removes the rasters a stage wrote: deletes their files and clears the
+    /// population state. The declarations survive, as a layer's does.
     void discardRasterOfStage(StageId);
 
     int32_t count() const noexcept;
     RasterId at(int32_t index) const;
     int64_t  totalBytesOnDisk() const;
+
+    /// The directory that holds the raster files: the store path with
+    /// "-rasters" appended, as UTF-8. Valid while the store lives.
+    const char* directory() const noexcept;
+
+    /// Deletes the files in `directory()` that no raster refers to and no live
+    /// writer of this store owns; returns the bytes reclaimed.
+    int64_t removeUnreferencedFiles();
 };
 ```
 
@@ -1245,23 +1288,213 @@ probability map for the reference slide is 8×10⁹ pixels, 32 GB, which belongs
 in neither a SQLite file nor a backup of one. Each raster is a pyramidal TIFF
 in a subdirectory of the workspace — *not* the scratch subdirectory, which
 `Workspace::create` and `open` clear (`04-workspace.md` 4.1) — and the store
-holds one row naming it. Reading it back is SlideIO opening a TIFF, which the
-library already depends on.
+holds one row naming it.
 
-This module therefore gains a dependency on SlideIO that it did not have, for
-raster I/O only. It is a module-level edge, not a library-level one: the data
-library already links SlideIO through `reporting`'s `MaskWriter`. The
-alternative placement was `reporting`, and it fails on the same point
-`makeLayerRasterSource` failed on — `workspace` does not depend on `reporting`
-and must not start to. Persistence with stage attribution, lifecycle and
-discard is this module's subject; `reporting` exports finished results to
-consumers.
+**The module reads and writes those files with libtiff directly.** libtiff is
+linked privately into `slideio-processor-data` and never exported; on Linux its
+symbols are hidden like SQLite's, so it cannot interpose on SlideIO's copy. The
+module never links SlideIO and never links OpenCV. The installed SlideIO
+libraries embed OpenCV statically, so linking them would put OpenCV into the
+viewer's data library, against design 5.1; that is the reason the raster code is
+not built on SlideIO. The files are nevertheless standard tiled pyramidal
+BigTIFFs (below), so SlideIO and any GDAL-based reader opens them. The two
+libtiff copies, ours and SlideIO's, are both static and private, so their
+versions need not match. The alternative placement was `reporting`, and it fails
+on the same point `makeLayerRasterSource` failed on — `workspace` does not
+depend on `reporting` and must not start to. Persistence with stage attribution,
+lifecycle and discard is this module's subject; `reporting` exports finished
+results to consumers.
+
+**Build (S40).** Conan `libtiff/4.7.1`, with `zlib` on and `jpeg`, `jbig`,
+`lzma`, `zstd`, `webp`, `libdeflate` and `cxx` off; the recipe has no `lerc`
+option, so LERC is always off. It is linked `PRIVATE` as `TIFF::TIFF`, beside
+`ZLIB::ZLIB`, and `zlib/1.3.2` is a direct requirement because the writer's spool
+uses zlib itself. A guard in `src/CMakeLists.txt` fails the configure if the data
+library or one of its modules ever lists a `slideio::` target or OpenCV among its
+link libraries. Every
+handle is opened through `TIFFClientOpenExt` over the module's own `std::FILE*`,
+with the path taken through `std::filesystem::u8path` so non-ASCII paths work on
+every platform, and with its own error and warning handlers. A libtiff failure
+therefore becomes an `IoError` naming the operation and the file, with libtiff's
+text as the cause, and no handle shares mutable state with another.
+
+**File layout (S41).** BigTIFF always: one layout is simpler than switching at
+4 GB, and every target reader handles it. Tiled, 512×512. A multi-page
+reduced-resolution pyramid, not SubIFDs: page 0 is full resolution, and page
+*k* has `NewSubfileType = FILETYPE_REDUCEDIMAGE` and half the size of page
+*k−1*, rounded up. This is GDAL's and COG's internal-overview layout.
+`PLANARCONFIG_SEPARATE`, one TIFF sample per plane, matching `BlockView`'s planar
+layout. `PHOTOMETRIC_MINISBLACK`; `SamplesPerPixel = planeCount`; `ExtraSamples`
+is `planeCount − 1` × `EXTRASAMPLE_UNSPECIFIED`. `BitsPerSample` and
+`SampleFormat` follow `DataType`: `UINT` for Byte, UInt16, UInt32 and UInt64;
+`INT` for Int8, Int16, Int32 and Int64; `IEEEFP` for Float16, Float32 and
+Float64. **Every tile of every page is written:** a tile no call touched is
+zeros, encoded once per page and reused, so no reader meets a sparse tile. Page
+0's `ImageDescription` is one JSON object: `{"slideioProcessorRaster":1,"name":…,
+"description":…,"dataType":"<dataTypeName>","level":L,"scaleX":sx,"scaleY":sy}`.
+
+**Compression (S42).** `None` is `COMPRESSION_NONE` with no predictor. `Lzw` is
+`COMPRESSION_LZW` and `Deflate` is `COMPRESSION_ADOBE_DEFLATE` at zlib level 6;
+both take a predictor, `PREDICTOR_HORIZONTAL` for every integer type and
+`PREDICTOR_FLOATINGPOINT` for Float32 and Float64, and none for Float16, whose
+floating predictor GDAL does not read reliably.
+
+**Pyramid (S43).** Pages are added until both dimensions are at most 512, each
+built from the one above it by 2×2 blocks to 1; edge blocks have 1 or 2 samples
+present. **Integer types take the top-left sample present** (nearest), so label,
+anchor and class values are never invented, and an `Int64` anchor survives
+exactly. **Float types take the mean of the samples present**, computed in
+`double`; Float16 goes through a half↔float conversion. The rule is decided by
+sample type alone, because the declaration carries no semantics: a continuous
+Byte map gets nearest too, which loses smoothness and never correctness.
+
+**Location and names (S44).** The directory is `<store path>-rasters/`, the store
+path with `-rasters` appended, as with `-wal`, `-shm` and `-writer.lock`; two
+stores in one directory therefore never share one, and it sits inside the
+workspace directory, so UR-STG-9's directory unit holds. It is created by the
+first `writerForStage`, never by `declare`. File names are 32 random hex digits,
+with `.tif` for a raster and `.spool` for its spool. The row stores the **file
+name only**, never a path, so a moved or copied workspace still resolves.
+
+**Level and geometry of written tiles (S45, as amended).** The first accepted
+tile fixes the raster's **level** only: `writtenAtLevel = view.level()`, and
+every later tile must have the same `level()`. The **scale** is not fixed by the
+first tile. It is read from the views' integers, as SDS 01 §1.17 requires:
+`scaleX = slideRect().width / width()` of the **widest** written view, and
+`scaleY = slideRect().height / height()` of the **tallest**. It is provisional
+while tiles arrive and final at `flush`. Each tile's extent must agree with that
+scale to within one level pixel (`|slideRect().width − width·scaleX| ≤ scaleX`,
+and likewise for y), which a clipped edge tile satisfies. Every call's origin in
+level pixels, `llround(slideRect().x / scaleX)`, is computed at `flush`, from the
+final scale. `flush` re-validates every call against it and refuses to publish
+when one is inconsistent. The raster's extent is the maximum of `origin + width`
+(and of `origin + height`) over the written tiles, with its origin at (0, 0);
+area beyond the extent reads as zero, as unwritten area does. `writeTile` throws
+`InvalidArgumentError` naming the field for: a null view; a plane count or plane
+type other than the declared one; a level other than the first tile's; a scale
+outside the tolerance; a negative origin; or an extent beyond 2³¹−1.
+**Known limitation:** `BlockView` carries integer geometry only. For a level
+scale that is not integral and not representable as `slideRect().width /
+width()`, a tile's placement can therefore drift from the true level geometry by
+about *x*·Δ*s*/*s* level pixels, where Δ*s* is the error of the scale taken from
+the integers. Writes and reads through the same view geometry stay
+self-consistent, so a stage that reads back what it wrote sees no drift. The real
+fix is for `BlockView` to carry the exact scale, a change to `core` and outside
+this module.
+
+**Accumulation and memory (S46, as amended).** `writeTile` is ThreadSafe. It
+spools the **whole call**: its raw `slideRect` and size, with each plane
+compressed as its own zlib stream at level 1 outside any lock but a shared
+lifecycle lock; the streams are then appended to the `.spool` file under the
+writer's mutex, which also guards a memory-resident index entry
+(`detail::SpoolEntry`, about 48 bytes per call). Nothing is cut at that point,
+because where a call lies depends on the scale, which is final only at `flush`.
+At `flush` the spool cuts the calls along the 512 grid: each call is decoded at
+most once per grid tile it touches, row by row and only as far as that tile
+needs, and no whole-page buffer is ever held. When calls overlap, the later
+append wins. The pipeline writes disjoint tiles; overlap is the caller's
+misuse, never corruption. Page 0 holds one 512×512 tile per plane plus one
+scratch tile for the encoder; each later page holds four source tiles and one
+output tile. None of this is charged to `MemoryBudget`, which `storage` does not
+hold.
+
+**One live writer per raster, and the publish protocol (S47).** A live writer
+is one that has not been flushed or destroyed. `writerForStage` throws
+`InvalidArgumentError` when the raster already has a live writer, or when it is
+populated by a stage other than `stage`; also for an unknown stage or raster; and
+`IoError` on a `ReadOnly` store. **It appends no event and opens no transaction.**
+It only allocates the generated name and opens the spool. `flush` runs in order:
+fix the scale and re-validate every call (S45); compose and write the TIFF
+(S41–S43); close it; `fsync` it; delete the spool; then one write transaction.
+That transaction **re-checks ownership** and throws `InvalidArgumentError`,
+publishing nothing, when another stage populated the raster since
+`writerForStage` looked; otherwise it sets the row's `writer_stage_id`, `level`,
+scales, `width`, `height`, `file_name`, `bytes` (the file's size) and
+`populated = 1`, appends `RasterWritten`, and `notifyCommitted` follows. When the
+same stage re-runs a populated raster, the old file is deleted **after** that
+commit, so a reader never sees the row point at nothing. `flush` is terminal: a
+second `flush` is a no-op, and `writeTile` after `flush` throws
+`InvalidArgumentError`. A `flush` with zero tiles deletes the spool, publishes
+nothing and appends no event. If `flush` fails, it deletes its partial files
+where it can, leaves the row untouched, and rethrows. **The destructor never
+publishes.** It deletes the spool and any partial TIFF, and logs at `Warning`
+when tiles were abandoned: a stage that fails must leave a declared, unpopulated
+raster (`04-workspace.md` 4.4), so publishing from a destructor would be wrong.
+The writer is a client of the store's gate, and **`Store::close` abandons it the
+same way**, so closing never builds a pyramid. Once the store is closing,
+`writeTile` is refused as `ObjectWriter::emit` is, and afterwards every writer
+call throws `IoError` with `store is closed`.
+
+**Declarations and registry reads (S48).** `declare` throws
+`InvalidArgumentError` for: a null or empty name; a duplicate name (rasters have
+their own namespace, compared exactly, so a layer and a raster may share a name);
+`DataType::Unknown` or an out-of-range type; a `planeCount` outside 1..65535 (the
+TIFF `SamplesPerPixel` limit); or an unknown compression. It inserts the row and
+appends `RasterDeclared`, which carries the raster, in **one transaction**; the
+event belongs to `declare`, not to `writerForStage`. Ids number from 1 and are
+never removed. `name`, `planeType`, `planeCount`, `writerStage`,
+`writtenAtLevel` and `at` throw `InvalidArgumentError` on an unknown id or index;
+`writerStage` and `writtenAtLevel` also when the raster is not populated.
+**`isPopulated` is the row's flag AND the file exists** (`std::filesystem::exists`
+with an `error_code`, so it stays `noexcept`): a store file copied without its
+`-rasters` directory yields declared, unpopulated rasters. `bytesOnDisk` is the
+row's `bytes` when populated and 0 otherwise, and `totalBytesOnDisk` sums it.
+The registry caches its rows on a `rasters_revision` counter in `meta`, bumped
+inside every transaction that changes a raster row — `declare`, a publish and a
+discard — exactly as `LayerRegistry` caches on `layers_revision`; it never keys a
+cache on `COUNT(*)`, which a publish or discard does not change. Closed and
+read-only behaviour is that of the other registries (3.2).
+
+**`sourceFor` (S50).** An unknown raster throws `InvalidArgumentError`. An
+**unpopulated** raster returns a source that fills zeros. A populated raster's
+source is bound to the file named in the row at the moment `sourceFor` is called,
+and it keeps that file open while it lives; a later re-run or discard does not
+move it. `sourceFor` validates the file against the row and the layout above —
+its pages, sample type, plane count and tiling — and throws `IoError` on a
+mismatch, which is stricter than the row alone would require. `planeType()` and
+`planeCount()` are the declared ones. `fillTile(view)` throws
+`InvalidArgumentError` unless the view has exactly `planeCount()` planes of
+`planeType()` and a derivable scale, and throws `IoError` naming the file when it
+cannot be read; a file unlinked while the source holds it open stays readable
+(POSIX). **Page choice:** let `t = min(slideRect().width / width(),
+slideRect().height / height())`. Take the coarsest page *k* with `scaleX·2^k ≤
+t·(1 + 1e-9)`, or page 0 when none qualifies (the view is finer than the raster
+was written, which up-samples rather than failing). **Sampling** is nearest: the
+level-0 centre `x0 + (i + 0.5)·tx` maps to page pixel `floor(centre / (scaleX·2^k))`,
+and likewise for y. Pixels outside the page's extent read 0. The view's `level()`
+number is ignored; only its geometry counts. A source is ThreadSafe, keeps a pool
+of read handles, one per concurrent caller, opened on demand, and caches the TIFF
+tiles each call decodes. It needs nothing of the store once made, and may outlive
+it.
+
+**Discard, and the sweep (S51).** `discardRasterOfStage(StageId)` throws
+`InvalidArgumentError` for an unknown stage and `IoError` on a `ReadOnly` store.
+For each raster whose row `writer_stage_id` equals the stage, ascending by id, in
+**one** transaction it clears `populated`, `file_name`, `bytes`, `level`, the
+scales, `width`, `height` and `writer_stage_id`, and appends one `RasterDropped`
+per raster; then it commits and notifies. The files are deleted **only after the
+commit**. A deletion that fails (on Windows, a file still open in a live source)
+is logged at `Warning` and leaves an orphan for the sweep, while the open source
+keeps reading the old pixels. A stage with no raster is a no-op with no event. A
+live writer of that stage is unaffected: its later `flush` publishes as usual.
+`removeUnreferencedFiles()` deletes every regular file in `directory()` whose name
+is 32 lowercase hex digits followed by `.tif` or `.spool`, which is not the
+`file_name` of any row and is not owned by a live writer of this store. It returns
+the bytes reclaimed; other names are never touched; a missing directory returns 0;
+a file that fails to delete is logged at `Warning` and not counted. It throws
+`IoError` on a `ReadOnly` or closed store. `Workspace::open` calls it beside its
+scratch clear and reports the result (`04-workspace.md` 4.1).
+
+**Events (S49).** `RasterDeclared`, `RasterWritten` and `RasterDropped` carry the
+raster (`Event::raster()`, 3.9). `RasterWritten` also carries the stage, the
+number of tiles written and the union of the written tiles' level-0
+`slideRect`s; `RasterDropped` carries the stage that had written the raster.
 
 **One writing stage per raster, enforced.** Objects from two stages coexist in
 a layer because they are distinct rows. Tiles from two stages overlap in one
 image and there is no merge rule, so `writerForStage` refuses a second stage
-while a raster is populated by a first. A caller wanting two contributions
-declares two rasters.
+while a raster is populated by a first, and the publish transaction re-checks it.
+A caller wanting two contributions declares two rasters.
 
 ### Writing a raster is the one durable operation that is not a transaction
 
@@ -1271,24 +1504,24 @@ a file, and no file write is atomic with a transaction. This is stated rather
 than assumed, because the failure modes are real and the recovery has to be
 designed:
 
-1. `writerForStage` allocates a **generated file name** and appends
-   `RasterDeclared` if this is the first write. The name is never derived from
-   the raster's name, so a re-run cannot collide with the file its previous
-   attempt left behind.
-2. Tiles accumulate into that file. The registry row still says
-   `isPopulated == false`, so nothing reads it.
+1. `writerForStage` allocates a **generated file name** and opens the spool. It
+   appends no event: `RasterDeclared` was appended by `declare`. The name is
+   never derived from the raster's name, so a re-run cannot collide with the
+   file its previous attempt left behind.
+2. Tiles accumulate into the spool, a private file beside the future TIFF. The
+   registry row still says `isPopulated == false`, so nothing reads it.
 3. `flush` builds the pyramid, closes the file, and **then** commits one
-   transaction setting the row's path, size, level and population flag, and
+   transaction setting the row's file name, size, level and population flag, and
    appending `RasterWritten`.
 
-The window is between 2 and 3. A crash there leaves a complete or partial file
-that no row references, and `isPopulated` stays false — so a reader sees a
-declared, unpopulated raster, which is a legal state, rather than a corrupt
-one. **`Workspace::open` sweeps unreferenced raster files**, the way it already
-clears the scratch subdirectory, and reports the bytes reclaimed. Discard runs
-the same way in reverse: clear the row and commit first, delete the file
-after, so a crash leaves an orphan for the sweep rather than a row pointing at
-nothing.
+The window is between 2 and 3. A crash there leaves a spool or a complete or
+partial file that no row references, and `isPopulated` stays false — so a reader
+sees a declared, unpopulated raster, which is a legal state, rather than a
+corrupt one. **`Workspace::open` sweeps unreferenced raster files**
+(`removeUnreferencedFiles`), the way it already clears the scratch subdirectory,
+and reports the bytes reclaimed. Discard runs the same way in reverse: clear the
+row and commit first, delete the file after, so a crash leaves an orphan for the
+sweep rather than a row pointing at nothing.
 
 The asymmetry is deliberate. An orphaned file costs disk and is recoverable; a
 row pointing at a missing file is a store that lies about its own contents.
@@ -1305,6 +1538,12 @@ copying the store file alone yields a workspace whose rasters are all
 declared and unpopulated. That is a consequence worth stating plainly rather
 than discovering: it is legal, it is detectable, and it is not what the person
 copying the file intended.
+
+**Compatibility is pinned structurally.** No test in this module opens a persisted
+raster in SlideIO, because nothing here links SlideIO. A raw libtiff read checks
+every tag listed under the file layout instead, and the first SlideIO open of a
+persisted raster belongs to the first test executable that links SlideIO
+(`workspace` or `reporting`).
 
 ## 3.9 Event journal — `storage/event_journal.hpp`
 
@@ -1325,8 +1564,11 @@ public:
     StageId stage() const noexcept;        // invalid where not applicable
     LayerId layer() const noexcept;
     LabelId label() const noexcept;
+    RasterId raster() const noexcept;      // RasterDeclared / RasterWritten /
+                                           // RasterDropped; otherwise invalid
 
     int64_t objectCount() const noexcept;  // ObjectsAdded / EdgesAsserted /
+                                           // RasterWritten (tiles) /
                                            // StageDiscarded; otherwise 0
     Rect64  boundingBox() const noexcept;  // union bbox of the batch
     StageStatus stageStatus() const noexcept;  // StageStateChanged
@@ -1396,9 +1638,14 @@ a truncated range silently either — its next `next()` throws
 
 **What an event carries.** A batch kind carries its count and union bounding
 box; `StageDiscarded` carries the number of objects removed; every other kind
-carries a count of 0 and an empty bounding box. `LayerDeclared` names the
-layer, `LabelAdded` the label, and `StageStateChanged` the stage and the status
-it entered.
+carries a count of 0 and an empty bounding box, except the raster kinds below.
+`LayerDeclared` names the layer, `LabelAdded` the label, and `StageStateChanged`
+the stage and the status it entered. **The raster kinds carry the raster**
+(`Event::raster()`, invalid for every other kind and for a moved-from event):
+`RasterDeclared` carries it alone; `RasterWritten` carries it with the stage,
+`objectCount` = the tiles written, and `boundingBox` = the union of the written
+tiles' level-0 `slideRect`s; `RasterDropped` carries it with the stage that had
+written it.
 
 Events are rows in the store, not messages sent to subscribers. Subscription is
 a cursor over `seq` — a subscriber holds one integer and asks for events above
@@ -1683,14 +1930,16 @@ and `workspace`.
 
 Written for reference; the DDL itself lives in the implementation (`src/storage/detail/schema.cpp`). The first
 part created every table below down to `measurements`, plus `events`; the second
-added the edge and annotation tables and two `layers` columns; the raster table
-is added to the same creation DDL by the third part, under the same
-`format_version` (see the note at the top). A store created before the second
-part lacks the added tables and columns and is unsupported; nothing migrates it.
+added the edge and annotation tables and two `layers` columns; the third added
+`rasters`, `events.raster_id` and the `rasters_revision` meta key to the same
+creation DDL, under the same `format_version`, and then froze it (see the note at
+the top). A store created before the second part lacks the added tables and
+columns and is unsupported; nothing migrates it, and the same holds for one
+created before the third.
 
 | Table | Holds |
 |---|---|
-| `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid`, `layers_revision` (bumped by every `layers` mutation; the registry cache key, 3.3) |
+| `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid`, `layers_revision` (bumped by every `layers` mutation; the registry cache key, 3.3), `rasters_revision` (bumped by every `rasters` mutation: declare, publish and discard; the registry cache key, 3.8) |
 | `layers` | Name, kind, parent, depth, dropped flag, coarsest analysis level, `ever_populated` (set by an `ObjectWriter` commit, never cleared; 3.3) and `dropped_object_count` (objects deleted by `dropPrimitive`; 3.3) |
 | `labels` | Name, origin, `ontology_ref` (reserved, empty in v1 — 02 §2.2). No recognised flag: `isRecognised` is computed (3.4) |
 | `stages` | Name, status, stale flag, configuration, completion time |
@@ -1704,8 +1953,8 @@ part lacks the added tables and columns and is unsupported; nothing migrates it.
 | `measurement_assertions` | `object_rowid`, `stage_id`, `name_id`, `value` (`NOT NULL`), `unit` — `WITHOUT ROWID`, primary key `(object_rowid, stage_id, name_id)` (3.7) |
 | `parent_edges` | `child_rowid` (primary key, so one parent per child), `parent_rowid` (indexed), `stage_id` — `WITHOUT ROWID` (3.6) |
 | `derived_from` | `derived_layer`, `derived_anchor`, `primitive_layer`, `primitive_anchor`, `stage_id` — `WITHOUT ROWID`, primary key on all five, index on `(primitive_layer, primitive_anchor)`; keyed by `ObjectId` so rows outlive a dropped primitive (3.6) |
-| `rasters` | Name, data type, plane count, writing stage, level, file path, bytes, populated flag (3.8) |
-| `events` | Sequence (`AUTOINCREMENT`), kind, stage, layer, label, count, bbox, stage status, timestamp |
+| `rasters` | `id`; `name` (`UNIQUE`); `data_type`, `plane_count`, `compression`, `description` (the declaration); `writer_stage_id` (references `stages`, indexed by `rasters_writer`), `level`, `scale_x`, `scale_y`, `width`, `height`, `file_name` (the name only, never a path), `bytes` and `populated`, which describe the published file and are cleared together when it is dropped (3.8) |
+| `events` | Sequence (`AUTOINCREMENT`), kind, stage, layer, label, `raster_id` (nullable; set by the three raster kinds, 3.9), count, bbox, stage status, timestamp |
 
 **The identifier a caller sees and the key the table is ordered by are not the
 same thing.** `ObjectId` stays exactly what decision 8 defines — layer plus

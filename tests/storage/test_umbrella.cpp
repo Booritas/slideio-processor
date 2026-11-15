@@ -26,6 +26,7 @@ TEST(Umbrella, ExposesTheWholeModule) {
         EXPECT_STREQ(store->stageStates().name(stage), "umbrella");
         EXPECT_EQ(store->edges().parentEdgeCount(), 0);
         EXPECT_EQ(store->annotations().labelAnnotationCount(), 0);
+        EXPECT_EQ(store->rasters().count(), 0);
         const LayerId layer = store->layers().declarePrimitive("umbrella_layer");
         GeoJsonImporter importer(*store, layer, stage);
         store->close();

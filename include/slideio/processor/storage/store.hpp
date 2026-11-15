@@ -227,6 +227,10 @@ public:
      * store is closed even when a flush fails: every writer is tried, and the first
      * failure is then reported. Errors during teardown are reported here rather than
      * in the destructor, which logs them.
+     *
+     * A live RasterWriter is abandoned, never flushed: its spool and any partial file are
+     * deleted and nothing is published, because closing must not build a pyramid. Its
+     * raster keeps the state it had.
      * @throws InvalidArgumentError When a writer's pending batch collides with a
      * committed object's anchor, holds an edge whose endpoint does not exist or that
      * conflicts with a committed parent edge, or holds an annotation whose object does
