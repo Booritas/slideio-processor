@@ -10,6 +10,8 @@
 #include "common/temp_path.hpp"
 
 #include <slideio/processor/core/data_type.hpp>
+#include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 
 #include <gtest/gtest.h>
@@ -45,7 +47,7 @@ void appendBlock(detail::TileSpool& spool, int64_t x, int64_t y, int64_t width, 
         data.push_back(plane.data());
         strides.push_back(width * static_cast<int64_t>(sizeof(T)));
     }
-    spool.append(x, y, width, height, data.data(), strides.data());
+    spool.append(Rect64{x, y, width, height}, width, height, data.data(), strides.data());
 }
 
 // A file with its spool beside it, both deleted at scope exit.
@@ -137,6 +139,7 @@ TEST(PyramidTiffWriter, LayoutTagsMatchS41) {
             appendBlock(spool, 0, band.first, width, band.second, data);
         }
         const detail::PyramidMetadata metadata{"nuclei", "a \"quoted\" description", 2, 4.0, 4.5};
+        spool.place(1.0, 1.0);
         const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, metadata);
         EXPECT_EQ(info.pages, 3);
         EXPECT_EQ(info.width, width);
@@ -246,7 +249,8 @@ TEST(PyramidTiffWriter, CompressionAndPredictorMapping) {
             detail::TileSpool spool(files.spoolPath, format);
             const void* planes[] = {data[0].data(), data[1].data()};
             const int64_t strides[] = {width * static_cast<int64_t>(sampleBytes), width * static_cast<int64_t>(sampleBytes)};
-            spool.append(0, 0, width, height, planes, strides);
+            spool.append(Rect64{0, 0, width, height}, width, height, planes, strides);
+            spool.place(1.0, 1.0);
             detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
         }
         detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(files.tif));
@@ -295,7 +299,8 @@ TEST(PyramidTiffWriter, IntegersTakeTopLeftFloatsTakeTheMean) {
         detail::TileSpool spool(files.spoolPath, format);
         const void* planes[] = {values};
         const int64_t strides[] = {3 * dataTypeSizeBytes(type)};
-        spool.append(patch, patch, 3, 3, planes, strides);
+        spool.append(Rect64{patch, patch, 3, 3}, 3, 3, planes, strides);
+        spool.place(1.0, 1.0);
         const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
         EXPECT_EQ(info.pages, 4);
         EXPECT_EQ(info.width, extent);
@@ -376,6 +381,7 @@ TEST(PyramidTiffWriter, TinyAndThinExtents) {
             {
                 detail::TileSpool spool(files.spoolPath, format);
                 appendBlock<uint16_t>(spool, 0, 0, 1, 1, {{7}, {9}});
+                spool.place(1.0, 1.0);
                 const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
                 EXPECT_EQ(info.pages, 1);
                 EXPECT_EQ(info.width, 1);
@@ -399,6 +405,7 @@ TEST(PyramidTiffWriter, TinyAndThinExtents) {
                 detail::TileSpool spool(files.spoolPath, format);
                 // Only the last pixel is written: the first tile is never touched.
                 appendBlock<uint16_t>(spool, 512, 0, 1, 1, {{300}, {301}});
+                spool.place(1.0, 1.0);
                 const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
                 EXPECT_EQ(info.pages, 2);
                 EXPECT_EQ(info.width, 513);
@@ -449,7 +456,7 @@ TEST(TileSpool, FragmentsComposeAcrossGridLines) {
                 }
         const void* ptrs[] = {data[0].data(), data[1].data()};
         const int64_t strides[] = {stride * 2, stride * 2};
-        spool.append(x0, y0, w, h, ptrs, strides);
+        spool.append(Rect64{x0, y0, w, h}, w, h, ptrs, strides);
     };
     append(ox, oy, size, size, [](int p, int64_t x, int64_t y) {
         return static_cast<uint16_t>((x * 3 + y * 5 + p * 7000 + 1) & 0xffff);
@@ -457,6 +464,7 @@ TEST(TileSpool, FragmentsComposeAcrossGridLines) {
     // A later block straddling the column-1 grid line overwrites the first one.
     append(480, 1000, 100, 100, [](int p, int64_t, int64_t) { return static_cast<uint16_t>(0xABCD + p); });
 
+    spool.place(1.0, 1.0);
     EXPECT_EQ(spool.extentWidth(), 1300);
     EXPECT_EQ(spool.extentHeight(), 1700);
 
@@ -509,6 +517,7 @@ TEST(TileSpool, ConcurrentAppendsAreAllKept) {
     for (std::thread& worker : workers) worker.join();
 
     const int64_t extentW = ox + across * block, extentH = oy + (threads * perThread / across) * block;
+    spool.place(1.0, 1.0);
     EXPECT_EQ(spool.extentWidth(), extentW);
     EXPECT_EQ(spool.extentHeight(), extentH);
     size_t mismatches = 0, tiles = 0;
@@ -524,6 +533,63 @@ TEST(TileSpool, ConcurrentAppendsAreAllKept) {
     });
     EXPECT_EQ(mismatches, 0u);
     EXPECT_EQ(tiles, 20u); // 2037 x 2059 reaches grid columns 0..3 and rows 0..4
+    spool.remove();
+}
+
+// The spool cuts nothing at append time: place() maps every call's slideRect to level
+// pixels at the scale it is given, rounding to the nearest pixel (half away from zero),
+// and a call that straddles grid lines is decoded once for each tile it touches.
+TEST(TileSpool, PlaceMapsSlideRectsAtTheScale) {
+    const std::filesystem::path path = uniqueTempPath("spool_place", ".spool");
+    TempFileGuard guard(path);
+    detail::TileSpool spool(path, {DataType::Int32, 1, RasterCompression::Deflate});
+    constexpr int64_t w = 600, h = 300;
+    std::vector<int32_t> data(w * h);
+    for (int64_t i = 0; i < w * h; ++i) data[i] = static_cast<int32_t>(i + 1);
+    const void* planes[] = {data.data()};
+    const int64_t strides[] = {w * 4};
+    // At scale 4: origin (1601 / 4, 2002 / 4) = (400.25, 500.5), which rounds to (400, 501).
+    spool.append(Rect64{1601, 2002, w * 4, h * 4}, w, h, planes, strides);
+
+    EXPECT_EQ(spool.extentWidth(), 0);  // nothing is placed yet
+    EXPECT_THROW(spool.forEachGridTile([](int32_t, int32_t, const std::vector<std::vector<uint8_t>>&) {}),
+                 InternalError);
+    EXPECT_THROW(spool.place(0.0, 4.0), InternalError);
+    size_t calls = 0;
+    spool.forEachCall([&](const Rect64& rect, int64_t width, int64_t height) {
+        ++calls;
+        EXPECT_EQ(rect.x, 1601);
+        EXPECT_EQ(rect.width, w * 4);
+        EXPECT_EQ(width, w);
+        EXPECT_EQ(height, h);
+    });
+    EXPECT_EQ(calls, 1u);
+
+    spool.place(4.0, 4.0);
+    EXPECT_EQ(spool.extentWidth(), 400 + w);
+    EXPECT_EQ(spool.extentHeight(), 501 + h);
+    std::vector<std::pair<int32_t, int32_t>> visited;
+    size_t mismatches = 0;
+    spool.forEachGridTile([&](int32_t gx, int32_t gy, const std::vector<std::vector<uint8_t>>& tile) {
+        visited.emplace_back(gx, gy);
+        const auto* samples = reinterpret_cast<const int32_t*>(tile[0].data());
+        for (int64_t y = 0; y < kTile; ++y)
+            for (int64_t x = 0; x < kTile; ++x) {
+                const int64_t cx = gx * kTile + x - 400, cy = gy * kTile + y - 501;
+                const int32_t want = cx >= 0 && cx < w && cy >= 0 && cy < h ? data[cy * w + cx] : 0;
+                if (samples[y * kTile + x] != want) ++mismatches;
+            }
+    });
+    EXPECT_EQ(mismatches, 0u);
+    const std::vector<std::pair<int32_t, int32_t>> order = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+    EXPECT_EQ(visited, order);
+
+    // Placed again at another scale: the origin moves with it. Negative origins refuse.
+    spool.place(2.0, 2.0);
+    EXPECT_EQ(spool.extentWidth(), 801 + w);
+    EXPECT_EQ(spool.extentHeight(), 1001 + h);
+    spool.append(Rect64{-8, 0, 4, 4}, 2, 2, planes, strides);
+    EXPECT_THROW(spool.place(4.0, 4.0), InternalError);
     spool.remove();
 }
 

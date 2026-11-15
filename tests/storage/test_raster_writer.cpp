@@ -141,6 +141,24 @@ protected:
         return name;
     }
 
+    // A REAL column of the raster row (scale_x, scale_y), read on a connection of its own.
+    double rowReal(RasterId raster, const char* column) {
+        sqlite3* db = nullptr;
+        double value = -1.0;
+        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+            sqlite3_stmt* select = nullptr;
+            const std::string sql =
+                std::string("SELECT ") + column + " FROM rasters WHERE id = " + std::to_string(raster.value());
+            if (sqlite3_prepare_v2(db, sql.c_str(), -1, &select, nullptr) == SQLITE_OK &&
+                sqlite3_step(select) == SQLITE_ROW) {
+                value = sqlite3_column_double(select, 0);
+            }
+            sqlite3_finalize(select);
+        }
+        sqlite3_close(db);
+        return value;
+    }
+
     RasterId p;
     StageId a;
     StageId b;
@@ -236,6 +254,77 @@ TEST_F(RasterWriterTest, TilesAreValidated) {
     EXPECT_EQ(page.at(255, 10), 1.0);
     EXPECT_EQ(page.at(256, 10), 2.0);
     EXPECT_EQ(page.at(355, 255), 2.0);
+}
+
+// The first tile fixes the level only; the scale is fixed at flush by the widest tile
+// (ruling S45 as amended in fix round 1). A clipped edge tile arriving first (100 pixels
+// over 399, scale 3.99) must not misplace the full tile after it.
+TEST_F(RasterWriterTest, ClippedFirstTileDoesNotFixTheScale) {
+    RasterRegistry& R = store().rasters();
+    RasterWriterPtr w = R.writerForStage(a, p);
+    w->writeTile(makeView(2, Rect64{1024, 0, 399, 1024}, 100, 256, DataType::Float32, 1, 2.0)->view);
+    w->writeTile(makeView(2, Rect64{0, 0, 1024, 1024}, 256, 256, DataType::Float32, 1, 1.0)->view);
+    w->flush();
+
+    EXPECT_EQ(R.writtenAtLevel(p), 2);
+    EXPECT_EQ(rowReal(p, "scale_x"), 4.0);
+    EXPECT_EQ(rowReal(p, "scale_y"), 4.0);
+    const std::vector<std::string> tifs = filesEndingIn(".tif");
+    ASSERT_EQ(tifs.size(), 1u);
+    const RasterPage page = readPage(directory() / tifs[0], 0, 0);
+    ASSERT_EQ(page.width, 356u);
+    ASSERT_EQ(page.height, 256u);
+    int64_t wrong = 0;
+    for (uint32_t y = 0; y < page.height; ++y)
+        for (uint32_t x = 0; x < page.width; ++x)
+            if (page.at(x, y) != (x < 256 ? 1.0 : 2.0)) ++wrong;
+    EXPECT_EQ(wrong, 0);
+}
+
+// A non-integral scale: 5000-pixel tiles over 20001 level-0 pixels (4.0002), and a clipped
+// last tile (1234 pixels over 4936, which alone reads as scale 4) written first, far from
+// the origin. Every tile lands exactly at 5000 * i.
+TEST_F(RasterWriterTest, NonIntegralScalePlacesEveryTileExactly) {
+    RasterRegistry& R = store().rasters();
+    RasterWriterPtr w = R.writerForStage(a, p);
+    constexpr int64_t kWidth = 5000, kSpan = 20001, kRows = 8;
+    w->writeTile(makeView(0, Rect64{3 * kSpan, 0, 4936, 32}, 1234, kRows, DataType::Float32, 1, 4.0)->view);
+    for (int64_t i = 0; i < 3; ++i) {
+        w->writeTile(makeView(0, Rect64{i * kSpan, 0, kSpan, 32}, kWidth, kRows, DataType::Float32, 1,
+                              static_cast<double>(i + 1))
+                         ->view);
+    }
+    w->flush();
+
+    EXPECT_EQ(rowReal(p, "scale_x"), 20001.0 / 5000.0);
+    EXPECT_EQ(rowReal(p, "scale_y"), 4.0);
+    const std::vector<std::string> tifs = filesEndingIn(".tif");
+    ASSERT_EQ(tifs.size(), 1u);
+    const RasterPage page = readPage(directory() / tifs[0], 0, 0);
+    ASSERT_EQ(page.width, 16234u);
+    ASSERT_EQ(page.height, 8u);
+    int64_t wrong = 0;
+    for (uint32_t y = 0; y < page.height; ++y)
+        for (uint32_t x = 0; x < page.width; ++x)
+            if (page.at(x, y) != static_cast<double>(x / kWidth + 1)) ++wrong;
+    EXPECT_EQ(wrong, 0);
+}
+
+// A tile within one level pixel of the widest tile seen when it was written, but not of
+// the widest tile overall, makes flush refuse; nothing is published.
+TEST_F(RasterWriterTest, FlushRefusesATileOffTheFinalScale) {
+    RasterRegistry& R = store().rasters();
+    RasterWriterPtr w = R.writerForStage(a, p);
+    w->writeTile(makeView(0, Rect64{0, 0, 395, 8}, 100, 2, DataType::Float32, 1, 1.0)->view);      // 3.95
+    w->writeTile(makeView(0, Rect64{400, 0, 4000, 8}, 1000, 2, DataType::Float32, 1, 2.0)->view);  // 4.0
+    EXPECT_EQ(w->tilesWritten(), 2);
+    const std::string refused = messageOf([&] { w->flush(); });
+    EXPECT_TRUE(contains(refused, "slideRect.width")) << refused;
+    EXPECT_FALSE(R.isPopulated(p));
+    EXPECT_TRUE(eventsOfKind(store(), EventKind::RasterWritten).empty());
+    EXPECT_EQ(fileCount(), 0u);
+    EXPECT_NO_THROW(w->flush());  // terminal
+    EXPECT_NO_THROW(R.writerForStage(a, p));  // no longer live
 }
 
 // Review Focus 2: eight threads, 1000 x 1000 tiles that straddle the 512 grid.

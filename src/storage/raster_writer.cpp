@@ -75,10 +75,44 @@ public:
     // "raster '<name>'", for messages.
     std::string rasterText() const { return "raster '" + setup.name + "'"; }
 
-    // Refuses a tile the declaration or the first tile's geometry rules out (ruling S45),
-    // and returns its origin in level pixels. The first accepted tile fixes the level and
-    // scale. Caller holds `lifecycle` shared.
-    void place(const BlockView& tile, int64_t& originX, int64_t& originY) {
+    // Refuses a call whose geometry does not fit the scale (sx, sy) (ruling S45): its
+    // extent must be within one level pixel of `pixels` x scale, so clipped edge tiles
+    // pass, and its origin in level pixels must be non-negative with its far edge within
+    // 2^31-1. `which` names the call in messages; `against` names the scale.
+    static void checkGeometry(const char* operation, const std::string& which, const Rect64& rect, int64_t width,
+                              int64_t height, double sx, double sy, const std::string& against) {
+        const auto offScale = [](int64_t extent, int64_t pixels, double scale) {
+            return std::abs(static_cast<double>(extent) - static_cast<double>(pixels) * scale) > scale * (1.0 + 1e-9);
+        };
+        if (offScale(rect.width, width, sx)) {
+            detail::throwInvalid(operation, which + " slideRect.width " + std::to_string(rect.width) + " over " +
+                                                std::to_string(width) + " pixels is off the scale " +
+                                                std::to_string(sx) + " of " + against + " by more than one level pixel");
+        }
+        if (offScale(rect.height, height, sy)) {
+            detail::throwInvalid(operation, which + " slideRect.height " + std::to_string(rect.height) + " over " +
+                                                std::to_string(height) + " pixels is off the scale " +
+                                                std::to_string(sy) + " of " + against + " by more than one level pixel");
+        }
+        // Checked as doubles, so a far slideRect cannot overflow.
+        const double x = levelOrigin(rect.x, sx);
+        const double y = levelOrigin(rect.y, sy);
+        if (x < 0 || y < 0) {
+            detail::throwInvalid(operation, which + " origin (" + std::to_string(static_cast<int64_t>(x)) + ", " +
+                                                std::to_string(static_cast<int64_t>(y)) + ") in level pixels is negative");
+        }
+        if (x + static_cast<double>(width) > static_cast<double>(kMaxExtent) ||
+            y + static_cast<double>(height) > static_cast<double>(kMaxExtent)) {
+            detail::throwInvalid(operation, which + " extent reaches beyond 2^31-1 level pixels");
+        }
+    }
+
+    // Refuses a tile the declaration, the first tile's level or the provisional scale
+    // rules out (ruling S45 as amended in fix round 1). The first accepted tile fixes the
+    // level only. The scale is provisional until flush: scaleX is that of the widest tile
+    // so far (slideRect.width / width), scaleY that of the tallest; each tile is checked
+    // against it, counting itself. Caller holds `lifecycle` shared.
+    void accept(const BlockView& tile) {
         if (tile.isNull()) detail::throwInvalid(kWriteTile, "the tile is null");
         if (tile.planeCount() != setup.format.planes) {
             detail::throwInvalid(kWriteTile, "the tile's planeCount " + std::to_string(tile.planeCount()) + " is not " +
@@ -96,57 +130,35 @@ public:
         const int64_t height = tile.height();
 
         std::lock_guard<std::mutex> guard(mutex);
-        // SDS 01 §1.17: the scale is read from the view's integers, not from a level index.
-        const int32_t tileLevel = hasGeometry ? level : tile.level();
-        const double sx = hasGeometry ? scaleX : static_cast<double>(rect.width) / static_cast<double>(width);
-        const double sy = hasGeometry ? scaleY : static_cast<double>(rect.height) / static_cast<double>(height);
-        if (tile.level() != tileLevel) {
+        if (hasLevel && tile.level() != level) {
             detail::throwInvalid(kWriteTile, "the tile's level " + std::to_string(tile.level()) + " is not " +
-                                                 std::to_string(tileLevel) + ", the level of " + rasterText() +
+                                                 std::to_string(level) + ", the level of " + rasterText() +
                                                  "'s first tile");
         }
-        // Within one level pixel of the first tile's scale, so clipped edge tiles pass.
-        const auto offScale = [](int64_t extent, int64_t pixels, double scale) {
-            return std::abs(static_cast<double>(extent) - static_cast<double>(pixels) * scale) > scale * (1.0 + 1e-9);
-        };
-        if (offScale(rect.width, width, sx)) {
-            detail::throwInvalid(kWriteTile, "the tile's slideRect.width " + std::to_string(rect.width) + " over " +
-                                                 std::to_string(width) + " pixels is off the scale " +
-                                                 std::to_string(sx) + " of " + rasterText() +
-                                                 "'s first tile by more than one level pixel");
-        }
-        if (offScale(rect.height, height, sy)) {
-            detail::throwInvalid(kWriteTile, "the tile's slideRect.height " + std::to_string(rect.height) + " over " +
-                                                 std::to_string(height) + " pixels is off the scale " +
-                                                 std::to_string(sy) + " of " + rasterText() +
-                                                 "'s first tile by more than one level pixel");
-        }
-        // Rounded to the nearest level pixel, as rasteriseInto does; checked as doubles
-        // first, so a far slideRect cannot overflow.
-        const double x = std::round(static_cast<double>(rect.x) / sx);
-        const double y = std::round(static_cast<double>(rect.y) / sy);
-        if (x < 0 || y < 0) {
-            detail::throwInvalid(kWriteTile, "the tile's origin (" + std::to_string(static_cast<int64_t>(x)) + ", " +
-                                                 std::to_string(static_cast<int64_t>(y)) +
-                                                 ") in level pixels is negative");
-        }
-        if (x + static_cast<double>(width) > static_cast<double>(kMaxExtent) ||
-            y + static_cast<double>(height) > static_cast<double>(kMaxExtent)) {
-            detail::throwInvalid(kWriteTile, "the tile's extent reaches beyond 2^31-1 level pixels");
-        }
-        originX = static_cast<int64_t>(x);
-        originY = static_cast<int64_t>(y);
-        if (!hasGeometry) {
-            hasGeometry = true;
-            level = tileLevel;
-            scaleX = sx;
-            scaleY = sy;
+        // SDS 01 §1.17: the scale is read from the view's integers, not from a level index.
+        const bool widest = width > widestWidth;
+        const bool tallest = height > tallestHeight;
+        const double sx = widest ? static_cast<double>(rect.width) / static_cast<double>(width) : scaleX;
+        const double sy = tallest ? static_cast<double>(rect.height) / static_cast<double>(height) : scaleY;
+        checkGeometry(kWriteTile, "the tile's", rect, width, height, sx, sy, rasterText() + "'s widest tile so far");
+        if (!hasLevel) {
+            hasLevel = true;
+            level = tile.level();
         }
     }
 
-    // Counts an appended tile into tilesWritten and the event's bounding box.
-    void counted(const Rect64& rect) {
+    // Counts an appended tile into tilesWritten, the event's bounding box and the
+    // provisional scale, which therefore only spooled tiles set.
+    void counted(const Rect64& rect, int64_t width, int64_t height) {
         std::lock_guard<std::mutex> guard(mutex);
+        if (width > widestWidth) {
+            widestWidth = width;
+            scaleX = static_cast<double>(rect.width) / static_cast<double>(width);
+        }
+        if (height > tallestHeight) {
+            tallestHeight = height;
+            scaleY = static_cast<double>(rect.height) / static_cast<double>(height);
+        }
         if (tiles == 0) {
             minX = rect.x;
             minY = rect.y;
@@ -181,17 +193,31 @@ public:
         if (state == State::Flushed) {
             detail::throwInvalid(kWriteTile, rasterText() + " was flushed; a flushed writer accepts no more tiles");
         }
-        int64_t originX = 0, originY = 0;
-        place(tile, originX, originY);
+        accept(tile);
         std::vector<const void*> planes(static_cast<size_t>(setup.format.planes));
         std::vector<int64_t> strides(planes.size());
         for (int32_t p = 0; p < setup.format.planes; ++p) {
             planes[static_cast<size_t>(p)] = tile.planeData(p);
             strides[static_cast<size_t>(p)] = tile.planeRowStrideBytes(p);
         }
-        // Compressed outside every lock but the shared one (ruling S46).
-        spool->append(originX, originY, tile.width(), tile.height(), planes.data(), strides.data());
-        counted(tile.slideRect());
+        // Spooled whole, with its slideRect: where it lies is decided at flush, once the
+        // scale is final. Compressed outside every lock but the shared one (ruling S46).
+        spool->append(tile.slideRect(), tile.width(), tile.height(), planes.data(), strides.data());
+        counted(tile.slideRect(), tile.width(), tile.height());
+    }
+
+    // Fixes the final scale, that of the widest and the tallest tile, and refuses the
+    // flush when any spooled tile does not fit it; then places the spool at it.
+    void placeAtFinalScale(const PyramidMetadata& metadata) {
+        int64_t index = 0;
+        spool->forEachCall([&](const Rect64& rect, int64_t width, int64_t height) {
+            const std::string which = "tile " + std::to_string(index++) + " (slideRect " + std::to_string(rect.x) +
+                                      ", " + std::to_string(rect.y) + ", " + std::to_string(rect.width) + " x " +
+                                      std::to_string(rect.height) + "):";
+            checkGeometry(kFlush, which, rect, width, height, metadata.scaleX, metadata.scaleY,
+                          rasterText() + "'s widest tile. Nothing was published");
+        });
+        spool->place(metadata.scaleX, metadata.scaleY);
     }
 
     // Builds the file, then publishes it in one transaction (ruling S47).
@@ -230,6 +256,7 @@ public:
         PyramidInfo info;
         int64_t bytes = 0;
         try {
+            placeAtFinalScale(metadata);
             info = writePyramidTiff(tif, *spool, setup.format, metadata);
             // A committed row never names a file that is not yet on disk.
             syncFile(tif);
@@ -350,9 +377,11 @@ public:
     State state = State::Open;  // written only under `lifecycle` held exclusively
 
     mutable std::mutex mutex;  // guards everything below
-    bool hasGeometry = false;
-    int32_t level = 0;
-    double scaleX = 0.0;
+    bool hasLevel = false;
+    int32_t level = 0;  // fixed by the first accepted tile
+    int64_t widestWidth = 0;    // the widest spooled tile's width; it gives scaleX
+    int64_t tallestHeight = 0;  // the tallest spooled tile's height; it gives scaleY
+    double scaleX = 0.0;        // provisional until flush, then final
     double scaleY = 0.0;
     int64_t tiles = 0;
     int64_t minX = 0, minY = 0, maxX = 0, maxY = 0;  // the union of the tiles' slideRects

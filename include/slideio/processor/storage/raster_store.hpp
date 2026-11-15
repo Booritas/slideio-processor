@@ -162,8 +162,9 @@ public:
      * Tiles may arrive in any order and need not cover the raster; unwritten area reads
      * as zero.
      * @param tile The tile.
-     * @throws InvalidArgumentError When the tile does not match the declaration or the
-     * level and scale of the first tile, or when the writer was flushed.
+     * @throws InvalidArgumentError When the tile does not match the declaration, the
+     * level of the first tile or, within one level pixel, the scale of the widest tile so
+     * far; or when the writer was flushed.
      * @throws IoError When the store is closed, or when the spool cannot be written.
      */
     void writeTile(const BlockView& tile) override;
@@ -172,8 +173,12 @@ public:
      * publishes it.
      *
      * Until this returns, the raster is not readable and RasterRegistry::isPopulated()
-     * is false. Terminal: a second call is a no-op. With no tile written it publishes
-     * nothing. When it fails, the raster's previous state stands.
+     * is false. The scale is final here: that of the widest tile, and of the tallest.
+     * Terminal: a second call is a no-op. With no tile written it publishes nothing. When
+     * it fails, the raster's previous state stands.
+     * @throws InvalidArgumentError When a tile does not fit the final scale within one
+     * level pixel, or when another stage published the raster meanwhile; nothing is then
+     * published.
      * @throws IoError When the store is closed, or when the file cannot be written.
      */
     void flush() override;

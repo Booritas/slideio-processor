@@ -35,7 +35,8 @@ struct PyramidInfo {
 // spool; each page k > 0 is built from page k-1, read back through a second handle on the
 // same file: integer types take the top-left sample present in each 2x2 block, floating
 // types the mean of the samples present, in double. The file is complete and closed on
-// return. Throws InternalError for an empty spool or a `format` whose type or plane
+// return. The spool must be placed (TileSpool::place); its extent is page 0's size.
+// Throws InternalError for an empty or unplaced spool or a `format` whose type or plane
 // count is not the spool's, IoError naming the file when libtiff or the file fails, and IoError from
 // the spool. On a throw the partial file is left for the caller to delete.
 PyramidInfo writePyramidTiff(const std::filesystem::path& tif, const TileSpool& spool, const RasterFormat& format,
