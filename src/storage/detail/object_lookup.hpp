@@ -39,4 +39,16 @@ std::string describeObject(sqlite3* db, ObjectId id);
 // Rebuilds the ObjectId of a stored (layer_id, anchor_id) pair.
 ObjectId objectIdOf(int64_t layer, int64_t anchorPacked) noexcept;
 
+// Which objects deleteObjects removes: one stage's (a discard) or one layer's (a drop).
+enum class ObjectsOf { Stage, Layer };
+
+// Deletes the objects of one stage or one primitive layer and every row about them, by
+// any stage, child rows first so the declared foreign keys never fire: the label and
+// measurement assertions on them, their measurements and their R*Tree rows (rulings
+// S16, S25). A stage's parent edges and derived-from rows with either endpoint among
+// its objects go too. A layer's derived-from rows are kept, since a dropped layer is
+// never repopulated, and a primitive layer has no parent edges. Runs inside the
+// caller's write transaction and returns the number of objects deleted. Throws IoError.
+int64_t deleteObjects(sqlite3* db, ObjectsOf which, int64_t key);
+
 } // namespace slideio::processor::detail

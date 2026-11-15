@@ -16,6 +16,9 @@ inline constexpr const char* kMetaProvenance = "provenance";
 inline constexpr const char* kMetaImportPolicy = "import_policy";
 inline constexpr const char* kMetaJournalTruncatedBelow = "journal_truncated_below";
 inline constexpr const char* kMetaStoreUuid = "store_uuid";
+// Bumped by every change to the layers table, in its transaction, so a LayerRegistry
+// cache sees declarations and drops alike (ruling S28).
+inline constexpr const char* kMetaLayersRevision = "layers_revision";
 
 // The pixel layer, created with the store (ruling S5); declared layers number from 2.
 inline constexpr int32_t kPixelLayerId = 1;
@@ -29,5 +32,9 @@ inline constexpr int32_t kFirstLocalLabelId = 65536;
 // rows. Runs inside the caller's write transaction on `db`. `provenanceJson` is the
 // initial meta.provenance, `storeUuid` the initial meta.store_uuid. Throws IoError.
 void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid);
+
+// Adds one to meta.layers_revision. Runs inside the caller's write transaction, which
+// has just changed the layers table. Throws IoError.
+void bumpLayersRevision(sqlite3* db);
 
 } // namespace slideio::processor::detail

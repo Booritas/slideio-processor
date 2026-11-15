@@ -204,6 +204,18 @@ public:
             dropped.reset();
         }
 
+        // Each layer the batch wrote has now been populated (ruling S16); the flag never
+        // clears, so only its first commit changes the layers table.
+        detail::Statement populated(db, "UPDATE layers SET ever_populated = 1 WHERE id = ? AND ever_populated = 0");
+        bool layersChanged = false;
+        for (const auto& entry : layers) {
+            populated.bindInt64(1, entry.first);
+            populated.run();
+            populated.reset();
+            layersChanged = layersChanged || sqlite3_changes(db) > 0;
+        }
+        if (layersChanged) detail::bumpLayersRevision(db);
+
         for (const auto& entry : layers) {
             detail::EventRow event;
             event.kind = EventKind::ObjectsAdded;

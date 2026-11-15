@@ -26,7 +26,10 @@ CREATE TABLE layers(
     parent_id      INTEGER REFERENCES layers(id),
     depth          INTEGER NOT NULL,
     dropped        INTEGER NOT NULL DEFAULT 0,
-    analysis_level INTEGER NOT NULL DEFAULT 0
+    analysis_level INTEGER NOT NULL DEFAULT 0,
+    -- Set by the first ObjectWriter commit into the layer, never cleared (ruling S16).
+    ever_populated       INTEGER NOT NULL DEFAULT 0,
+    dropped_object_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE labels(
@@ -171,6 +174,13 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     // Nothing is truncated yet: every sequence (they start at 1) is retained.
     StoreImpl::setMetaInt64(db, kMetaJournalTruncatedBelow, 1);
     StoreImpl::setMetaText(db, kMetaStoreUuid, storeUuid);
+    StoreImpl::setMetaInt64(db, kMetaLayersRevision, 0);
+}
+
+void bumpLayersRevision(sqlite3* db) {
+    Statement bump(db, "INSERT INTO meta(key, value) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET value = value + 1");
+    bump.bindText(1, kMetaLayersRevision);
+    bump.run();
 }
 
 } // namespace slideio::processor::detail

@@ -2,6 +2,7 @@
 
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
+#include "storage/detail/object_lookup.hpp"
 #include "storage/detail/query_builder.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
@@ -96,35 +97,8 @@ void ObjectStore::discardStage(StageId stage) {
     detail::StoreImpl& store = impl_->store;
     store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         if (!detail::stageExists(db, stage)) detail::throwUnknownStage(kOperation, stage);
-        int64_t removed = 0;
-        {
-            detail::Statement count(db, "SELECT COUNT(*) FROM objects WHERE stage_id = ?");
-            count.bindInt64(1, stage.value());
-            if (count.step()) removed = count.columnInt64(0);
-        }
-        // Everything about the stage's objects, by any stage, goes with them (ruling S25),
-        // child rows first so the declared foreign keys never fire.
-        for (const char* sql : {"DELETE FROM label_assertions WHERE object_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
-                                "DELETE FROM measurement_assertions WHERE object_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
-                                "DELETE FROM parent_edges WHERE child_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?1) OR parent_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
-                                // Keyed by ObjectId: a kept row would re-attach to a re-run's
-                                // object at a coincident anchor.
-                                "DELETE FROM derived_from WHERE (derived_layer, derived_anchor) IN "
-                                "(SELECT layer_id, anchor_id FROM objects WHERE stage_id = ?1) OR "
-                                "(primitive_layer, primitive_anchor) IN "
-                                "(SELECT layer_id, anchor_id FROM objects WHERE stage_id = ?1)",
-                                "DELETE FROM measurements WHERE object_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?1)",
-                                "DELETE FROM object_rtree WHERE rowid IN (SELECT rowid FROM objects WHERE stage_id = ?1)",
-                                "DELETE FROM objects WHERE stage_id = ?1"}) {
-            detail::Statement remove(db, sql);
-            remove.bindInt64(1, stage.value());
-            remove.run();
-        }
+        // Everything about the stage's objects, by any stage, goes with them (ruling S25).
+        const int64_t removed = detail::deleteObjects(db, detail::ObjectsOf::Stage, stage.value());
         detail::EventRow event;
         event.kind = EventKind::StageDiscarded;
         event.stageId = stage.value();

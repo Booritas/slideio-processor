@@ -1,15 +1,26 @@
-// Requirements: UR-STG-10, UR-RES-13, UR-RES-14, UR-SEG-4, UR-IMG-4
+// Requirements: UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-RES-16, UR-SEG-4, UR-IMG-4
 #include "storage/store_fixture.hpp"
 
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/object_query.hpp>
+#include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
+#include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <thread>
@@ -19,7 +30,25 @@ using namespace slideio::processor;
 
 namespace {
 
-class LayerRegistryTest : public StoreFixture {};
+class LayerRegistryTest : public StoreFixture {
+protected:
+    void complete(StageId stage) { store().stageStateWriter().setStatus(stage, StageStatus::Complete); }
+
+    // Reads the single integer `sql` selects, on a connection of its own; -1 when it cannot.
+    int64_t rawCount(const char* sql) {
+        sqlite3* db = nullptr;
+        int64_t count = -1;
+        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+            sqlite3_stmt* select = nullptr;
+            if (sqlite3_prepare_v2(db, sql, -1, &select, nullptr) == SQLITE_OK && sqlite3_step(select) == SQLITE_ROW) {
+                count = sqlite3_column_int64(select, 0);
+            }
+            sqlite3_finalize(select);
+        }
+        sqlite3_close(db);
+        return count;
+    }
+};
 
 std::string messageOf(const std::function<void()>& call) {
     try {
@@ -28,6 +57,48 @@ std::string messageOf(const std::function<void()>& call) {
         return e.what();
     }
     return std::string();
+}
+
+bool contains(const std::string& text, const char* part) { return text.find(part) != std::string::npos; }
+
+// The square [x, x + side) x [y, y + side) as a record of `layer`.
+ObjectRecord square(LayerId layer, int64_t x, int64_t y, int64_t side = 1) {
+    const Point64 points[] = {{x, y}, {x + side, y}, {x + side, y + side}, {x, y + side}};
+    Polygon polygon;
+    polygon.addRing(points, 4, false);
+    ObjectRecord record;
+    record.setLayer(layer);
+    record.setGeometry(polygon);
+    return record;
+}
+
+std::vector<ObjectId> idsOf(const CursorPtr& cursor) {
+    std::vector<ObjectId> ids;
+    while (cursor->next()) ids.push_back(cursor->current().id());
+    return ids;
+}
+
+std::vector<Event> eventsOfKind(Store& store, EventKind kind) {
+    std::vector<Event> events;
+    EventCursorPtr cursor = store.events().subscribe(EventJournal::kFromBeginning);
+    while (cursor->next(0)) {
+        if (cursor->current().kind() == kind) events.push_back(cursor->current());
+    }
+    return events;
+}
+
+// Fills a 64x64 view at level 0 over [0, 64)^2 from `source`; true when every byte is 0.
+bool fillsBackground(TileRasterSource& source) {
+    constexpr int64_t kSide = 64;
+    const int64_t pixelBytes = dataTypeSizeBytes(source.planeType());
+    std::vector<uint8_t> bytes(static_cast<size_t>(kSide * kSide * pixelBytes), 0xAB);
+    BlockPlane plane{bytes.data(), source.planeType(), kSide * pixelBytes, 0};
+    BlockView view(kSide, kSide, Rect64{0, 0, kSide, kSide}, 0, &plane, 1);
+    source.fillTile(view);
+    for (uint8_t b : bytes) {
+        if (b != 0) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -311,4 +382,219 @@ TEST_F(LayerRegistryTest, ConcurrentDeclarationsAndReads) {
     EXPECT_EQ(failures.load(), 0);
     EXPECT_EQ(L.count(), 1 + kThreads * kEach);
     EXPECT_EQ(L.childCount(L.pixelLayer()), kThreads * (kEach / 2));
+}
+
+TEST_F(LayerRegistryTest, DropPrimitiveKeepsDerivedObjects) {  // UR-STG-12 / UR-RES-16 acceptance
+    LayerRegistry& L = store().layers();
+    StageStateWriter& states = store().stageStateWriter();
+    const LayerId tissue = L.declareSemantic("tissue", L.pixelLayer());
+    const LayerId sp = L.declarePrimitive("sp");
+    const StageId seg = states.declare("superpixels", "");
+    const StageId tis = states.declare("tissue", "");
+    const StageId link = states.declare("link", "");
+    const StageId note = states.declare("note", "");
+    EXPECT_FALSE(L.wasEverPopulated(sp));
+
+    // 50,000 labelled unit squares on a 250 x 200 grid, each with one measurement.
+    constexpr int64_t kObjects = 50000;
+    constexpr int64_t kColumns = 250;
+    std::vector<ObjectId> s;
+    {
+        ObjectWriterPtr w = store().objects().writerForStage(seg);
+        w->setBatchSizeObjects(10000);
+        for (int64_t i = 0; i < kObjects; ++i) {
+            ObjectRecord r = square(sp, i % kColumns, i / kColumns);
+            r.setLabel(LabelId(3));
+            r.measurements().set("area", 1.0, MeasurementUnit::SquarePixels);
+            w->emit(r);
+            s.push_back(r.id());
+        }
+        w->flush();
+    }
+    ObjectWriterPtr tw = store().objects().writerForStage(tis);
+    const ObjectRecord r1 = square(tissue, 0, 0, 100);
+    const ObjectRecord r2 = square(tissue, 125, 0, 100);
+    tw->emit(r1);
+    tw->emit(r2);
+    tw->flush();
+    const ObjectId t1 = r1.id(), t2 = r2.id();
+
+    EdgeWriterPtr ew = store().edges().writerForStage(link);
+    ew->assertDerivedFrom(t1, s[0]);
+    ew->assertDerivedFrom(t1, s[1]);
+    ew->assertDerivedFrom(t1, s[kColumns]);
+    ew->assertDerivedFrom(t2, s[130]);
+    ew->flush();
+    AnnotationWriterPtr aw = store().annotations().writerForStage(note);
+    aw->assertLabel(s[0], LabelId(7));
+    aw->assertMeasurement(s[1], "score", 0.5, MeasurementUnit::Dimensionless);
+    aw->assertLabel(t1, LabelId(2));
+    aw->flush();
+    for (StageId stage : {seg, tis, link, note}) complete(stage);
+
+    ASSERT_EQ(idsOf(store().edges().originsOf(t1)).size(), 3u);
+    EXPECT_FALSE(fillsBackground(*store().annotations().layerRasterSource(sp, LayerRasterContent::Membership)));
+    EXPECT_FALSE(fillsBackground(*store().annotations().layerRasterSource(sp, LayerRasterContent::Label)));
+    EXPECT_TRUE(L.wasEverPopulated(sp));
+    const int64_t derivedEdges = store().edges().derivedFromEdgeCount();
+    EXPECT_EQ(derivedEdges, 4);
+
+    L.dropPrimitive(sp);
+
+    EXPECT_TRUE(L.isDropped(sp));
+    EXPECT_EQ(L.droppedObjectCount(sp), kObjects);
+    EXPECT_TRUE(L.wasEverPopulated(sp));
+    EXPECT_EQ(store().objects().objectCountInLayer(sp), 0);
+    EXPECT_EQ(idsOf(store().objects().query(ObjectQuery().layer(tissue))), (std::vector<ObjectId>{t1, t2}));
+    EXPECT_TRUE(idsOf(store().edges().originsOf(t1)).empty());
+    EXPECT_TRUE(idsOf(store().edges().originsOf(t2)).empty());
+    EXPECT_EQ(store().edges().derivedFromEdgeCount(), derivedEdges);
+
+    const std::vector<Event> dropped = eventsOfKind(store(), EventKind::LayerDropped);
+    ASSERT_EQ(dropped.size(), 1u);
+    EXPECT_EQ(dropped[0].layer(), sp);
+    EXPECT_EQ(dropped[0].objectCount(), 0);
+    EXPECT_TRUE(dropped[0].boundingBox() == (Rect64{0, 0, 0, 0}));
+    EXPECT_FALSE(dropped[0].stage().isValid());
+    for (StageId stage : {seg, tis, link, note}) {
+        EXPECT_FALSE(store().stageStates().isStale(stage));
+        EXPECT_EQ(store().stageStates().status(stage), StageStatus::Complete);
+    }
+
+    // The assertions on sp objects went with them; the one on t1 stays.
+    EXPECT_EQ(store().annotations().labelAnnotationCount(), 1);
+    EXPECT_EQ(store().annotations().measurementAnnotationCount(), 0);
+    EXPECT_EQ(store().annotations().labelCount(t1), 1);
+    EXPECT_EQ(rawCount("SELECT COUNT(*) FROM measurements"), 0);
+    EXPECT_EQ(rawCount("SELECT COUNT(*) FROM object_rtree"), 2);
+    EXPECT_EQ(rawCount("SELECT COUNT(*) FROM derived_from"), derivedEdges);
+
+    // A dropped layer still exists and yields background (ruling S15).
+    for (LayerRasterContent content : {LayerRasterContent::Membership, LayerRasterContent::Label}) {
+        EXPECT_TRUE(fillsBackground(*store().annotations().layerRasterSource(sp, content)));
+    }
+}
+
+TEST_F(LayerRegistryTest, DropErrorsAndIdempotence) {
+    LayerRegistry& L = store().layers();
+    const LayerId tissue = L.declareSemantic("tissue", L.pixelLayer());
+    const LayerId sp = L.declarePrimitive("sp");
+    const LayerId unwritten = L.declarePrimitive("unwritten");
+    const StageId seg = store().stageStateWriter().declare("superpixels", "");
+
+    std::string message = messageOf([&] { L.dropPrimitive(tissue); });
+    EXPECT_TRUE(contains(message, "'tissue'")) << message;
+    message = messageOf([&] { L.dropPrimitive(L.pixelLayer()); });
+    EXPECT_TRUE(contains(message, "'pixel'")) << message;
+    message = messageOf([&] { L.dropPrimitive(LayerId(99)); });
+    EXPECT_TRUE(contains(message, "99")) << message;
+    EXPECT_THROW(L.dropPrimitive(tissue), InvalidArgumentError);
+    EXPECT_THROW(L.dropPrimitive(L.pixelLayer()), InvalidArgumentError);
+    EXPECT_THROW(L.dropPrimitive(LayerId(99)), InvalidArgumentError);
+    EXPECT_THROW(L.dropPrimitive(LayerId()), InvalidArgumentError);
+    EXPECT_FALSE(L.isDropped(tissue));
+    EXPECT_FALSE(L.wasEverPopulated(LayerId(99)));
+    EXPECT_EQ(L.droppedObjectCount(LayerId(99)), 0);
+    EXPECT_EQ(L.droppedObjectCount(sp), 0);
+
+    {
+        ObjectWriterPtr w = store().objects().writerForStage(seg);
+        w->emit(square(sp, 0, 0));
+        w->emit(square(sp, 5, 0));
+        w->flush();
+    }
+    EXPECT_TRUE(L.wasEverPopulated(sp));
+    EXPECT_FALSE(L.wasEverPopulated(tissue));
+
+    {
+        StorePtr viewer = Store::open(pathUtf8().c_str(), OpenMode::ReadOnly, config());
+        EXPECT_THROW(viewer->layers().dropPrimitive(sp), IoError);
+        EXPECT_FALSE(viewer->layers().isDropped(sp));
+        viewer->close();
+    }
+
+    L.dropPrimitive(sp);
+    EXPECT_EQ(L.droppedObjectCount(sp), 2);
+    EXPECT_NO_THROW(L.dropPrimitive(sp));
+    EXPECT_EQ(L.droppedObjectCount(sp), 2);
+    EXPECT_EQ(eventsOfKind(store(), EventKind::LayerDropped).size(), 1u);
+
+    EXPECT_FALSE(L.wasEverPopulated(unwritten));
+    L.dropPrimitive(unwritten);
+    EXPECT_TRUE(L.isDropped(unwritten));
+    EXPECT_FALSE(L.wasEverPopulated(unwritten));
+    EXPECT_EQ(L.droppedObjectCount(unwritten), 0);
+    EXPECT_EQ(eventsOfKind(store(), EventKind::LayerDropped).size(), 2u);
+
+    ObjectWriterPtr late = store().objects().writerForStage(seg);
+    message = messageOf([&] { late->emit(square(sp, 10, 0)); });
+    EXPECT_TRUE(contains(message, "'sp'")) << message;
+    EXPECT_TRUE(contains(message, "dropped")) << message;
+    EXPECT_THROW(late->emit(square(sp, 10, 0)), InvalidArgumentError);
+
+    // A drop survives reopening.
+    StorePtr ro = reopen(OpenMode::ReadOnly);
+    EXPECT_TRUE(ro->layers().isDropped(sp));
+    EXPECT_EQ(ro->layers().droppedObjectCount(sp), 2);
+    EXPECT_TRUE(ro->layers().wasEverPopulated(sp));
+}
+
+TEST_F(LayerRegistryTest, DropRacesAPendingWriterAndOtherHandles) {  // Review Focus 4
+    LayerRegistry& L = store().layers();
+    const LayerId tissue = L.declareSemantic("tissue", L.pixelLayer());
+    const LayerId sp = L.declarePrimitive("sp");
+    const StageId seg = store().stageStateWriter().declare("superpixels", "");
+    const StageId tis = store().stageStateWriter().declare("tissue", "");
+    const StageId link = store().stageStateWriter().declare("link", "");
+
+    ObjectWriterPtr tw = store().objects().writerForStage(tis);
+    const ObjectRecord t1 = square(tissue, 0, 0, 100);
+    tw->emit(t1);
+    tw->flush();
+    ObjectWriterPtr sw = store().objects().writerForStage(seg);
+    const ObjectRecord committed = square(sp, 50, 50);
+    sw->emit(committed);
+    sw->flush();
+
+    // A viewer opened before the drop, whose registry has already cached the layers.
+    StorePtr viewer = Store::open(pathUtf8().c_str(), OpenMode::ReadOnly, config());
+    EXPECT_FALSE(viewer->layers().isDropped(sp));
+    EXPECT_EQ(viewer->layers().count(), 3);
+
+    ObjectWriterPtr pending = store().objects().writerForStage(seg);
+    for (int64_t x = 0; x < 3; ++x) pending->emit(square(sp, x, 0));
+    EXPECT_EQ(pending->emittedCount(), 3);
+
+    L.dropPrimitive(sp);
+
+    std::string message;
+    try {
+        pending->flush();
+        ADD_FAILURE() << "a pending batch into a dropped layer was committed";
+    } catch (const InvalidArgumentError& e) {
+        message = e.what();
+    }
+    EXPECT_TRUE(contains(message, "'sp'")) << message;
+    // The writer validated sp before the drop: a later emit is accepted and refused at commit.
+    pending->emit(square(sp, 3, 0));
+    EXPECT_THROW(pending->flush(), InvalidArgumentError);
+    EXPECT_EQ(store().objects().objectCountInLayer(sp), 0);
+    EXPECT_EQ(L.droppedObjectCount(sp), 1);
+
+    EXPECT_TRUE(viewer->layers().isDropped(sp));  // without reopening
+    EXPECT_EQ(viewer->layers().droppedObjectCount(sp), 1);
+    EXPECT_TRUE(viewer->layers().wasEverPopulated(sp));
+    EXPECT_EQ(viewer->objects().objectCountInLayer(sp), 0);
+    viewer->close();
+
+    EdgeWriterPtr ew = store().edges().writerForStage(link);
+    message.clear();
+    try {
+        ew->assertDerivedFrom(t1.id(), committed.id());
+        ADD_FAILURE() << "assertDerivedFrom into a dropped layer was accepted";
+    } catch (const InvalidArgumentError& e) {
+        message = e.what();
+    }
+    EXPECT_TRUE(contains(message, "'sp'")) << message;
+    EXPECT_EQ(ew->assertedCount(), 0);
 }

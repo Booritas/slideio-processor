@@ -1,5 +1,7 @@
 #include "storage/detail/object_lookup.hpp"
 
+#include <vector>
+
 namespace slideio::processor::detail {
 
 bool findObjectRow(Statement& lookup, ObjectId id, ObjectRow& out) {
@@ -15,6 +17,36 @@ bool findObjectRow(Statement& lookup, ObjectId id, ObjectRow& out) {
     }
     lookup.reset();
     return found;
+}
+
+int64_t deleteObjects(sqlite3* db, ObjectsOf which, int64_t key) {
+    const std::string filter = which == ObjectsOf::Stage ? "stage_id = ?1" : "layer_id = ?1";
+    const std::string rowids = "(SELECT rowid FROM objects WHERE " + filter + ")";
+    int64_t removed = 0;
+    {
+        Statement count(db, ("SELECT COUNT(*) FROM objects WHERE " + filter).c_str());
+        count.bindInt64(1, key);
+        if (count.step()) removed = count.columnInt64(0);
+    }
+    std::vector<std::string> deletes = {"DELETE FROM label_assertions WHERE object_rowid IN " + rowids,
+                                        "DELETE FROM measurement_assertions WHERE object_rowid IN " + rowids};
+    if (which == ObjectsOf::Stage) {
+        const std::string anchors = "(SELECT layer_id, anchor_id FROM objects WHERE " + filter + ")";
+        deletes.push_back("DELETE FROM parent_edges WHERE child_rowid IN " + rowids + " OR parent_rowid IN " + rowids);
+        // Keyed by ObjectId: a kept row would re-attach to a re-run's object at a
+        // coincident anchor.
+        deletes.push_back("DELETE FROM derived_from WHERE (derived_layer, derived_anchor) IN " + anchors +
+                          " OR (primitive_layer, primitive_anchor) IN " + anchors);
+    }
+    deletes.push_back("DELETE FROM measurements WHERE object_rowid IN " + rowids);
+    deletes.push_back("DELETE FROM object_rtree WHERE rowid IN " + rowids);
+    deletes.push_back("DELETE FROM objects WHERE " + filter);
+    for (const std::string& sql : deletes) {
+        Statement remove(db, sql.c_str());
+        remove.bindInt64(1, key);
+        remove.run();
+    }
+    return removed;
 }
 
 std::string describeObject(sqlite3* db, ObjectId id) {

@@ -1,4 +1,4 @@
-// Requirements: UR-RES-5, UR-RES-14, UR-RES-16, UR-STG-4, UR-STG-6, UR-OBS-2
+// Requirements: UR-RES-5, UR-RES-14, UR-RES-16, UR-STG-4, UR-STG-6, UR-STG-12, UR-OBS-2
 #include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -360,6 +360,35 @@ TEST_F(EdgeStoreTest, VisibilityFollowsTheAssertingStage) {
     EXPECT_FALSE(edges().parentOf(ObjectId(), parent));
     EXPECT_FALSE(edges().isAttached(ObjectId()));
     EXPECT_TRUE(idsOf(edges().childrenOf(ObjectId())).empty());
+}
+
+// Ruling S16: a drop keeps the derived-from rows, which then resolve to nothing, and a
+// derived-from edge still pending into the dropped layer fails at flush.
+TEST_F(EdgeStoreTest, DroppedPrimitiveKeepsItsDerivedFromRows) {
+    const std::vector<ObjectId> ids =
+        commit(a, {rec(tissue, 0, 0, 50), rec(sp, 10, 0, 5), rec(sp, 20, 0, 5), rec(sp, 30, 0, 5)});
+    const ObjectId t = ids[0], s1 = ids[1], s2 = ids[2], s3 = ids[3];
+    complete(a);
+    EdgeWriterPtr w = edges().writerForStage(b);
+    w->assertDerivedFrom(t, s1);
+    w->assertDerivedFrom(t, s2);
+    w->flush();
+    complete(b);
+    EdgeWriterPtr pending = edges().writerForStage(c);
+    pending->assertDerivedFrom(t, s3);
+    ASSERT_EQ(idsOf(edges().originsOf(t)), (std::vector<ObjectId>{s1, s2}));
+
+    store().layers().dropPrimitive(sp);
+
+    EXPECT_TRUE(idsOf(edges().originsOf(t)).empty());
+    EXPECT_EQ(edges().derivedFromEdgeCount(), 2);
+    const std::string message = invalidArgumentMessage([&] { pending->flush(); });
+    EXPECT_TRUE(contains(message, "primitive sp/")) << message;
+    EXPECT_EQ(pending->assertedCount(), 0);
+    EXPECT_EQ(edges().derivedFromEdgeCount(), 2);
+    EXPECT_TRUE(contains(invalidArgumentMessage([&] { w->assertDerivedFrom(t, s1); }), "'sp' is dropped"));
+    ObjectRecord stored;
+    EXPECT_TRUE(store().objects().get(t, stored));
 }
 
 TEST_F(EdgeStoreTest, BatchEventAndDiscardEdgesOfStage) {
