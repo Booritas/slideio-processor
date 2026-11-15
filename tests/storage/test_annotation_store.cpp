@@ -1,4 +1,5 @@
 // Requirements: UR-RES-4, UR-RES-17, UR-RES-18, UR-STG-4, UR-STG-6, UR-QA-3
+#include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -13,10 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cmath>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace slideio::processor;
@@ -408,4 +412,133 @@ TEST_F(AnnotationStoreTest, WriterBatchingAndLifecycle) {
     EXPECT_EQ(reopened->annotations().labelAnnotationCount(), 2);
     EXPECT_THROW(reopened->annotations().writerForStage(c), IoError);
     EXPECT_THROW(reopened->annotations().discardAnnotationsOfStage(c), IoError);
+}
+
+namespace {
+
+// Tracked on the gate after the writer, so close() calls it once the writer is flushed and
+// before the store is closed: it asserts into the writer in that window.
+class LateAnnotator final : public detail::GateClient {
+public:
+    LateAnnotator(AnnotationWriter& writer, ObjectId object) : writer_(writer), object_(object) {}
+    void flushBeforeClose() override {
+        try {
+            writer_.assertMeasurement(object_, "late", 1.0, MeasurementUnit::Dimensionless);
+        } catch (const IoError& e) {
+            refusal = e.what();
+        }
+    }
+    std::string refusal;  // empty when the assert was accepted
+
+private:
+    AnnotationWriter& writer_;
+    const ObjectId object_;
+};
+
+// "m0042" for 42: names sort in assertion order, so a reader's last index is the newest.
+std::string measurementName(int i) {
+    std::string digits = std::to_string(i);
+    return "m" + std::string(4 - digits.size(), '0') + digits;
+}
+
+} // namespace
+
+TEST(AnnotationHandleLifetime, ConcurrentAssertsReadsAndCloseFlushes) {
+    constexpr int kThreads = 4;
+    constexpr int kReaders = 3;
+    constexpr int kPerThread = 500;
+    StoreFilesGuard files("annclose");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
+    const StageId a = store->stageStateWriter().declare("a", "");
+    const StageId b = store->stageStateWriter().declare("b", "");
+
+    std::vector<ObjectId> objects;
+    {
+        ObjectWriterPtr writer = store->objects().writerForStage(a);
+        for (int t = 0; t < kThreads; ++t) {
+            const ObjectRecord r = rec(cells, t * 10, 0, 4);
+            writer->emit(r);
+            objects.push_back(r.id());
+        }
+        writer->flush();
+    }
+    // Both stages complete, so the readers see each batch as it commits.
+    store->stageStateWriter().setStatus(a, StageStatus::Complete);
+    store->stageStateWriter().setStatus(b, StageStatus::Complete);
+
+    AnnotationWriterPtr writer = store->annotations().writerForStage(b);
+    writer->setBatchSizeAnnotations(300);  // 2004 is not a multiple: close() commits a tail
+    std::atomic<bool> writing{true};
+    // Readers that have read a committed row, or stopped; the writers wait for all of them
+    // halfway through, so reads overlap the second half of the writes.
+    std::atomic<int> readersReady{0};
+    std::vector<std::string> readerFailures(kReaders);
+    std::vector<std::thread> readers;
+    for (int r = 0; r < kReaders; ++r) {
+        readers.emplace_back([&, r] {
+            bool ready = false;
+            try {
+                while (writing.load() && readerFailures[r].empty()) {
+                    for (ObjectId object : objects) {
+                        const int32_t count = store->annotations().assertedMeasurementCount(object);
+                        if (count == 0) continue;
+                        // Rows only accumulate, so the last index read above stays in range.
+                        const Measurement m = store->annotations().assertedMeasurementAt(object, count - 1);
+                        if (std::string(m.name()) != measurementName(static_cast<int>(m.value()))) {
+                            readerFailures[r] = std::string("mismatched row ") + m.name();
+                        }
+                        if (!ready) {
+                            ready = true;
+                            ++readersReady;
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                readerFailures[r] = e.what();
+            }
+            if (!ready) ++readersReady;
+        });
+    }
+    std::vector<std::thread> writers;
+    for (int t = 0; t < kThreads; ++t) {
+        writers.emplace_back([&, t] {
+            writer->assertLabel(objects[t], LabelId(2));
+            for (int i = 0; i < kPerThread; ++i) {
+                // Once every writer waits here, 1004 calls have committed 3 batches, so
+                // every reader finds rows and the wait ends.
+                if (i == kPerThread / 2) {
+                    while (readersReady.load() < kReaders) std::this_thread::yield();
+                }
+                writer->assertMeasurement(objects[t], measurementName(i).c_str(), i, MeasurementUnit::Dimensionless);
+            }
+        });
+    }
+    for (std::thread& thread : writers) thread.join();
+    writing.store(false);
+    for (std::thread& thread : readers) thread.join();
+    for (const std::string& failure : readerFailures) EXPECT_EQ(failure, "");
+    constexpr int64_t kAsserted = kThreads * (kPerThread + 1);
+    EXPECT_EQ(writer->assertedCount(), kAsserted);
+    EXPECT_LT(store->annotations().measurementAnnotationCount() + store->annotations().labelAnnotationCount(),
+              kAsserted);  // a tail is pending
+
+    const auto late = std::make_shared<LateAnnotator>(*writer, objects[0]);
+    detail::trackForCloseTesting(*store, late);
+    store->close();
+    EXPECT_NE(late->refusal.find("store is closed"), std::string::npos) << "refusal: '" << late->refusal << "'";
+    EXPECT_EQ(writer->assertedCount(), kAsserted);
+    EXPECT_THROW(writer->assertLabel(objects[0], LabelId(2)), IoError);
+    writer.reset();
+    store.reset();
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->annotations().labelAnnotationCount(), kThreads);
+    EXPECT_EQ(store->annotations().measurementAnnotationCount(), kThreads * kPerThread);
+    for (ObjectId object : objects) {
+        EXPECT_EQ(store->annotations().assertedMeasurementCount(object), kPerThread);
+        EXPECT_EQ(store->annotations().labelCount(object), 1);
+    }
+    EXPECT_THROW(store->annotations().writerForStage(b), IoError);
 }
