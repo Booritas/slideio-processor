@@ -163,7 +163,7 @@ public:
      * as zero.
      * @param tile The tile.
      * @throws InvalidArgumentError When the tile does not match the declaration or the
-     * level and scale of the first tile.
+     * level and scale of the first tile, or when the writer was flushed.
      * @throws IoError When the store is closed, or when the spool cannot be written.
      */
     void writeTile(const BlockView& tile) override;
@@ -172,7 +172,8 @@ public:
      * publishes it.
      *
      * Until this returns, the raster is not readable and RasterRegistry::isPopulated()
-     * is false.
+     * is false. Terminal: a second call is a no-op. With no tile written it publishes
+     * nothing. When it fails, the raster's previous state stands.
      * @throws IoError When the store is closed, or when the file cannot be written.
      */
     void flush() override;
@@ -341,7 +342,6 @@ public:
      * already has a live writer, or another stage populated it.
      * @throws IoError When the store is closed or read-only, or when the spool cannot
      * be created.
-     * @throws InternalError Until raster writing is implemented.
      */
     RasterWriterPtr writerForStage(StageId stage, RasterId raster);
 

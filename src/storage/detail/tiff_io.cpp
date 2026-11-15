@@ -1,5 +1,7 @@
 #include "storage/detail/tiff_io.hpp"
 
+#include "storage/detail/file_io.hpp"
+
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
 
@@ -13,7 +15,6 @@
 #include <mutex>
 #include <new>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -26,9 +27,13 @@ namespace slideio::processor::detail {
 // One handle's file, libtiff handle and error collector (declared in the header). libtiff keeps a pointer to it as
 // the handlers' user data and as the client data, so it lives on the heap and never moves.
 struct TiffHandleState {
+    // The last transfer on `file` since its last seek, for the direction-switch guard.
+    enum class Direction { None, Read, Write };
+
     std::string path;
     bool write = false;
     std::FILE* file = nullptr;
+    Direction direction = Direction::None;
     TIFF* tif = nullptr;
     std::string errors; // libtiff errors since the last fail, "; "-separated
 };
@@ -83,30 +88,34 @@ void silenceGlobalHandlers() {
     });
 }
 
-std::FILE* fileOf(thandle_t client) { return static_cast<TiffHandleState*>(client)->file; }
+// The handle's file, ready for a transfer in `direction`. ISO C requires a file
+// positioning call between output and input on an update stream ("w+b"), so a switch of
+// direction with no seek in between gets a seek to the current position. libtiff seeks
+// before nearly every transfer, and no current test fails without this guard.
+std::FILE* fileFor(thandle_t client, TiffHandleState::Direction direction) {
+    auto* state = static_cast<TiffHandleState*>(client);
+    if (state->direction != direction && state->direction != TiffHandleState::Direction::None)
+        std::fseek(state->file, 0, SEEK_CUR);
+    state->direction = direction;
+    return state->file;
+}
 
 tmsize_t readProc(thandle_t client, void* buffer, tmsize_t size) {
     if (size <= 0) return 0;
-    return static_cast<tmsize_t>(std::fread(buffer, 1, static_cast<size_t>(size), fileOf(client)));
+    std::FILE* file = fileFor(client, TiffHandleState::Direction::Read);
+    return static_cast<tmsize_t>(std::fread(buffer, 1, static_cast<size_t>(size), file));
 }
 
 tmsize_t writeProc(thandle_t client, void* buffer, tmsize_t size) {
     if (size <= 0) return 0;
-    return static_cast<tmsize_t>(std::fwrite(buffer, 1, static_cast<size_t>(size), fileOf(client)));
+    std::FILE* file = fileFor(client, TiffHandleState::Direction::Write);
+    return static_cast<tmsize_t>(std::fwrite(buffer, 1, static_cast<size_t>(size), file));
 }
-
-#ifdef _WIN32
-int seekFile(std::FILE* file, int64_t offset, int whence) { return _fseeki64(file, offset, whence); }
-int64_t tellFile(std::FILE* file) { return _ftelli64(file); }
-#else
-int seekFile(std::FILE* file, int64_t offset, int whence) {
-    return fseeko(file, static_cast<off_t>(offset), whence);
-}
-int64_t tellFile(std::FILE* file) { return static_cast<int64_t>(ftello(file)); }
-#endif
 
 toff_t seekProc(thandle_t client, toff_t offset, int whence) {
-    std::FILE* file = fileOf(client);
+    auto* state = static_cast<TiffHandleState*>(client);
+    std::FILE* file = state->file;
+    state->direction = TiffHandleState::Direction::None;
     if (seekFile(file, static_cast<int64_t>(offset), whence) != 0) return static_cast<toff_t>(-1);
     const int64_t position = tellFile(file);
     return position < 0 ? static_cast<toff_t>(-1) : static_cast<toff_t>(position);
@@ -116,7 +125,9 @@ toff_t seekProc(thandle_t client, toff_t offset, int whence) {
 int closeProc(thandle_t) { return 0; }
 
 toff_t sizeProc(thandle_t client) {
-    std::FILE* file = fileOf(client);
+    auto* state = static_cast<TiffHandleState*>(client);
+    std::FILE* file = state->file;
+    state->direction = TiffHandleState::Direction::None; // it seeks
     const int64_t position = tellFile(file);
     if (position < 0 || seekFile(file, 0, SEEK_END) != 0) return 0;
     const int64_t size = tellFile(file);
@@ -127,15 +138,6 @@ toff_t sizeProc(thandle_t client) {
 // No memory mapping: libtiff reads through readProc.
 int mapProc(thandle_t, void**, toff_t*) { return 0; }
 void unmapProc(thandle_t, void*, toff_t) {}
-
-// The text of an errno value; std::strerror is deprecated on MSVC and not thread-safe.
-std::string errnoText(int error) { return std::error_code(error, std::generic_category()).message(); }
-
-[[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
-    ErrorContext context;
-    context.cause = cause.empty() ? nullptr : cause.c_str();
-    throw IoError(message.c_str(), context);
-}
 
 // Opens the file through u8path, so non-ASCII paths work on every platform (C-4). On
 // Windows _wfsopen with _SH_DENYNO is _wfopen's default share mode, spelled out: it lets

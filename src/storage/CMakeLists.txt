@@ -12,6 +12,7 @@ add_library(slideio-processor-storage OBJECT
     object_writer.cpp
     raster_declaration.cpp
     raster_registry.cpp
+    raster_writer.cpp
     stage_state_reader.cpp
     stage_state_writer.cpp
     store.cpp
@@ -19,6 +20,7 @@ add_library(slideio-processor-storage OBJECT
     vocabulary_registry.cpp
     detail/errors.cpp
     detail/event_log.cpp
+    detail/file_io.cpp
     detail/geometry_codec.cpp
     detail/half_float.cpp
     detail/label_aliases.cpp

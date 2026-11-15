@@ -1,5 +1,7 @@
 #include "storage/detail/tile_spool.hpp"
 
+#include "storage/detail/file_io.hpp"
+
 #include <slideio/processor/core/error.hpp>
 
 #include <zlib.h>
@@ -25,21 +27,6 @@ namespace {
 constexpr int kSpoolLevel = 1;               // zlib level of spooled fragments (ruling S46)
 constexpr size_t kOutputChunk = 64 * 1024;   // deflate output grows by this much
 constexpr size_t kInputChunk = size_t(1) << 30; // inflate input is fed at most this much at once
-
-std::string errnoText(int error) { return std::error_code(error, std::generic_category()).message(); }
-
-[[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
-    ErrorContext context;
-    context.cause = cause.empty() ? nullptr : cause.c_str();
-    throw IoError(message.c_str(), context);
-}
-
-#ifdef _WIN32
-int seekFile(std::FILE* file, int64_t offset) { return _fseeki64(file, offset, SEEK_SET); }
-#else
-// Unverified here: the POSIX side is compiled on Linux and macOS only.
-int seekFile(std::FILE* file, int64_t offset) { return fseeko(file, static_cast<off_t>(offset), SEEK_SET); }
-#endif
 
 // Read and write share the file, so every switch of direction goes through a seek, as
 // ISO C requires; both directions here always seek first.
@@ -177,7 +164,7 @@ void TileSpool::append(int64_t originX, int64_t originY, int64_t width, int64_t 
     // all earlier or all later than any other.
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_ == nullptr) throw InternalError("TileSpool::append: the spool was removed");
-    if (seekFile(file_, end_) != 0) throwIo("cannot seek in spool '" + path_.u8string() + "'", errnoText(errno));
+    if (seekFile(file_, end_, SEEK_SET) != 0) throwIo("cannot seek in spool '" + path_.u8string() + "'", errnoText(errno));
     int64_t offset = end_;
     for (Fragment& fragment : fragments) {
         errno = 0;
@@ -237,7 +224,7 @@ void TileSpool::forEachGridTile(
 
             compressed.resize(static_cast<size_t>(entry.bytes));
             errno = 0;
-            if (seekFile(file_, entry.offset) != 0 ||
+            if (seekFile(file_, entry.offset, SEEK_SET) != 0 ||
                 std::fread(compressed.data(), 1, compressed.size(), file_) != compressed.size()) {
                 const int error = errno != 0 ? errno : EIO;
                 throwIo("cannot read " + where, errnoText(error));

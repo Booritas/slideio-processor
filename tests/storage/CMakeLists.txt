@@ -27,6 +27,7 @@ add_executable(slideio_processor_storage_tests
     test_object_writer.cpp
     test_pyramid_tiff_writer.cpp
     test_raster_registry.cpp
+    test_raster_writer.cpp
     test_store.cpp
     test_store_impl.cpp
     test_tiff_io.cpp
@@ -36,6 +37,7 @@ add_executable(slideio_processor_storage_tests
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/${STORAGE_CHANGE_SIGNAL_SOURCE}
     ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/file_io.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/half_float.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp

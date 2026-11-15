@@ -2,7 +2,9 @@
 
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
+#include "storage/detail/file_io.hpp"
 #include "storage/detail/raster_files.hpp"
+#include "storage/detail/raster_writer_core.hpp"
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
@@ -59,13 +61,16 @@ void validate(const char* operation, const RasterDeclaration& declaration) {
 
 class RasterRegistry::Impl {
 public:
-    // A raster row. Rows are never removed, and id, name, type and plane count never
-    // change; the population columns do, and are refreshed with the revision.
+    // A raster row. Rows are never removed, and the declaration columns (id to
+    // description) never change; the population columns do, and are refreshed with the
+    // revision.
     struct Row {
         RasterId id;
         std::string name;
         DataType type = DataType::Unknown;
         int32_t planeCount = 0;
+        RasterCompression compression = RasterCompression::Deflate;
+        std::string description;
         StageId writer;
         int32_t level = 0;
         std::string fileName;
@@ -87,7 +92,7 @@ public:
             if (revision && *revision == stored) return;
             detail::Statement select(db,
                                      "SELECT id, name, data_type, plane_count, writer_stage_id, level, file_name, "
-                                     "bytes, populated FROM rasters ORDER BY id");
+                                     "bytes, populated, compression, description FROM rasters ORDER BY id");
             while (select.step()) {
                 const int32_t id = static_cast<int32_t>(select.columnInt64(0));
                 auto known = byId.find(id);
@@ -97,6 +102,8 @@ public:
                     row.name = select.columnText(1);
                     row.type = static_cast<DataType>(select.columnInt64(2));
                     row.planeCount = static_cast<int32_t>(select.columnInt64(3));
+                    row.compression = static_cast<RasterCompression>(select.columnInt64(9));
+                    row.description = select.columnText(10);
                     rows.push_back(std::move(row));  // deque: earlier rows (and their names) never move
                     Row& added = rows.back();
                     known = byId.emplace(id, &added).first;
@@ -169,6 +176,8 @@ public:
     std::deque<Row> rows;
     std::map<int32_t, Row*> byId;
     std::map<std::string, Row*> byName;
+    // The live writers (ruling S47), shared with them; locked after `mutex`, never before.
+    const std::shared_ptr<detail::LiveRasterWriters> live = std::make_shared<detail::LiveRasterWriters>();
 };
 
 RasterRegistry::RasterRegistry(detail::StoreImpl& store) : impl_(std::make_unique<Impl>(store)) {}
@@ -257,8 +266,62 @@ int64_t RasterRegistry::bytesOnDisk(RasterId raster) const {
     return found == impl_->byId.end() ? 0 : impl_->bytesOf(*found->second);
 }
 
-RasterWriterPtr RasterRegistry::writerForStage(StageId, RasterId) {
-    throwNotImplemented("RasterRegistry::writerForStage");
+RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
+    constexpr const char* kOperation = "RasterRegistry::writerForStage";
+    impl_->store.checkWritable(kOperation);
+    detail::RasterWriterSetup setup;
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        impl_->refresh(kOperation);
+        const auto found = impl_->byId.find(raster.value());
+        if (found == impl_->byId.end()) throwUnknown(kOperation, raster);
+        const Impl::Row& row = *found->second;
+        // Another stage's raster stays its own until it is discarded (ruling S47).
+        const StageId writer = impl_->isPopulated(row) && row.writer != stage ? row.writer : StageId();
+        std::string writerText;
+        const bool known = impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
+            if (!detail::stageExists(db, stage)) return false;
+            if (writer.isValid()) {
+                detail::Statement select(db, "SELECT name FROM stages WHERE id = ?");
+                select.bindInt64(1, writer.value());
+                const std::string id = std::to_string(writer.value());
+                writerText = select.step() ? "'" + select.columnText(0) + "' (id " + id + ")" : id;
+            }
+            return true;
+        });
+        if (!known) detail::throwUnknownStage(kOperation, stage);
+        if (writer.isValid()) {
+            detail::throwInvalid(kOperation, "raster '" + row.name + "' was written by stage " + writerText +
+                                                 "; only that stage may write it until it is discarded");
+        }
+        setup.gate = impl_->store.gate();
+        setup.live = impl_->live;
+        setup.stage = stage;
+        setup.raster = raster;
+        setup.name = row.name;
+        setup.description = row.description;
+        setup.format = detail::RasterFormat{row.type, row.planeCount, row.compression};
+        setup.directory = impl_->directoryPath;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(impl_->directoryPath, error);
+    if (error) {
+        detail::throwIo(std::string(kOperation) + ": cannot create the raster directory '" + impl_->directory + "'",
+                        error.message());
+    }
+    {
+        std::lock_guard<std::mutex> guard(impl_->live->mutex);
+        if (impl_->live->byRaster.count(raster.value()) != 0) {
+            detail::throwInvalid(kOperation, "raster '" + setup.name +
+                                                 "' already has a live writer; a raster has one writer at a time");
+        }
+        const std::string stem = detail::generateRasterFileStem();
+        setup.files = detail::LiveRasterFiles{stem + ".spool", stem + ".tif"};
+        impl_->live->byRaster.emplace(raster.value(), setup.files);
+    }
+    // Leaves the live set again if it throws.
+    return RasterWriter::Impl::open(std::move(setup));
 }
 
 TileRasterSourcePtr RasterRegistry::sourceFor(RasterId) const { throwNotImplemented("RasterRegistry::sourceFor"); }
