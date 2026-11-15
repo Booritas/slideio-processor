@@ -379,10 +379,18 @@ public:
     /**
      * @brief Removes the rasters a stage wrote: deletes their files and clears their
      * population state. The declarations survive, as a layer's does.
+     *
+     * One write transaction clears every raster the stage populated, in ascending id
+     * order, and appends one RasterDropped per raster, carrying the raster and the
+     * stage. Their files are deleted only after the commit. A file that cannot be deleted
+     * (on Windows, one a source from sourceFor() still holds open) is logged at Warning
+     * and left for removeUnreferencedFiles(); such a source keeps reading the old pixels.
+     * A stage that populated no raster is a no-op with no event. A live writer of the
+     * stage is unaffected: its later flush publishes as usual.
      * @param stage The stage.
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the store is closed or read-only, or when SQLite fails.
-     * @throws InternalError Until discarding is implemented.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     void discardRasterOfStage(StageId stage);
 
@@ -424,10 +432,12 @@ public:
      * Only names the library generates are considered (32 lowercase hex digits, then
      * ".tif" or ".spool"); every other file is left alone. A file named by a raster, or
      * owned by a live writer of this store, is kept. A file that cannot be deleted is
-     * logged at Warning and not counted.
+     * logged at Warning and not counted. It reclaims what a crashed process, an
+     * abandoned writer or a failed delete left behind; Workspace::open calls it.
      * @return The bytes reclaimed; 0 when directory() does not exist.
-     * @throws IoError When the store is closed or read-only.
-     * @throws InternalError Until the sweep is implemented.
+     * @throws IoError When the store is closed or read-only, when directory() cannot be
+     * listed, or when SQLite fails.
+     * @throws std::bad_alloc When memory is exhausted.
      */
     int64_t removeUnreferencedFiles();
 

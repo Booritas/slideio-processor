@@ -11,14 +11,18 @@
 #include "storage/detail/tiff_raster_reader.hpp"
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/log.hpp>
 
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace slideio::processor {
 
@@ -29,11 +33,6 @@ constexpr int32_t kMaxPlaneCount = 65535;
 
 [[noreturn]] void throwUnknown(const char* operation, RasterId raster) {
     detail::throwInvalid(operation, "there is no raster " + std::to_string(raster.value()));
-}
-
-[[noreturn]] void throwNotImplemented(const char* operation) {
-    const std::string message = std::string(operation) + ": not implemented";
-    throw InternalError(message.c_str());
 }
 
 // Refuses a declaration declare() cannot store (ruling S48). The name's uniqueness is
@@ -177,6 +176,22 @@ public:
     }
 
     int64_t bytesOf(const Row& row) const noexcept { return isPopulated(row) ? row.bytes : 0; }
+
+    // Deletes `fileName` from the directory and returns true. A failure (on Windows, a
+    // file a source still holds open) is logged at Warning and returns false: the file is
+    // left for removeUnreferencedFiles (ruling S51).
+    bool deleteOrWarn(const char* operation, const std::string& fileName) noexcept {
+        try {
+            detail::removeFile(directoryPath / std::filesystem::u8path(fileName));
+            return true;
+        } catch (const std::exception& e) {
+            logMessage(LogLevel::Warning, "%s: %s; it is left for removeUnreferencedFiles", operation, e.what());
+        } catch (...) {
+            logMessage(LogLevel::Warning, "%s: cannot delete '%s'; it is left for removeUnreferencedFiles", operation,
+                       fileName.c_str());
+        }
+        return false;
+    }
 
     detail::StoreImpl& store;
     const std::filesystem::path directoryPath;
@@ -359,7 +374,48 @@ TileRasterSourcePtr RasterRegistry::sourceFor(RasterId raster) const {
     }
 }
 
-void RasterRegistry::discardRasterOfStage(StageId) { throwNotImplemented("RasterRegistry::discardRasterOfStage"); }
+void RasterRegistry::discardRasterOfStage(StageId stage) {
+    constexpr const char* kOperation = "RasterRegistry::discardRasterOfStage";
+    // The rows first, in one transaction (ruling S51); the files they named go only after
+    // the commit, so a row never names a missing file.
+    struct Dropped {
+        int32_t raster;
+        std::string fileName;
+    };
+    const std::vector<Dropped> dropped = impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
+        if (!detail::stageExists(db, stage)) detail::throwUnknownStage(kOperation, stage);
+        std::vector<Dropped> rows;
+        {
+            detail::Statement select(db, "SELECT id, file_name FROM rasters WHERE writer_stage_id = ? ORDER BY id");
+            select.bindInt64(1, stage.value());
+            while (select.step()) {
+                rows.push_back(Dropped{static_cast<int32_t>(select.columnInt64(0)),
+                                       select.columnIsNull(1) ? std::string() : select.columnText(1)});
+            }
+        }
+        if (rows.empty()) return rows;
+        detail::Statement clear(db,
+                                "UPDATE rasters SET writer_stage_id = NULL, level = 0, scale_x = 0, scale_y = 0, "
+                                "width = 0, height = 0, file_name = NULL, bytes = 0, populated = 0 "
+                                "WHERE writer_stage_id = ?");
+        clear.bindInt64(1, stage.value());
+        clear.run();
+        detail::bumpRastersRevision(db);
+        for (const Dropped& row : rows) {
+            detail::EventRow event;
+            event.kind = EventKind::RasterDropped;
+            event.rasterId = row.raster;
+            event.stageId = stage.value();
+            detail::appendEvent(db, event);
+        }
+        return rows;
+    });
+    if (dropped.empty()) return;
+    impl_->store.notifyCommitted();
+    for (const Dropped& row : dropped) {
+        if (!row.fileName.empty()) impl_->deleteOrWarn(kOperation, row.fileName);
+    }
+}
 
 int32_t RasterRegistry::count() const noexcept {
     try {
@@ -391,6 +447,56 @@ int64_t RasterRegistry::totalBytesOnDisk() const {
 
 const char* RasterRegistry::directory() const noexcept { return impl_->directory.c_str(); }
 
-int64_t RasterRegistry::removeUnreferencedFiles() { throwNotImplemented("RasterRegistry::removeUnreferencedFiles"); }
+int64_t RasterRegistry::removeUnreferencedFiles() {
+    constexpr const char* kOperation = "RasterRegistry::removeUnreferencedFiles";
+    impl_->store.checkWritable(kOperation);
+    std::error_code error;
+    if (!std::filesystem::exists(impl_->directoryPath, error)) return 0;
+
+    // The order makes a file the sweep sees either kept or truly unreferenced (ruling
+    // S51). A writer joins the live set before it creates its spool, and its TIFF exists
+    // only while it is live, so a file listed here belongs to a writer that is live in the
+    // snapshot below, or one that has left it: by abandoning, or by committing a row that
+    // the refresh after the snapshot sees.
+    std::vector<std::string> candidates;
+    std::filesystem::directory_iterator entry(impl_->directoryPath, error);
+    for (; !error && entry != std::filesystem::directory_iterator(); entry.increment(error)) {
+        std::error_code typeError;
+        if (!entry->is_regular_file(typeError)) continue;
+        std::string name = entry->path().filename().u8string();
+        if (detail::isGeneratedRasterFileName(name)) candidates.push_back(std::move(name));
+    }
+    if (error) {
+        detail::throwIo(std::string(kOperation) + ": cannot list the raster directory '" + impl_->directory + "'",
+                        error.message());
+    }
+
+    std::set<std::string> kept;
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        {
+            std::lock_guard<std::mutex> liveGuard(impl_->live->mutex);
+            for (const auto& owned : impl_->live->byRaster) {
+                kept.insert(owned.second.spoolName);
+                kept.insert(owned.second.tifName);
+            }
+        }
+        impl_->refresh(kOperation);
+        for (const Impl::Row& row : impl_->rows) {
+            if (!row.fileName.empty()) kept.insert(row.fileName);
+        }
+    }
+
+    int64_t reclaimed = 0;
+    for (const std::string& name : candidates) {
+        if (kept.count(name) != 0) continue;
+        std::error_code sizeError;
+        const std::uintmax_t size =
+            std::filesystem::file_size(impl_->directoryPath / std::filesystem::u8path(name), sizeError);
+        if (sizeError) continue;  // gone since the listing
+        if (impl_->deleteOrWarn(kOperation, name)) reclaimed += static_cast<int64_t>(size);
+    }
+    return reclaimed;
+}
 
 } // namespace slideio::processor

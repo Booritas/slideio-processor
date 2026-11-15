@@ -264,13 +264,6 @@ TEST_F(RasterRegistryTest, PopulatedIsTheRowAndItsFile) {
     EXPECT_THROW(R.writtenAtLevel(p), InvalidArgumentError);
 }
 
-TEST_F(RasterRegistryTest, LaterMembersAreNotYetImplemented) {
-    RasterRegistry& R = store().rasters();
-    const StageId stage = store().stageStateWriter().declare("segment", "{}");
-    EXPECT_THROW(R.discardRasterOfStage(stage), InternalError);
-    EXPECT_THROW(R.removeUnreferencedFiles(), InternalError);
-}
-
 TEST(RasterDeclaration, CopyMoveAndGetters) {
     RasterDeclaration d("probability", DataType::Float32, 2);
     EXPECT_STREQ(d.name(), "probability");

@@ -26,6 +26,7 @@ add_executable(slideio_processor_storage_tests
     test_object_query.cpp
     test_object_writer.cpp
     test_pyramid_tiff_writer.cpp
+    test_raster_lifecycle.cpp
     test_raster_registry.cpp
     test_raster_source.cpp
     test_raster_writer.cpp
