@@ -177,13 +177,13 @@ public:
 
     int64_t bytesOf(const Row& row) const noexcept { return isPopulated(row) ? row.bytes : 0; }
 
-    // Deletes `fileName` from the directory and returns true. A failure (on Windows, a
-    // file a source still holds open) is logged at Warning and returns false: the file is
-    // left for removeUnreferencedFiles (ruling S51).
+    // Deletes `fileName` from the directory, and returns whether this call removed it:
+    // false when it was already gone (another deleter got there first). A failure (on
+    // Windows, a file a source still holds open) is logged at Warning and returns false:
+    // the file is left for removeUnreferencedFiles (ruling S51).
     bool deleteOrWarn(const char* operation, const std::string& fileName) noexcept {
         try {
-            detail::removeFile(directoryPath / std::filesystem::u8path(fileName));
-            return true;
+            return detail::removeFile(directoryPath / std::filesystem::u8path(fileName));
         } catch (const std::exception& e) {
             logMessage(LogLevel::Warning, "%s: %s; it is left for removeUnreferencedFiles", operation, e.what());
         } catch (...) {
@@ -305,8 +305,10 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
         const auto found = impl_->byId.find(raster.value());
         if (found == impl_->byId.end()) throwUnknown(kOperation, raster);
         const Impl::Row& row = *found->second;
-        // Another stage's raster stays its own until it is discarded (ruling S47).
-        const StageId writer = impl_->isPopulated(row) && row.writer != stage ? row.writer : StageId();
+        // Another stage's raster stays its own until it is discarded (ruling S47). The row's
+        // flag decides, as in the publish transaction, not isPopulated: a store copied
+        // without its files is refused here rather than after a whole pyramid is built.
+        const StageId writer = row.populated && row.writer != stage ? row.writer : StageId();
         std::string writerText;
         const bool known = impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
             if (!detail::stageExists(db, stage)) return false;
@@ -382,7 +384,7 @@ void RasterRegistry::discardRasterOfStage(StageId stage) {
         int32_t raster;
         std::string fileName;
     };
-    const std::vector<Dropped> dropped = impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
+    const std::vector<Dropped> dropped = impl_->store.withDurableWriteTransaction(kOperation, [&](sqlite3* db) {
         if (!detail::stageExists(db, stage)) detail::throwUnknownStage(kOperation, stage);
         std::vector<Dropped> rows;
         {
@@ -451,7 +453,12 @@ int64_t RasterRegistry::removeUnreferencedFiles() {
     constexpr const char* kOperation = "RasterRegistry::removeUnreferencedFiles";
     impl_->store.checkWritable(kOperation);
     std::error_code error;
-    if (!std::filesystem::exists(impl_->directoryPath, error)) return 0;
+    const bool present = std::filesystem::exists(impl_->directoryPath, error);
+    if (error) {
+        detail::throwIo(std::string(kOperation) + ": cannot inspect the raster directory '" + impl_->directory + "'",
+                        error.message());
+    }
+    if (!present) return 0;
 
     // The order makes a file the sweep sees either kept or truly unreferenced (ruling
     // S51). A writer joins the live set before it creates its spool, and its TIFF exists

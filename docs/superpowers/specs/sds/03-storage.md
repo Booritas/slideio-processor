@@ -156,8 +156,8 @@ signatures for a state a caller reaches only by misuse.
 writer is tried and the first failure is then reported, and the store is closed
 either way. **A live `RasterWriter` is the exception: `close()` abandons it,
 deleting its spool and any partial file and publishing nothing (3.8).** From the
-moment `close()` begins, `ObjectWriter::emit` is refused
-with `IoError` "store is closed" rather than accepted and silently lost behind
+moment `close()` begins, `ObjectWriter::emit` (and `RasterWriter::writeTile`
+and `flush`) is refused with `IoError` "store is closed" rather than accepted and silently lost behind
 the final flush. A writer or cursor used afterwards throws `IoError`. The
 destructor calls `close()`, logs any error at `Error`, and swallows it.
 
@@ -173,7 +173,13 @@ record's text, which carries the slide identifier.
 
 **Connections.** WAL mode, `synchronous=NORMAL`, `foreign_keys=ON`,
 `busy_timeout=5000`. There is one write connection, guarded by a mutex, and
-every write transaction runs on it. Read connections come from a pool: a point
+every write transaction runs on it. A `NORMAL` commit is atomic but may be
+rolled back by a power loss or an OS crash; that is harmless while the store
+holds everything it names. The two transactions after whose commit files are
+deleted — a raster's publish and `discardRasterOfStage` (3.8) — therefore run
+with `synchronous=FULL`, set on the write connection before `BEGIN` and restored
+to `NORMAL` after `COMMIT` or `ROLLBACK`, under the write mutex. That costs one
+more sync of the WAL per publish or discard. Read connections come from a pool: a point
 read checks one out for the call, and an object cursor checks one out for its
 lifetime and holds one read transaction, so it sees a single snapshot and never
 a partially applied batch. That is what makes UR-OBS-1 achievable: a `ReadOnly`
@@ -1400,19 +1406,26 @@ hold.
 
 **One live writer per raster, and the publish protocol (S47).** A live writer
 is one that has not been flushed or destroyed. `writerForStage` throws
-`InvalidArgumentError` when the raster already has a live writer, or when it is
-populated by a stage other than `stage`; also for an unknown stage or raster; and
-`IoError` on a `ReadOnly` store. **It appends no event and opens no transaction.**
+`InvalidArgumentError` when the raster already has a live writer, or when its
+row records a publish by a stage other than `stage` — the row's flag, as the
+publish transaction checks it, not `isPopulated`, so a store copied without its
+`-rasters` directory is refused here rather than after a whole pyramid is
+built; also for an unknown stage or raster; and `IoError` on a `ReadOnly`
+store. **It appends no event and opens no transaction.**
 It only allocates the generated name and opens the spool. `flush` runs in order:
 fix the scale and re-validate every call (S45); compose and write the TIFF
-(S41–S43); close it; `fsync` it; delete the spool; then one write transaction.
+(S41–S43); close it; `fsync` it (on macOS `F_FULLFSYNC`, falling back to
+`fsync`; on POSIX its directory too, skipped with a `Debug` log where the
+filesystem cannot sync a directory: `EINVAL`, `EBADF` or `ENOTSUP`); delete the
+spool; then one write transaction, committed with `synchronous=FULL` (3.2).
 That transaction **re-checks ownership** and throws `InvalidArgumentError`,
 publishing nothing, when another stage populated the raster since
 `writerForStage` looked; otherwise it sets the row's `writer_stage_id`, `level`,
 scales, `width`, `height`, `file_name`, `bytes` (the file's size) and
 `populated = 1`, appends `RasterWritten`, and `notifyCommitted` follows. When the
 same stage re-runs a populated raster, the old file is deleted **after** that
-commit, so a reader never sees the row point at nothing. `flush` is terminal: a
+commit, which is durable by then, so neither a reader nor a power loss ever
+leaves the row pointing at nothing. `flush` is terminal: a
 second `flush` is a no-op, and `writeTile` after `flush` throws
 `InvalidArgumentError`. A `flush` with zero tiles deletes the spool, publishes
 nothing and appends no event. If `flush` fails, it deletes its partial files
@@ -1421,9 +1434,11 @@ publishes.** It deletes the spool and any partial TIFF, and logs at `Warning`
 when tiles were abandoned: a stage that fails must leave a declared, unpopulated
 raster (`04-workspace.md` 4.4), so publishing from a destructor would be wrong.
 The writer is a client of the store's gate, and **`Store::close` abandons it the
-same way**, so closing never builds a pyramid. Once the store is closing,
-`writeTile` is refused as `ObjectWriter::emit` is, and afterwards `writeTile` and
-`flush` throw `IoError` with `store is closed`.
+same way**. Once the store is closing, `writeTile` and `flush` are refused as
+`ObjectWriter::emit` is, with `IoError` `store is closed`, so closing never
+starts a pyramid; a `flush` already running when `close` begins holds the
+writer, and `close` waits for it to finish publishing. After `close`,
+`writeTile` and `flush` throw the same `IoError`.
 
 **Declarations and registry reads (S48).** `declare` throws
 `InvalidArgumentError` for: a null or empty name; a duplicate name (rasters have
@@ -1472,8 +1487,8 @@ it.
 For each raster whose row `writer_stage_id` equals the stage, ascending by id, in
 **one** transaction it clears `populated`, `file_name`, `bytes`, `level`, the
 scales, `width`, `height` and `writer_stage_id`, and appends one `RasterDropped`
-per raster; then it commits and notifies. The files are deleted **only after the
-commit**. A deletion that fails (on Windows, a file still open in a live source)
+per raster; then it commits, with `synchronous=FULL` (3.2), and notifies. The
+files are deleted **only after the commit**, which is durable by then. A deletion that fails (on Windows, a file still open in a live source)
 is logged at `Warning` and leaves an orphan for the sweep, while the open source
 keeps reading the old pixels. A stage with no raster is a no-op with no event. A
 live writer of that stage is unaffected: its later `flush` publishes as usual.
@@ -1481,8 +1496,9 @@ live writer of that stage is unaffected: its later `flush` publishes as usual.
 is 32 lowercase hex digits followed by `.tif` or `.spool`, which is not the
 `file_name` of any row and is not owned by a live writer of this store. It returns
 the bytes reclaimed; other names are never touched; a missing directory returns 0;
-a file that fails to delete is logged at `Warning` and not counted. It throws
-`IoError` on a `ReadOnly` or closed store. `Workspace::open` calls it beside its
+a file that fails to delete is logged at `Warning` and not counted, and neither
+is one another deleter removed first. It throws `IoError` on a `ReadOnly` or
+closed store, and when the directory cannot be inspected or listed. `Workspace::open` calls it beside its
 scratch clear and reports the result (`04-workspace.md` 4.1).
 
 **Events (S49).** `RasterDeclared`, `RasterWritten` and `RasterDropped` carry the

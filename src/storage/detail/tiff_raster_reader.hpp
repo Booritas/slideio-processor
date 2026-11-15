@@ -5,6 +5,7 @@
 // TileRasterSource implementations behind RasterRegistry::sourceFor: one over such a file,
 // one that reads zero for a raster that is not populated.
 
+#include "storage/detail/tiff_io.hpp"
 #include "storage/detail/tile_spool.hpp"
 
 #include <slideio/processor/core/block_view.hpp>
@@ -13,14 +14,13 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace slideio::processor::detail {
-
-class TiffHandle;
 
 // One page of a raster file: its size and its TIFF tile size, in page pixels.
 struct RasterFilePage {
@@ -59,17 +59,26 @@ public:
     void fill(BlockView& out);
 
 private:
-    struct Handle;
+    // Drives acquire() and discard() directly, to pin the pool's wake-ups (test only).
+    friend struct TiffRasterReaderTestSeam;
+
+    // A read handle, the page its directory is set to, and its tile buffer.
+    struct Handle {
+        TiffHandle tiff;
+        int64_t page = -1;  // the current directory; -1 before the first TIFFSetDirectory
+        std::vector<uint8_t> tile;
+    };
 
     // Takes an idle handle, else opens one. When opening fails while other handles are
     // open, waits for one of them to come back instead, since a file unlinked after the
     // constructor is still readable through them (POSIX). Rethrows the open failure when
-    // no handle is open.
+    // no handle is open, after waking every waiter, which then tries an open of its own.
     std::unique_ptr<Handle> acquire();
     // Returns a handle to the pool after a fill that succeeded.
     void release(std::unique_ptr<Handle> handle) noexcept;
     // Forgets a handle whose fill failed; it is closed, not reused.
     void discard(std::unique_ptr<Handle> handle) noexcept;
+    // Opens a handle, running openHook_ first when it is set.
     std::unique_ptr<Handle> open() const;
 
     const std::filesystem::path path_;
@@ -83,6 +92,7 @@ private:
     std::condition_variable returned_;
     std::vector<std::unique_ptr<Handle>> idle_;
     int32_t open_ = 0;  // handles open: idle plus in use
+    std::function<void()> openHook_;  // test seam (TiffRasterReaderTestSeam); empty in the library
 };
 
 // A source over `reader` (defined in raster_source.cpp). planeType() and planeCount() are

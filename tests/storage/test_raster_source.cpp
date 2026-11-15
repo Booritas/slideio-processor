@@ -3,6 +3,7 @@
 // one reads its file at any scale and region (the coarsest page no coarser than the view,
 // sampled nearest; zero outside the extent), and a source stays bound to the file the row
 // named when it was made.
+#include "storage/detail/tiff_raster_reader.hpp"
 #include "storage/raster_test_util.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -16,11 +17,18 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -324,3 +332,151 @@ TEST_F(RasterSourceTest, BoundToTheFileAtCallTime) {
     // On Windows v1 outlives s1 as an orphan, until the sweep (Task 6).
     s1.reset();
 }
+
+namespace slideio::processor::detail {
+
+// The friend TiffRasterReader names: drives its handle pool directly
+// (tiff_raster_reader.cpp is compiled into this test).
+struct TiffRasterReaderTestSeam {
+    using HandlePtr = std::unique_ptr<TiffRasterReader::Handle>;
+    static HandlePtr acquire(TiffRasterReader& reader) { return reader.acquire(); }
+    static void discard(TiffRasterReader& reader, HandlePtr handle) { reader.discard(std::move(handle)); }
+    static void setOpenHook(TiffRasterReader& reader, std::function<void()> hook) {
+        reader.openHook_ = std::move(hook);
+    }
+    static int32_t openCount(TiffRasterReader& reader) {
+        std::lock_guard<std::mutex> guard(reader.mutex_);
+        return reader.open_;
+    }
+    static void wakeWaiters(TiffRasterReader& reader) {
+        std::lock_guard<std::mutex> guard(reader.mutex_);
+        reader.returned_.notify_all();
+    }
+};
+
+} // namespace slideio::processor::detail
+
+namespace {
+
+constexpr std::chrono::seconds kDeadline(10);
+
+// Polls `condition` until it holds or kDeadline passes; returns whether it held.
+bool eventually(const std::function<bool()>& condition) {
+    const auto deadline = std::chrono::steady_clock::now() + kDeadline;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+}  // namespace
+
+// A caller waiting for a pooled handle must wake when the last open handle goes: here the
+// last one is an open that fails after the only file handle was discarded. The waiter then
+// tries an open of its own and throws, rather than waiting forever (ruling S50).
+TEST_F(RasterSourceTest, PoolWaiterWakesWhenTheLastOpenFails) {
+    using Seam = detail::TiffRasterReaderTestSeam;
+    writeGradient();
+    detail::TiffRasterReader reader(onlyTif(), detail::RasterFormat{DataType::Int32, 1, RasterCompression::Deflate},
+                                    2.0, 2.0, kSide, kSide);
+    Seam::HandlePtr held = Seam::acquire(reader);  // the constructor's handle; no other is open
+
+    // Every later open blocks until released, then fails.
+    std::mutex mutex;
+    std::condition_variable changed;
+    int arrivals = 0;
+    int released = 0;
+    bool releaseAll = false;
+    Seam::setOpenHook(reader, [&] {
+        std::unique_lock<std::mutex> lock(mutex);
+        const int arrival = arrivals++;
+        changed.notify_all();
+        changed.wait(lock, [&] { return releaseAll || arrival < released; });
+        throw IoError("injected open failure");
+    });
+    const auto arrived = [&](int n) {
+        return eventually([&] {
+            std::lock_guard<std::mutex> guard(mutex);
+            return arrivals >= n;
+        });
+    };
+    const auto release = [&](int n, bool all) {
+        std::lock_guard<std::mutex> guard(mutex);
+        released = n;
+        releaseAll = all;
+        changed.notify_all();
+    };
+    // "" when a handle was acquired (and discarded again), else the failure's text.
+    const auto acquireOrFail = [&]() -> std::string {
+        try {
+            Seam::discard(reader, Seam::acquire(reader));
+            return std::string();
+        } catch (const IoError& e) {
+            return e.what();
+        }
+    };
+
+    std::future<std::string> waiter = std::async(std::launch::async, acquireOrFail);
+    ASSERT_TRUE(arrived(1));
+    std::future<std::string> last = std::async(std::launch::async, acquireOrFail);
+    ASSERT_TRUE(arrived(2));
+    Seam::discard(reader, std::move(held));
+    // The first open fails while the second is still open: that caller waits.
+    release(1, false);
+    ASSERT_TRUE(eventually([&] { return Seam::openCount(reader) == 1; }));
+    // The second fails too, and no handle is open: the waiter must wake.
+    release(2, true);
+
+    const auto deadline = std::chrono::steady_clock::now() + kDeadline;
+    const bool waiterDone = waiter.wait_until(deadline) == std::future_status::ready;
+    const bool lastDone = last.wait_until(deadline) == std::future_status::ready;
+    EXPECT_TRUE(waiterDone) << "the waiter missed the last open failing";
+    EXPECT_TRUE(lastDone);
+    if (!waiterDone || !lastDone) Seam::wakeWaiters(reader);  // let a stuck waiter finish
+    EXPECT_NE(waiter.get().find("injected open failure"), std::string::npos);
+    EXPECT_NE(last.get().find("injected open failure"), std::string::npos);
+    EXPECT_EQ(Seam::openCount(reader), 0);
+}
+
+#ifndef _WIN32
+// A file unlinked after sourceFor stays readable through the handle the source holds;
+// further handles cannot open, so concurrent fills wait for that one, and every fill
+// returns the file's pixels (ruling S50).
+TEST_F(RasterSourceTest, UnlinkedFileServesConcurrentFillsThroughThePool) {
+    const RasterId g = writeGradient();
+    TileRasterSourcePtr s = store().rasters().sourceFor(g);
+    ASSERT_TRUE(std::filesystem::remove(onlyTif()));
+
+    constexpr int kThreads = 8;
+    constexpr int kViews = 16;
+    std::vector<std::future<std::string>> results;
+    for (int t = 0; t < kThreads; ++t) {
+        results.push_back(std::async(std::launch::async, [&, t]() -> std::string {
+            try {
+                for (int i = 0; i < kViews; ++i) {
+                    // 64 x 64 level-1 pixels (scale 2), read from page 0.
+                    const int64_t x0 = (t * 211 + i * 97) % (kSide - 64);
+                    const int64_t y0 = (t * 113 + i * 59) % (kSide - 64);
+                    const auto view = fill(*s, Rect64{x0 * 2, y0 * 2, 128, 128}, 64, 64);
+                    for (int64_t y = 0; y < 64; ++y)
+                        for (int64_t x = 0; x < 64; ++x)
+                            if (at<int32_t>(*view, 0, x, y) != gradient(x0 + x, y0 + y))
+                                return "thread " + std::to_string(t) + ": wrong sample";
+                }
+                return std::string();
+            } catch (const std::exception& e) {
+                return "thread " + std::to_string(t) + ": " + e.what();
+            }
+        }));
+    }
+    const auto deadline = std::chrono::steady_clock::now() + kDeadline * 3;
+    for (std::future<std::string>& result : results) {
+        if (result.wait_until(deadline) != std::future_status::ready) {
+            std::fprintf(stderr, "UnlinkedFileServesConcurrentFillsThroughThePool: a fill hung\n");
+            std::abort();  // a hung fill cannot be joined
+        }
+        EXPECT_EQ(result.get(), "");
+    }
+}
+#endif

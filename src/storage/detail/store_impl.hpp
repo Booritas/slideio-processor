@@ -184,8 +184,9 @@ public:
     void checkWritable(const char* operation) const;
     // checkWritable, then throws IoError "<operation>: store is closed ('<path>')" once
     // close() has begun: a new object accepted then might be queued after its writer's
-    // flush and lost. For ObjectWriter::emit only; commits (close's own flush among them)
-    // use checkWritable.
+    // flush and lost. For calls that start new work: ObjectWriter::emit and the like, and
+    // RasterWriter::writeTile and RasterWriter::flush, so closing never starts a pyramid.
+    // Commits (close's own flush among them) use checkWritable.
     void checkAcceptingObjects(const char* operation) const;
 
     // Runs fn(sqlite3* writeConnection) inside BEGIN IMMEDIATE ... COMMIT, holding the
@@ -194,6 +195,16 @@ public:
     // IoError when closed, read-only, or on a SQLite failure.
     template <class Fn>
     auto withWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>()));
+
+    // As withWriteTransaction, with the commit durable before this returns: the write
+    // connection runs synchronous=FULL for this transaction alone (the others keep
+    // NORMAL, whose commit a power loss may roll back). For a transaction after whose
+    // commit files are deleted, so a row never outlives a commit that is lost while the
+    // files it superseded are already gone (SDS 03 §3.8). Costs one more sync of the WAL
+    // per call. Also throws IoError when the connection refuses synchronous=FULL; a
+    // failure to restore NORMAL afterwards is logged at Warning and leaves FULL.
+    template <class Fn>
+    auto withDurableWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>()));
 
     // Runs fn(sqlite3* readConnection) on a pooled read connection and returns its
     // result. No transaction is opened: a single statement is its own snapshot; fn
@@ -244,6 +255,24 @@ private:
     void openWriteConnection(int flags);
     void configureWriteConnection();
     int32_t readFormatVersion(sqlite3* db) const;
+    // Raises the write connection to synchronous=FULL for one durable transaction, and
+    // restores NORMAL when it ends; does nothing for any other. Caller holds writeMutex_
+    // and is outside a transaction. The constructor throws IoError when the pragma
+    // fails; the destructor never throws, and logs a failed restore at Warning.
+    class SynchronousScope {
+    public:
+        SynchronousScope(StoreImpl& store, const char* operation, bool durable);
+        SynchronousScope(const SynchronousScope&) = delete;
+        SynchronousScope& operator=(const SynchronousScope&) = delete;
+        ~SynchronousScope();
+
+    private:
+        StoreImpl& store_;
+        const bool durable_;
+    };
+
+    template <class Fn>
+    auto runWriteTransaction(const char* operation, bool durable, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>()));
     void beginWrite(const char* operation);
     void commitWrite(const char* operation);
     void rollbackWrite() noexcept;
@@ -298,9 +327,18 @@ Provenance parseProvenanceJson(const std::string& json, const std::string& store
 
 template <class Fn>
 auto StoreImpl::withWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>())) {
+    return runWriteTransaction(operation, false, std::forward<Fn>(fn));
+}
+
+template <class Fn>
+auto StoreImpl::runWriteTransaction(const char* operation, bool durable, Fn&& fn)
+    -> decltype(fn(std::declval<sqlite3*>())) {
     checkWritable(operation);
     std::lock_guard<std::mutex> guard(writeMutex_);
     checkOpen(operation);  // close() may have run while this call waited
+    // Declared after the guard, so NORMAL is back before the write mutex is released, and
+    // after the COMMIT or ROLLBACK below: the level cannot change inside a transaction.
+    const SynchronousScope synchronous(*this, operation, durable);
     beginWrite(operation);
     try {
         if constexpr (std::is_void_v<decltype(fn(std::declval<sqlite3*>()))>) {
@@ -321,6 +359,12 @@ auto StoreImpl::withWriteTransaction(const char* operation, Fn&& fn) -> decltype
         rollbackWrite();
         throwTranslated(operation, e);
     }
+}
+
+template <class Fn>
+auto StoreImpl::withDurableWriteTransaction(const char* operation, Fn&& fn)
+    -> decltype(fn(std::declval<sqlite3*>())) {
+    return runWriteTransaction(operation, true, std::forward<Fn>(fn));
 }
 
 template <class Fn>

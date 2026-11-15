@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -53,6 +54,46 @@ TEST(StoreImpl, AbandonedReadTransactionIsRolledBackBeforePooling) {
         detail::exec(lease.get(), "BEGIN; SELECT count(*) FROM meta");
     }
     store.withReadConnection("test", [](sqlite3* db) { EXPECT_NE(sqlite3_get_autocommit(db), 0); });
+    store.close();
+}
+
+namespace {
+
+// PRAGMA synchronous on `db`: 1 is NORMAL, 2 is FULL.
+int64_t synchronousLevel(sqlite3* db) {
+    detail::Statement pragma(db, "PRAGMA synchronous");
+    return pragma.step() ? pragma.columnInt64(0) : -1;
+}
+
+} // namespace
+
+// A durable transaction commits under synchronous=FULL, and the write connection is back
+// to NORMAL afterwards, whether it committed or rolled back.
+TEST(StoreImpl, DurableWriteTransactionRunsWithFullSyncThenRestoresNormal) {
+    StoreFilesGuard files;
+    detail::StoreImpl store(files.utf8().c_str(), OpenMode::CreateNew, Configuration());
+    store.withWriteTransaction("test", [](sqlite3* db) { EXPECT_EQ(synchronousLevel(db), 1); });
+
+    store.withDurableWriteTransaction("test", [](sqlite3* db) {
+        EXPECT_EQ(synchronousLevel(db), 2);
+        detail::StoreImpl::setMetaText(db, "probe", "durable");
+    });
+    store.withWriteTransaction("test", [](sqlite3* db) {
+        EXPECT_EQ(synchronousLevel(db), 1);
+        EXPECT_EQ(*detail::StoreImpl::metaText(db, "probe"), "durable");
+    });
+
+    EXPECT_THROW(store.withDurableWriteTransaction("test",
+                                                   [](sqlite3* db) {
+                                                       EXPECT_EQ(synchronousLevel(db), 2);
+                                                       detail::StoreImpl::setMetaText(db, "probe", "lost");
+                                                       throw std::runtime_error("rolled back");
+                                                   }),
+                 InternalError);
+    store.withWriteTransaction("test", [](sqlite3* db) {
+        EXPECT_EQ(synchronousLevel(db), 1);
+        EXPECT_EQ(*detail::StoreImpl::metaText(db, "probe"), "durable");
+    });
     store.close();
 }
 

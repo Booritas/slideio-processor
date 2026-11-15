@@ -51,6 +51,7 @@ add_executable(slideio_processor_storage_tests
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_io.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_raster_reader.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/tile_spool.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/writer_lock.cpp
 )

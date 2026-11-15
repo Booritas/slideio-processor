@@ -179,7 +179,8 @@ public:
      * @throws InvalidArgumentError When a tile does not fit the final scale within one
      * level pixel, or when another stage published the raster meanwhile; nothing is then
      * published.
-     * @throws IoError When the store is closed, or when the file cannot be written.
+     * @throws IoError When the store is closed or closing (Store::close() then abandons
+     * the writer), or when the file cannot be written.
      */
     void flush() override;
     /**
@@ -344,7 +345,8 @@ public:
      * @param raster The raster to write.
      * @return The writer.
      * @throws InvalidArgumentError When the stage or raster is unknown, the raster
-     * already has a live writer, or another stage populated it.
+     * already has a live writer, or another stage populated it (by its row, even when
+     * its file is missing and isPopulated() is false).
      * @throws IoError When the store is closed or read-only, or when the spool cannot
      * be created.
      */
@@ -436,7 +438,7 @@ public:
      * abandoned writer or a failed delete left behind; Workspace::open calls it.
      * @return The bytes reclaimed; 0 when directory() does not exist.
      * @throws IoError When the store is closed or read-only, when directory() cannot be
-     * listed, or when SQLite fails.
+     * inspected or listed, or when SQLite fails.
      * @throws std::bad_alloc When memory is exhausted.
      */
     int64_t removeUnreferencedFiles();

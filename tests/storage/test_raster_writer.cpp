@@ -3,6 +3,7 @@
 // until flush() commits, every tile is validated against the declaration and the first
 // tile's geometry, and a writer that is destroyed or closed before flush() publishes
 // nothing.
+#include "storage/detail/store_impl.hpp"
 #include "storage/raster_test_util.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -477,6 +478,44 @@ TEST_F(RasterWriterTest, AbandonedWritersPublishNothing) {
     EXPECT_TRUE(eventsOfKind(*reopened, EventKind::RasterWritten).empty());
     w.reset();  // destroying a writer after its store closed is harmless
     EXPECT_EQ(fileCount(), 0u);
+}
+
+namespace {
+
+// Flushes `writer` from inside Store::close(), as a stage thread racing the close would.
+class LateFlusher final : public detail::GateClient {
+public:
+    void flushBeforeClose() override {
+        try {
+            writer->flush();
+        } catch (const IoError& e) {
+            refusal = e.what();
+        }
+    }
+    RasterWriterPtr writer;
+    std::string refusal;  // empty when the flush ran
+};
+
+}  // namespace
+
+// Closing never builds a pyramid: a flush that starts once close() has begun is refused,
+// and close() then abandons the writer.
+TEST_F(RasterWriterTest, FlushDuringCloseIsRefused) {
+    RasterRegistry& R = store().rasters();
+    const auto late = std::make_shared<LateFlusher>();
+    detail::trackForCloseTesting(store(), late);  // before the writer, so close() calls it first
+    late->writer = R.writerForStage(a, p);
+    late->writer->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 1, 1.0)->view);
+    WarningCapture warnings;
+    store().close();
+    EXPECT_TRUE(contains(late->refusal, "store is closed")) << "refusal: '" << late->refusal << "'";
+    EXPECT_EQ(warnings.count("abandoned"), 1);
+    EXPECT_EQ(fileCount(), 0u);
+    late->writer.reset();
+
+    StorePtr reopened = reopen(OpenMode::ReadWrite);
+    EXPECT_FALSE(reopened->rasters().isPopulated(p));
+    EXPECT_TRUE(eventsOfKind(*reopened, EventKind::RasterWritten).empty());
 }
 
 // A flush that fails deletes its partial files, leaves the row as it was, and rethrows.

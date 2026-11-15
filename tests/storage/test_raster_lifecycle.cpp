@@ -326,5 +326,17 @@ TEST_F(RasterLifecycleTest, StoreFileCopiedWithoutRastersReadsUnpopulated) {
     EXPECT_EQ(R.bytesOnDisk(p), 0);
     EXPECT_EQ(R.totalBytesOnDisk(), 0);
     EXPECT_EQ(firstSample(*R.sourceFor(p)), 0.0f);
+    // The row still names stage a as its writer: another stage is refused up front, as
+    // the publish would refuse it, rather than after building a whole pyramid.
+    const std::string refusal = [&] {
+        try {
+            R.writerForStage(b, p);
+        } catch (const InvalidArgumentError& e) {
+            return std::string(e.what());
+        }
+        return std::string("no refusal");
+    }();
+    EXPECT_NE(refusal.find("only that stage may write it"), std::string::npos) << refusal;
+    EXPECT_NE(R.writerForStage(a, p), nullptr);
     copied->close();
 }

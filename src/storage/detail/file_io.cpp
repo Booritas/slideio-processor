@@ -1,6 +1,7 @@
 #include "storage/detail/file_io.hpp"
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/log.hpp>
 
 #include <system_error>
 
@@ -56,36 +57,61 @@ void syncFile(const std::filesystem::path& path) {
 #else
 
 // Unverified here: the POSIX side is compiled on Linux and macOS only.
+static_assert(sizeof(off_t) == 8, "64-bit file offsets are required (_FILE_OFFSET_BITS=64 on 32-bit Linux)");
+
 int seekFile(std::FILE* file, int64_t offset, int whence) { return fseeko(file, static_cast<off_t>(offset), whence); }
 
 int64_t tellFile(std::FILE* file) { return static_cast<int64_t>(ftello(file)); }
 
 namespace {
 
-// fsync on a descriptor opened with `flags`; throws naming `path`.
-void syncPath(const std::filesystem::path& path, int flags) {
-    const int fd = ::open(path.c_str(), flags);
+// Syncs the descriptor and returns 0, or the errno of the failure. On macOS fsync leaves
+// the data in the drive's cache, so F_FULLFSYNC is asked first; a filesystem that does not
+// support it (some network ones) falls back to fsync.
+int syncDescriptor(int fd, bool full) {
+#ifdef __APPLE__
+    if (full && ::fcntl(fd, F_FULLFSYNC) == 0) return 0;
+#else
+    (void)full;
+#endif
+    return ::fsync(fd) == 0 ? 0 : errno;
+}
+
+// Syncs `path`, opened read-only, and returns 0, or the errno of the failed sync. Throws
+// IoError naming `path` when it cannot be opened.
+int syncPath(const std::filesystem::path& path, bool full) {
+    const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) throwIo("cannot sync '" + path.u8string() + "'", errnoText(errno));
-    const int error = ::fsync(fd) == 0 ? 0 : errno;
+    const int error = syncDescriptor(fd, full);
     ::close(fd);
-    if (error != 0) throwIo("cannot sync '" + path.u8string() + "'", errnoText(error));
+    return error;
 }
 
 } // namespace
 
 void syncFile(const std::filesystem::path& path) {
-    syncPath(path, O_RDONLY);
-    // A new file's name lives in its directory, which has to reach the disk as well.
+    const int error = syncPath(path, true);
+    if (error != 0) throwIo("cannot sync '" + path.u8string() + "'", errnoText(error));
+    // A new file's name lives in its directory, which has to reach the disk as well. Some
+    // filesystems (FUSE, network) cannot sync a directory and say so with EINVAL, EBADF
+    // or ENOTSUP; there that sync is best-effort, as it is all they offer.
     const std::filesystem::path parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
-    syncPath(parent, O_RDONLY);
+    const int directoryError = syncPath(parent, false);
+    if (directoryError == EINVAL || directoryError == EBADF || directoryError == ENOTSUP) {
+        logMessage(LogLevel::Debug, "cannot sync the directory '%s' (%s); its filesystem does not support it",
+                   parent.u8string().c_str(), errnoText(directoryError).c_str());
+    } else if (directoryError != 0) {
+        throwIo("cannot sync '" + parent.u8string() + "'", errnoText(directoryError));
+    }
 }
 
 #endif
 
-void removeFile(const std::filesystem::path& path) {
+bool removeFile(const std::filesystem::path& path) {
     std::error_code error;
-    std::filesystem::remove(path, error);
+    const bool removed = std::filesystem::remove(path, error);
     if (error) throwIo("cannot delete '" + path.u8string() + "'", error.message());
+    return removed;
 }
 
 } // namespace slideio::processor::detail

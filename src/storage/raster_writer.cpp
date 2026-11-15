@@ -223,7 +223,10 @@ public:
     // Builds the file, then publishes it in one transaction (ruling S47).
     void flush() {
         std::unique_lock<std::shared_mutex> life(lifecycle);
-        setup.gate->with(kFlush, [](StoreImpl& store) { store.checkWritable(kFlush); });
+        // Refused once the store is closing, so closing never builds a pyramid: Store::close
+        // then abandons the writer. A flush already past this point holds `lifecycle`, and
+        // close waits for it to finish publishing.
+        setup.gate->with(kFlush, [](StoreImpl& store) { store.checkAcceptingObjects(kFlush); });
         if (state == State::Abandoned) throwClosed(kFlush);
         if (state == State::Flushed) return;
         state = State::Flushed;  // terminal, whatever follows
@@ -247,8 +250,14 @@ public:
             metadata.scaleY = scaleY;
         }
         if (event.objectCount == 0) {
+            // The spool goes first, as in abandon().
+            try {
+                spool->remove();
+            } catch (...) {
+                leaveLive(*setup.live, setup.raster, setup.files);
+                throw;
+            }
             leaveLive(*setup.live, setup.raster, setup.files);
-            spool->remove();
             return;
         }
 
@@ -275,7 +284,7 @@ public:
         std::string oldFile;
         try {
             setup.gate->with(kFlush, [&](StoreImpl& store) {
-                oldFile = store.withWriteTransaction(kFlush, [&](sqlite3* db) { return publish(db, info, metadata, bytes, event); });
+                oldFile = store.withDurableWriteTransaction(kFlush, [&](sqlite3* db) { return publish(db, info, metadata, bytes, event); });
                 store.notifyCommitted();
             });
         } catch (...) {
@@ -351,8 +360,9 @@ public:
             std::unique_lock<std::shared_mutex> life(lifecycle);
             if (state != State::Open) return;
             state = State::Abandoned;
-            leaveLive(*setup.live, setup.raster, setup.files);
+            // The spool goes first, so a concurrent sweep never meets it unowned.
             removeSpool();
+            leaveLive(*setup.live, setup.raster, setup.files);
             const int64_t abandoned = tileCount();
             if (abandoned > 0) {
                 logMessage(LogLevel::Warning,

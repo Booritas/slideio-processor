@@ -91,11 +91,23 @@ void silenceGlobalHandlers() {
 // The handle's file, ready for a transfer in `direction`. ISO C requires a file
 // positioning call between output and input on an update stream ("w+b"), so a switch of
 // direction with no seek in between gets a seek to the current position. libtiff seeks
-// before nearly every transfer, and no current test fails without this guard.
+// before nearly every transfer, and no current test fails without this guard. Returns
+// null when that seek fails, with the reason added to the handle's errors; the transfer
+// then reports failure, and libtiff reports it in turn.
 std::FILE* fileFor(thandle_t client, TiffHandleState::Direction direction) {
     auto* state = static_cast<TiffHandleState*>(client);
-    if (state->direction != direction && state->direction != TiffHandleState::Direction::None)
-        std::fseek(state->file, 0, SEEK_CUR);
+    if (state->direction != direction && state->direction != TiffHandleState::Direction::None) {
+        if (std::fseek(state->file, 0, SEEK_CUR) != 0) {
+            const int error = errno;
+            try {
+                if (!state->errors.empty()) state->errors += "; ";
+                state->errors += "seek on a switch between reading and writing: " + errnoText(error);
+            } catch (...) {
+                // Out of memory while collecting: the transfer still reports failure.
+            }
+            return nullptr;
+        }
+    }
     state->direction = direction;
     return state->file;
 }
@@ -103,12 +115,14 @@ std::FILE* fileFor(thandle_t client, TiffHandleState::Direction direction) {
 tmsize_t readProc(thandle_t client, void* buffer, tmsize_t size) {
     if (size <= 0) return 0;
     std::FILE* file = fileFor(client, TiffHandleState::Direction::Read);
+    if (file == nullptr) return static_cast<tmsize_t>(-1);
     return static_cast<tmsize_t>(std::fread(buffer, 1, static_cast<size_t>(size), file));
 }
 
 tmsize_t writeProc(thandle_t client, void* buffer, tmsize_t size) {
     if (size <= 0) return 0;
     std::FILE* file = fileFor(client, TiffHandleState::Direction::Write);
+    if (file == nullptr) return static_cast<tmsize_t>(-1);
     return static_cast<tmsize_t>(std::fwrite(buffer, 1, static_cast<size_t>(size), file));
 }
 

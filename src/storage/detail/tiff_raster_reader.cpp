@@ -71,13 +71,6 @@ T field(const TiffHandle& handle, uint32_t tag, const char* name, const std::str
 
 } // namespace
 
-// A read handle, the page its directory is set to, and its tile buffer.
-struct TiffRasterReader::Handle {
-    TiffHandle tiff;
-    int64_t page = -1;  // the current directory; -1 before the first TIFFSetDirectory
-    std::vector<uint8_t> tile;
-};
-
 TiffRasterReader::TiffRasterReader(std::filesystem::path path, RasterFormat format, double scaleX, double scaleY,
                                    int64_t width, int64_t height)
     : path_(std::move(path)), pathUtf8_(path_.u8string()), format_(format), scaleX_(scaleX), scaleY_(scaleY) {
@@ -220,11 +213,18 @@ std::unique_ptr<TiffRasterReader::Handle> TiffRasterReader::acquire() {
         } catch (const IoError&) {
             lock.lock();
             --open_;
-            if (open_ == 0) throw;
+            if (open_ == 0) {
+                // This was the last handle a waiter counted on: wake them, to try an open of
+                // their own. Not while others are open, or two failing callers would wake
+                // each other round and round.
+                returned_.notify_all();
+                throw;
+            }
             wait = true;  // the file may be gone, but the open handles still read it
         } catch (...) {
             lock.lock();
             --open_;
+            if (open_ == 0) returned_.notify_all();
             throw;
         }
     }
@@ -250,6 +250,7 @@ void TiffRasterReader::discard(std::unique_ptr<Handle> handle) noexcept {
 }
 
 std::unique_ptr<TiffRasterReader::Handle> TiffRasterReader::open() const {
+    if (openHook_) openHook_();
     auto handle = std::make_unique<Handle>();
     handle->tiff = TiffHandle::openRead(pathUtf8_);
     return handle;
