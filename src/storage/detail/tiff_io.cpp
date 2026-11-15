@@ -221,6 +221,15 @@ void TiffHandle::fail(const char* operation) const {
     throwIo(std::string(operation) + ": libtiff failed on '" + path + "'", cause);
 }
 
+void TiffHandle::flush() {
+    if (!state_ || state_->file == nullptr) return;
+    errno = 0;
+    if (std::fflush(state_->file) != 0) {
+        const int error = errno != 0 ? errno : EIO;
+        throwIo("fflush: cannot flush '" + state_->path + "'", errnoText(error));
+    }
+}
+
 void TiffHandle::close() {
     if (!state_) return;
     std::unique_ptr<TiffHandleState> state = std::move(state_);

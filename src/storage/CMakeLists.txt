@@ -20,16 +20,19 @@ add_library(slideio-processor-storage OBJECT
     detail/errors.cpp
     detail/event_log.cpp
     detail/geometry_codec.cpp
+    detail/half_float.cpp
     detail/label_aliases.cpp
     detail/measurement_names.cpp
     detail/object_lookup.cpp
     detail/polygon_predicates.cpp
+    detail/pyramid_tiff_writer.cpp
     detail/query_builder.cpp
     detail/raster_files.cpp
     detail/schema.cpp
     detail/sqlite.cpp
     detail/store_impl.cpp
     detail/tiff_io.cpp
+    detail/tile_spool.cpp
     detail/writer_lock.cpp
 )
 # The wake-up signal (ruling S13): a named event on Windows; elsewhere a POSIX named

@@ -25,6 +25,7 @@ add_executable(slideio_processor_storage_tests
     test_layer_registry.cpp
     test_object_query.cpp
     test_object_writer.cpp
+    test_pyramid_tiff_writer.cpp
     test_raster_registry.cpp
     test_store.cpp
     test_store_impl.cpp
@@ -36,13 +37,16 @@ add_executable(slideio_processor_storage_tests
     ${PROJECT_SOURCE_DIR}/src/storage/detail/${STORAGE_CHANGE_SIGNAL_SOURCE}
     ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/half_float.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/polygon_predicates.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/pyramid_tiff_writer.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/raster_files.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_io.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tile_spool.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/writer_lock.cpp
 )
 # SQLite is linked directly to probe the R*Tree module of the Conan build, and libtiff

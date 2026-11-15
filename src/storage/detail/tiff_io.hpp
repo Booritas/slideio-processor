@@ -49,6 +49,12 @@ public:
     // libtiff call on get() that returned failure.
     [[noreturn]] void fail(const char* operation) const;
 
+    // Pushes what libtiff has written so far out of the stdio buffer to the OS, so another
+    // handle on the same file sees it (the pyramid read-back opens one after each
+    // TIFFWriteDirectory). Throws IoError naming the path when the flush fails. A no-op on
+    // a handle that holds nothing.
+    void flush();
+
     // Flushes the TIFF (a write handle writes its pending directory), closes it, then
     // closes the file. Throws IoError naming the path when either step fails; the handle
     // is released either way. A no-op on a handle that holds nothing.
