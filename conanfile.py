@@ -16,6 +16,10 @@ class SlideioProcessorConan(ConanFile):
         # TIFFClientOpenExt and TIFFOpenOptions (4.5+); SlideIO pins 4.6.0, but both
         # copies are static and private, so they need not match.
         self.requires("libtiff/4.7.1")
+        # Storage uses zlib directly (the raster spool's compression, ruling S46), so it is
+        # a direct requirement: through libtiff alone its headers would not be visible.
+        # The version libtiff/4.7.1 resolves.
+        self.requires("zlib/1.3.2")
         # Used for its version only: nothing links OpenCV.
         self.requires("opencv/4.14.0")
 

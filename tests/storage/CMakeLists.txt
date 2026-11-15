@@ -44,9 +44,9 @@ add_executable(slideio_processor_storage_tests
     ${PROJECT_SOURCE_DIR}/src/storage/detail/writer_lock.cpp
 )
 # SQLite is linked directly to probe the R*Tree module of the Conan build, and libtiff
-# for the tiff_io wrapper compiled in above.
+# and zlib for the tiff_io wrapper compiled in above and the spool's compression.
 target_link_libraries(slideio_processor_storage_tests PRIVATE
-    slideio-processor-data SQLite::SQLite3 rapidjson TIFF::TIFF Threads::Threads GTest::gtest_main)
+    slideio-processor-data SQLite::SQLite3 rapidjson TIFF::TIFF ZLIB::ZLIB Threads::Threads GTest::gtest_main)
 target_include_directories(slideio_processor_storage_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)

@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include <tiffio.h>
+#include <zlib.h>
 
 #include <atomic>
 #include <cstdint>
@@ -221,6 +222,13 @@ TEST(TiffIo, HandlesOnManyThreadsKeepTheirOwnErrors) {
     for (auto& thread : threads) thread.join();
     EXPECT_EQ(validFailures.load(), 0);
     EXPECT_EQ(garbageMisreports.load(), 0);
+}
+
+// The raster spool compresses with zlib directly, so its headers must reach storage code,
+// not only libtiff's link line.
+TEST(TiffIo, ZlibHeadersAreAvailable) {
+    ASSERT_NE(zlibVersion(), nullptr);
+    EXPECT_EQ(zlibVersion()[0], ZLIB_VERSION[0]);
 }
 
 TEST(TiffIo, SampleFormatMapping) {
