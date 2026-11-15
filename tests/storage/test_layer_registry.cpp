@@ -448,6 +448,8 @@ TEST_F(LayerRegistryTest, DropPrimitiveKeepsDerivedObjects) {  // UR-STG-12 / UR
     EXPECT_EQ(idsOf(store().objects().query(ObjectQuery().layer(tissue))), (std::vector<ObjectId>{t1, t2}));
     EXPECT_TRUE(idsOf(store().edges().originsOf(t1)).empty());
     EXPECT_TRUE(idsOf(store().edges().originsOf(t2)).empty());
+    EXPECT_TRUE(idsOf(store().edges().derivedFrom(s[0])).empty());
+    EXPECT_TRUE(idsOf(store().edges().derivedFrom(s[130])).empty());
     EXPECT_EQ(store().edges().derivedFromEdgeCount(), derivedEdges);
 
     const std::vector<Event> dropped = eventsOfKind(store(), EventKind::LayerDropped);

@@ -381,6 +381,8 @@ TEST_F(EdgeStoreTest, DroppedPrimitiveKeepsItsDerivedFromRows) {
     store().layers().dropPrimitive(sp);
 
     EXPECT_TRUE(idsOf(edges().originsOf(t)).empty());
+    EXPECT_TRUE(idsOf(edges().derivedFrom(s1)).empty());  // the primitive no longer exists
+    EXPECT_TRUE(idsOf(edges().derivedFrom(s2)).empty());
     EXPECT_EQ(edges().derivedFromEdgeCount(), 2);
     const std::string message = invalidArgumentMessage([&] { pending->flush(); });
     EXPECT_TRUE(contains(message, "primitive sp/")) << message;

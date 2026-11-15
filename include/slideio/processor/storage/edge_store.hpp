@@ -237,6 +237,9 @@ public:
     CursorPtr originsOf(ObjectId derived) const;
     /**
      * @brief Opens a cursor over the visible objects derived from a primitive.
+     *
+     * A primitive that no longer exists (its layer was dropped) yields nothing, though
+     * the edges from it are kept and still counted by derivedFromEdgeCount().
      * @param primitive The primitive.
      * @return The cursor, as for childrenOf().
      * @throws IoError When the store is closed, or when SQLite fails.

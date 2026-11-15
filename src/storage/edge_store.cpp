@@ -140,9 +140,13 @@ CursorPtr EdgeStore::originsOf(ObjectId derived) const {
 }
 
 CursorPtr EdgeStore::derivedFrom(ObjectId primitive) const {
+    // An inner join on the primitive, as originsOf: a dropped primitive yields nothing,
+    // though its derived-from rows are kept (ruling S16).
     return impl_->open("EdgeStore::derivedFrom",
                        visibleObjects("(o.layer_id, o.anchor_id) IN (SELECT d.derived_layer, d.derived_anchor "
                                       "FROM derived_from d JOIN stages sd ON sd.id = d.stage_id "
+                                      "JOIN objects p ON p.layer_id = d.primitive_layer "
+                                      "AND p.anchor_id = d.primitive_anchor "
                                       "WHERE d.primitive_layer = ? AND d.primitive_anchor = ? AND sd.status = ?)",
                                       {int64Value(primitive.layer().value()), int64Value(primitive.anchorPacked()),
                                        int64Value(kComplete)}));
