@@ -20,12 +20,14 @@ namespace slideio::processor::testing_support {
 
 /// "test.probe": PerChannel, Byte and Float32, halo 0, output Float32 zeros.
 /// Int parameters:
-/// - "failX", "failY" (default -1): the apply whose tile rect at the level holds
+/// - "failX", "failY" (no default; both or no failure): the apply whose tile rect at the level holds
 ///   level pixel (failX, failY) throws, while failures are armed;
 /// - "failKind" (default 0): what it throws: 0 std::runtime_error("deliberate
 ///   failure"), 1 IoError("deliberate failure"), 2 CancelledError("deliberate
 ///   cancellation");
-/// - "sleepMs" (default 0): how long each apply sleeps, so concurrent applies overlap.
+/// - "sleepMs" (default 0): how long each apply sleeps, so concurrent applies overlap;
+/// - "copy" (default 0): 1 writes the input tile as Float32 instead of zeros, so a
+///   probe can sit in a chain without changing what follows.
 /// Every apply is counted, and the number running at once is tracked. The counters
 /// and the arming switch are process-wide: tests that use them run one at a time.
 class ProbeOperation : public Operation {
@@ -55,6 +57,8 @@ private:
     int64_t failY_ = -1;
     int64_t failKind_ = 0;
     int64_t sleepMs_ = 0;
+    int64_t copy_ = 0;
+    bool fails_ = false;  ///< Both failX and failY given.
 };
 
 /// Registers "test.probe", unless already registered.

@@ -41,10 +41,12 @@ public:
 // --- ProbeOperation -----------------------------------------------------------------
 
 ProbeOperation::ProbeOperation(const OperationParameters& parameters) : parameters_(parameters) {
-    parameters_.getInt("failX", failX_);
-    parameters_.getInt("failY", failY_);
+    const bool hasX = parameters_.getInt("failX", failX_);
+    const bool hasY = parameters_.getInt("failY", failY_);
+    fails_ = hasX && hasY;
     parameters_.getInt("failKind", failKind_);
     parameters_.getInt("sleepMs", sleepMs_);
+    parameters_.getInt("copy", copy_);
     if (failKind_ < 0 || failKind_ > 2) {
         throw InvalidArgumentError("test.probe: failKind must be 0, 1 or 2");
     }
@@ -67,7 +69,7 @@ void ProbeOperation::apply(OperationContext& context) {
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs_));
     }
     const Rect64 tile = context.tileRectAtLevel();
-    if (gArmed && failX_ >= tile.x && failX_ < tile.x + tile.width && failY_ >= tile.y &&
+    if (fails_ && gArmed && failX_ >= tile.x && failX_ < tile.x + tile.width && failY_ >= tile.y &&
         failY_ < tile.y + tile.height) {
         switch (failKind_) {
         case 1:
@@ -82,7 +84,22 @@ void ProbeOperation::apply(OperationContext& context) {
     for (int32_t plane = 0; plane < out.planeCount(); ++plane) {
         for (int64_t y = 0; y < out.height(); ++y) {
             auto* row = static_cast<unsigned char*>(out.planeData(plane)) + y * out.planeRowStrideBytes(plane);
-            std::memset(row, 0, static_cast<size_t>(out.width() * 4));
+            if (copy_ == 0) {
+                std::memset(row, 0, static_cast<size_t>(out.width() * 4));
+                continue;
+            }
+            // Halo 0: the input covers exactly the tile.
+            const BlockView& in = context.input();
+            const auto* source = static_cast<const unsigned char*>(in.planeData(plane)) + y * in.planeRowStrideBytes(plane);
+            for (int64_t x = 0; x < out.width(); ++x) {
+                float v = 0.0f;
+                if (in.planeType(plane) == DataType::Byte) {
+                    v = static_cast<float>(source[x]);
+                } else {
+                    std::memcpy(&v, source + x * 4, sizeof v);
+                }
+                std::memcpy(row + x * 4, &v, sizeof v);
+            }
         }
     }
 }

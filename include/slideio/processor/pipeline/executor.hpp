@@ -56,6 +56,10 @@ public:
     /**
      * @brief Calls shutdown(): finishes the queued work and joins every thread.
      * @throws Nothing.
+     * @par Thread-safety
+     * Not concurrently with any other member; not from a worker thread of this pool.
+     * @par Requirements
+     * UR-EXE-4
      */
     ~WorkerPool();
 
@@ -137,6 +141,10 @@ public:
     /**
      * @brief Releases the executor. A run in progress must have returned.
      * @throws Nothing.
+     * @par Thread-safety
+     * Not concurrently with any other member.
+     * @par Requirements
+     * UR-EXE-4
      */
     ~TileExecutor();
 

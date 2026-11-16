@@ -10,6 +10,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -90,11 +91,11 @@ struct RunState {
         stop = true;
     }
 
-    void jobDone() {
-        {
-            std::lock_guard<std::mutex> lock(doneMutex);
-            --jobsLeft;
-        }
+    // The last thing a job does. noexcept: a failure here would leave run() waiting
+    // forever, so it terminates instead.
+    void jobDone() noexcept {
+        std::lock_guard<std::mutex> lock(doneMutex);
+        --jobsLeft;
         done.notify_all();
     }
 };
@@ -301,14 +302,18 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     const int64_t total = impl_->grid.tileCount();
     const std::string& stageName = state.stageName;
     std::atomic<int64_t>& completed = impl_->completed;
-    RunState run;
+    // Shared with every job, so a job that signals done after run() has seen
+    // jobsLeft reach 0 and returned still touches a live object.
+    const auto shared = std::make_shared<RunState>();
+    RunState& run = *shared;
 
-    auto work = [&]() {
+    auto work = [&, shared]() {
+        RunState& own = *shared;
         for (;;) {
-            if (run.stop) {
+            if (own.stop) {
                 break;
             }
-            const int64_t tile = run.next.fetch_add(1);
+            const int64_t tile = own.next.fetch_add(1);
             if (tile >= total) {
                 break;
             }
@@ -318,23 +323,23 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                 {
                     budget.reserveOrWait(tileBytes, token);
                     const Reservation held(budget, tileBytes);
-                    if (run.stop) {
+                    if (own.stop) {
                         break;
                     }
                     evaluator.evaluate(tile, token, &operation);
                 }
-                std::lock_guard<std::mutex> lock(run.progressMutex);
+                std::lock_guard<std::mutex> lock(own.progressMutex);
                 const int64_t done = ++completed;
                 if (progress != nullptr) {
                     progress->onProgress(stageName.c_str(), static_cast<double>(done) / static_cast<double>(total),
                                          done, total);
                 }
             } catch (...) {
-                run.recordFailure(std::current_exception(), tile, operation);
+                own.recordFailure(std::current_exception(), tile, operation);
                 break;
             }
         }
-        run.jobDone();
+        own.jobDone();
     };
 
     // One job per worker; each pulls tile indices until none is left or the run fails.

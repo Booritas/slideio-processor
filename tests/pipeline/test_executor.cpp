@@ -183,8 +183,11 @@ struct DisarmGuard {
 
 TEST(TileExecutor, ResultsIdenticalAcrossWorkerCounts) {
     ts::registerTestOperations();
+    ts::registerProbeOperation();
     auto scene = ts::makeSyntheticScene({{2000, 1500, 0, 0}}, {slideio::DataType::DT_Byte}, blobs);
     PipelineSpec spec;
+    // A pass-through probe first, to see that tiles really overlap with several workers.
+    spec.operation("test.probe", intParams({{"copy", 1}, {"sleepMs", 1}}));
     spec.operation("test.boxMean", intParams({{"radius", 1}}));
     OperationParameters threshold;
     threshold.setDouble("level", 100.0);
@@ -197,15 +200,18 @@ TEST(TileExecutor, ResultsIdenticalAcrossWorkerCounts) {
         Pipeline p(scene, config(128, workers), spec);
         p.bindLayer("objects", LayerId(3));
         p.rasterSink(&raster);
+        ts::ProbeOperation::resetCounters();
         p.runInto(objects, nullptr, CancellationToken());
         return RunResult{raster.tiles(), sortedKeys(objects.records())};
     };
 
     const RunResult reference = runWith(1);
+    EXPECT_EQ(ts::ProbeOperation::maxConcurrent(), 1);
     ASSERT_EQ(reference.tiles.size(), 16u * 12u);
     ASSERT_GT(reference.objects.size(), 1000u);
     for (const int32_t workers : {2, 4, 8}) {
         const RunResult result = runWith(workers);
+        EXPECT_GT(ts::ProbeOperation::maxConcurrent(), 1) << workers << " workers ran no two tiles at once";
         EXPECT_TRUE(result.tiles == reference.tiles) << workers << " workers: raster tiles differ";
         EXPECT_TRUE(result.objects == reference.objects) << workers << " workers: objects differ";
     }
