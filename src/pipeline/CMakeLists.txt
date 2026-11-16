@@ -15,6 +15,8 @@ add_library(slideio-processor-pipeline OBJECT
     detail/level_table.cpp
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
+    detail/plane_buffers.cpp
+    detail/scene_reader.cpp
     detail/type_contract.cpp
 )
 set_target_properties(slideio-processor-pipeline PROPERTIES POSITION_INDEPENDENT_CODE ON)

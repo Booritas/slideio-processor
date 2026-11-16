@@ -34,6 +34,7 @@ add_executable(slideio_processor_pipeline_tests
     test_operation_parameters.cpp
     test_pipeline_spec.cpp
     test_reduction.cpp
+    test_scene_reader.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly
@@ -43,6 +44,8 @@ add_executable(slideio_processor_pipeline_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/plane_buffers.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/scene_reader.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/type_contract.cpp
 )
 target_link_libraries(slideio_processor_pipeline_tests PRIVATE
