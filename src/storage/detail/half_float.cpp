@@ -55,4 +55,34 @@ uint16_t floatToHalf(float value) noexcept {
     return static_cast<uint16_t>(sign | half);
 }
 
+uint16_t doubleToHalf(double value) noexcept {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof bits);
+    const auto sign = static_cast<uint16_t>((bits >> 48) & 0x8000u);
+    const uint64_t magnitude = bits & 0x7fffffffffffffffull;
+    if (magnitude >= 0x7ff0000000000000ull) {
+        if (magnitude == 0x7ff0000000000000ull) return static_cast<uint16_t>(sign | 0x7c00u);
+        // NaN: keep the payload's high bits and make it quiet, so it never becomes infinity.
+        return static_cast<uint16_t>(sign | 0x7e00u | ((magnitude >> 42) & 0x3ffu));
+    }
+    // 65520, the tie between 65504 and 65536, and everything above it round to infinity.
+    if (magnitude >= 0x40effe0000000000ull) return static_cast<uint16_t>(sign | 0x7c00u);
+    if (magnitude < 0x3f10000000000000ull) {
+        // Below 2^-14: a subnormal in units of 2^-24; up to 2^-25 inclusive rounds to zero.
+        if (magnitude <= 0x3e60000000000000ull) return sign;
+        const uint64_t mantissa = (magnitude & 0xfffffffffffffull) | 0x10000000000000ull;
+        const auto shift = static_cast<uint32_t>(1051u - (magnitude >> 52)); // 43..53
+        uint64_t units = mantissa >> shift;
+        const uint64_t rest = mantissa & ((uint64_t(1) << shift) - 1u);
+        const uint64_t halfway = uint64_t(1) << (shift - 1u);
+        if (rest > halfway || (rest == halfway && (units & 1u) != 0)) ++units; // may carry into 2^-14
+        return static_cast<uint16_t>(sign | units);
+    }
+    uint64_t half = (((magnitude >> 52) - 1008u) << 10) | ((magnitude & 0xfffffffffffffull) >> 42);
+    const uint64_t rest = magnitude & 0x3ffffffffffull;
+    const uint64_t halfway = 0x20000000000ull;
+    if (rest > halfway || (rest == halfway && (half & 1u) != 0)) ++half; // a carry moves to the next exponent
+    return static_cast<uint16_t>(sign | half);
+}
+
 } // namespace slideio::processor::detail

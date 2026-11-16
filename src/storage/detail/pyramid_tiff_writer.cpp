@@ -190,7 +190,7 @@ struct Half {
         return halfToFloat(bits);
     }
     static void store(double value, uint8_t* p) {
-        const uint16_t bits = floatToHalf(static_cast<float>(value));
+        const uint16_t bits = doubleToHalf(value);
         std::memcpy(p, &bits, sizeof bits);
     }
 };

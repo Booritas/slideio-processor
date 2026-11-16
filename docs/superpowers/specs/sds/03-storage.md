@@ -1353,9 +1353,12 @@ built from the one above it by 2×2 blocks to 1; edge blocks have 1 or 2 samples
 present. **Integer types take the top-left sample present** (nearest), so label,
 anchor and class values are never invented, and an `Int64` anchor survives
 exactly. **Float types take the mean of the samples present**, computed in
-`double`; Float16 goes through a half↔float conversion. The rule is decided by
-sample type alone, because the declaration carries no semantics: a continuous
-Byte map gets nearest too, which loses smoothness and never correctness.
+`double` and rounded once to the sample type: a Float16 sample is read through
+`float`, which holds every half exactly, and its mean is rounded from `double`
+straight to half, ties to even, never through `float`, which could round it
+twice. The rule is decided by sample type alone, because the declaration
+carries no semantics: a continuous Byte map gets nearest too, which loses
+smoothness and never correctness.
 
 **Location and names (S44).** The directory is `<store path>-rasters/`, the store
 path with `-rasters` appended, as with `-wal`, `-shm` and `-writer.lock`; two
@@ -1409,8 +1412,8 @@ the later append wins. The pipeline writes disjoint tiles; overlap is the
 caller's misuse, never corruption. Page 0 holds one 512×512 tile per plane, one
 piece row and a 64 KiB read buffer, one inflate stream at a time (zlib's default
 32 KiB window plus its state, about 7 KiB), and one scratch tile for the
-encoder; each later page holds four source tiles and one output tile. None of this is charged to `MemoryBudget`, which `storage` does not
-hold.
+encoder; each later page holds four source tiles and one output tile. None of
+this is charged to `MemoryBudget`, which `storage` does not hold.
 
 **One live writer per raster, and the publish protocol (S47).** A live writer
 is one that has not been flushed or destroyed. `writerForStage` throws

@@ -18,4 +18,9 @@ float halfToFloat(uint16_t bits) noexcept;
 // to a signed zero. A NaN stays a NaN (quiet, sign kept).
 uint16_t floatToHalf(float value) noexcept;
 
+// The bits of the half nearest to `value`, rounded once, straight from the double, with the
+// rules of floatToHalf. Going through a float would round twice: 1 + 2^-11 + 2^-26 becomes
+// the float 1 + 2^-11, a tie that goes to 1, where the nearest half is 1 + 2^-10.
+uint16_t doubleToHalf(double value) noexcept;
+
 } // namespace slideio::processor::detail

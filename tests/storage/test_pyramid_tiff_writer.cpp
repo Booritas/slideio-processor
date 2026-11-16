@@ -24,6 +24,8 @@
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <limits>
+#include <random>
 #include <string>
 #include <thread>
 #include <utility>
@@ -368,6 +370,18 @@ TEST(PyramidTiffWriter, IntegersTakeTopLeftFloatsTakeTheMean) {
         expectMean(1024, 1025, {values[6], values[7]});
         EXPECT_EQ(sampleAt<uint16_t>(tif, 1, 0, 1025, 1025), values[8]);
     }
+    {
+        SCOPED_TRACE("Float16 mean rounded once");
+        TempRaster files;
+        // 2, 2, 2^-9, 2^-24: the mean 1 + 2^-11 + 2^-26 is just above the tie between 1 and
+        // 1 + 2^-10. Through a float it would become the tie itself and round to 1.
+        const uint16_t values[9] = {0x4000, 0x4000, 0x3C00, 0x1800, 0x0001, 0x3C00, 0x3C00, 0x3C00, 0x3C00};
+        writePatch(files, DataType::Float16, values);
+        detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(files.tif));
+        TIFF* tif = handle.get();
+        ASSERT_NE(tif, nullptr);
+        EXPECT_EQ(sampleAt<uint16_t>(tif, 1, 0, 1024, 1024), 0x3C01);
+    }
 }
 
 TEST(PyramidTiffWriter, TinyAndThinExtents) {
@@ -676,4 +690,74 @@ TEST(HalfFloat, RoundTripsEveryHalfAndRoundsToNearestEven) {
     EXPECT_EQ(detail::floatToHalf(std::ldexp(3.0f, -25)), 0x0002);               // tie, to even
     EXPECT_EQ(detail::floatToHalf(-std::ldexp(1.0f, -30)), 0x8000);
     EXPECT_EQ(detail::floatToHalf(std::ldexp(1023.5f, -24)), 0x0400);           // to the smallest normal
+}
+
+TEST(HalfFloat, DoubleToHalfRoundsOnce) {
+    // The reviewer's mean of 2, 2, 2^-9 and 2^-24: through a float it lands on the tie.
+    const double mean = 1.0 + std::ldexp(1.0, -11) + std::ldexp(1.0, -26);
+    EXPECT_EQ(detail::floatToHalf(static_cast<float>(mean)), 0x3C00);
+    EXPECT_EQ(detail::doubleToHalf(mean), 0x3C01);
+
+    const double tiny = std::ldexp(1.0, -40);
+    EXPECT_EQ(detail::doubleToHalf(1.0 + std::ldexp(1.0, -11)), 0x3C00);            // tie, to even
+    EXPECT_EQ(detail::doubleToHalf(1.0 + std::ldexp(1.0, -11) + tiny), 0x3C01);     // above the tie
+    EXPECT_EQ(detail::doubleToHalf(1.0 + std::ldexp(1.0, -11) - tiny), 0x3C00);     // below the tie
+    EXPECT_EQ(detail::doubleToHalf(1.0 + 3 * std::ldexp(1.0, -11)), 0x3C02);        // tie, to even
+    EXPECT_EQ(detail::doubleToHalf(1.0 + 3 * std::ldexp(1.0, -11) - tiny), 0x3C01); // below the tie
+    EXPECT_EQ(detail::doubleToHalf(2.0 - std::ldexp(1.0, -12)), 0x4000);            // tie, carries the exponent
+
+    // Subnormals, in units of 2^-24.
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1.0, -25)), 0x0000);                  // tie, to even zero
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1.0, -25) + std::ldexp(1.0, -70)), 0x0001);
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1.0, -24)), 0x0001);
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(3.0, -25)), 0x0002);                  // tie, to even
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(5.0, -25)), 0x0002);                  // tie, to even
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1023.0, -24)), 0x03FF);               // largest subnormal
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1023.5, -24) - std::ldexp(1.0, -60)), 0x03FF);
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1023.5, -24)), 0x0400);               // to the smallest normal
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1.0, -14)), 0x0400);
+    EXPECT_EQ(detail::doubleToHalf(std::ldexp(1.0, -1074)), 0x0000);                // a double subnormal
+    EXPECT_EQ(detail::doubleToHalf(-std::ldexp(1.0, -30)), 0x8000);
+
+    // The largest finite half and overflow.
+    EXPECT_EQ(detail::doubleToHalf(65504.0), 0x7BFF);
+    EXPECT_EQ(detail::doubleToHalf(65520.0 - std::ldexp(1.0, -30)), 0x7BFF);        // below the tie
+    EXPECT_EQ(detail::doubleToHalf(65520.0), 0x7C00);                               // tie, to infinity
+    EXPECT_EQ(detail::doubleToHalf(-65520.0), 0xFC00);
+    EXPECT_EQ(detail::doubleToHalf(1e300), 0x7C00);
+    EXPECT_EQ(detail::doubleToHalf(std::numeric_limits<double>::infinity()), 0x7C00);
+    EXPECT_EQ(detail::doubleToHalf(-std::numeric_limits<double>::infinity()), 0xFC00);
+
+    // Zeros keep their sign; a NaN stays a quiet NaN with its sign, even a signalling one whose
+    // payload lies only in bits a half drops.
+    EXPECT_EQ(detail::doubleToHalf(0.0), 0x0000);
+    EXPECT_EQ(detail::doubleToHalf(-0.0), 0x8000);
+    const double quiet = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(detail::doubleToHalf(quiet) & 0x7E00, 0x7E00);
+    EXPECT_EQ(detail::doubleToHalf(quiet) & 0x8000, 0);
+    EXPECT_EQ(detail::doubleToHalf(-quiet) & 0xFE00, 0xFE00);
+    const uint64_t signallingBits = 0xFFF0000000000001ull;
+    double signalling = 0;
+    std::memcpy(&signalling, &signallingBits, sizeof signalling);
+    EXPECT_EQ(detail::doubleToHalf(signalling), 0xFE00);
+
+    // A float widens to a double exactly, so there is nothing to round twice and the two
+    // conversions agree on every float: each upper 18-bit pattern with the low 13 bits that
+    // decide normal rounding (zero, the tie and their neighbours), for both signs, and then
+    // random patterns for the subnormals, which round on higher bits.
+    size_t mismatches = 0;
+    const auto agree = [&](uint32_t floatBits) {
+        float value = 0;
+        std::memcpy(&value, &floatBits, sizeof value);
+        if (detail::doubleToHalf(static_cast<double>(value)) != detail::floatToHalf(value)) ++mismatches;
+    };
+    const uint32_t lows[] = {0x0000, 0x0001, 0x0800, 0x0fff, 0x1000, 0x1001, 0x17ff, 0x1fff};
+    for (uint32_t high = 0; high < (1u << 18); ++high)
+        for (const uint32_t low : lows) {
+            agree((high << 13) | low);
+            agree(0x80000000u | (high << 13) | low);
+        }
+    std::mt19937 random(43);
+    for (int i = 0; i < 1 << 22; ++i) agree(static_cast<uint32_t>(random()));
+    EXPECT_EQ(mismatches, 0u);
 }
