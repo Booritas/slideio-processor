@@ -100,6 +100,18 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   registry, pyramidal BigTIFF files through libtiff), their journal events, the
   unreferenced-file sweep, and the freeze of store format v1. Completes the module.
   **Delivered** as PR #8 (merged 2026-11-16).
+- [Pipeline implementation plan A](superpowers/plans/2026-11-16-pipeline-a.md) —
+  plan A of three for the `pipeline` module: the engine library and the OpenCV
+  backend adapter, the operation contract, parameters and catalog with its support
+  matrix, `PipelineSpec` and its JSON record, level selection and the tile grid, and
+  reductions. Adopts the whole-level operations proposal.
+- [Pipeline implementation plan B](superpowers/plans/2026-11-16-pipeline-b.md) —
+  plan B of three: `Pipeline` validation, planar block reads, per-tile chain
+  evaluation, the worker pool and tile executor, restrictions, sinks, auxiliary
+  rasters and the two-pass global context.
+- [Pipeline implementation plan C](superpowers/plans/2026-11-16-pipeline-c.md) —
+  plan C of three: `SeamMerger`, the UR-SEG-3 tiling-invariance suite and
+  `Pipeline::asScene()`. Completes the module.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
