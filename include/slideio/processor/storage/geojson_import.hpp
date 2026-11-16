@@ -141,8 +141,10 @@ private:
  * LabelOrigin::ImportRegistered and a LabelAdded event (UR-RES-19).
  *
  * A feature with null, missing, empty or unsupported geometry, or whose geometry the
- * reader rejects, is skipped with a LogLevel::Warning naming its index. Feature indices
- * are 0-based positions among the feature objects of the file. No diagnostic copies a
+ * reader rejects, is skipped with one LogLevel::Warning naming its index, although the file
+ * is read twice. Feature indices are 0-based positions in the file's feature list, counting
+ * elements that are not objects, as GeoJsonReader::featureIndex() numbers them, so the
+ * reader's messages and the importer's name a feature alike. No diagnostic copies a
  * property value or a provenance field.
  *
  * The importer borrows the store: the Store must outlive it.

@@ -326,6 +326,7 @@ public:
     PendingFeature pending;
     FileProvenance provenance;
     bool featureComplete = false; // set when a feature's closing brace is consumed
+    bool warnings = true;         // false: skipped features are counted but not logged
     bool notGeoJson = false;      // the top-level value is a scalar
 
     // True once the root object has turned out to be a FeatureCollection.
@@ -371,7 +372,12 @@ private:
 
     void push(Ctx c) { stack_.push_back(c); }
 
-    void notAnObject() { warnSkipped(path_, nextIndex_++, "the element is not an object"); }
+    void notAnObject() {
+        const int64_t index = nextIndex_++;
+        if (warnings) {
+            warnSkipped(path_, index, "the element is not an object");
+        }
+    }
 
     bool open(bool isObject) {
         if (skip_ > 0) {
@@ -626,6 +632,13 @@ public:
     bool done = false;
     int64_t read = 0;
     int64_t skipped = 0; // features finish() skipped with a warning
+    int64_t index = -1;  // the feature next() last returned or rejected for its geometry
+
+    void warn(const std::string& reason) const {
+        if (handler.warnings) {
+            warnSkipped(path, handler.pending.index, reason);
+        }
+    }
 
     InvalidArgumentError geometryError(const std::string& reason) const {
         return InvalidArgumentError(("GeoJsonReader: feature " + std::to_string(handler.pending.index) + " of " +
@@ -662,18 +675,18 @@ public:
     bool finish() {
         PendingFeature& f = handler.pending;
         if (!f.hasGeometry) {
-            warnSkipped(path, f.index, "the geometry is null or missing");
+            warn("the geometry is null or missing");
             ++skipped;
             return false;
         }
         const bool multi = f.geometryType == "MultiPolygon";
         if (!multi && f.geometryType != "Polygon") {
-            warnSkipped(path, f.index, describeGeometryType(f.geometryType) + " is not supported");
+            warn(describeGeometryType(f.geometryType) + " is not supported");
             ++skipped;
             return false;
         }
         if (f.positions.empty() && !f.coordsMalformed) {
-            warnSkipped(path, f.index, "the " + f.geometryType + " has no coordinates");
+            warn("the " + f.geometryType + " has no coordinates");
             ++skipped;
             return false;
         }
@@ -762,6 +775,7 @@ bool GeoJsonReader::next() {
     }
     Impl& d = *impl_;
     d.current.clear();
+    d.index = -1;
     if (!d.failure.empty()) {
         throw InvalidArgumentError(("GeoJsonReader::next: reading already failed: " + d.failure).c_str());
     }
@@ -793,10 +807,19 @@ bool GeoJsonReader::next() {
             d.done = true;
             break;
         }
-        if (d.finish()) {
-            ++d.read;
-            return true;
+        d.index = d.handler.pending.index;
+        try {
+            if (d.finish()) {
+                ++d.read;
+                return true;
+            }
+        } catch (const InvalidArgumentError&) {
+            throw; // a geometry error: the index names the rejected feature
+        } catch (...) {
+            d.index = -1;
+            throw;
         }
+        d.index = -1;
     }
     return false;
 }
@@ -842,5 +865,13 @@ bool GeoJsonReader::provenance(Provenance& out) const {
 }
 
 int64_t GeoJsonReader::featuresSkipped() const noexcept { return impl_ ? impl_->skipped : 0; }
+
+int64_t GeoJsonReader::featureIndex() const noexcept { return impl_ ? impl_->index : -1; }
+
+void GeoJsonReader::setWarningsEnabled(bool enabled) noexcept {
+    if (impl_) {
+        impl_->handler.warnings = enabled;
+    }
+}
 
 } // namespace slideio::processor

@@ -696,3 +696,75 @@ TEST(GeoJsonReader, NegativeProvenanceSceneIndexReadsAsZero) {
     EXPECT_STREQ(out.slideId(), "s");
     EXPECT_EQ(out.sceneIndex(), 0);                                    // setSceneIndex rejects negatives
 }
+
+TEST(GeoJsonReader, WarningsCanBeTurnedOffPerReader) {
+    auto path = uniqueTempPath("quiet", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection","features":[42,
+      {"type":"Feature","geometry":null},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(}},
+      {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1,1]]}},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(4) + R"(}}]})");
+    LogCapture log;
+    GeoJsonReader loud(path.u8string().c_str());
+    GeoJsonReader quiet(path.u8string().c_str());
+    quiet.setWarningsEnabled(false);
+    ASSERT_TRUE(quiet.next());
+    EXPECT_EQ(quiet.featuresSkipped(), 1);                             // still counted, just not logged
+    EXPECT_TRUE(log.messages().empty());
+    quiet.setWarningsEnabled(true);                                    // takes effect from the next feature
+    ASSERT_TRUE(quiet.next());
+    ASSERT_EQ(log.messages().size(), 1u);
+    EXPECT_NE(log.messages()[0].second.find("feature 3"), std::string::npos) << log.messages()[0].second;
+    EXPECT_FALSE(quiet.next());
+    EXPECT_EQ(quiet.featuresSkipped(), 2);
+    while (loud.next()) {
+    }
+    EXPECT_EQ(log.messages().size(), 4u);                              // another reader is unaffected
+
+    GeoJsonReader moved(std::move(quiet));
+    quiet.setWarningsEnabled(false);                                   // NOLINT(bugprone-use-after-move): no-op
+    EXPECT_FALSE(moved.next());
+}
+
+TEST(GeoJsonReader, FeatureIndexNamesTheFeatureAsMessagesDo) {
+    auto path = uniqueTempPath("index", ".geojson");
+    TempFileGuard guard(path);
+    writeFile(path, R"({"type":"FeatureCollection","features":[42,
+      {"type":"Feature","geometry":null},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + R"(}},
+      [1,2],
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[0,0]]]}},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(4) + R"(}},
+      {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]}}]})");
+    LogCapture log;
+    GeoJsonReader r(path.u8string().c_str());
+    EXPECT_EQ(r.featureIndex(), -1);
+    ASSERT_TRUE(r.next());
+    EXPECT_EQ(r.featureIndex(), 2);                                    // the non-object 42 is element 0
+    try {
+        r.next();
+        FAIL() << "a 2-point ring must throw";
+    } catch (const InvalidArgumentError& e) {
+        EXPECT_NE(messageOf(e).find("feature 4 "), std::string::npos) << e.what();
+        EXPECT_EQ(r.featureIndex(), 4);                                // the rejected feature
+    }
+    ASSERT_TRUE(r.next());
+    EXPECT_EQ(r.featureIndex(), 5);
+    EXPECT_FALSE(r.next());
+    EXPECT_EQ(r.featureIndex(), -1);
+    const auto& got = log.messages();
+    ASSERT_EQ(got.size(), 4u);
+    const char* expect[] = {"feature 0 ", "feature 1 ", "feature 3 ", "feature 6 "};
+    for (size_t i = 0; i < got.size(); ++i) {
+        EXPECT_NE(got[i].second.find(expect[i]), std::string::npos) << got[i].second;
+    }
+
+    writeFile(path, R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":)" + square(0) + "}}");
+    GeoJsonReader single(path.u8string().c_str());
+    ASSERT_TRUE(single.next());
+    EXPECT_EQ(single.featureIndex(), 0);
+    GeoJsonReader moved(std::move(single));
+    EXPECT_EQ(moved.featureIndex(), 0);
+    EXPECT_EQ(single.featureIndex(), -1);                              // NOLINT(bugprone-use-after-move)
+}

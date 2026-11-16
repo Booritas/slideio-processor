@@ -532,6 +532,8 @@ classDiagram
         +classification() cstr
         +layerName() cstr
         +featuresRead() int64_t
+        +featureIndex() int64_t
+        +setWarningsEnabled(bool) void
     }
 
     class GeoJsonWriter {

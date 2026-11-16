@@ -1920,9 +1920,15 @@ store. Both layer kinds are accepted. `import` reads the file twice.
   naming its index. A geometry error is told from a parse error by the reader's
   message prefix (`GeoJsonReader: feature `), a coupling that a test pins. A
   parse or read error ends the import.
-- **Feature indices** are 0-based among the feature objects of the file; a
-  non-object entry of a `features` list is neither counted nor skipped. The
-  reader's own skip warnings appear once per pass, so twice per import.
+- **Feature indices** are 0-based positions in the file's feature list, as
+  `GeoJsonReader::featureIndex()` numbers them: a non-object entry of a
+  `features` list takes an index (the reader logs it as skipped) but is not
+  counted in `featuresSkipped` or in progress. The importer's messages and the
+  reader's therefore name a feature by the same index.
+- **One Warning per skipped feature.** The pre-pass turns the reader's own
+  warnings off (`GeoJsonReader::setWarningsEnabled(false)`) and logs nothing
+  itself, so each skip is logged once, by the import pass, although the file
+  is read twice.
 - **Anchor collisions are fatal**, never silently dropped (3.5).
 - **Progress and cancellation.** Progress is reported after each committed batch
   and at the end, as `onProgress(stage name, done / total, done, total)` in

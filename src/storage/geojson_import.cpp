@@ -51,10 +51,12 @@ bool parseFinite(std::istringstream& in, const char* text, double& out) {
 }
 
 // Walks a file feature by feature, counting skipped features and those the reader rejected
-// for their geometry, so every feature has its 0-based index.
+// for their geometry. Features are named by GeoJsonReader::featureIndex(), so the reader's
+// messages and the importer's give one feature one index.
 class FeatureWalk {
 public:
-    explicit FeatureWalk(const char* path) : path_(path), reader_(path) {}
+    // `warn` false silences the reader's own warnings, for a pass that only counts.
+    FeatureWalk(const char* path, bool warn) : path_(path), reader_(path) { reader_.setWarningsEnabled(warn); }
 
     // Advances to the next importable feature, checking `token` before each feature;
     // logs and skips features with invalid geometry. False at the end of the file.
@@ -67,17 +69,17 @@ public:
                 if (!isGeometryError(e)) throw;
                 if (reportingFor != nullptr) {
                     logMessage(LogLevel::Warning, "%s: skipping feature %lld of '%s': %s", reportingFor,
-                               static_cast<long long>(processed()), path_, e.what());
+                               static_cast<long long>(reader_.featureIndex()), path_, e.what());
                 }
                 ++rejected_;
             }
         }
     }
-    // Features passed so far: read, skipped by the reader, or rejected for their geometry.
-    // Elements of the feature list that are not objects are not features, and not counted.
+    // Features passed so far, for progress: read, skipped by the reader, or rejected for their
+    // geometry. Elements of the feature list that are not objects are not counted.
     int64_t processed() const noexcept { return reader_.featuresRead() + reader_.featuresSkipped() + rejected_; }
-    // The index of the current feature, once next() has returned true.
-    int64_t index() const noexcept { return processed() - 1; }
+    // The index of the current feature, once next() has returned true, as the reader numbers it.
+    int64_t index() const noexcept { return reader_.featureIndex(); }
     int64_t skipped() const noexcept { return reader_.featuresSkipped() + rejected_; }
     GeoJsonReader& reader() noexcept { return reader_; }
 
@@ -213,7 +215,7 @@ ImportResult GeoJsonImporter::import(const char* path, ProgressObserver* observe
     // Pre-pass: count the features; under Strict, resolve every label before writing.
     int64_t total = 0;
     {
-        FeatureWalk walk(path);
+        FeatureWalk walk(path, false);
         while (walk.next(token, nullptr)) {
             const char* classification = walk.reader().classification();
             if (out.policy == ImportPolicy::Strict && *classification != '\0') {
@@ -226,7 +228,7 @@ ImportResult GeoJsonImporter::import(const char* path, ProgressObserver* observe
 
     // Import pass.
     ObjectWriterPtr writer = impl_->store.objects().writerForStage(impl_->stage);
-    FeatureWalk walk(path);
+    FeatureWalk walk(path, true);
     std::istringstream number;
     number.imbue(std::locale::classic());
     int64_t pending = 0;    // emitted since the last commit

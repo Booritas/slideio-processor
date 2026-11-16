@@ -343,6 +343,52 @@ TEST_F(GeoJsonImport, MeasurementsSkipsAndProvenance) {
     EXPECT_EQ(ImportResult().policyApplied(), ImportPolicy::Strict);
 }
 
+TEST_F(GeoJsonImport, EachSkippedFeatureIsLoggedOnceUnderTheReadersIndex) {
+    LogCapture log;
+    const GeoJsonFile file(collection({
+        "42",
+        R"({"type":"Feature","geometry":null,"properties":{}})",
+        R"({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[5,0],[0,0]]]},"properties":{}})",
+        squareFeature(0, 0, R"("measurements":{"Bad":"SECRET-VALUE-3"})"),
+    }));
+
+    GeoJsonImporter importer(store(), cells, imp);
+    const ImportResult result = importer.import(file.utf8().c_str());
+    complete(imp);
+    EXPECT_EQ(result.objectsImported(), 1);
+    EXPECT_EQ(result.featuresSkipped(), 2);
+
+    // The pre-pass logs nothing; each feature is named by its position in the feature list,
+    // the non-object element included, in the reader's messages and the importer's alike.
+    const auto count = [&log](const std::string& text) {
+        int n = 0;
+        for (const std::string& m : log.sink().messages) n += m.find(text) != std::string::npos ? 1 : 0;
+        return n;
+    };
+    EXPECT_EQ(log.sink().messages.size(), 4u);
+    EXPECT_EQ(count("GeoJsonReader: skipping feature 0 "), 1);
+    EXPECT_EQ(count("GeoJsonReader: skipping feature 1 "), 1);
+    EXPECT_EQ(count("GeoJsonImporter::import: skipping feature 2 "), 1);
+    EXPECT_EQ(count("GeoJsonReader: feature 2 "), 1);  // the reader's own error, quoted by the importer
+    EXPECT_EQ(count("GeoJsonImporter::import: feature 3 "), 1);
+    EXPECT_FALSE(log.anyContains("SECRET"));
+}
+
+TEST_F(GeoJsonImport, StrictUnknownLabelIsNamedUnderTheReadersIndex) {  // UR-RES-19
+    const GeoJsonFile file(collection({"42", "[1]", squareFeature(0, 0, qupathClass("Tumor")),
+                                       squareFeature(20, 0, qupathClass("my-weird-class"))}));
+    GeoJsonImporter importer(store(), cells, imp);
+    try {
+        importer.import(file.utf8().c_str());
+        FAIL() << "a label outside the vocabulary was accepted under Strict";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find("feature 3 of"), std::string::npos) << message;  // the two non-objects count
+        EXPECT_NE(message.find("my-weird-class"), std::string::npos) << message;
+    }
+    EXPECT_EQ(store().objects().totalObjectCount(), 0);
+}
+
 TEST(GeoJsonImportProgress, ProgressCancellationAndConstructorErrors) {
     const StoreFilesGuard files("import_progress");
     const Configuration config = ConfigurationBuilder().objectBatchSize(100).build();

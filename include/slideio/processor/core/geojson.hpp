@@ -32,7 +32,9 @@ namespace slideio::processor {
  * empty, or of any other type is skipped with a LogLevel::Warning message
  * naming its index and, when it is one of the seven RFC 7946 geometry names,
  * its type; any other type is logged as "an unrecognised geometry type",
- * because file text may carry a patient identifier.
+ * because file text may carry a patient identifier. An element of the feature
+ * list that is not an object is skipped with a Warning naming its index.
+ * setWarningsEnabled(false) silences these messages for one reader.
  *
  * Properties are the feature's scalar "properties" members other than
  * "classification" and "layer", in document order, followed by the scalar
@@ -49,7 +51,8 @@ namespace slideio::processor {
  * features skipped for their geometry.
  *
  * Feature indices in messages are 0-based positions in the feature list,
- * counting skipped features. A geometry error (a ring with fewer than 3
+ * counting skipped features and elements that are not objects; featureIndex()
+ * reports the current feature's index in the same numbering. A geometry error (a ring with fewer than 3
  * distinct points, a ring whose points all lie on one line, a polygon whose
  * extent does not fit int64_t, a non-finite or out-of-range coordinate, or
  * malformed coordinate nesting) throws from next() but leaves the reader usable: the
@@ -183,14 +186,41 @@ public:
      */
     bool provenance(Provenance& out) const;
     /**
-     * @brief Returns the number of features skipped with a warning because their
-     * geometry is null, missing, empty or of an unsupported type.
+     * @brief Returns the number of features skipped because their geometry is
+     * null, missing, empty or of an unsupported type, whether or not a warning
+     * was logged for them (see setWarningsEnabled()).
      * @return The count so far; features whose next() threw, and elements of the
      * feature list that are not objects, are not counted. 0 on a moved-from
      * reader.
      * @throws Nothing.
      */
     int64_t featuresSkipped() const noexcept;
+    /**
+     * @brief Returns the index of the current feature, numbered as the reader's
+     * messages number it.
+     *
+     * The index is the feature's 0-based position in the feature list, counting
+     * skipped features and elements that are not objects; a single Feature is 0.
+     * @return The index of the feature the last next() returned, or of the
+     * feature whose geometry error the last next() threw; -1 before the first
+     * next(), after next() returns false or throws any other error, and on a
+     * moved-from reader.
+     * @throws Nothing.
+     */
+    int64_t featureIndex() const noexcept;
+    /**
+     * @brief Turns this reader's LogLevel::Warning messages on or off.
+     *
+     * On by default. While off, the reader skips and counts exactly as when on:
+     * featuresSkipped() still counts the features skipped for their geometry,
+     * and featureIndex() still numbers elements that are not objects. Only the
+     * messages go, so a caller that reads a file twice can log each skip once.
+     * It affects every message from the call on, and no other reader; a
+     * moved-from reader ignores it.
+     * @param enabled False to log nothing; true to log as described above.
+     * @throws Nothing.
+     */
+    void setWarningsEnabled(bool enabled) noexcept;
 
 private:
     class Impl;

@@ -1252,6 +1252,8 @@ public:
     int64_t featuresRead() const noexcept;
     bool provenance(Provenance& out) const;   // false until the member is read
     int64_t featuresSkipped() const noexcept;
+    int64_t featureIndex() const noexcept;    // -1 when there is no current feature
+    void setWarningsEnabled(bool enabled) noexcept;
 };
 
 class GeoJsonWriter {
@@ -1333,9 +1335,22 @@ sees the member as the stream passes it. It then sets `out` through
 number that is not an integer in range, or a negative `sceneIndex` (which
 `setSceneIndex` refuses), as `""` or 0. It is false for a
 top-level array, a single Feature, or a member that is not an object, and
-leaves `out` unchanged. `featuresSkipped()` counts the features skipped with a
-warning for null, missing, empty or unsupported geometry; a feature whose
-`next()` threw is not counted. A moved-from reader reports false and 0. No
+leaves `out` unchanged. `featuresSkipped()` counts the features skipped for null,
+missing, empty or unsupported geometry, whether or not a warning was logged
+for them; a feature whose `next()` threw, and a list element that is not an
+object, is not counted. A moved-from reader reports false and 0.
+
+**Feature indices.** Every message names a feature by its 0-based position in
+the feature list, counting skipped features and list elements that are not
+objects (each of which is skipped, with a Warning unless warnings are off); a
+single Feature is 0.
+`featureIndex()` returns that index for the feature the last `next()` returned
+or rejected for its geometry, and -1 before the first `next()`, after it
+returns false or throws another error, and on a moved-from reader, so a caller
+that adds its own messages names a feature as the reader does.
+`setWarningsEnabled(false)` silences one reader's Warning messages, from the
+call on, without changing what it skips or counts; `storage`'s importer uses it
+for the pre-pass that only counts features, so each skip is logged once. No
 message the reader logs or throws copies text from the file other than an
 RFC 7946 geometry type name: none names a provenance field, a property value
 or an unrecognised geometry type, since any of them may carry a patient
