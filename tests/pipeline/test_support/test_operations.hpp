@@ -114,6 +114,65 @@ private:
     bool seams_;
 };
 
+/// "test.wholeLevel": PerChannel, Byte and Float32, halo 0, output Float32, a
+/// WholeLevel operation with a working set of 100 bytes per level pixel. Its tile
+/// is the whole level; it writes each sample of the tile as Float32.
+class WholeLevelOperation : public Operation {
+public:
+    explicit WholeLevelOperation(const OperationParameters& parameters);
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    DataType outputType(DataType inputType) const override;
+    const OperationParameters& parameters() const override;
+    void apply(OperationContext& context) override;
+    TileRequirement tileRequirement() const override;
+    int64_t workingSetBytesPerLevelPixel() const override;
+
+private:
+    OperationParameters parameters_;
+};
+
+/// "test.jointUniform": Joint, requiresUniformTypes, Byte and Float32, halo 0,
+/// output one plane of the input type: a copy of plane 0's tile.
+class JointUniformOperation : public Operation {
+public:
+    explicit JointUniformOperation(const OperationParameters& parameters);
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    DataType outputType(DataType inputType) const override;
+    const OperationParameters& parameters() const override;
+    void apply(OperationContext& context) override;
+    /// 1: the copy of plane 0.
+    int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+
+private:
+    OperationParameters parameters_;
+};
+
+/// "test.floatOnly": PerChannel, Float32 only, halo 0, output Float32: a copy of
+/// the tile.
+class FloatOnlyOperation : public Operation {
+public:
+    explicit FloatOnlyOperation(const OperationParameters& parameters);
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    DataType outputType(DataType inputType) const override;
+    const OperationParameters& parameters() const override;
+    void apply(OperationContext& context) override;
+
+private:
+    OperationParameters parameters_;
+};
+
 /// A factory whose declarations are read from a prototype operation built from
 /// default parameters, so they describe the operation create() returns for
 /// default parameters. The catalog's create() compares only the
@@ -149,7 +208,10 @@ private:
 OperationFactoryPtr makeThresholdFactory();
 OperationFactoryPtr makeBoxMeanFactory();
 OperationFactoryPtr makeComponentsFactory();
-/// Registers the three factories above, skipping any already registered.
+OperationFactoryPtr makeWholeLevelFactory();
+OperationFactoryPtr makeJointUniformFactory();
+OperationFactoryPtr makeFloatOnlyFactory();
+/// Registers the six factories above, skipping any already registered.
 void registerTestOperations();
 
 } // namespace slideio::processor::testing_support

@@ -5,6 +5,7 @@ add_library(slideio-processor-pipeline OBJECT
     operation_context.cpp
     operation_catalog.cpp
     operation_parameters.cpp
+    pipeline.cpp
     pipeline_spec.cpp
     reduction.cpp
     standard_measurements.cpp
@@ -16,6 +17,7 @@ add_library(slideio-processor-pipeline OBJECT
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
     detail/plane_buffers.cpp
+    detail/run_plan.cpp
     detail/scene_reader.cpp
     detail/type_contract.cpp
 )

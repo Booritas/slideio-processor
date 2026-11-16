@@ -33,6 +33,7 @@ add_executable(slideio_processor_pipeline_tests
     test_operation_catalog.cpp
     test_operation_parameters.cpp
     test_pipeline_spec.cpp
+    test_pipeline_validate.cpp
     test_reduction.cpp
     test_scene_reader.cpp
     test_tile_grid.cpp
@@ -98,6 +99,7 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_operation.cpp
     header_check/check_operation_catalog.cpp
     header_check/check_operation_parameters.cpp
+    header_check/check_pipeline.cpp
     header_check/check_pipeline_spec.cpp
     header_check/check_reduction.cpp
     header_check/check_standard_measurements.cpp
