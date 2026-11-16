@@ -6,9 +6,11 @@ add_library(slideio-processor-pipeline OBJECT
     operation_catalog.cpp
     operation_parameters.cpp
     pipeline_spec.cpp
+    reduction.cpp
     standard_measurements.cpp
     tile_grid.cpp
     detail/combine_partials.cpp
+    detail/half.cpp
     detail/level_mapping.cpp
     detail/level_table.cpp
     detail/operation_context_state.cpp
