@@ -225,6 +225,26 @@ TEST(PipelineSpec, FromJsonNamesTheBadMember) {
     ASSERT_TRUE(throwsInvalid("[]"));
 }
 
+TEST(PipelineSpec, FromJsonRefusesRepeatedMembersAndSurvivesDeepNesting) {
+    // A repeated member would replay ambiguously, at the top level or in parameters.
+    std::string m;
+    ASSERT_TRUE(throwsInvalid(
+        "{\"specVersion\":1,\"channels\":\"all\",\"analysisLevel\":-1,\"analysisLevel\":2,\"operations\":[]}", &m));
+    EXPECT_NE(m.find("analysisLevel"), std::string::npos) << m;
+    ASSERT_TRUE(throwsInvalid("{\"specVersion\":1,\"channels\":\"all\",\"analysisLevel\":-1,\"operations\":"
+                              "[{\"name\":\"test.threshold\",\"parameters\":{\"level\":1,\"level\":2}}]}",
+                              &m));
+    EXPECT_NE(m.find("level"), std::string::npos) << m;
+
+    // Deep nesting is parsed iteratively and refused as the wrong shape, not by overflowing the stack.
+    const std::string deep = std::string(200000, '[') + std::string(200000, ']');
+    EXPECT_TRUE(throwsInvalid(deep.c_str()));
+    const std::string deepObject = "{\"specVersion\":1,\"channels\":\"all\",\"analysisLevel\":-1,\"operations\":[],"
+                                   "\"extra\":" +
+                                   std::string(200000, '[') + std::string(200000, ']') + "}";
+    EXPECT_NO_FATAL_FAILURE(throwsInvalid(deepObject.c_str()));
+}
+
 TEST(PipelineSpec, Validation) {
     PipelineSpec s;
     EXPECT_THROW(s.restrictTo(Rect64{0, 0, 0, 5}), InvalidArgumentError);

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <new>
@@ -26,13 +27,16 @@ namespace slideio::processor {
 class OperationParameters::Impl {
 public:
     using Value = std::variant<int64_t, double, bool, std::string, std::vector<double>>;
-    std::map<std::string, Value> entries; // std::string orders bytewise (char_traits<char>)
+    // std::string orders bytewise (char_traits<char>). The transparent comparator
+    // finds a const char* without building a std::string, so the noexcept getters
+    // do not allocate.
+    std::map<std::string, Value, std::less<>> entries;
 
     const Value* find(const char* key) const noexcept {
         if (key == nullptr) {
             return nullptr;
         }
-        const auto it = entries.find(std::string(key));
+        const auto it = entries.find(key);
         return it == entries.end() ? nullptr : &it->second;
     }
 };

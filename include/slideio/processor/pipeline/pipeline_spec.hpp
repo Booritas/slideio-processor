@@ -290,7 +290,10 @@ public:
      * @return The spec.
      * @throws InvalidArgumentError When the text is null, does not parse (the message
      * carries the offset), lacks a member, holds a member of the wrong type or value
-     * (the message names it), or has a specVersion other than 1.
+     * (the message names it), has a specVersion other than 1, or repeats a member
+     * name within one object.
+     * @throws InternalError When reading fails for a reason other than the
+     * text (cause() keeps the underlying message).
      * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * Safe to call concurrently.
@@ -305,7 +308,8 @@ public:
      * hole flags included), and operations by name and parameters.
      * @param other The spec to compare with.
      * @return True when every part is equal.
-     * @throws Nothing.
+     * @throws Nothing. Declared noexcept although comparing parameters may
+     * allocate: failure to allocate is fatal and calls std::terminate.
      * @par Thread-safety
      * Safe to call concurrently on const specs.
      * @par Requirements

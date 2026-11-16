@@ -55,7 +55,7 @@ Continuing plan A's numbering (A used P1–P12, P14, P16, P17; P13 and P15 were 
 
 **Interfaces:**
 - Consumes: plan A's synthetic scene, `detail::rectToLevel0`.
-- Produces: `detail::PlaneBuffers` (`PlaneBuffers(int64_t width, int64_t height, const std::vector<DataType>& types, const std::vector<int32_t>& sourceChannels)`, `BlockView view(int32_t level, const Rect64& levelRect, double levelScale)`, `int64_t bytes() const`), `detail::SceneReader` (`SceneReader(slideio::ScenePtr)`, `std::vector<DataType> channelTypes() const`, `void read(int32_t level, const Rect64& levelRect, const std::vector<int32_t>& channels, PlaneBuffers& out) const`), per P18.
+- Produces: `detail::PlaneBuffers` (`PlaneBuffers(int64_t width, int64_t height, const std::vector<DataType>& types, const std::vector<int32_t>& sourceChannels)`, `BlockView view(int32_t level, const Rect64& levelRect, double levelScale)`, `int64_t bytes() const`), `detail::SceneReader` (`SceneReader(std::shared_ptr<slideio::Scene>)` (never `slideio::ScenePtr`, which SlideIO defines as a macro), `std::vector<DataType> channelTypes() const`, `void read(int32_t level, const Rect64& levelRect, const std::vector<int32_t>& channels, PlaneBuffers& out) const`), per P18.
 
 - [ ] **Step 1: Write the failing tests** (`// Requirements: UR-IMG-9, UR-IMG-4, UR-EXT-3`).
 

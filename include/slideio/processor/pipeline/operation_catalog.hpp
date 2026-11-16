@@ -21,8 +21,13 @@ namespace slideio::processor {
  * @brief Creates one kind of operation and declares what it is, so the catalog
  * can answer before constructing anything.
  *
- * The declarations must equal those of every operation create() returns; the
- * catalog checks that on each create().
+ * name(), arity(), requiresUniformTypes(), supportedTypes() and
+ * producesObjects() do not depend on parameters and must equal those of every
+ * operation create() returns; the catalog checks them on each create(). The
+ * other declarations (halo(), tileRequirement(),
+ * workingSetBytesPerLevelPixel(), outputPlaneCount()) describe the operation
+ * created from default parameters; the created operation's own declarations
+ * are authoritative.
  * @par Thread-safety
  * Implementations must be safe to use concurrently: the catalog calls them from
  * any thread.
@@ -114,8 +119,7 @@ public:
     virtual const char*  complexityNote() const = 0;
 
     /**
-     * @brief Returns Operation::tileRequirement() for default parameters; the instance is authoritative
-     * (ruling P5).
+     * @brief Returns Operation::tileRequirement() for default parameters; the instance is authoritative.
      * @return TileRequirement::Halo by default.
      * @par Thread-safety
      * Must be safe to call concurrently.
@@ -125,7 +129,7 @@ public:
     virtual TileRequirement tileRequirement() const;
     /**
      * @brief Returns, for default parameters (the instance is authoritative), Operation::workingSetBytesPerLevelPixel() of the
-     * operations created (ruling P5).
+     * operations created.
      * @return 0 by default.
      * @par Thread-safety
      * Must be safe to call concurrently.
@@ -134,8 +138,7 @@ public:
      */
     virtual int64_t workingSetBytesPerLevelPixel() const;
     /**
-     * @brief Returns Operation::producesObjects() of the operations created
-     * (ruling P5).
+     * @brief Returns Operation::producesObjects() of the operations created.
      * @return False by default.
      * @par Thread-safety
      * Must be safe to call concurrently.
@@ -144,8 +147,7 @@ public:
      */
     virtual bool producesObjects() const;
     /**
-     * @brief Returns, for default parameters (the instance is authoritative), Operation::outputPlaneCount() of the operations created
-     * (ruling P5).
+     * @brief Returns, for default parameters (the instance is authoritative), Operation::outputPlaneCount() of the operations created.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.
      * @par Thread-safety
@@ -203,7 +205,9 @@ public:
      * @brief Tells whether a name is registered.
      * @param name The UTF-8 name; null is never registered.
      * @return True when registered.
-     * @throws Nothing.
+     * @throws Nothing. Declared noexcept although it takes the catalog's
+     * shared lock: failure to lock (std::system_error) is fatal and calls
+     * std::terminate. The lookup itself does not allocate.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements
@@ -222,7 +226,7 @@ public:
      * name(), arity(), requiresUniformTypes(), supportedTypes() or
      * producesObjects() differs from the factory's (the
      * message names the field); also for a non-ProcessorError exception the
-     * factory throws, kept as cause(). halo(), tileRequirement(), the working
+     * factory throws, kept as cause(), or anything else it throws. halo(), tileRequirement(), the working
      * set and outputPlaneCount() are not compared: they may depend on the
      * parameters, which a factory does not see.
      * @throws std::bad_alloc When memory is exhausted.
@@ -236,7 +240,9 @@ public:
     /**
      * @brief Returns the number of registered operations.
      * @return The count.
-     * @throws Nothing.
+     * @throws Nothing. Declared noexcept although it takes the catalog's
+     * shared lock: failure to lock (std::system_error) is fatal and calls
+     * std::terminate.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements
@@ -313,7 +319,7 @@ public:
 
     /**
      * @brief Returns, for default parameters, OperationFactory::tileRequirement() of a registered
-     * operation (ruling P5).
+     * operation.
      * @param name The operation name.
      * @return The requirement.
      * @throws InvalidArgumentError When the name is null or unknown.
@@ -325,7 +331,7 @@ public:
     TileRequirement tileRequirement(const char* name) const;
     /**
      * @brief Returns, for default parameters, OperationFactory::workingSetBytesPerLevelPixel() of a
-     * registered operation (ruling P5).
+     * registered operation.
      * @param name The operation name.
      * @return Bytes per level pixel.
      * @throws InvalidArgumentError When the name is null or unknown.
@@ -337,7 +343,7 @@ public:
     int64_t workingSetBytesPerLevelPixel(const char* name) const;
     /**
      * @brief Returns OperationFactory::producesObjects() of a registered
-     * operation (ruling P5).
+     * operation.
      * @param name The operation name.
      * @return True when it emits objects.
      * @throws InvalidArgumentError When the name is null or unknown.
@@ -349,7 +355,7 @@ public:
     bool producesObjects(const char* name) const;
     /**
      * @brief Returns, for default parameters, OperationFactory::outputPlaneCount() of a registered
-     * operation (ruling P5).
+     * operation.
      * @param name The operation name.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return The number of output planes of a Joint operation.

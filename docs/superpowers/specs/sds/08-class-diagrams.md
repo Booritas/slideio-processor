@@ -1432,7 +1432,7 @@ classDiagram
 
     class Pipeline {
         <<ThreadConfined to configure>>
-        +Pipeline(ScenePtr, Configuration, PipelineSpec)
+        +Pipeline(shared_ptr~Scene~, Configuration, PipelineSpec)
         +memoryBudget(MemoryBudgetPtr) Pipeline
         +edgeSink(EdgeSink*) Pipeline
         +annotationSink(AnnotationSink*) Pipeline
@@ -1442,7 +1442,7 @@ classDiagram
         +bindLayer(cstr name, LayerId) Pipeline
         +spec() PipelineSpec
         +analysisLevel() int32_t
-        +asScene() ScenePtr
+        +asScene() shared_ptr~Scene~
         +runInto(ObjectSink, ProgressObserver*, CancellationToken) void
         +run(ProgressObserver*, CancellationToken) void
         +levelCount() int32_t
@@ -1465,7 +1465,7 @@ classDiagram
 
     class LevelSelector {
         <<Immutable>>
-        +LevelSelector(ScenePtr)
+        +LevelSelector(shared_ptr~Scene~)
         +levelForScale(double) int32_t
         +levelForSize(int64_t w, int64_t h) int32_t
         +scaleOfLevel(int32_t) double
@@ -1589,8 +1589,8 @@ what makes it enforceable — a float reduction combined in completion order
 makes UR-QA-3 fail intermittently and irreproducibly.
 
 `Pipeline::asScene()` returns a `std::shared_ptr<slideio::Scene>` — drawn as
-`ScenePtr`, though the signatures cannot spell it that way because SlideIO
-defines `ScenePtr` as a macro (`05-pipeline.md` 5.5) — and is the lazy path of
+`shared_ptr~Scene~`, never `ScenePtr`, because SlideIO defines `ScenePtr` as a
+macro (`05-pipeline.md` 5.5) — and is the lazy path of
 UR-EXE-1. It is implementable only through the SlideIO addition specified in
 [the scene-source design](../2026-10-08-scene-source-design.md); the spike
 found no route to it from the public reader API alone.

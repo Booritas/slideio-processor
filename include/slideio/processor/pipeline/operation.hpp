@@ -75,7 +75,7 @@ struct SLIDEIO_PROCESSOR_ENGINE_EXPORTS Halo {
      * @param n The width; must not be negative.
      * @return {n, n, n, n}.
      * @throws InvalidArgumentError When @p n is negative: a negative halo is
-     * refused, never clamped (ruling P16).
+     * refused, never clamped.
      * @par Thread-safety
      * Safe to call concurrently.
      * @par Requirements
@@ -367,7 +367,7 @@ public:
     /**
      * @brief Records a fragment touching a tile seam together with its
      * per-channel intensity partials, which the merger combines when the
-     * object closes (ruling P6).
+     * object closes.
      * @param fragment The fragment, in level-0 coordinates.
      * @param layer The layer the merged object belongs to.
      * @param partials One partial per channel, read during this call only;
@@ -553,7 +553,7 @@ public:
 
     /**
      * @brief Tells whether the operation is applied per tile with a halo or
-     * to the whole analysis level at once (ruling P5).
+     * to the whole analysis level at once.
      * @return TileRequirement::Halo by default.
      * @throws Nothing.
      * @par Thread-safety
@@ -565,7 +565,7 @@ public:
     /**
      * @brief Returns the working memory a WholeLevel operation needs per pixel
      * of the analysis level, so the run can be refused before it starts when
-     * the level does not fit the budget (ruling P5).
+     * the level does not fit the budget.
      * @return Bytes per level pixel; 0 by default.
      * @throws Nothing.
      * @par Thread-safety
@@ -576,8 +576,7 @@ public:
     virtual int64_t workingSetBytesPerLevelPixel() const;
     /**
      * @brief Tells whether the operation emits objects, and therefore has a
-     * target layer the run resolves from its "targetLayer" parameter
-     * (ruling P5).
+     * target layer the run resolves from its "targetLayer" parameter.
      * @return False by default.
      * @throws Nothing.
      * @par Thread-safety
@@ -588,7 +587,7 @@ public:
     virtual bool producesObjects() const;
     /**
      * @brief Returns how many output planes a Joint operation writes for a
-     * number of input planes (ruling P5). Not consulted for PerChannel
+     * number of input planes. Not consulted for PerChannel
      * operations, which yield one plane per input plane.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.

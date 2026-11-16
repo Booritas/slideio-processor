@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -111,6 +112,21 @@ class LyingFactory : public StubFactory {
 public:
     using StubFactory::StubFactory;
     TileRequirement tileRequirement() const override { return TileRequirement::WholeLevel; }
+};
+
+// A factory whose create() throws something: a std::exception, or an int.
+class ThrowingFactory : public StubFactory {
+public:
+    ThrowingFactory(StubSpec spec, bool standard) : StubFactory(std::move(spec)), standard_(standard) {}
+    OperationPtr create(const OperationParameters&) const override {
+        if (standard_) {
+            throw std::runtime_error("factory exploded");
+        }
+        throw 42;
+    }
+
+private:
+    bool standard_;
 };
 
 StubSpec specNamed(const std::string& name) {
@@ -302,6 +318,27 @@ TEST(OperationCatalog, CreatedOperationMustMatchItsFactory) {
     nothing.returnNull = true;
     registerOnce(stub(nothing));
     EXPECT_THROW(catalog.create(nothing.name.c_str(), parameters), InternalError);
+}
+
+TEST(OperationCatalog, FactoryExceptionsBecomeInternalErrors) {
+    OperationCatalog& catalog = OperationCatalog::instance();
+    const OperationParameters parameters;
+    const std::string standard = "test.FactoryExceptionsBecomeInternalErrors.standard";
+    const std::string other = "test.FactoryExceptionsBecomeInternalErrors.other";
+    registerOnce(std::make_shared<ThrowingFactory>(specNamed(standard), true));
+    registerOnce(std::make_shared<ThrowingFactory>(specNamed(other), false));
+    for (const std::string& name : {standard, other}) {
+        try {
+            catalog.create(name.c_str(), parameters);
+            ADD_FAILURE() << name << ": no exception";
+        } catch (const InternalError& e) {
+            EXPECT_NE(std::string(e.what()).find("failed in its factory"), std::string::npos);
+            EXPECT_STREQ(e.operationName(), name.c_str());
+            ASSERT_NE(e.cause(), nullptr);
+            EXPECT_EQ(std::string(e.cause()),
+                      name == standard ? "factory exploded" : "an exception not derived from std::exception");
+        }
+    }
 }
 
 TEST(OperationCatalog, SupportMatrixMatchesTheRuntimeContract) {

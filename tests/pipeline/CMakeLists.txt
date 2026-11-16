@@ -1,16 +1,19 @@
 include(GoogleTest)
 
 # Shared test helpers (synthetic scenes, test operations) that plans B and C
-# build on. They see only the public headers: the include path is the engine's
-# public interface plus tests/, never src/.
+# build on. The synthetic scene and the test operations use only the public
+# headers; operation_conformance.cpp also compares parameters through the
+# engine's detail header, so src/ is on the library's private include path. The
+# comparison is not exported from the engine, so its source is compiled into the
+# library, and every executable that links the library gets it from there.
 add_library(slideio_processor_pipeline_test_support STATIC
     test_support/synthetic_scene.cpp
     test_support/operation_conformance.cpp
     test_support/test_operations.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine GTest::gtest
     PRIVATE rapidjson)
-# operation_conformance.cpp compares parameters through the engine's detail header.
 target_include_directories(slideio_processor_pipeline_test_support PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_include_directories(slideio_processor_pipeline_test_support PUBLIC ${PROJECT_SOURCE_DIR}/tests)
 
@@ -33,13 +36,13 @@ add_executable(slideio_processor_pipeline_tests
     test_reduction.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
-    # Not exported from the library, so compiled into the test directly.
+    # Not exported from the library, so compiled into the test directly
+    # (parameters_json.cpp comes with the test-support library).
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/half.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
-    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/type_contract.cpp
 )
 target_link_libraries(slideio_processor_pipeline_tests PRIVATE
@@ -56,6 +59,13 @@ target_include_directories(slideio_processor_pipeline_tests PRIVATE
 # through TEST_LAUNCHER (CMake 3.29+), which wraps discovery and every run alike.
 set(PIPELINE_TEST_PROPERTIES TIMEOUT 60)
 if(WIN32)
+    if(CMAKE_VERSION VERSION_LESS 3.29)
+        # Before 3.29 TEST_LAUNCHER is ignored, so test discovery runs without
+        # SlideIO's DLLs on PATH and the pipeline tests cannot be listed or run
+        # (before 3.22 ENVIRONMENT_MODIFICATION is ignored as well).
+        message(WARNING "tests/pipeline: CMake ${CMAKE_VERSION} ignores TEST_LAUNCHER; the pipeline tests "
+                        "need CMake 3.29 or later on Windows to find SlideIO's DLLs.")
+    endif()
     get_target_property(SLIDEIO_RUNTIME slideio::slideio IMPORTED_LOCATION_RELEASE)
     if(NOT SLIDEIO_RUNTIME)
         # SlideIO's hand-written package config sets the configuration-less property.

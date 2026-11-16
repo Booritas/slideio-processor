@@ -8,6 +8,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -55,7 +56,8 @@ int32_t OperationFactory::outputPlaneCount(int32_t inputPlaneCount) const {
 
 // std::map keeps the names in ascending bytewise order (char compares as
 // unsigned char) and never moves a node, so a name or a factory pointer handed
-// out stays valid: nothing is ever removed.
+// out stays valid: nothing is ever removed. The transparent comparator finds a
+// const char* without building a std::string, so lookups do not allocate.
 class OperationCatalog::Impl {
 public:
     OperationFactoryPtr find(const char* name, const char* caller) const {
@@ -73,7 +75,7 @@ public:
     }
 
     mutable std::shared_mutex mutex;
-    std::map<std::string, OperationFactoryPtr> factories;
+    std::map<std::string, OperationFactoryPtr, std::less<>> factories;
 };
 
 OperationCatalog::OperationCatalog() : impl_(std::make_unique<Impl>()) {}
@@ -134,6 +136,11 @@ OperationPtr OperationCatalog::create(const char* name, const OperationParameter
         ErrorContext context;
         context.operationName = name;
         context.cause = e.what();
+        throw InternalError((label + " failed in its factory").c_str(), context);
+    } catch (...) {
+        ErrorContext context;
+        context.operationName = name;
+        context.cause = "an exception not derived from std::exception";
         throw InternalError((label + " failed in its factory").c_str(), context);
     }
     if (operation == nullptr) {

@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,11 +52,43 @@ void requireIndex(int32_t index, size_t count, const char* method) {
     }
 }
 
+// The default state, constructed when the library loads rather than on first use,
+// so a noexcept getter reading a moved-from spec never constructs (and allocates)
+// it. A failure to allocate it at load is fatal.
+template <class T>
+const T kEmpty{};
+
 // A moved-from spec has no Impl; it reads as the default state and is revived on first write.
 template <class T>
-const T& orEmpty(const std::unique_ptr<T>& impl) {
-    static const T instance;
-    return impl ? *impl : instance;
+const T& orEmpty(const std::unique_ptr<T>& impl) noexcept {
+    return impl ? *impl : kEmpty<T>;
+}
+
+// RapidJSON keeps repeated member names; FindMember takes the first while a member
+// loop lets the last win, so a record holding one would replay ambiguously. Walked
+// with an explicit stack, like the iterative parse, so deep nesting cannot
+// overflow the call stack.
+void rejectDuplicateKeys(const rapidjson::Value& root) {
+    std::vector<const rapidjson::Value*> pending{&root};
+    std::set<std::string> names;
+    while (!pending.empty()) {
+        const rapidjson::Value* value = pending.back();
+        pending.pop_back();
+        if (value->IsObject()) {
+            names.clear();
+            for (auto it = value->MemberBegin(); it != value->MemberEnd(); ++it) {
+                std::string name(it->name.GetString(), it->name.GetStringLength());
+                if (!names.insert(name).second) {
+                    fail("fromJson: an object repeats the member '" + name + "'");
+                }
+                pending.push_back(&it->value);
+            }
+        } else if (value->IsArray()) {
+            for (const rapidjson::Value& element : value->GetArray()) {
+                pending.push_back(&element);
+            }
+        }
+    }
 }
 
 template <class T>
@@ -445,12 +478,14 @@ PipelineSpec PipelineSpec::fromJson(const char* json) {
     }
     try {
         rapidjson::Document doc;
-        // Full precision, so a double such as 0.1 reads back to the exact value written.
-        doc.Parse<rapidjson::kParseFullPrecisionFlag>(json);
+        // Full precision, so a double such as 0.1 reads back to the exact value written;
+        // iterative, so deeply nested input fails to parse instead of overflowing the stack.
+        doc.Parse<rapidjson::kParseFullPrecisionFlag | rapidjson::kParseIterativeFlag>(json);
         if (doc.HasParseError()) {
             fail(std::string("fromJson: the JSON does not parse: ") + rapidjson::GetParseError_En(doc.GetParseError()) +
                  " (offset " + std::to_string(doc.GetErrorOffset()) + ")");
         }
+        rejectDuplicateKeys(doc);
         return readSpec(doc);
     } catch (const std::bad_alloc&) {
         throw;
@@ -464,30 +499,28 @@ PipelineSpec PipelineSpec::fromJson(const char* json) {
 }
 
 bool PipelineSpec::equals(const PipelineSpec& other) const noexcept {
-    try {
-        const Impl& a = orEmpty(impl_);
-        const Impl& b = orEmpty(other.impl_);
-        if (a.level != b.level || a.hasRoi != b.hasRoi || a.hasPolygon != b.hasPolygon ||
-            a.operations.size() != b.operations.size() || !channelsEqual(a.channels, b.channels)) {
-            return false;
-        }
-        if (a.hasRoi && (a.roi.x != b.roi.x || a.roi.y != b.roi.y || a.roi.width != b.roi.width ||
-                         a.roi.height != b.roi.height)) {
-            return false;
-        }
-        if (a.hasPolygon && !polygonsEqual(a.polygon, b.polygon)) {
-            return false;
-        }
-        for (size_t k = 0; k < a.operations.size(); ++k) {
-            if (a.operations[k].name != b.operations[k].name ||
-                !detail::parametersEqual(a.operations[k].parameters, b.operations[k].parameters)) {
-                return false;
-            }
-        }
-        return true;
-    } catch (...) {
+    // Comparing parameters can allocate; a failure there is fatal (documented in the
+    // header) rather than read as "not equal".
+    const Impl& a = orEmpty(impl_);
+    const Impl& b = orEmpty(other.impl_);
+    if (a.level != b.level || a.hasRoi != b.hasRoi || a.hasPolygon != b.hasPolygon ||
+        a.operations.size() != b.operations.size() || !channelsEqual(a.channels, b.channels)) {
         return false;
     }
+    if (a.hasRoi && (a.roi.x != b.roi.x || a.roi.y != b.roi.y || a.roi.width != b.roi.width ||
+                     a.roi.height != b.roi.height)) {
+        return false;
+    }
+    if (a.hasPolygon && !polygonsEqual(a.polygon, b.polygon)) {
+        return false;
+    }
+    for (size_t k = 0; k < a.operations.size(); ++k) {
+        if (a.operations[k].name != b.operations[k].name ||
+            !detail::parametersEqual(a.operations[k].parameters, b.operations[k].parameters)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace slideio::processor
