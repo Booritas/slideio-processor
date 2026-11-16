@@ -121,6 +121,8 @@ TEST(PipelineValidate, JointUniformOnMixedTypesIsArityError) {
     auto source = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
     Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.jointUniform"));
     const std::string message = validateMessage<ChannelArityError>(p);
+    EXPECT_TRUE(contains(message, "channel 0 (Byte)")) << message;
+    EXPECT_TRUE(contains(message, "channel 1 (Float32)")) << message;
     EXPECT_TRUE(contains(message, "test.jointUniform")) << message;
     EXPECT_EQ(source->readCount(), 0);
 
@@ -275,7 +277,36 @@ TEST(PipelineValidate, AutoLevel) {
     none.memoryBudget(makeMemoryBudget(5000000));
     const std::string message = validateMessage<InvalidArgumentError>(none);
     EXPECT_TRUE(contains(message, "test.wholeLevel")) << message;
+    // No level fits: the coarsest, level 2, needs 250 x 250 x 105 bytes.
+    EXPECT_TRUE(contains(message, "level 2")) << message;
+    EXPECT_TRUE(contains(message, "6562500")) << message;
+    EXPECT_TRUE(contains(message, "5000000 bytes")) << message;
     EXPECT_THROW(none.analysisLevel(), InvalidArgumentError);
+    EXPECT_EQ(source->readCount(), 0);
+}
+
+namespace {
+
+// An auxiliary of 200 Float32 planes: 800 bytes per tile pixel. Never read here.
+class WideAuxiliary : public TileRasterSource {
+public:
+    void fillTile(BlockView&) override {}
+    DataType planeType() const override { return DataType::Float32; }
+    int32_t planeCount() const override { return 200; }
+};
+
+} // namespace
+
+TEST(PipelineValidate, AutoLevelAlsoFitsTheTile) {
+    auto source = pyramid();
+    WideAuxiliary auxiliary;
+    // Level 0: the whole-level need is 105,000,000 bytes, but its one tile needs
+    // 1,000,000 x (1 + 4 + 800) = 805,000,000; level 1's tile needs 201,250,000.
+    Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.wholeLevel"));
+    p.memoryBudget(makeMemoryBudget(300000000)).auxiliaryRaster("coarse", &auxiliary);
+    p.validate();
+    EXPECT_EQ(p.analysisLevel(), 1);
+    EXPECT_EQ(planOf(p).tileBytes, int64_t(500) * 500 * 805);
     EXPECT_EQ(source->readCount(), 0);
 }
 
@@ -285,6 +316,7 @@ TEST(PipelineValidate, AnalysisLevelBeforeValidateThrows) {
     EXPECT_THROW(p.analysisLevel(), InvalidArgumentError);
     p.validate();
     EXPECT_EQ(p.analysisLevel(), 0);
+    EXPECT_EQ(source->readCount(), 0);
 }
 
 TEST(PipelineValidate, TileLargerThanTheCeilingFails) {

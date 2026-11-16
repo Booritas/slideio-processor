@@ -79,10 +79,15 @@ Rect64 regionAtLevel0(const PipelineSpec& spec, const LevelDims& level0) {
     return region;
 }
 
+// The region at a level: the level-0 region mapped outward, clipped to the level.
+// May be empty.
 Rect64 regionAtLevel(const Rect64& region0, int32_t level, const LevelSelector& selector,
                      const std::vector<LevelDims>& levels) {
     const LevelDims& dims = levels[static_cast<size_t>(level)];
-    const Rect64 region = selector.mapToLevel(region0, level).intersected(Rect64{0, 0, dims.width, dims.height});
+    return selector.mapToLevel(region0, level).intersected(Rect64{0, 0, dims.width, dims.height});
+}
+
+Rect64 requireRegion(const Rect64& region) {
     if (region.isEmpty()) {
         invalid("the restriction does not intersect the scene");
     }
@@ -276,28 +281,61 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 std::to_string(inputs.ceilingBytes) + " bytes");
     };
 
+    // What one tile's buffers need (P26): every step's planes, every auxiliary's
+    // planes and the restriction masks, over the tile grown by the chain's halo.
+    const Halo chainHalo = sumHalos(operations);
+    int64_t tilePixelBytes = bytesPerPixel;
+    for (const auto& auxiliary : *inputs.auxiliaries) {
+        const int64_t count = std::max<int32_t>(0, auxiliary.second->planeCount());
+        tilePixelBytes = addSat(tilePixelBytes, mulSat(count, dataTypeSizeBytes(auxiliary.second->planeType())));
+    }
+    const bool restricted = spec.hasRoi() || spec.hasPolygon() || inputs.hasMaskSource;
+    tilePixelBytes = addSat(tilePixelBytes, restricted ? (inputs.hasMaskSource ? 2 : 1) : 0);
+    auto haloSide = [](int64_t side, int32_t a, int32_t b) { return addSat(side, int64_t(a) + b); };
+    auto tileNeed = [&](int64_t tileW, int64_t tileH) {
+        return mulSat(mulSat(haloSide(tileW, chainHalo.left, chainHalo.right),
+                             haloSide(tileH, chainHalo.top, chainHalo.bottom)),
+                      tilePixelBytes);
+    };
+
     int32_t level = spec.analysisLevel();
     Rect64 region{};
     if (level >= 0) {
-        region = regionAtLevel(region0, level, selector, levels);
+        region = requireRegion(regionAtLevel(region0, level, selector, levels));
         if (wholeLevel && wholeNeed(region) > inputs.ceilingBytes) {
             tooBig(level, wholeNeed(region), "");
         }
     } else if (!wholeLevel) {
         level = 0;
-        region = regionAtLevel(region0, level, selector, levels);
+        region = requireRegion(regionAtLevel(region0, level, selector, levels));
     } else {
+        // The finest level whose single tile passes both P13 and P26. Levels whose
+        // mapped region is empty are skipped.
+        int32_t coarsest = -1;
+        Rect64 coarsestRegion{};
         for (int32_t candidate = 0; candidate < levelCount && level < 0; ++candidate) {
             const Rect64 candidateRegion = regionAtLevel(region0, candidate, selector, levels);
-            if (wholeNeed(candidateRegion) <= inputs.ceilingBytes) {
+            if (candidateRegion.isEmpty()) {
+                continue;
+            }
+            coarsest = candidate;
+            coarsestRegion = candidateRegion;
+            if (wholeNeed(candidateRegion) <= inputs.ceilingBytes &&
+                tileNeed(candidateRegion.width, candidateRegion.height) <= inputs.ceilingBytes) {
                 level = candidate;
                 region = candidateRegion;
             }
         }
         if (level < 0) {
-            const int32_t coarsest = levelCount - 1;
-            tooBig(coarsest, wholeNeed(regionAtLevel(region0, coarsest, selector, levels)),
-                   "no level fits the memory ceiling: ");
+            if (coarsest < 0) {
+                invalid("the restriction does not intersect the scene");
+            }
+            if (wholeNeed(coarsestRegion) > inputs.ceilingBytes) {
+                tooBig(coarsest, wholeNeed(coarsestRegion), "no level fits the memory ceiling: ");
+            }
+            // P13 fits there but P26 does not: the tile check below reports it.
+            level = coarsest;
+            region = coarsestRegion;
         }
     }
 
@@ -318,22 +356,13 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     TileGrid grid(region, level, tileWidth, tileHeight, selector);
 
     // One tile's buffers against the ceiling (P26).
-    const Halo chainHalo = sumHalos(operations);
-    int64_t tilePixelBytes = bytesPerPixel;
-    for (const auto& auxiliary : *inputs.auxiliaries) {
-        const int64_t count = std::max<int32_t>(0, auxiliary.second->planeCount());
-        tilePixelBytes = addSat(tilePixelBytes, mulSat(count, dataTypeSizeBytes(auxiliary.second->planeType())));
-    }
-    const bool restricted = spec.hasRoi() || spec.hasPolygon() || inputs.hasMaskSource;
-    tilePixelBytes = addSat(tilePixelBytes, restricted ? (inputs.hasMaskSource ? 2 : 1) : 0);
     const int64_t tileW = std::min<int64_t>(tileWidth, region.width);
     const int64_t tileH = std::min<int64_t>(tileHeight, region.height);
-    const int64_t haloW = addSat(tileW, int64_t(chainHalo.left) + chainHalo.right);
-    const int64_t haloH = addSat(tileH, int64_t(chainHalo.top) + chainHalo.bottom);
-    const int64_t tileBytes = mulSat(mulSat(haloW, haloH), tilePixelBytes);
+    const int64_t tileBytes = tileNeed(tileW, tileH);
     if (tileBytes > inputs.ceilingBytes) {
         invalid("a tile of " + std::to_string(tileW) + " x " + std::to_string(tileH) + " level pixels (" +
-                std::to_string(haloW) + " x " + std::to_string(haloH) + " with the chain's halo) needs " +
+                std::to_string(haloSide(tileW, chainHalo.left, chainHalo.right)) + " x " +
+                std::to_string(haloSide(tileH, chainHalo.top, chainHalo.bottom)) + " with the chain's halo) needs " +
                 bytesText(tileBytes) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
                 " bytes");
     }
