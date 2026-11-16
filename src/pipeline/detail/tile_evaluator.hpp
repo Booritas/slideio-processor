@@ -56,6 +56,16 @@ struct TileOutcome {
     int64_t bytesUsed;  ///< Bytes of every buffer the tile allocated (source, intermediates, auxiliaries, mask).
 };
 
+/// One tile of a global-context accumulation pass (ruling P28): the operations
+/// before `position` are applied (already finalised), then `accumulator`, a fresh
+/// instance of operation `position`, accumulates their output in its place.
+/// Nothing reaches a sink in such a pass and the operations after `position` do
+/// not run.
+struct Accumulation {
+    size_t position;          ///< A chain position; below the operation count.
+    Operation* accumulator;   ///< Borrowed; not null.
+};
+
 /// Evaluates the chain on one tile (ruling P25): builds the tile's mask (P24),
 /// reads the source over the tile grown by the chain's halo, applies each
 /// operation on its own region, filters emitted objects by anchor (P20, P24) and
@@ -73,8 +83,15 @@ public:
     /// When `runningOperation` is not null, it is set to the name of each operation
     /// while that operation runs and back to null after it, so a caller that
     /// catches can tell which operation threw (null: none did).
+    /// When `accumulation` is not null, the tile is evaluated for that accumulation
+    /// pass instead of the final one: same mask, reads and rects as a chain ending
+    /// at `accumulation->position`, no sink is written, and a skipped tile is not
+    /// counted in RunCounters::tilesSkipped (the final pass counts it).
+    /// Throws InvalidArgumentError when `accumulation` names no operation or has a
+    /// null accumulator.
     TileOutcome evaluate(int64_t tileIndex, const CancellationToken& token,
-                         const char** runningOperation = nullptr) const;
+                         const char** runningOperation = nullptr,
+                         const Accumulation* accumulation = nullptr) const;
 
     const RestrictionFilter& restriction() const noexcept;
 

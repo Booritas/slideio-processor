@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace slideio::processor::detail {
@@ -136,9 +138,14 @@ TileEvaluator::TileEvaluator(const RunPlan& plan, const SceneReader& reader, Bin
 const RestrictionFilter& TileEvaluator::restriction() const noexcept { return restriction_; }
 
 TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& token,
-                                    const char** runningOperation) const {
+                                    const char** runningOperation, const Accumulation* accumulation) const {
     if (runningOperation != nullptr) {
         *runningOperation = nullptr;
+    }
+    const std::vector<OperationPtr>& operations = plan_.operations;
+    if (accumulation != nullptr &&
+        (accumulation->position >= operations.size() || accumulation->accumulator == nullptr)) {
+        throw InvalidArgumentError("TileEvaluator::evaluate: the accumulation names no operation");
     }
     token.throwIfCancelled();
     const TileGrid& grid = plan_.grid;
@@ -151,16 +158,22 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         bytes += mask.regionAtLevel().width * mask.regionAtLevel().height;
     }
     if (restriction_.skips(mask, tileIndex)) {
-        ++bindings_.counters->tilesSkipped;
+        if (accumulation == nullptr) {
+            ++bindings_.counters->tilesSkipped;  // Once per run: the final pass counts it.
+        }
         return TileOutcome{true, bytes};
     }
     const RasterMask* tileMask = mask.isNull() ? nullptr : &mask;
 
-    // Operation k writes the tile grown by the halos of the operations after it (P25).
-    const std::vector<OperationPtr>& operations = plan_.operations;
-    std::vector<Rect64> outputRects(operations.size());
+    // The chain runs up to its end, or up to and including the accumulating operation
+    // (P28), which accumulates instead of applying; `end` is one past it.
+    const bool finalPass = accumulation == nullptr;
+    const size_t end = finalPass ? operations.size() : accumulation->position + 1;
+
+    // Operation k writes the tile grown by the halos of the operations after it, up to `end` (P25).
+    std::vector<Rect64> outputRects(end);
     Rect64 sourceRect = tile;
-    for (size_t k = operations.size(); k-- > 0;) {
+    for (size_t k = end; k-- > 0;) {
         outputRects[k] = sourceRect;
         sourceRect = grow(sourceRect, operations[k]->halo());
     }
@@ -188,17 +201,27 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     }
 
     TileObjectFilter objects(bindings_.objectSink, grid.tileRect(tileIndex), tileMask, *bindings_.counters);
+    // An accumulation pass writes no sink: what the operations before the
+    // accumulating one emit is dropped, seam fragments included.
+    const std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> dropFragment =
+        [](const Polygon&, LayerId, const IntensityPartial*, int32_t) {};
 
-    for (size_t k = 0; k < operations.size(); ++k) {
+    for (size_t k = 0; k < end; ++k) {
         token.throwIfCancelled();
         Operation& op = *operations[k];
+        const bool accumulates = !finalPass && k + 1 == end;
         const Rect64& outputRect = outputRects[k];
-        const std::vector<DataType>& outputTypes = plan_.planeTypes[k + 1];
-        PlaneBuffers output(outputRect.width, outputRect.height, outputTypes,
-                            outputChannels(current, outputTypes.size()));
-        bytes += output.bytes();
         const BlockView inputView = current.view(plan_.level, currentRect, plan_.levelScale);
-        const BlockView outputView = output.view(plan_.level, outputRect, plan_.levelScale);
+        // An accumulating operation writes nothing, so it gets no output buffer.
+        std::optional<PlaneBuffers> output;
+        BlockView outputView;
+        if (!accumulates) {
+            const std::vector<DataType>& outputTypes = plan_.planeTypes[k + 1];
+            output.emplace(outputRect.width, outputRect.height, outputTypes,
+                           outputChannels(current, outputTypes.size()));
+            bytes += output->bytes();
+            outputView = output->view(plan_.level, outputRect, plan_.levelScale);
+        }
 
         // Each operation sees the auxiliaries over its own input rect: a sub-view of
         // the buffers filled once, over the first operation's halo rect.
@@ -209,9 +232,14 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         }
 
         OperationContextState state;
-        state.objectSink = op.producesObjects() && bindings_.objectSink != nullptr ? &objects : nullptr;
-        state.edgeSink = bindings_.edgeSink;
-        state.annotationSink = bindings_.annotationSink;
+        if (finalPass) {
+            state.objectSink = op.producesObjects() && bindings_.objectSink != nullptr ? &objects : nullptr;
+            state.edgeSink = bindings_.edgeSink;
+            state.annotationSink = bindings_.annotationSink;
+            state.seamFragment = bindings_.seamFragment;
+        } else {
+            state.seamFragment = dropFragment;
+        }
         for (size_t a = 0; a < bindings_.auxiliaries.size(); ++a) {
             state.auxiliaries.emplace_back(bindings_.auxiliaries[a].first, &auxiliaryViews[a]);
         }
@@ -225,34 +253,45 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.channels = &bindings_.spec->channels();
         state.cancellation = &token;
         state.mask = tileMask;
-        state.seamFragment = bindings_.seamFragment;
 
+        // The operation's declarations decide the call shape; when it accumulates,
+        // the call goes to the accumulator, a fresh instance of the same operation.
+        const auto call = [&](OperationContext& context) {
+            if (accumulates) {
+                accumulation->accumulator->accumulate(context);
+            } else {
+                op.apply(context);
+            }
+        };
         if (runningOperation != nullptr) {
             *runningOperation = op.name();
         }
         if (op.arity() == ChannelArity::PerChannel) {
             for (int32_t plane = 0; plane < inputView.planeCount(); ++plane) {
                 const BlockView in = singlePlane(inputView, plane);
-                BlockView out = singlePlane(outputView, plane);
+                BlockView out = accumulates ? BlockView() : singlePlane(outputView, plane);
                 OperationContextState planeState = state;
                 planeState.input = &in;
-                planeState.output = &out;
-                op.apply(*makeOperationContext(std::move(planeState)));
+                planeState.output = accumulates ? nullptr : &out;
+                call(*makeOperationContext(std::move(planeState)));
             }
         } else {
             BlockView out = outputView;
             state.input = &inputView;
-            state.output = &out;
-            op.apply(*makeOperationContext(std::move(state)));
+            state.output = accumulates ? nullptr : &out;
+            call(*makeOperationContext(std::move(state)));
         }
         if (runningOperation != nullptr) {
             *runningOperation = nullptr;
         }
-
-        if (k + 1 < operations.size()) {
-            zeroOutside(output, outputRect, plan_.levelRect);
+        if (accumulates) {
+            return TileOutcome{false, bytes};
         }
-        current = std::move(output);
+
+        if (k + 1 < end) {
+            zeroOutside(*output, outputRect, plan_.levelRect);
+        }
+        current = std::move(*output);
         currentRect = outputRect;
     }
 

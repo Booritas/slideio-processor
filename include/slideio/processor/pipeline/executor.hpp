@@ -153,10 +153,17 @@ public:
      * of them are done, or when the run has failed and the tiles in flight have
      * finished. Validates the pipeline first when it has not been validated
      * since its last binding call.
+     *
+     * A chain with global-context operations runs one accumulation pass over
+     * every tile per such operation, in chain order, then the final pass. An
+     * accumulation pass applies the operations before it, accumulates each tile
+     * into a fresh instance of the operation, combines those instances in
+     * ascending tile index (a skipped tile combining nothing), and finalises;
+     * it writes no sink. Results therefore do not depend on the worker count.
      * @param pipeline The pipeline; its bindings (sinks, auxiliaries, mask
      * source, layers, stage name) are used as they stand.
      * @param sink Receives the objects the chain emits; not flushed.
-     * @param progress Receives one call per tile; may be null.
+     * @param progress Receives one call per tile of every pass; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As Pipeline::validate(); when the pipeline's
      * grid differs from this executor's; when one tile's bytes exceed the
@@ -164,15 +171,16 @@ public:
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
      * @throws TileError When a tile fails; hasTile() is true, tileX() and
-     * tileY() are its column and row.
+     * tileY() are its column and row. When finalising a global-context
+     * operation fails; hasTile() is then false.
      * @throws CancelledError When @p token is cancelled or an operation throws it.
-     * @throws InternalError When the chain needs a global-context pass, which
-     * is not run yet.
+     * @throws InternalError When a tile failed and its failure could not be
+     * recorded.
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * Safe to call concurrently; runs on one executor are serialised.
      * @par Requirements
-     * UR-EXE-2, UR-EXE-4, UR-EXE-5
+     * UR-EXE-1, UR-EXE-2, UR-EXE-4, UR-EXE-5, UR-QA-3
      */
     void run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token);
 
@@ -187,8 +195,10 @@ public:
      */
     int64_t tilesCompleted() const noexcept;
     /**
-     * @brief The tiles a run evaluates: the grid's tile count.
-     * @return The count.
+     * @brief The tile evaluations of the current or last run: the grid's tile
+     * count times the passes (one per global-context operation, plus the final
+     * pass).
+     * @return The count; the grid's tile count before the first run.
      * @throws Nothing.
      * @par Thread-safety
      * Safe to call concurrently, also during run().

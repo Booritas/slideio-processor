@@ -1,9 +1,11 @@
-// Requirements: UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5
+// Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3
 #include <slideio/processor/pipeline/executor.hpp>
 
+#include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -60,11 +62,15 @@ private:
     int64_t bytes_;
 };
 
-// What the workers of one run share. Lives on run()'s stack; run() returns only
-// after every job has signalled done.
+// What the workers of one pass share. Held by shared_ptr by run() and by every
+// job, so a job that signals done after run() has seen jobsLeft reach 0 and
+// returned still touches a live object.
 struct RunState {
     std::atomic<int64_t> next{0};       ///< The next tile index to hand out.
     std::atomic<bool> stop{false};      ///< Set by the first failure: hand out no more tiles.
+    /// Set when a failure could not be recorded (its lock or its copy failed): the
+    /// pass failed, but `failure` may not say how.
+    std::atomic<bool> failureLost{false};
 
     std::mutex failureMutex;
     std::exception_ptr failure;         ///< The first failure; later ones are dropped.
@@ -78,17 +84,21 @@ struct RunState {
     std::condition_variable done;
     int32_t jobsLeft = 0;
 
-    void recordFailure(std::exception_ptr error, int64_t tile, const char* operation) {
-        {
+    // Never throws: the run stops first, and a failure that cannot be stored is
+    // flagged instead, so run() still fails.
+    void recordFailure(std::exception_ptr error, int64_t tile, const char* operation) noexcept {
+        stop = true;
+        try {
             std::lock_guard<std::mutex> lock(failureMutex);
             if (!failure) {
-                failure = std::move(error);
-                failedTile = tile;
-                hasOperation = operation != nullptr;
                 failedOperation = operation != nullptr ? operation : "";
+                hasOperation = operation != nullptr;
+                failedTile = tile;
+                failure = std::move(error);
             }
+        } catch (...) {
+            failureLost = true;
         }
-        stop = true;
     }
 
     // The last thing a job does. noexcept: a failure here would leave run() waiting
@@ -99,6 +109,45 @@ struct RunState {
         done.notify_all();
     }
 };
+
+// Signals a job done on every way out of it, an exception included.
+class JobDoneGuard {
+public:
+    explicit JobDoneGuard(RunState& state) noexcept : state_(state) {}
+    ~JobDoneGuard() { state_.jobDone(); }
+    JobDoneGuard(const JobDoneGuard&) = delete;
+    JobDoneGuard& operator=(const JobDoneGuard&) = delete;
+
+private:
+    RunState& state_;
+};
+
+// Rethrows `failure` as the run reports it (P27): a CancelledError as is, anything
+// else as a TileError naming the stage, the operation and, when there is one, the tile.
+[[noreturn]] void reportFailure(const std::exception_ptr& failure, const std::string& stageName,
+                                const char* operationName, const TileGrid& grid, int64_t tile) {
+    std::string cause;
+    try {
+        std::rethrow_exception(failure);
+    } catch (const CancelledError&) {
+        throw;
+    } catch (const std::exception& e) {
+        cause = e.what();
+    } catch (...) {
+        cause = "an exception that is not a std::exception";
+    }
+    ErrorContext context;
+    context.stageName = stageName.c_str();
+    context.operationName = operationName;
+    context.cause = cause.c_str();
+    if (tile >= 0) {
+        context.hasTile = true;
+        context.tileX = tile % grid.columns();
+        context.tileY = tile / grid.columns();
+        throw TileError("a tile failed", context);
+    }
+    throw TileError("a global-context accumulation failed", context);
+}
 
 } // namespace
 
@@ -236,12 +285,13 @@ void WorkerPool::shutdown() { impl_->stop(); }
 class TileExecutor::Impl {
 public:
     Impl(const TileGrid& gridIn, WorkerPool& poolIn, const Configuration& configIn)
-        : grid(gridIn), pool(poolIn), config(configIn) {}
+        : grid(gridIn), pool(poolIn), config(configIn), total(gridIn.tileCount()) {}
 
     const TileGrid grid;
     WorkerPool& pool;
     const Configuration config;
     std::atomic<int64_t> completed{0};
+    std::atomic<int64_t> total;         ///< Passes × tiles of the current or last run.
     std::mutex runMutex;                ///< Serialises run().
 };
 
@@ -252,7 +302,7 @@ TileExecutor::~TileExecutor() = default;
 
 int64_t TileExecutor::tilesCompleted() const noexcept { return impl_->completed.load(); }
 
-int64_t TileExecutor::tilesTotal() const noexcept { return impl_->grid.tileCount(); }
+int64_t TileExecutor::tilesTotal() const noexcept { return impl_->total.load(); }
 
 void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* progress,
                        const CancellationToken& token) {
@@ -267,16 +317,13 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     if (!state.plan) {
         pipeline.validate();
     }
-    const detail::RunPlan& plan = *state.plan;
+    detail::RunPlan& plan = *state.plan;
     if (!sameGrid(plan.grid, impl_->grid)) {
         throw InvalidArgumentError("TileExecutor::run: the pipeline's tile grid differs from the executor's");
     }
-    if (!plan.globalContextPositions.empty()) {
-        throw InternalError("TileExecutor::run: global-context operations are not run yet");
-    }
     WorkerPool::Impl& pool = *impl_->pool.impl_;
     MemoryBudget& budget = *pool.budget;
-    // The plan's tileBytes bounds every tile's peak buffers (P26); reserve it whole.
+    // The plan's tileBytes bounds every tile's peak buffers (P26), in every pass; reserve it whole.
     const int64_t tileBytes = plan.tileBytes;
     if (tileBytes > budget.ceilingBytes()) {
         throw InvalidArgumentError(("TileExecutor::run: one tile needs " + std::to_string(tileBytes) +
@@ -285,7 +332,19 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                                        .c_str());
     }
 
+    // One accumulation pass per global-context operation, then the final pass (P28).
+    const std::vector<size_t>& globalPositions = plan.globalContextPositions;
+    const int64_t tileCount = impl_->grid.tileCount();
+    const int64_t total = static_cast<int64_t>(globalPositions.size() + 1) * tileCount;
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    // Each run accumulates into fresh instances, never on top of an earlier run's.
+    for (size_t g : globalPositions) {
+        const auto k = static_cast<int32_t>(g);
+        plan.operations[g] = catalog.create(state.spec.operationName(k), state.spec.operationParameters(k));
+    }
+
     impl_->completed = 0;
+    impl_->total = total;
     state.counters.reset();
     detail::Bindings bindings;
     bindings.objectSink = &sink;
@@ -299,103 +358,121 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.counters = &state.counters;
     const detail::TileEvaluator evaluator(plan, *state.reader, std::move(bindings));
 
-    const int64_t total = impl_->grid.tileCount();
     const std::string& stageName = state.stageName;
     std::atomic<int64_t>& completed = impl_->completed;
-    // Shared with every job, so a job that signals done after run() has seen
-    // jobsLeft reach 0 and returned still touches a live object.
-    const auto shared = std::make_shared<RunState>();
-    RunState& run = *shared;
 
-    auto work = [&, shared]() {
-        RunState& own = *shared;
-        for (;;) {
-            if (own.stop) {
-                break;
-            }
-            const int64_t tile = own.next.fetch_add(1);
-            if (tile >= total) {
-                break;
-            }
-            const char* operation = nullptr;
-            try {
-                token.throwIfCancelled();
-                {
-                    budget.reserveOrWait(tileBytes, token);
-                    const Reservation held(budget, tileBytes);
-                    if (own.stop) {
-                        break;
+    // Runs `evaluateTile` on every tile, one job per worker, each pulling tile indices
+    // until none is left or a tile fails; returns once every job is done, and throws
+    // the pass's first failure as reportFailure() does.
+    using TileFunction = std::function<void(int64_t tile, const char** operation)>;
+    const auto runPass = [&](const TileFunction& evaluateTile) {
+        const auto shared = std::make_shared<RunState>();
+        RunState& run = *shared;
+        auto work = [&, shared]() {
+            RunState& own = *shared;
+            const JobDoneGuard doneOnExit(own);
+            for (;;) {
+                if (own.stop) {
+                    break;
+                }
+                const int64_t tile = own.next.fetch_add(1);
+                if (tile >= tileCount) {
+                    break;
+                }
+                const char* operation = nullptr;
+                try {
+                    token.throwIfCancelled();
+                    {
+                        budget.reserveOrWait(tileBytes, token);
+                        const Reservation held(budget, tileBytes);
+                        if (own.stop) {
+                            break;
+                        }
+                        evaluateTile(tile, &operation);
                     }
-                    evaluator.evaluate(tile, token, &operation);
+                    std::lock_guard<std::mutex> lock(own.progressMutex);
+                    const int64_t done = ++completed;
+                    if (progress != nullptr) {
+                        progress->onProgress(stageName.c_str(),
+                                             static_cast<double>(done) / static_cast<double>(total), done, total);
+                    }
+                } catch (...) {
+                    own.recordFailure(std::current_exception(), tile, operation);
+                    break;
                 }
-                std::lock_guard<std::mutex> lock(own.progressMutex);
-                const int64_t done = ++completed;
-                if (progress != nullptr) {
-                    progress->onProgress(stageName.c_str(), static_cast<double>(done) / static_cast<double>(total),
-                                         done, total);
-                }
-            } catch (...) {
-                own.recordFailure(std::current_exception(), tile, operation);
-                break;
             }
+        };
+
+        std::exception_ptr submitFailure;
+        try {
+            for (int32_t i = 0; i < pool.workerCount; ++i) {
+                {
+                    std::lock_guard<std::mutex> lock(run.doneMutex);
+                    ++run.jobsLeft;
+                }
+                try {
+                    pool.submit(work);
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(run.doneMutex);
+                    --run.jobsLeft;
+                    throw;
+                }
+            }
+        } catch (...) {
+            submitFailure = std::current_exception();
+            run.stop = true;
         }
-        own.jobDone();
+        try {
+            std::unique_lock<std::mutex> lock(run.doneMutex);
+            run.done.wait(lock, [&run] { return run.jobsLeft == 0; });
+        } catch (...) {
+            // Without the wait the jobs could outlive this frame; nothing safe remains.
+            std::terminate();
+        }
+        if (submitFailure) {
+            std::rethrow_exception(submitFailure);
+        }
+        if (run.failure) {
+            reportFailure(run.failure, stageName, run.hasOperation ? run.failedOperation.c_str() : nullptr,
+                          impl_->grid, run.failedTile);
+        }
+        if (run.failureLost) {
+            throw InternalError("TileExecutor::run: a tile failed and its failure could not be recorded");
+        }
     };
 
-    // One job per worker; each pulls tile indices until none is left or the run fails.
-    std::exception_ptr submitFailure;
-    try {
-        for (int32_t i = 0; i < pool.workerCount; ++i) {
-            {
-                std::lock_guard<std::mutex> lock(run.doneMutex);
-                ++run.jobsLeft;
+    for (size_t g : globalPositions) {
+        // Pass for operation g: each tile accumulates into a fresh instance, and the
+        // instances fold into the run's instance in ascending tile index (P15).
+        Operation& runInstance = *plan.operations[g];
+        const auto k = static_cast<int32_t>(g);
+        const char* name = state.spec.operationName(k);
+        const OperationParameters& parameters = state.spec.operationParameters(k);
+        detail::OrderedFold<OperationPtr> fold(
+            tileCount, [&runInstance](OperationPtr& tileInstance) { runInstance.combine(*tileInstance); });
+        runPass([&](int64_t tile, const char** operation) {
+            *operation = name;
+            OperationPtr instance = catalog.create(name, parameters);
+            detail::Accumulation accumulation{g, instance.get()};
+            const detail::TileOutcome outcome = evaluator.evaluate(tile, token, operation, &accumulation);
+            *operation = name;
+            if (outcome.skipped) {
+                fold.skip(tile);
+            } else {
+                fold.submit(tile, std::move(instance));
             }
-            try {
-                pool.submit(work);
-            } catch (...) {
-                std::lock_guard<std::mutex> lock(run.doneMutex);
-                --run.jobsLeft;
-                throw;
-            }
+            *operation = nullptr;
+        });
+        if (!fold.complete()) {
+            throw InternalError("TileExecutor::run: an accumulation pass ended with tiles not folded");
         }
-    } catch (...) {
-        submitFailure = std::current_exception();
-        run.stop = true;
+        try {
+            runInstance.finalizeAccumulation();
+        } catch (...) {
+            reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
+        }
     }
-    try {
-        std::unique_lock<std::mutex> lock(run.doneMutex);
-        run.done.wait(lock, [&run] { return run.jobsLeft == 0; });
-    } catch (...) {
-        // Without the wait the jobs could outlive this frame; nothing safe remains.
-        std::terminate();
-    }
-    if (submitFailure) {
-        std::rethrow_exception(submitFailure);
-    }
-    if (!run.failure) {
-        return;
-    }
-
-    // The first failure: a CancelledError as is, anything else as a TileError (P27).
-    std::string cause;
-    try {
-        std::rethrow_exception(run.failure);
-    } catch (const CancelledError&) {
-        throw;
-    } catch (const std::exception& e) {
-        cause = e.what();
-    } catch (...) {
-        cause = "an exception that is not a std::exception";
-    }
-    const int64_t columns = impl_->grid.columns();
-    ErrorContext context;
-    context.stageName = stageName.c_str();
-    context.operationName = run.hasOperation ? run.failedOperation.c_str() : nullptr;
-    context.cause = cause.c_str();
-    context.hasTile = true;
-    context.tileX = run.failedTile % columns;
-    context.tileY = run.failedTile / columns;
-    throw TileError("a tile failed", context);
+    runPass([&](int64_t tile, const char** operation) { evaluator.evaluate(tile, token, operation); });
 }
 
 } // namespace slideio::processor

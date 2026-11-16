@@ -12,6 +12,7 @@ add_library(slideio_processor_pipeline_test_support STATIC
     test_support/test_operations.cpp
     test_support/executor_support.cpp
     test_support/disc_mask_source.cpp
+    test_support/global_ops.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine GTest::gtest
@@ -33,6 +34,7 @@ add_executable(slideio_processor_pipeline_tests
     test_backend.cpp
     test_bindings.cpp
     test_executor.cpp
+    test_global_context.cpp
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
