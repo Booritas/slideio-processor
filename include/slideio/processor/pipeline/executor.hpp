@@ -120,6 +120,9 @@ private:
  * @par Thread-safety
  * ThreadSafe: concurrent run() calls on one executor are serialised, and
  * tilesCompleted() and tilesTotal() may be read while a run is in progress.
+ * run() updates the pipeline's per-run state (its validation result, its
+ * global-context instances and its counters), so no other thread may use that
+ * pipeline, through this executor or any other, while run() is in progress.
  * @par Requirements
  * UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5
  */
@@ -160,9 +163,17 @@ public:
      * into a fresh instance of the operation, combines those instances in
      * ascending tile index (a skipped tile combining nothing), and finalises;
      * it writes no sink. Results therefore do not depend on the worker count.
+     *
+     * The object sink and the pipeline's edge, annotation and raster sinks are
+     * called concurrently from the pool's worker threads, so each must be
+     * ThreadSafe. run() flushes none of them; Pipeline::runInto flushes each
+     * once, after run() has returned and every worker has stopped, and only on
+     * success.
      * @param pipeline The pipeline; its bindings (sinks, auxiliaries, mask
-     * source, layers, stage name) are used as they stand.
-     * @param sink Receives the objects the chain emits; not flushed.
+     * source, layers, stage name) are used as they stand. No other thread may
+     * use it while run() is in progress.
+     * @param sink Receives the objects the chain emits; called concurrently,
+     * not flushed.
      * @param progress Receives one call per tile of every pass; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As Pipeline::validate(); when the pipeline's
@@ -170,15 +181,17 @@ public:
      * pool's budget ceiling; when the pool has been shut down.
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
+     * @throws IoError As Pipeline::validate().
      * @throws TileError When a tile fails; hasTile() is true, tileX() and
      * tileY() are its column and row. When creating or finalising a
      * global-context operation fails; hasTile() is then false.
      * @throws CancelledError When @p token is cancelled or an operation throws it.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded.
+     * recorded, or as Pipeline::validate().
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
-     * Safe to call concurrently; runs on one executor are serialised.
+     * Safe to call concurrently; runs on one executor are serialised. The
+     * pipeline must not be used by any other thread during the call.
      * @par Requirements
      * UR-EXE-1, UR-EXE-2, UR-EXE-4, UR-EXE-5, UR-QA-3
      */

@@ -269,10 +269,23 @@ It covers the **halo** rect rather than the tile rect, because that is the
 region `input()` spans. A mask stopping at the tile edge would leave a
 neighbourhood operation unmasked exactly where seam correctness matters.
 
+**Edges and annotations are not filtered.** The framework's ownership and
+restriction filters (5.5) apply to `objectSink()` only; what an operation hands
+to `edgeSink()` or `annotationSink()` is passed on as made. An operation must
+therefore assert edges, and attach labels and measurements, only for objects
+anchored in its `tileRect()` and admitted by `mask()` — for objects it emits,
+exactly those `objectSink()` keeps — so that an object seen in several tiles'
+halos is asserted once, by the tile owning its anchor, and nothing outside the
+restriction is. For these two sinks, reading `mask()` is not optional. Both
+sinks are called concurrently from the run's workers and must be ThreadSafe.
+
 The global-context group serves two-pass operations such as whole-slide Otsu:
-`accumulate` runs over every tile, `combine` merges per-worker accumulators,
+`accumulate` runs over every tile, `combine` merges the accumulators,
 `finalizeAccumulation` computes the result, then `apply` runs with it
-(UR-PIX-5, UR-EXE-1).
+(UR-PIX-5, UR-EXE-1). Each tile accumulates into a fresh instance of its own
+(5.8), and that instance sees every plane of the tile: a `PerChannel` operation
+is called once per plane, each call a single-plane input told apart by its
+`planeSourceChannel`, and a `Joint` operation once with all planes.
 
 ### One formula for object measurements — `pipeline/standard_measurements.hpp`
 
@@ -640,11 +653,15 @@ public:
 
     /// Where operations assert containment. Borrowed, may be null, must
     /// outlive the run. `StageRunner` passes the stage's `EdgeWriter`.
+    /// Called concurrently from the workers; flushed once, after they stop,
+    /// on success only.
     Pipeline& edgeSink(EdgeSink*);
 
     /// Where operations attach labels and measurements to objects that
     /// already exist. Borrowed, may be null, must outlive the run.
-    /// `StageRunner` passes the stage's `AnnotationWriter`.
+    /// `StageRunner` passes the stage's `AnnotationWriter`. Called
+    /// concurrently from the workers; flushed once, after they stop, on
+    /// success only.
     Pipeline& annotationSink(AnnotationSink*);
 
     /// Where the chain's final raster output goes, one tile at a time.
@@ -859,7 +876,10 @@ mis-specified stage fails in seconds rather than hours. Each failure is an
    have mixed types throws `ChannelArityError` naming the operation and the
    channels.
 8. Target layers (below).
-9. Whole-level layout, budget and level, then the per-tile memory check (below).
+9. Every bound auxiliary raster declares at least one plane of a type with a
+   size; otherwise the message names its binding. An auxiliary that would
+   fail on its first tile is refused here instead.
+10. Whole-level layout, budget and level, then the per-tile memory check (below).
 
 The results (resolved level, target layer per operation, plane types per step,
 the grid) are cached until the next binding call or the next `validate()`.
@@ -905,13 +925,17 @@ to be adequate to; the automatic choice is instead the finest level the chain
 can run at. That is level 0 for a chain of `Halo` operations. For a chain with
 a `WholeLevel` operation it is the finest level at which both the whole-level
 budget and the per-tile bytes (below) fit the ceiling, skipping levels whose
-mapped region is empty; when no level fits, the whole-level budget error is
-reported. A caller that wants a coarser level states it, with `analysisLevel(n)`
+mapped region is empty. When no level fits, the coarsest level decides the
+error: if its whole-level budget does not fit, the whole-level budget error is
+reported; if the budget fits but its single tile's bytes do not, the per-tile
+error is reported. A caller that wants a coarser level states it, with `analysisLevel(n)`
 or `LevelSelector::levelForScale`.
 
 **Memory.** Before it reads a tile a worker reserves that tile's bytes with
 `reserveOrWait` and releases them when the tile is done. The bytes are the
-source read, every intermediate, the auxiliary rasters (once, over the tile
+source read, the reader's interleave buffer (as large as all the source planes
+when one call reads every channel, else as large as the widest source plane),
+every intermediate, the auxiliary rasters (once, over the tile
 grown by the chain's halo) and the restriction mask, which is 1 byte per pixel
 for a rectangle-only restriction and 2 when a polygon or a `TileMaskSource` is
 involved. A tile whose bytes exceed the ceiling on its own throws
@@ -933,8 +957,10 @@ all and the reader de-interleaves them into planes; otherwise it makes one call
 per channel. A channel whose SlideIO type has no `DataType` is reported as
 `Unknown`; validation and reads reject it, with `UnsupportedDataTypeError`
 naming the channel, only when that channel is selected. Every SlideIO failure,
-including one while describing the scene, surfaces as `IoError` carrying the
-cause. The buffers are owned by `detail::PlaneBuffers`, one array per plane with
+including one while describing the scene or reporting a level, surfaces as
+`IoError` carrying the cause; on this path that holds for the level table
+`LevelSelector` reads too, which on its own reports such a failure as
+`InternalError` (5.6). The buffers are owned by `detail::PlaneBuffers`, one array per plane with
 a row stride of width × sample size, which also produces the `BlockView`; its
 `slideRect` is the level-0 edge mapping of the rect (5.6).
 
@@ -993,8 +1019,18 @@ from the same three sources. Filtering never alters pixels.
 ### Running
 
 `run(progress, token)` is `runInto` with an internal sink that counts and drops
-what it is given. `runInto` flushes the object, edge, annotation and raster
-sinks, in that order, only on success (5.9).
+what it is given. The object, edge, annotation and raster sinks are called
+concurrently from the run's worker threads, so every implementation bound to
+a run must be ThreadSafe; the internal sink of `run` counts atomically for the
+same reason. Edge and annotation emissions pass through no filter (5.1).
+`runInto` flushes the object, edge, annotation and raster sinks, once each and
+in that order, after every worker has stopped, and only on success (5.9).
+
+`runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
+tile (`hasTile()` true) or for a failure creating or finalising a
+global-context operation (`hasTile()` false); `CancelledError` when the token
+is cancelled or an operation throws it; and `InternalError` when a tile failed
+and its failure could not be recorded. Nothing is flushed on any of these.
 
 ## 5.6 Tiling and level selection — `pipeline/tile_grid.hpp`
 
@@ -1404,7 +1440,12 @@ order-independently, so worker count cannot affect them, and
 Workers hand in `(tileIndex, T)`, and the fold applies `combine` to the
 accumulated value strictly in ascending tile index, holding an out-of-order
 result until its predecessors have arrived. A tile the restriction skips counts
-as arrived, so the fold never waits on it. The fold is used for every
+as arrived, so the fold never waits on it. How many results are held at once is
+bounded by how far completion runs ahead of the slowest tile still in flight,
+and a held per-tile instance lives outside the per-tile memory reservation,
+which is released when its tile finishes. A `combine` that throws fails the
+pass; it runs on whichever arrival unblocks the fold, so the `TileError` names
+that arriving tile, not necessarily the tile whose result failed to combine. The fold is used for every
 global-context operation, always, because an operation does not declare whether
 its arithmetic is order-independent, and for any `Reduction` whose
 `isOrderIndependent()` is false. An order-independent `Reduction` may combine in
@@ -1514,6 +1555,13 @@ in that order.
 
 **Cancellation** is checked before each tile and between operations, and
 surfaces as `CancelledError`.
+
+**Sinks and the pipeline during a run.** The object sink and the pipeline's
+edge, annotation and raster sinks are called concurrently from the workers, so
+each must be ThreadSafe; `TileExecutor::run` flushes none of them. `run`
+updates the pipeline's per-run state — its validation result, its
+global-context instances and its counters — so no other thread may use that
+pipeline, through the same executor or another, while `run` is in progress.
 
 **Progress.** `onProgress(stageName, done / total, done, total)` is called after
 each tile, with `total` equal to `tileCount()` (5.6) for a single pass and

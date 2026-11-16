@@ -89,6 +89,10 @@ public:
     /**
      * @brief Where operations assert containment. Borrowed, may be null, must
      * outlive the run. `StageRunner` passes the stage's `EdgeWriter`.
+     *
+     * Operations call the sink concurrently from the run's worker threads, so
+     * it must be ThreadSafe. Its flush() is called once, after every worker
+     * has stopped, and only when the run succeeds.
      * @param sink The sink, or null for none.
      * @return This pipeline, for chaining.
      * @throws Nothing.
@@ -103,6 +107,10 @@ public:
      * @brief Where operations attach labels and measurements to objects that
      * already exist. Borrowed, may be null, must outlive the run.
      * `StageRunner` passes the stage's `AnnotationWriter`.
+     *
+     * Operations call the sink concurrently from the run's worker threads, so
+     * it must be ThreadSafe. Its flush() is called once, after every worker
+     * has stopped, and only when the run succeeds.
      * @param sink The sink, or null for none.
      * @return This pipeline, for chaining.
      * @throws Nothing.
@@ -241,21 +249,28 @@ public:
      *
      * Tiles run on a WorkerPool of the configuration's workerCount() threads,
      * each reserving its buffers from the memory budget while it is evaluated, so
-     * the budget bounds how many tiles are in memory at once. On success the
-     * object, edge, annotation and raster sinks are flushed, in that order; on
-     * failure or cancellation none is, and no worker thread outlives the call.
-     * @param sink Receives the objects the chain emits.
+     * the budget bounds how many tiles are in memory at once. The object, edge,
+     * annotation and raster sinks are called concurrently from those worker
+     * threads, so each must be ThreadSafe. On success, once every worker has stopped,
+     * the object, edge, annotation and raster sinks are flushed, once each, in
+     * that order; on failure or cancellation none is, and no worker thread
+     * outlives the call.
+     * @param sink Receives the objects the chain emits; called concurrently.
      * @param progress Receives progress reports; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
      * @throws TileError When a tile fails: the stage, the operation when one
-     * threw, the tile's column and row, and the original text as the cause.
-     * Nothing is flushed then.
-     * @throws CancelledError When @p token is cancelled; nothing is flushed.
-     * @throws InternalError When the chain needs a global-context pass, which
-     * is not run yet.
+     * threw, the tile's column and row (hasTile() is true), and the original
+     * text as the cause. Also when creating or finalising a global-context
+     * operation fails; hasTile() is then false. Nothing is flushed then.
+     * @throws CancelledError When @p token is cancelled or an operation throws
+     * it; nothing is flushed.
+     * @throws InternalError When a tile failed and its failure could not be
+     * recorded, or as validate(); nothing is flushed.
+     * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements
@@ -269,12 +284,15 @@ public:
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws TileError When a tile fails: the stage, the operation when one
-     * threw, the tile's column and row, and the original text as the cause.
+     * @throws IoError As validate().
+     * @throws TileError As runInto(): hasTile() is true for a tile failure and
+     * false for a failure creating or finalising a global-context operation.
      * Nothing is flushed then.
-     * @throws CancelledError When @p token is cancelled; nothing is flushed.
-     * @throws InternalError When the chain needs a global-context pass, which
-     * is not run yet.
+     * @throws CancelledError When @p token is cancelled or an operation throws
+     * it; nothing is flushed.
+     * @throws InternalError When a tile failed and its failure could not be
+     * recorded, or as validate(); nothing is flushed.
+     * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements
@@ -326,19 +344,26 @@ public:
      * empty; every operation accepts the plane types it receives, the scene's
      * channel types for the first and each predecessor's output types after;
      * every object-producing operation's target layer resolves against
-     * bindLayer(); a chain with a WholeLevel operation fits the memory ceiling
-     * as one tile; and one tile's buffers fit the ceiling. The result is kept
-     * until the next binding call or validate().
+     * bindLayer(); every bound auxiliary raster declares at least one plane of
+     * a type with a size; a chain with a WholeLevel operation fits the memory
+     * ceiling as one tile; and one tile's buffers fit the ceiling. The result
+     * is kept until the next binding call or validate().
      * @throws InvalidArgumentError When the spec is empty, an operation is
      * unknown or its parameters are refused, a channel or the level is out of
      * range, the restriction does not intersect the scene, a target layer is
-     * unnamed, unbound or ambiguous, or the run does not fit the memory ceiling.
+     * unnamed, unbound or ambiguous, an auxiliary raster declares no plane or
+     * a plane type without a size (the message names its binding), a level of
+     * the scene has a non-positive size, or the run does not fit the memory
+     * ceiling.
      * @throws UnsupportedDataTypeError When an operation does not accept a type
-     * it would receive; the message names the operation and the type.
+     * it would receive, or a selected channel has a type the pipeline cannot
+     * read; the message names the operation or the channel, and the type.
      * @throws ChannelArityError When a Joint operation requiring uniform types
      * would receive mixed types.
-     * @throws IoError When SlideIO cannot describe the scene.
-     * @throws InternalError When SlideIO fails to report a level.
+     * @throws IoError When SlideIO fails to describe the scene or to report a
+     * level; the cause is preserved.
+     * @throws InternalError When an operation's factory misbehaves, as
+     * OperationCatalog::create() reports it.
      * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * ThreadConfined.
