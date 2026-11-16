@@ -31,6 +31,7 @@ target_include_directories(pipeline_public_only PRIVATE
 
 add_executable(slideio_processor_pipeline_tests
     test_backend.cpp
+    test_bindings.cpp
     test_executor.cpp
     test_operation.cpp
     test_operation_catalog.cpp

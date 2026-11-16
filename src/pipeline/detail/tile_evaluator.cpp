@@ -64,6 +64,21 @@ BlockView singlePlane(const BlockView& view, int32_t plane) {
     return BlockView(view.width(), view.height(), view.slideRect(), view.level(), &p, 1);
 }
 
+// The part of `buffers`, which cover `bufferRect`, lying over `rect` (inside it), as a
+// view of its own: same memory, offset and stride, and the edge-mapped slideRect of `rect`.
+BlockView subView(PlaneBuffers& buffers, const Rect64& bufferRect, const Rect64& rect, int32_t level,
+                  double levelScale) {
+    std::vector<BlockPlane> planes;
+    for (int32_t plane = 0; plane < buffers.planeCount(); ++plane) {
+        const int64_t size = dataTypeSizeBytes(buffers.planeType(plane));
+        const int64_t stride = buffers.rowStrideBytes(plane);
+        uint8_t* first = buffers.planeData(plane) + (rect.y - bufferRect.y) * stride + (rect.x - bufferRect.x) * size;
+        planes.push_back(BlockPlane{first, buffers.planeType(plane), stride, buffers.sourceChannel(plane)});
+    }
+    return BlockView(rect.width, rect.height, rectToLevel0(rect, levelScale), level, planes.data(),
+                     static_cast<int32_t>(planes.size()));
+}
+
 // Zeroes every sample of `buffers`, which cover `rect`, lying outside `extent`, so
 // a later operation reads beyond the level exactly as it reads the source there.
 void zeroOutside(PlaneBuffers& buffers, const Rect64& rect, const Rect64& extent) {
@@ -155,6 +170,23 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     reader_.read(plan_.level, sourceRect, plan_.channels, current);
     Rect64 currentRect = sourceRect;
 
+    // Auxiliary rasters are filled once per tile over the first operation's halo rect,
+    // the largest rect of the chain, which holds every later operation's input rect.
+    std::vector<PlaneBuffers> auxiliaryBuffers;
+    auxiliaryBuffers.reserve(bindings_.auxiliaries.size());
+    for (const auto& auxiliary : bindings_.auxiliaries) {
+        std::vector<int32_t> channels;
+        for (int32_t c = 0; c < std::max<int32_t>(auxiliary.second->planeCount(), 0); ++c) {
+            channels.push_back(c);
+        }
+        auxiliaryBuffers.emplace_back(sourceRect.width, sourceRect.height,
+                                      std::vector<DataType>(channels.size(), auxiliary.second->planeType()),
+                                      channels);
+        bytes += auxiliaryBuffers.back().bytes();
+        BlockView whole = auxiliaryBuffers.back().view(plan_.level, sourceRect, plan_.levelScale);
+        auxiliary.second->fillTile(whole);
+    }
+
     TileObjectFilter objects(bindings_.objectSink, grid.tileRect(tileIndex), tileMask, *bindings_.counters);
 
     for (size_t k = 0; k < operations.size(); ++k) {
@@ -168,23 +200,12 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         const BlockView inputView = current.view(plan_.level, currentRect, plan_.levelScale);
         const BlockView outputView = output.view(plan_.level, outputRect, plan_.levelScale);
 
-        // Auxiliary rasters cover the operation's input rect.
-        std::vector<PlaneBuffers> auxiliaryBuffers;
+        // Each operation sees the auxiliaries over its own input rect: a sub-view of
+        // the buffers filled once, over the first operation's halo rect.
         std::vector<BlockView> auxiliaryViews;
-        auxiliaryBuffers.reserve(bindings_.auxiliaries.size());
-        auxiliaryViews.reserve(bindings_.auxiliaries.size());
-        for (const auto& auxiliary : bindings_.auxiliaries) {
-            const int32_t count = auxiliary.second->planeCount();
-            std::vector<int32_t> channels;
-            for (int32_t c = 0; c < std::max<int32_t>(count, 0); ++c) {
-                channels.push_back(c);
-            }
-            auxiliaryBuffers.emplace_back(currentRect.width, currentRect.height,
-                                          std::vector<DataType>(channels.size(), auxiliary.second->planeType()),
-                                          channels);
-            bytes += auxiliaryBuffers.back().bytes();
-            auxiliaryViews.push_back(auxiliaryBuffers.back().view(plan_.level, currentRect, plan_.levelScale));
-            auxiliary.second->fillTile(auxiliaryViews.back());
+        auxiliaryViews.reserve(auxiliaryBuffers.size());
+        for (PlaneBuffers& buffers : auxiliaryBuffers) {
+            auxiliaryViews.push_back(subView(buffers, sourceRect, currentRect, plan_.level, plan_.levelScale));
         }
 
         OperationContextState state;
