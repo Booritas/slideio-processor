@@ -94,6 +94,10 @@ public:
     // Commits what is pending. Called by StoreImpl::close() while the store is still
     // open, holding no store lock; it reaches the store through the gate as usual.
     virtual void flushBeforeClose() = 0;
+    // When close() flushes this client: every client of phase 0 before any of phase 1.
+    // Object writers are phase 0; edge and annotation writers, whose pending rows may
+    // reference objects another writer still holds, are phase 1.
+    virtual int flushPhase() const noexcept { return 0; }
 };
 
 // The route by which a handle that may outlive its Store (an ObjectWriterPtr) reaches
@@ -121,7 +125,8 @@ public:
         clients_.push_back(client);
     }
 
-    // Calls flushBeforeClose on every live client, in registration order, and returns the
+    // Calls flushBeforeClose on every live client, phase 0 before phase 1 (see
+    // GateClient::flushPhase) and in registration order within a phase, and returns the
     // first exception thrown (null when none), after trying them all.
     std::exception_ptr flushClients() noexcept {
         std::vector<std::shared_ptr<GateClient>> live;
@@ -134,11 +139,14 @@ public:
         } catch (...) {
             first = std::current_exception();
         }
-        for (const std::shared_ptr<GateClient>& client : live) {
-            try {
-                client->flushBeforeClose();
-            } catch (...) {
-                if (!first) first = std::current_exception();
+        for (int phase = 0; phase <= 1; ++phase) {
+            for (const std::shared_ptr<GateClient>& client : live) {
+                if (client->flushPhase() != phase) continue;
+                try {
+                    client->flushBeforeClose();
+                } catch (...) {
+                    if (!first) first = std::current_exception();
+                }
             }
         }
         return first;

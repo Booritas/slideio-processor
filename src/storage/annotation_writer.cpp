@@ -233,6 +233,8 @@ public:
         std::lock_guard<std::mutex> guard(mutex);
         commitLocked("Store::close");
     }
+    // After the object writers: the pending rows may reference objects they hold.
+    int flushPhase() const noexcept override { return 1; }
 };
 
 } // namespace

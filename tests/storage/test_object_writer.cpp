@@ -548,6 +548,37 @@ TEST(ObjectHandleLifetime, CloseFlushesEveryWriterAndReportsTheFirstFailure) {
     EXPECT_EQ(store->objects().totalObjectCount(), 2);  // the second writer's object was committed
 }
 
+// close() flushes the object writers before the edge and annotation writers, whatever
+// order they were made in: pending edges and annotations may reference pending objects.
+TEST(ObjectHandleLifetime, CloseFlushesObjectWritersBeforeEdgeAndAnnotationWriters) {
+    StoreFilesGuard files("objectorder");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const LayerId tissue = store->layers().declareSemantic("tissue", store->layers().pixelLayer());
+    const LayerId cells = store->layers().declareSemantic("cells", tissue);
+    const StageId a = store->stageStateWriter().declare("a", "");
+    EdgeWriterPtr edges = store->edges().writerForStage(a);
+    AnnotationWriterPtr annotations = store->annotations().writerForStage(a);
+    ObjectWriterPtr objects = store->objects().writerForStage(a);
+    const ObjectRecord parent = rec(tissue, 0, 0, 40);
+    const ObjectRecord child = rec(cells, 20, 0, 4);
+    objects->emit(parent);
+    objects->emit(child);
+    edges->assertParent(child.id(), parent.id());
+    annotations->assertLabel(child.id(), LabelId(2));
+    annotations->assertMeasurement(child.id(), "area", 16.0, MeasurementUnit::Dimensionless);
+    EXPECT_NO_THROW(store->close());
+    edges.reset();
+    annotations.reset();
+    objects.reset();
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->objects().totalObjectCount(), 2);
+    EXPECT_EQ(store->edges().parentEdgeCount(), 1);
+    EXPECT_EQ(store->annotations().labelAnnotationCount(), 1);
+    EXPECT_EQ(store->annotations().measurementAnnotationCount(), 1);
+}
+
 namespace {
 
 // Tracked on the gate after `writer`, so close() calls it once the writer is flushed and

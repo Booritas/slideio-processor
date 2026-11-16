@@ -152,13 +152,16 @@ its fallback. Dropping `noexcept` instead would have changed every one of these
 signatures for a state a caller reaches only by misuse.
 
 **`close()` flushes live writers before it closes.** Every live
-`ObjectWriter` commits what it holds pending, as by its own `flush()`; every
-writer is tried and the first failure is then reported, and the store is closed
-either way. **A live `RasterWriter` is the exception: `close()` abandons it,
-deleting its spool and any partial file and publishing nothing (3.8).** From the
-moment `close()` begins, `ObjectWriter::emit` (and `RasterWriter::writeTile`
-and `flush`) is refused with `IoError` "store is closed" rather than accepted and silently lost behind
-the final flush. A writer or cursor used afterwards throws `IoError`. The
+`ObjectWriter`, `EdgeWriter` and `AnnotationWriter` commits what it holds
+pending, as by its own `flush()`; every writer is tried and the first failure is
+then reported, and the store is closed either way. Object writers flush before
+edge and annotation writers, whatever order they were made in, so pending edges
+and annotations may reference objects still pending in an object writer. **A
+live `RasterWriter` is the exception: `close()` abandons it, deleting its spool
+and any partial file and publishing nothing (3.8).** From the moment `close()`
+begins, `ObjectWriter::emit` (and `RasterWriter::writeTile` and `flush`) is
+refused with `IoError` "store is closed" rather than accepted and silently lost
+behind the final flush. A writer or cursor used afterwards throws `IoError`. The
 destructor calls `close()`, logs any error at `Error`, and swallows it.
 
 **`provenance()` returns the stored record, not the reader's.** `meta`

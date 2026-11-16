@@ -416,8 +416,9 @@ TEST_F(AnnotationStoreTest, WriterBatchingAndLifecycle) {
 
 namespace {
 
-// Tracked on the gate after the writer, so close() calls it once the writer is flushed and
-// before the store is closed: it asserts into the writer in that window.
+// Tracked on the gate after the writer and in the writer's flush phase, so close() calls it
+// once the writer is flushed and before the store is closed: it asserts into the writer in
+// that window.
 class LateAnnotator final : public detail::GateClient {
 public:
     LateAnnotator(AnnotationWriter& writer, ObjectId object) : writer_(writer), object_(object) {}
@@ -428,6 +429,7 @@ public:
             refusal = e.what();
         }
     }
+    int flushPhase() const noexcept override { return 1; }
     std::string refusal;  // empty when the assert was accepted
 
 private:
