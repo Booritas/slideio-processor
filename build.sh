@@ -154,7 +154,19 @@ step "Installing Conan dependencies ($build_type)"
 if ! "$conan" profile path default >/dev/null 2>&1; then
     "$conan" profile detect
 fi
-"$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 --build=missing
+# The default profile's arch is whatever the first `profile detect` saw, and a restored
+# ~/.conan2 cache can carry the wrong one; SlideIO's install.py picks its profile from
+# the host, so on macOS name the host arch here or the two will not link.
+arch_setting=()
+if [[ "$(uname -s)" == Darwin ]]; then
+    case "$(uname -m)" in
+        arm64) arch_setting=(-s arch=armv8) ;;
+        x86_64) arch_setting=(-s arch=x86_64) ;;
+    esac
+fi
+# ${a[@]+...} because macOS's bash 3.2 treats an empty array as unbound under set -u.
+"$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 \
+    ${arch_setting[@]+"${arch_setting[@]}"} --build=missing
 
 step "Configuring ($build_type)"
 cmake -S . -B "$build_dir" \
