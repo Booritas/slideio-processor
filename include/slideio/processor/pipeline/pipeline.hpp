@@ -238,13 +238,24 @@ public:
     /**
      * @brief Eager: streams the whole slide or ROI, sending emitted objects to
      * @p sink. Calls validate() first.
+     *
+     * Tiles run on a WorkerPool of the configuration's workerCount() threads,
+     * each reserving its buffers from the memory budget while it is evaluated, so
+     * the budget bounds how many tiles are in memory at once. On success the
+     * object, edge, annotation and raster sinks are flushed, in that order; on
+     * failure or cancellation none is, and no worker thread outlives the call.
      * @param sink Receives the objects the chain emits.
      * @param progress Receives progress reports; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws InternalError When the eager run is not yet available.
+     * @throws TileError When a tile fails: the stage, the operation when one
+     * threw, the tile's column and row, and the original text as the cause.
+     * Nothing is flushed then.
+     * @throws CancelledError When @p token is cancelled; nothing is flushed.
+     * @throws InternalError When the chain needs a global-context pass, which
+     * is not run yet.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements
@@ -258,7 +269,12 @@ public:
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws InternalError When the eager run is not yet available.
+     * @throws TileError When a tile fails: the stage, the operation when one
+     * threw, the tile's column and row, and the original text as the cause.
+     * Nothing is flushed then.
+     * @throws CancelledError When @p token is cancelled; nothing is flushed.
+     * @throws InternalError When the chain needs a global-context pass, which
+     * is not run yet.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements

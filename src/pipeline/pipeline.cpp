@@ -4,6 +4,7 @@
 #include <pipeline/detail/pipeline_impl.hpp>
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/pipeline/executor.hpp>
 
 #include <algorithm>
 #include <string>
@@ -133,32 +134,13 @@ std::shared_ptr<slideio::Scene> Pipeline::asScene() const { notUntilPlanC(); }
 void Pipeline::runInto(ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token) {
     validate();
     Impl& impl = *impl_;
-    const detail::RunPlan& plan = *impl.plan;
-    if (!plan.globalContextPositions.empty()) {
-        throw InternalError("Pipeline::runInto: global-context operations are not run yet");
-    }
-    impl.counters.reset();
-
-    detail::Bindings bindings;
-    bindings.objectSink = &sink;
-    bindings.edgeSink = impl.edgeSink;
-    bindings.annotationSink = impl.annotationSink;
-    bindings.rasterSink = impl.rasterSink;
-    bindings.auxiliaries = impl.auxiliaries;
-    bindings.maskSource = impl.maskSource;
-    bindings.spec = &impl.spec;
-    bindings.selector = impl.selector.get();
-    bindings.counters = &impl.counters;
-    const detail::TileEvaluator evaluator(plan, *impl.reader, std::move(bindings));
-
-    // One worker, tiles in ascending order.
-    const int64_t total = plan.grid.tileCount();
-    for (int64_t tile = 0; tile < total; ++tile) {
-        evaluator.evaluate(tile, token);
-        if (progress != nullptr) {
-            progress->onProgress(impl.stageName.c_str(), static_cast<double>(tile + 1) / static_cast<double>(total),
-                                 tile + 1, total);
-        }
+    {
+        // The pool lives for this run only: its destructor joins every thread, on
+        // the failure path too.
+        WorkerPool pool(impl.config.workerCount(), impl.budget);
+        TileExecutor executor(impl.plan->grid, pool, impl.config);
+        executor.run(*this, sink, progress, token);
+        pool.shutdown();
     }
 
     // On success only, in this order (ruling P27).

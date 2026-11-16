@@ -120,7 +120,11 @@ TileEvaluator::TileEvaluator(const RunPlan& plan, const SceneReader& reader, Bin
 
 const RestrictionFilter& TileEvaluator::restriction() const noexcept { return restriction_; }
 
-TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& token) const {
+TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& token,
+                                    const char** runningOperation) const {
+    if (runningOperation != nullptr) {
+        *runningOperation = nullptr;
+    }
     token.throwIfCancelled();
     const TileGrid& grid = plan_.grid;
     const Rect64 tile = grid.tileRectAtLevel(tileIndex);
@@ -202,6 +206,9 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.mask = tileMask;
         state.seamFragment = bindings_.seamFragment;
 
+        if (runningOperation != nullptr) {
+            *runningOperation = op.name();
+        }
         if (op.arity() == ChannelArity::PerChannel) {
             for (int32_t plane = 0; plane < inputView.planeCount(); ++plane) {
                 const BlockView in = singlePlane(inputView, plane);
@@ -216,6 +223,9 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
             state.input = &inputView;
             state.output = &out;
             op.apply(*makeOperationContext(std::move(state)));
+        }
+        if (runningOperation != nullptr) {
+            *runningOperation = nullptr;
         }
 
         if (k + 1 < operations.size()) {

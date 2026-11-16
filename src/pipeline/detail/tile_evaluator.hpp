@@ -70,7 +70,11 @@ public:
     /// Evaluates tile `tileIndex`. Throws CancelledError when `token` is
     /// cancelled (checked before the tile and between operations), and whatever
     /// the reader, an operation or a sink throws.
-    TileOutcome evaluate(int64_t tileIndex, const CancellationToken& token) const;
+    /// When `runningOperation` is not null, it is set to the name of each operation
+    /// while that operation runs and back to null after it, so a caller that
+    /// catches can tell which operation threw (null: none did).
+    TileOutcome evaluate(int64_t tileIndex, const CancellationToken& token,
+                         const char** runningOperation = nullptr) const;
 
     const RestrictionFilter& restriction() const noexcept;
 

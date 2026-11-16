@@ -10,6 +10,7 @@ add_library(slideio_processor_pipeline_test_support STATIC
     test_support/synthetic_scene.cpp
     test_support/operation_conformance.cpp
     test_support/test_operations.cpp
+    test_support/executor_support.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine GTest::gtest
@@ -29,6 +30,7 @@ target_include_directories(pipeline_public_only PRIVATE
 
 add_executable(slideio_processor_pipeline_tests
     test_backend.cpp
+    test_executor.cpp
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
@@ -96,6 +98,7 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 # the normal build. One source per public header.
 add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_backend.cpp
+    header_check/check_executor.cpp
     header_check/check_export.cpp
     header_check/check_operation.cpp
     header_check/check_operation_catalog.cpp

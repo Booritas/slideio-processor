@@ -351,6 +351,12 @@ TEST(TileEvaluator, ContextGeometryAtEachChainPosition) {
     std::lock_guard<std::mutex> lock(gRecordMutex);
     ASSERT_EQ(static_cast<int64_t>(gRecords[1].size()), grid.tileCount());
     ASSERT_EQ(static_cast<int64_t>(gRecords[2].size()), grid.tileCount());
+    // Tiles complete in any order on several workers; row-major order is (y, x) order.
+    for (auto* records : {&gRecords[1], &gRecords[2]}) {
+        std::sort(records->begin(), records->end(), [](const Recorded& a, const Recorded& b) {
+            return std::tie(a.tileRectAtLevel.y, a.tileRectAtLevel.x) < std::tie(b.tileRectAtLevel.y, b.tileRectAtLevel.x);
+        });
+    }
     for (int64_t i = 0; i < grid.tileCount(); ++i) {
         const Rect64 tile = grid.tileRectAtLevel(i);
         const Recorded& last = gRecords[2][static_cast<size_t>(i)];

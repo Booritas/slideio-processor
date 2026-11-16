@@ -10,6 +10,7 @@ add_library(slideio-processor-pipeline OBJECT
     reduction.cpp
     standard_measurements.cpp
     tile_grid.cpp
+    executor.cpp
     detail/combine_partials.cpp
     detail/half.cpp
     detail/level_mapping.cpp
