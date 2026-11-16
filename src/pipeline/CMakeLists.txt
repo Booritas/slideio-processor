@@ -4,6 +4,7 @@ add_library(slideio-processor-pipeline OBJECT
     operation_context.cpp
     operation_catalog.cpp
     operation_parameters.cpp
+    pipeline_spec.cpp
     standard_measurements.cpp
     detail/combine_partials.cpp
     detail/level_mapping.cpp

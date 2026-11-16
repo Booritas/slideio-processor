@@ -29,6 +29,7 @@ add_executable(slideio_processor_pipeline_tests
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
+    test_pipeline_spec.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
@@ -80,6 +81,7 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_operation.cpp
     header_check/check_operation_catalog.cpp
     header_check/check_operation_parameters.cpp
+    header_check/check_pipeline_spec.cpp
     header_check/check_standard_measurements.cpp
 )
 target_include_directories(pipeline_headers_are_opencv_free PRIVATE
