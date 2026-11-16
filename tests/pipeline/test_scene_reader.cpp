@@ -159,6 +159,10 @@ TEST(PlaneBuffers, ViewCarriesGeometry) {
     EXPECT_EQ(v.height(), 40);
     EXPECT_EQ(v.level(), 1);
     const Rect64 expected = detail::rectToLevel0(rect, 4.0005);
+    EXPECT_EQ(v.slideRect().x, 40);
+    EXPECT_EQ(v.slideRect().y, 80);
+    EXPECT_EQ(v.slideRect().width, 120);
+    EXPECT_EQ(v.slideRect().height, 160);
     EXPECT_EQ(v.slideRect().x, expected.x);
     EXPECT_EQ(v.slideRect().y, expected.y);
     EXPECT_EQ(v.slideRect().width, expected.width);

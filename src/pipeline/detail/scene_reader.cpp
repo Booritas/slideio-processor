@@ -5,6 +5,7 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <slideio/core/levelinfo.hpp>
 #include <slideio/slideio/scene.hpp>
 
 #include <algorithm>
@@ -48,25 +49,31 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
     if (!scene_) {
         throw InvalidArgumentError("SceneReader: the scene is null");
     }
+    std::vector<LevelDims> table;
     try {
         const int channels = scene_->getNumChannels();
         for (int c = 0; c < channels; ++c) {
             types_.push_back(dataTypeFromSlideio(static_cast<int32_t>(scene_->getChannelDataType(c))));
         }
+        const std::tuple<int, int, int, int> rect = scene_->getRect();
+        table = levelTable(scene_->getNumZoomLevels(), std::get<2>(rect), std::get<3>(rect), [this](int32_t level) {
+            const slideio::LevelInfo* info = scene_->getLevelInfo(level);
+            if (info == nullptr) {
+                throw InternalError("SceneReader: SlideIO reported no such level");
+            }
+            const slideio::Size size = info->getSize();
+            const slideio::Size tile = info->getTileSize();
+            return LevelDims{size.width, size.height, tile.width, tile.height};
+        });
     } catch (...) {
-        rethrowAsIoError("SceneReader: SlideIO failed to describe the scene's channels");
+        rethrowAsIoError("SceneReader: SlideIO failed to describe the scene");
     }
-    for (const LevelDims& level : levelTable(*scene_)) {
+    for (const LevelDims& level : table) {
         levelSizes_.emplace_back(level.width, level.height);
     }
 }
 
 std::vector<DataType> SceneReader::channelTypes() const {
-    for (size_t c = 0; c < types_.size(); ++c) {
-        if (types_[c] == DataType::Unknown) {
-            throwUnknownType(c);
-        }
-    }
     return types_;
 }
 

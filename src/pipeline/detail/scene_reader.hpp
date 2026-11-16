@@ -22,12 +22,12 @@ namespace slideio::processor::detail {
 /// as a macro. Concurrent reads go through the scene's own thread-safety.
 class SceneReader {
 public:
-    /// Throws InvalidArgumentError for a null scene; IoError when SlideIO cannot
+    /// Throws InvalidArgumentError for a null scene; IoError, with the cause, when SlideIO cannot
     /// describe it.
     explicit SceneReader(std::shared_ptr<slideio::Scene> scene);
 
-    /// The type of every scene channel. Throws UnsupportedDataTypeError naming the
-    /// first channel whose SlideIO type has no pipeline equivalent.
+    /// The type of every scene channel; DataType::Unknown for a channel whose
+    /// SlideIO type has no pipeline equivalent (read() rejects such a channel).
     std::vector<DataType> channelTypes() const;
 
     /// Fills `out` with `channels` of `levelRect` at `level`. `out` must have
@@ -41,7 +41,7 @@ public:
 
 private:
     std::shared_ptr<slideio::Scene> scene_;
-    std::vector<DataType> types_;                  // Unknown kept; channelTypes() rejects it
+    std::vector<DataType> types_;                  // Unknown kept; read() rejects it for a selected channel
     std::vector<std::pair<int64_t, int64_t>> levelSizes_;
 };
 
