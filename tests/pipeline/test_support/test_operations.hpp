@@ -75,18 +75,25 @@ private:
     int32_t radius_;
 };
 
-/// "test.components": Joint, Byte only, one input plane, halo 0, produces objects;
-/// the raster output is a copy of the input's tile. Components are found in the
-/// tile rect only, never in the halo around it, so each is anchored in the tile, and
-/// one continuing past the tile edge is its tile-clipped piece. Emits one
-/// ObjectRecord per 4-connected non-zero component: a polygon of pixel-edge rings in level-0 coordinates (through
+/// "test.components": Joint, halo 0, produces objects, in one of two forms:
+/// - one plane, the Byte mask, which is also the intensity measured;
+/// - two planes, plane 0 the Byte mask and plane 1 the intensity, Byte or
+///   Float32, from which the partials are taken (how a real segmenter measures).
+/// supportedTypes() is therefore {Byte, Float32} with mixed types allowed, but
+/// Float32 is accepted only as the intensity plane of the two-plane form. The
+/// raster output is one Byte plane, a copy of the mask's tile. Components are
+/// found in the tile rect only, never in the halo around it, so each is anchored
+/// in the tile, and one continuing past the tile edge is its tile-clipped piece.
+/// Emits one ObjectRecord per 4-connected non-zero component of the mask: a
+/// polygon of pixel-edge rings in level-0 coordinates (through
 /// OperationContext::toLevel0), each ring normalised by normaliseRing, outer ring
-/// first and clockwise on screen, holes after it ordered by first vertex. It is
-/// measured with applyStandardMeasurements from one IntensityPartial of the
-/// component's samples (channel = the plane's source channel). Components are
-/// emitted in raster order of their first pixel. When bool parameter "seams" is
-/// true (default false), a component touching the tile rect's edge goes to
-/// emitSeamFragment with that partial instead. A plain flood fill, no library call.
+/// first and clockwise on screen, holes after it ordered by first vertex (y, then
+/// x). It is measured with applyStandardMeasurements from one IntensityPartial of
+/// the component's intensity samples (channel = the intensity plane's source
+/// channel). Components are emitted in raster order of their first pixel. When
+/// bool parameter "seams" is true (default false), a component touching the tile
+/// rect's edge goes to emitSeamFragment with that partial instead. A plain flood
+/// fill, no library call.
 class ComponentsOperation : public Operation {
 public:
     explicit ComponentsOperation(const OperationParameters& parameters);
@@ -99,6 +106,8 @@ public:
     const OperationParameters& parameters() const override;
     void apply(OperationContext& context) override;
     bool producesObjects() const override;
+    /// 1 for either form: the mask copy.
+    int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
 
 private:
     OperationParameters parameters_;
@@ -106,9 +115,11 @@ private:
 };
 
 /// A factory whose declarations are read from a prototype operation built from
-/// default parameters, so it cannot disagree with the operation it creates (for
-/// default parameters; a parameter that changes a declaration, such as the
-/// BoxMean radius, is refused by the catalog's create()).
+/// default parameters, so they describe the operation create() returns for
+/// default parameters. The catalog's create() compares only the
+/// parameter-independent declarations (name, arity, requiresUniformTypes,
+/// supportedTypes, producesObjects), so a parameter that changes the halo, such
+/// as the BoxMean radius, is accepted.
 class PrototypeFactory : public OperationFactory {
 public:
     using Maker = OperationPtr (*)(const OperationParameters&);

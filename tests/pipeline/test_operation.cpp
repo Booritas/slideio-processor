@@ -170,10 +170,16 @@ TEST(Operation, TestOperationsDeclareTheirContracts) {
     ts::ComponentsOperation components{OperationParameters()};
     EXPECT_EQ(components.arity(), ChannelArity::Joint);
     EXPECT_TRUE(components.producesObjects());
-    EXPECT_EQ(components.supportedTypes().count(), 1);
+    // Byte masks, and Float32 as the intensity plane of the two-plane form.
+    EXPECT_EQ(components.supportedTypes().count(), 2);
     EXPECT_TRUE(components.supportedTypes().contains(DataType::Byte));
+    EXPECT_TRUE(components.supportedTypes().contains(DataType::Float32));
+    EXPECT_FALSE(components.requiresUniformTypes());
     EXPECT_TRUE(components.halo().isEmpty());
     EXPECT_EQ(components.outputType(DataType::Byte), DataType::Byte);
+    EXPECT_EQ(components.outputType(DataType::Float32), DataType::Byte);
+    EXPECT_EQ(components.outputPlaneCount(1), 1);
+    EXPECT_EQ(components.outputPlaneCount(2), 1);
 }
 
 // --- OperationContext ------------------------------------------------------------
@@ -468,6 +474,120 @@ TEST(TestSupport, ComponentsEmitsPixelEdgePolygonsInLevel0) {
     EXPECT_EQ(records[1].geometry().boundingBox(), (Rect64{28, 48, 2, 2}));
     EXPECT_EQ(records[2].geometry().boundingBox(), (Rect64{32, 50, 2, 2}));
     EXPECT_EQ(measured(records[2].measurements(), "intensity.2.max"), 9.0);
+}
+
+TEST(TestSupport, ComponentsTwoPlaneFormMeasuresAFloatIntensityPlane) {
+    // Plane 0 is the Byte mask, plane 1 a Float32 intensity on source channel 5:
+    // the polygons come from the mask, the partials from plane 1.
+    ByteTile mask({
+        "##..",
+        "##..",
+        "...#",
+    }, Rect64{0, 0, 4, 3}, 1.0);
+    std::vector<float> intensity = {0.25f, 1.5f, 9.0f, 9.0f, -2.0f, 0.125f, 9.0f, 9.0f, 9.0f, 9.0f, 9.0f, 3.75f};
+    const BlockPlane planes[] = {BlockPlane{mask.pixels.data(), DataType::Byte, 4, 2},
+                                 BlockPlane{intensity.data(), DataType::Float32, 4 * 4, 5}};
+    const BlockView input(4, 3, Rect64{0, 0, 4, 3}, 0, planes, 2);
+    std::vector<uint8_t> copy(mask.pixels.size(), 0);
+    const BlockPlane outPlane{copy.data(), DataType::Byte, 4, 2};
+    BlockView output(4, 3, Rect64{0, 0, 4, 3}, 0, &outPlane, 1);
+    ts::CollectingObjectSink sink;
+    std::vector<IntensityPartial> fragments;
+    detail::OperationContextState state;
+    state.input = &input;
+    state.output = &output;
+    state.objectSink = &sink;
+    state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 4, 3};
+    state.seamFragment = [&fragments](const Polygon&, LayerId, const IntensityPartial* partials, int32_t count) {
+        ASSERT_EQ(count, 1);
+        fragments.push_back(partials[0]);
+    };
+    ts::ComponentsOperation op{OperationParameters()};
+    op.apply(*detail::makeOperationContext(state));
+
+    EXPECT_EQ(copy, mask.pixels);
+    const std::vector<ObjectRecord> records = sink.records();
+    ASSERT_EQ(records.size(), 2u);
+    EXPECT_EQ(records[0].geometry().boundingBox(), (Rect64{0, 0, 2, 2}));
+    EXPECT_EQ(measured(records[0].measurements(), "intensity.5.mean"), (0.25 + 1.5 - 2.0 + 0.125) / 4);
+    EXPECT_EQ(measured(records[0].measurements(), "intensity.5.min"), -2.0);
+    EXPECT_EQ(measured(records[0].measurements(), "intensity.5.max"), 1.5);
+    Measurement unused;
+    EXPECT_FALSE(records[0].measurements().find("intensity.2.mean", unused));
+    EXPECT_EQ(measured(records[1].measurements(), "intensity.5.max"), 3.75);
+
+    // With "seams" the partial handed to the merger also comes from plane 1.
+    ts::ComponentsOperation seams{OperationParameters().setBool("seams", true)};
+    seams.apply(*detail::makeOperationContext(state));
+    ASSERT_EQ(fragments.size(), 2u);
+    EXPECT_EQ(fragments[0].count, 4);
+    EXPECT_EQ(fragments[0].sum, -0.125);
+    EXPECT_EQ(fragments[0].sumOfSquares, 0.0625 + 2.25 + 4.0 + 0.015625);
+    EXPECT_EQ(fragments[0].channel, 5);
+    EXPECT_EQ(fragments[1].sum, 3.75);
+}
+
+TEST(TestSupport, ComponentsTwoPlaneFormAcceptsAByteIntensityAndRefusesBadPlanes) {
+    ByteTile mask({"#."}, Rect64{0, 0, 2, 1}, 1.0);
+    std::vector<uint8_t> byteIntensity = {77, 3};
+    std::vector<float> floatMask = {1.0f, 0.0f};
+    std::vector<uint16_t> wideIntensity = {7, 7};
+    std::vector<uint8_t> copy(2, 0);
+    const BlockPlane outPlane{copy.data(), DataType::Byte, 2, 0};
+    BlockView output(2, 1, Rect64{0, 0, 2, 1}, 0, &outPlane, 1);
+    ts::CollectingObjectSink sink;
+    auto run = [&](const BlockPlane* planes, int32_t count) {
+        const BlockView input(2, 1, Rect64{0, 0, 2, 1}, 0, planes, count);
+        detail::OperationContextState state;
+        state.input = &input;
+        state.output = &output;
+        state.objectSink = &sink;
+        state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 2, 1};
+        ts::ComponentsOperation op{OperationParameters()};
+        op.apply(*detail::makeOperationContext(state));
+    };
+    const BlockPlane maskPlane{mask.pixels.data(), DataType::Byte, 2, 0};
+    const BlockPlane byteIntensityPlane{byteIntensity.data(), DataType::Byte, 2, 1};
+    const BlockPlane twoByte[] = {maskPlane, byteIntensityPlane};
+    run(twoByte, 2);
+    ASSERT_EQ(sink.records().size(), 1u);
+    EXPECT_EQ(measured(sink.records()[0].measurements(), "intensity.1.mean"), 77.0);
+
+    // Float32 is an intensity type only, UInt16 is neither, and three planes are neither form.
+    const BlockPlane floatMaskPlane{floatMask.data(), DataType::Float32, 2 * 4, 0};
+    const BlockPlane floatFirst[] = {floatMaskPlane, byteIntensityPlane};
+    EXPECT_THROW(run(floatFirst, 2), slideio::processor::UnsupportedDataTypeError);
+    EXPECT_THROW(run(&floatMaskPlane, 1), slideio::processor::UnsupportedDataTypeError);
+    const BlockPlane widePlane{wideIntensity.data(), DataType::UInt16, 2 * 2, 1};
+    const BlockPlane wideSecond[] = {maskPlane, widePlane};
+    EXPECT_THROW(run(wideSecond, 2), slideio::processor::UnsupportedDataTypeError);
+    const BlockPlane three[] = {maskPlane, byteIntensityPlane, byteIntensityPlane};
+    EXPECT_THROW(run(three, 3), InvalidArgumentError);
+}
+
+TEST(TestSupport, ComponentsChecksTheTileAndOutputBeforeReading) {
+    const ByteTile input({"##", "##"}, Rect64{0, 0, 2, 2}, 1.0);
+    std::vector<uint8_t> copy(9, 0);
+    const BlockPlane outPlane{copy.data(), DataType::Byte, 3, 2};
+    detail::OperationContextState state;
+    state.input = &input.view;
+    ts::CollectingObjectSink sink;
+    state.objectSink = &sink;
+    ts::ComponentsOperation op{OperationParameters()};
+
+    // A tile reaching past the input is refused before any pixel is copied.
+    BlockView big(3, 3, Rect64{0, 0, 3, 3}, 0, &outPlane, 1);
+    state.output = &big;
+    state.haloRectAtLevel = Rect64{0, 0, 2, 2};
+    state.tileRectAtLevel = Rect64{0, 0, 3, 3};
+    EXPECT_THROW(op.apply(*detail::makeOperationContext(state)), InvalidArgumentError);
+    EXPECT_EQ(copy, std::vector<uint8_t>(9, 0));
+
+    // An output whose size differs from the tile is refused too.
+    state.tileRectAtLevel = Rect64{0, 0, 2, 2};
+    EXPECT_THROW(op.apply(*detail::makeOperationContext(state)), InvalidArgumentError);
+    EXPECT_EQ(copy, std::vector<uint8_t>(9, 0));
+    EXPECT_TRUE(sink.records().empty());
 }
 
 TEST(TestSupport, ComponentsSelfTouchingShapeIsOneRing) {

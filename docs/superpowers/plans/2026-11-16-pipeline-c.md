@@ -151,10 +151,10 @@ TEST(SeamRun, NoMergerForRasterOnlyChains) { /* BoxMean chain: no scratch dir cr
 ### Task 5: The UR-SEG-3 suite
 
 **Files:**
-- Create: `tests/pipeline/test_seg3_tiling_invariance.cpp`, `tests/pipeline/test_support/blob_scene.hpp/.cpp` (a synthetic scene of blobs: discs, annuli, U-shapes, corner-touching pairs, one region spanning the level, values varying inside each blob; Byte and Float32 variants; dyadic and non-dyadic pyramids).
+- Create: `tests/pipeline/test_seg3_tiling_invariance.cpp`, `tests/pipeline/test_support/blob_scene.hpp/.cpp` (a synthetic scene of blobs: discs, annuli, U-shapes, corner-touching pairs, one region spanning the level, values varying inside each blob; a Byte mask with a Byte or a Float32 intensity channel; dyadic and non-dyadic pyramids).
 
 **Interfaces:**
-- Consumes: Task 4; `ComponentsOperation`.
+- Consumes: Task 4; `ComponentsOperation` (the Byte suites use its one-plane form, the mask measured as its own intensity; the Float32 suite uses its two-plane form, plane 0 a Byte mask and plane 1 the Float32 intensity, so the float partials cross the seams).
 
 - [ ] **Step 1: Write the tests** (`// Requirements: UR-SEG-3, UR-QA-2, UR-QA-3`). They should pass if Tasks 1–4 are right; any failure is a defect in those tasks, fixed there, not here.
 
@@ -163,7 +163,7 @@ TEST(SeamRun, NoMergerForRasterOnlyChains) { /* BoxMean chain: no scratch dir cr
 // "Identical" compares, per object sorted by ObjectId: the id, the normalised polygon point for point,
 // area, perimeter, centroid, bounding box, and intensity.<c>.{mean,stddev,min,max}.
 TEST(Seg3, IdenticalAcrossThreeTileSizesByte) { /* tile sizes 64, 100, 257 at level 0: identical, exact */ }
-TEST(Seg3, IdenticalAcrossTileSizesFloat) { /* Float32 blobs: geometry exact, intensities within 1e-12 relative (P34) */ }
+TEST(Seg3, IdenticalAcrossTileSizesFloat) { /* two-plane ComponentsOperation: a Byte blob mask over Float32 intensities; geometry exact, intensities within 1e-12 relative (P34) */ }
 TEST(Seg3, IdenticalOnANonDyadicLevel) { /* the 8001x6001 / 2000x1500 pyramid, level 1, tile sizes 64, 100, 257 */ }
 TEST(Seg3, IdenticalAcrossWorkerCounts) { /* tile 100: 1, 2, 4, 8 workers identical, exact for both types */ }
 TEST(Seg3, IdenticalWhenSpilling) { /* tile 64 with a budget that forces spills of the level-spanning region */ }

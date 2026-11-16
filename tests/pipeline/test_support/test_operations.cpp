@@ -250,25 +250,28 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
 
 const char* ComponentsOperation::name() const { return "test.components"; }
 ChannelArity ComponentsOperation::arity() const { return ChannelArity::Joint; }
-bool ComponentsOperation::requiresUniformTypes() const { return true; }
-DataTypeSet ComponentsOperation::supportedTypes() const { return DataTypeSet().add(DataType::Byte); }
+bool ComponentsOperation::requiresUniformTypes() const { return false; }
+DataTypeSet ComponentsOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
 Halo ComponentsOperation::halo() const { return Halo::none(); }
 DataType ComponentsOperation::outputType(DataType) const { return DataType::Byte; }
 const OperationParameters& ComponentsOperation::parameters() const { return parameters_; }
 bool ComponentsOperation::producesObjects() const { return true; }
+int32_t ComponentsOperation::outputPlaneCount(int32_t) const { return 1; }
 
 void ComponentsOperation::apply(OperationContext& context) {
     const BlockView& in = context.input();
-    if (in.planeCount() != 1) {
-        throw InvalidArgumentError("test.components: needs exactly one input plane");
+    if (in.planeCount() != 1 && in.planeCount() != 2) {
+        throw InvalidArgumentError("test.components: needs one input plane (the mask) or two (the mask, then the "
+                                   "intensity)");
     }
-    requireType(name(), in.planeType(0), supportedTypes());
+    // The mask is Byte in both forms; Float32 is admitted only as the intensity plane.
+    requireType(name(), in.planeType(0), DataTypeSet().add(DataType::Byte));
+    const int32_t intensityPlane = in.planeCount() - 1;
+    requireType(name(), in.planeType(intensityPlane), supportedTypes());
     BlockView& out = context.output();
     const Point64 offset = tileOffset(context);
-    for (int64_t y = 0; y < out.height(); ++y) {
-        std::memcpy(mutableRowOf(out, 0, y), rowOf(in, 0, y + offset.y) + offset.x,
-                    static_cast<size_t>(out.width()));
-    }
 
     // Components are found in the tile alone, never in the halo around it: every
     // component is then anchored in this tile, and one that continues past the tile
@@ -280,8 +283,19 @@ void ComponentsOperation::apply(OperationContext& context) {
     if (offset.x < 0 || offset.y < 0 || offset.x + width > in.width() || offset.y + height > in.height()) {
         throw InvalidArgumentError("test.components: the tile rect must lie inside the input");
     }
+    if (out.width() != width || out.height() != height || out.planeCount() != 1 ||
+        out.planeType(0) != DataType::Byte) {
+        throw InvalidArgumentError("test.components: the output must be one Byte plane the size of the tile");
+    }
+    for (int64_t y = 0; y < height; ++y) {
+        std::memcpy(mutableRowOf(out, 0, y), rowOf(in, 0, y + offset.y) + offset.x, static_cast<size_t>(width));
+    }
+
     const Point64 origin{tile.x, tile.y};
     auto sample = [&in, offset](int64_t x, int64_t y) { return rowOf(in, 0, y + offset.y)[x + offset.x]; };
+    auto intensity = [&in, offset, intensityPlane](int64_t x, int64_t y) {
+        return sampleAt(in, intensityPlane, x + offset.x, y + offset.y);
+    };
 
     std::vector<int32_t> labels(static_cast<size_t>(width * height), 0);
     auto at = [width](int64_t x, int64_t y) { return static_cast<size_t>(y * width + x); };
@@ -295,13 +309,13 @@ void ComponentsOperation::apply(OperationContext& context) {
             std::vector<Point64> pixels;
             std::vector<Point64> stack = {Point64{sx, sy}};
             labels[at(sx, sy)] = label;
-            IntensityPartial partial{0, 0.0, 0.0, 0.0, 0.0, in.planeSourceChannel(0)};
+            IntensityPartial partial{0, 0.0, 0.0, 0.0, 0.0, in.planeSourceChannel(intensityPlane)};
             bool touchesEdge = false;
             while (!stack.empty()) {
                 const Point64 p = stack.back();
                 stack.pop_back();
                 pixels.push_back(p);
-                const double v = sample(p.x, p.y);
+                const double v = intensity(p.x, p.y);
                 partial.minimum = partial.count == 0 ? v : std::min(partial.minimum, v);
                 partial.maximum = partial.count == 0 ? v : std::max(partial.maximum, v);
                 ++partial.count;
@@ -398,7 +412,7 @@ OperationFactoryPtr makeBoxMeanFactory() {
 OperationFactoryPtr makeComponentsFactory() {
     return std::make_shared<PrototypeFactory>(
         [](const OperationParameters& p) -> OperationPtr { return std::make_shared<ComponentsOperation>(p); },
-        "Definition: 4-connected components of the non-zero samples", "O(n) in the number of samples");
+        "Definition: 4-connected components of the non-zero mask samples", "O(n) in the number of samples");
 }
 
 void registerTestOperations() {
