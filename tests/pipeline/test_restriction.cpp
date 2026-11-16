@@ -64,6 +64,15 @@ Polygon rectangle(int64_t x0, int64_t y0, int64_t x1, int64_t y1) {
     return p;
 }
 
+Polygon holedPolygon() {
+    const Point64 outer[] = {{64, 64}, {448, 64}, {448, 448}, {64, 448}};
+    const Point64 hole[] = {{200, 200}, {330, 200}, {330, 330}, {200, 330}};
+    Polygon p;
+    p.addRing(outer, 4, false);
+    p.addRing(hole, 4, true);
+    return p;
+}
+
 class RecordingObserver : public ProgressObserver {
 public:
     void onProgress(const char*, double, int64_t completed, int64_t total) override {
@@ -247,22 +256,22 @@ TEST(Restriction, AnchorDecides) {
     rasteriseInto(expectedMask, polygon);
 
     std::vector<ObjectId> expected;
-    int64_t straddling = 0;
+    int64_t excludedInsideBounds = 0;
     for (const ObjectRecord& r : all.records()) {
         const bool admitted = expectedMask.testLevel0(r.geometry().anchor());
         if (admitted) {
             expected.push_back(r.id());
         } else {
-            // An excluded object that still touches the polygon's bounding box: it straddles the edge.
+            // An excluded object that still lies within the polygon's bounding box: it is cut off by the polygon edge, not by the grid.
             const Rect64 box = r.geometry().boundingBox();
             if (!box.intersected(polygon.boundingBox()).isEmpty()) {
-                ++straddling;
+                ++excludedInsideBounds;
             }
         }
     }
     std::sort(expected.begin(), expected.end());
     ASSERT_GT(expected.size(), 50u);
-    ASSERT_GT(straddling, 10) << "the fixture should have blobs across the polygon edge";
+    ASSERT_GT(excludedInsideBounds, 10) << "the fixture should exclude blobs that lie within the polygon's bounding box";
     EXPECT_LT(expected.size(), all.records().size());
     EXPECT_EQ(sortedIds(stored), expected);
     for (const ObjectRecord& r : stored.records()) {
@@ -396,7 +405,7 @@ void checkAdmits(int32_t level, const PipelineSpec& baseSpec, ts::DiscMaskSource
     int admitted = 0;
     int refused = 0;
     int checked = 0;
-    while (checked < 1000) {
+    for (int attempts = 0; checked < 1000 && attempts < 200000; ++attempts) {
         const Point64 anchor{dist(rng), dist(rng)};
         const Point64 pixel{static_cast<int64_t>(std::floor(static_cast<double>(anchor.x) / scale)),
                             static_cast<int64_t>(std::floor(static_cast<double>(anchor.y) / scale))};
@@ -416,6 +425,7 @@ void checkAdmits(int32_t level, const PipelineSpec& baseSpec, ts::DiscMaskSource
         ++checked;
     }
     EXPECT_GT(admitted, 50);
+    ASSERT_EQ(checked, 1000) << "the anchor draw hit its attempt cap";
     if (expectRefusals) {
         EXPECT_GT(refused, 50);
     }
@@ -438,6 +448,11 @@ TEST(Restriction, AdmitsOutsideATile) {
             spec.restrictToPolygon(polygon);
             checkAdmits(level, spec, nullptr);
         }
+        {  // polygon with a hole
+            PipelineSpec spec = spec1("test.boxMean", radius(3));
+            spec.restrictToPolygon(holedPolygon());
+            checkAdmits(level, spec, nullptr);
+        }
         {  // mask source only
             checkAdmits(level, spec1("test.boxMean", radius(3)), &disc);
         }
@@ -447,4 +462,45 @@ TEST(Restriction, AdmitsOutsideATile) {
             checkAdmits(level, spec, &disc);
         }
     }
+}
+
+// An anchor inside a polygon's hole is refused, in a run and through admits().
+TEST(Restriction, HoleRefusesItsAnchors) {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Polygon polygon = holedPolygon();
+    auto inHole = [](const Point64& a) { return a.x >= 200 && a.x < 330 && a.y >= 200 && a.y < 330; };
+
+    ts::CollectingObjectSink all;
+    Pipeline unrestricted(scene, config(), spec1("test.components"));
+    unrestricted.bindLayer("objects", LayerId(3));
+    unrestricted.runInto(all, nullptr, CancellationToken());
+    int64_t inHoleUnrestricted = 0;
+    for (const ObjectRecord& r : all.records()) {
+        inHoleUnrestricted += inHole(r.geometry().anchor()) ? 1 : 0;
+    }
+    ASSERT_GT(inHoleUnrestricted, 20);
+
+    PipelineSpec spec = spec1("test.components");
+    spec.restrictToPolygon(polygon);
+    ts::CollectingObjectSink stored;
+    Pipeline restricted(scene, config(), spec);
+    restricted.bindLayer("objects", LayerId(3));
+    restricted.runInto(stored, nullptr, CancellationToken());
+    ASSERT_FALSE(stored.records().empty());
+    int64_t deep = 0;
+    for (const ObjectRecord& r : stored.records()) {
+        const Point64 a = r.geometry().anchor();
+        // The conservative fill keeps the hole's edge pixels, so test the hole's interior.
+        EXPECT_FALSE(a.x >= 202 && a.x < 328 && a.y >= 202 && a.y < 328) << "an anchor inside the hole was stored";
+        deep += inHole(a) ? 1 : 0;
+    }
+    EXPECT_EQ(deep, 0) << "no anchor of the hole is expected at all with a pixel-aligned hole";
+
+    restricted.validate();
+    auto& impl = detail::PipelineAccess::impl(restricted);
+    const detail::RestrictionFilter filter(detail::PipelineAccess::plan(restricted), impl.spec, *impl.selector,
+                                           impl.maskSource);
+    EXPECT_FALSE(filter.admits(Point64{260, 260}));
+    EXPECT_TRUE(filter.admits(Point64{100, 100}));
+    EXPECT_FALSE(filter.admits(Point64{30, 30}));
 }

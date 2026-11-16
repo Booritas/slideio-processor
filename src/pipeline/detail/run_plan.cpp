@@ -290,7 +290,9 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         tilePixelBytes = addSat(tilePixelBytes, mulSat(count, dataTypeSizeBytes(auxiliary.second->planeType())));
     }
     const bool restricted = spec.hasRoi() || spec.hasPolygon() || inputs.hasMaskSource;
-    tilePixelBytes = addSat(tilePixelBytes, restricted ? (inputs.hasMaskSource ? 2 : 1) : 0);
+    // intersect() holds the tile mask plus one temporary mask of the same size while it
+    // applies a polygon or a mask source (one at a time): 2 bytes; the ROI alone needs 1.
+    tilePixelBytes = addSat(tilePixelBytes, restricted ? (spec.hasPolygon() || inputs.hasMaskSource ? 2 : 1) : 0);
     auto haloSide = [](int64_t side, int32_t a, int32_t b) { return addSat(side, int64_t(a) + b); };
     auto tileNeed = [&](int64_t tileW, int64_t tileH) {
         return mulSat(mulSat(haloSide(tileW, chainHalo.left, chainHalo.right),

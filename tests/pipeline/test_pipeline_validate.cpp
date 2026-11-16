@@ -360,3 +360,36 @@ TEST(PipelineValidate, PlanCNotYetImplemented) {
     EXPECT_THROW(bad.run(nullptr, CancellationToken()), InvalidArgumentError);
     EXPECT_EQ(source->readCount(), 0);
 }
+
+// P26: the tile mask plus the one temporary mask that a polygon or a mask source needs at its peak.
+TEST(PipelineValidate, TileBytesCountTheRestrictionMasks) {
+    auto source = byteSource(2000, 2000);
+    const auto scene = ts::makeSyntheticScene(source);
+    auto tileBytes = [&](const PipelineSpec& spec, bool maskSource) {
+        Pipeline p(scene, config(256), spec);
+        struct Source : TileMaskSource {
+            void fillMask(RasterMask&) override {}
+        } mask;
+        if (maskSource) {
+            p.maskSource(&mask);
+        }
+        p.validate();
+        return planOf(p).tileBytes;
+    };
+    const Point64 ring[] = {{0, 0}, {2000, 0}, {2000, 2000}, {0, 2000}};
+    Polygon polygon;
+    polygon.addRing(ring, 4, false);
+
+    const int64_t area = 256 * 256;
+    const int64_t base = tileBytes(specOf("test.threshold"), false);
+    PipelineSpec roi = specOf("test.threshold");
+    roi.restrictTo(Rect64{0, 0, 2000, 2000});
+    PipelineSpec poly = specOf("test.threshold");
+    poly.restrictToPolygon(polygon);
+    PipelineSpec both = poly;
+    both.restrictTo(Rect64{0, 0, 2000, 2000});
+    EXPECT_EQ(tileBytes(roi, false), base + area);
+    EXPECT_EQ(tileBytes(poly, false), base + 2 * area);
+    EXPECT_EQ(tileBytes(both, false), base + 2 * area);
+    EXPECT_EQ(tileBytes(specOf("test.threshold"), true), base + 2 * area);
+}
