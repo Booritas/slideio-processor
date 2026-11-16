@@ -337,15 +337,29 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     const int64_t tileCount = impl_->grid.tileCount();
     const int64_t total = static_cast<int64_t>(globalPositions.size() + 1) * tileCount;
     const OperationCatalog& catalog = OperationCatalog::instance();
-    // Each run accumulates into fresh instances, never on top of an earlier run's.
-    for (size_t g : globalPositions) {
-        const auto k = static_cast<int32_t>(g);
-        plan.operations[g] = catalog.create(state.spec.operationName(k), state.spec.operationParameters(k));
-    }
-
+    const std::string& stageName = state.stageName;
     impl_->completed = 0;
     impl_->total = total;
     state.counters.reset();
+
+    // Each run accumulates into fresh instances, never on top of an earlier run's.
+    // All are created first and then swapped in together, so a failed create
+    // leaves the plan as it was.
+    std::vector<OperationPtr> fresh;
+    fresh.reserve(globalPositions.size());
+    for (size_t g : globalPositions) {
+        const auto k = static_cast<int32_t>(g);
+        const char* name = state.spec.operationName(k);
+        try {
+            fresh.push_back(catalog.create(name, state.spec.operationParameters(k)));
+        } catch (...) {
+            reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
+        }
+    }
+    for (size_t i = 0; i < globalPositions.size(); ++i) {
+        plan.operations[globalPositions[i]] = std::move(fresh[i]);
+    }
+
     detail::Bindings bindings;
     bindings.objectSink = &sink;
     bindings.edgeSink = state.edgeSink;
@@ -358,7 +372,6 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.counters = &state.counters;
     const detail::TileEvaluator evaluator(plan, *state.reader, std::move(bindings));
 
-    const std::string& stageName = state.stageName;
     std::atomic<int64_t>& completed = impl_->completed;
 
     // Runs `evaluateTile` on every tile, one job per worker, each pulling tile indices

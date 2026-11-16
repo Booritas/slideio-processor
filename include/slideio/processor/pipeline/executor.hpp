@@ -171,8 +171,8 @@ public:
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
      * @throws TileError When a tile fails; hasTile() is true, tileX() and
-     * tileY() are its column and row. When finalising a global-context
-     * operation fails; hasTile() is then false.
+     * tileY() are its column and row. When creating or finalising a
+     * global-context operation fails; hasTile() is then false.
      * @throws CancelledError When @p token is cancelled or an operation throws it.
      * @throws InternalError When a tile failed and its failure could not be
      * recorded.
