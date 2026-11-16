@@ -71,9 +71,9 @@ private:
 };
 
 // Appends the `height` rows of `rowBytes` bytes at `base`, `stride` bytes apart, to `out`
-// as one zlib stream, row by row, so no packed copy of the plane is made. Returns the
+// as one zlib stream, row by row, so no packed copy of the piece is made. Returns the
 // stream's size.
-int64_t compressPlane(const uint8_t* base, int64_t stride, size_t rowBytes, int64_t height, std::vector<uint8_t>& out) {
+int64_t compressPiece(const uint8_t* base, int64_t stride, size_t rowBytes, int64_t height, std::vector<uint8_t>& out) {
     ZStream zs(true);
     const size_t start = out.size();
     size_t used = start;
@@ -139,12 +139,24 @@ void TileSpool::append(const Rect64& slideRect, int64_t width, int64_t height, c
     if (width < 0 || height < 0) throw InternalError("TileSpool::append: negative size");
     if (width == 0 || height == 0) return;
 
-    // Compressed outside the lock, plane by plane.
-    const size_t rowBytes = static_cast<size_t>(width) * sampleBytes_;
+    // Compressed outside the lock, plane by plane, each plane piece by piece.
+    const int64_t across = (width + kRasterTileSize - 1) / kRasterTileSize;
+    const int64_t down = (height + kRasterTileSize - 1) / kRasterTileSize;
     std::vector<uint8_t> bytes;
-    std::vector<int64_t> sizes(static_cast<size_t>(format_.planes));
-    for (int32_t p = 0; p < format_.planes; ++p)
-        sizes[p] = compressPlane(static_cast<const uint8_t*>(planeData[p]), rowStrides[p], rowBytes, height, bytes);
+    std::vector<int64_t> sizes;
+    sizes.reserve(static_cast<size_t>(format_.planes * across * down));
+    for (int32_t p = 0; p < format_.planes; ++p) {
+        const auto* base = static_cast<const uint8_t*>(planeData[p]);
+        for (int64_t py = 0; py < down; ++py)
+            for (int64_t px = 0; px < across; ++px) {
+                const int64_t pieceWidth = std::min(kRasterTileSize, width - px * kRasterTileSize);
+                const int64_t pieceHeight = std::min(kRasterTileSize, height - py * kRasterTileSize);
+                sizes.push_back(compressPiece(base + py * kRasterTileSize * rowStrides[p] +
+                                                  px * kRasterTileSize * sampleBytes_,
+                                              rowStrides[p], static_cast<size_t>(pieceWidth) * sampleBytes_,
+                                              pieceHeight, bytes));
+            }
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_ == nullptr) throw InternalError("TileSpool::append: the spool was removed");
@@ -158,10 +170,14 @@ void TileSpool::append(const Rect64& slideRect, int64_t width, int64_t height, c
     entry.slideRect = slideRect;
     entry.width = width;
     entry.height = height;
-    entry.offset = end_;
-    entry.firstPlane = planeBytes_.size();
+    entry.firstPiece = pieces_.size();
     entries_.reserve(entries_.size() + 1);
-    planeBytes_.insert(planeBytes_.end(), sizes.begin(), sizes.end());
+    pieces_.reserve(pieces_.size() + sizes.size());
+    int64_t offset = end_;
+    for (const int64_t size : sizes) {
+        pieces_.push_back({offset, size});
+        offset += size;
+    }
     entries_.push_back(entry);
     end_ += static_cast<int64_t>(bytes.size());
     placed_ = false;  // a new call has no origin yet
@@ -205,16 +221,15 @@ int64_t TileSpool::extentHeight() const {
     return placed_ ? extentHeight_ : 0;
 }
 
-void TileSpool::decodeInto(const SpoolEntry& entry, int32_t plane, int64_t rowBegin, int64_t rowEnd,
+void TileSpool::decodeInto(const SpoolPiece& piece, int64_t pieceWidth, int64_t rowBegin, int64_t rowEnd,
                            int64_t columnBegin, int64_t columnEnd, std::vector<uint8_t>& target, int64_t targetX,
                            int64_t targetY, std::vector<uint8_t>& row, std::vector<uint8_t>& chunk) const {
-    int64_t offset = entry.offset;
-    for (int32_t p = 0; p < plane; ++p) offset += planeBytes_[entry.firstPlane + p];
-    int64_t remaining = planeBytes_[entry.firstPlane + plane];
+    ++piecesDecoded_;
+    int64_t remaining = piece.bytes;
     const std::string where = "spool '" + path_.u8string() + "'";
-    if (seekFile(file_, offset, SEEK_SET) != 0) throwIo("cannot read " + where, errnoText(errno));
+    if (seekFile(file_, piece.offset, SEEK_SET) != 0) throwIo("cannot read " + where, errnoText(errno));
 
-    const size_t rowBytes = static_cast<size_t>(entry.width) * sampleBytes_;
+    const size_t rowBytes = static_cast<size_t>(pieceWidth) * sampleBytes_;
     const size_t copyBytes = static_cast<size_t>(columnEnd - columnBegin) * sampleBytes_;
     row.resize(rowBytes);
     chunk.resize(kReadChunk);
@@ -225,9 +240,9 @@ void TileSpool::decodeInto(const SpoolEntry& entry, int32_t plane, int64_t rowBe
     for (int64_t r = 0; r < rowEnd; ++r) {
         size_t filled = 0;
         while (filled < rowBytes) {
-            if (status == Z_STREAM_END) throw InternalError("TileSpool: a call decodes short");
+            if (status == Z_STREAM_END) throw InternalError("TileSpool: a piece decodes short");
             if (zs.stream.avail_in == 0) {
-                if (remaining == 0) throw InternalError("TileSpool: a call decodes short");
+                if (remaining == 0) throw InternalError("TileSpool: a piece decodes short");
                 const size_t n = static_cast<size_t>(std::min<int64_t>(remaining, static_cast<int64_t>(chunk.size())));
                 errno = 0;
                 if (std::fread(chunk.data(), 1, n, file_) != n) {
@@ -290,12 +305,37 @@ void TileSpool::forEachGridTile(
             const SpoolEntry& e = entries_[touch.entry];
             const int64_t x0 = std::max(e.originX, tileX), x1 = std::min(e.originX + e.width, tileX + kRasterTileSize);
             const int64_t y0 = std::max(e.originY, tileY), y1 = std::min(e.originY + e.height, tileY + kRasterTileSize);
+            // The overlap in call-local pixels, and the call's pieces it meets.
+            const int64_t cx0 = x0 - e.originX, cx1 = x1 - e.originX, cy0 = y0 - e.originY, cy1 = y1 - e.originY;
+            const int64_t across = (e.width + kRasterTileSize - 1) / kRasterTileSize;
+            const int64_t down = (e.height + kRasterTileSize - 1) / kRasterTileSize;
             for (int32_t p = 0; p < format_.planes; ++p)
-                decodeInto(e, p, y0 - e.originY, y1 - e.originY, x0 - e.originX, x1 - e.originX, planes[p],
-                           x0 - tileX, y0 - tileY, row, chunk);
+                for (int64_t py = cy0 / kRasterTileSize; py * kRasterTileSize < cy1; ++py)
+                    for (int64_t px = cx0 / kRasterTileSize; px * kRasterTileSize < cx1; ++px) {
+                        const int64_t pieceX = px * kRasterTileSize, pieceY = py * kRasterTileSize;
+                        const int64_t pieceWidth = std::min(kRasterTileSize, e.width - pieceX);
+                        const int64_t rowBegin = std::max(cy0, pieceY) - pieceY;
+                        const int64_t rowEnd = std::min(cy1, pieceY + kRasterTileSize) - pieceY;
+                        const int64_t columnBegin = std::max(cx0, pieceX) - pieceX;
+                        const int64_t columnEnd = std::min(cx1, pieceX + kRasterTileSize) - pieceX;
+                        const size_t index = e.firstPiece + static_cast<size_t>((p * down + py) * across + px);
+                        decodeInto(pieces_[index], pieceWidth, rowBegin, rowEnd, columnBegin, columnEnd, planes[p],
+                                   e.originX + pieceX + columnBegin - tileX, e.originY + pieceY + rowBegin - tileY,
+                                   row, chunk);
+                    }
         }
         fn(first.gridX, first.gridY, planes);
     }
+}
+
+int64_t TileSpool::piecesStored() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int64_t>(pieces_.size());
+}
+
+int64_t TileSpool::piecesDecoded() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return piecesDecoded_;
 }
 
 void TileSpool::remove() {

@@ -1392,19 +1392,24 @@ fix is for `BlockView` to carry the exact scale, a change to `core` and outside
 this module.
 
 **Accumulation and memory (S46, as amended).** `writeTile` is ThreadSafe. It
-spools the **whole call**: its raw `slideRect` and size, with each plane
-compressed as its own zlib stream at level 1 outside any lock but a shared
-lifecycle lock; the streams are then appended to the `.spool` file under the
-writer's mutex, which also guards a memory-resident index entry
-(`detail::SpoolEntry`, about 80 bytes per call, plus 8 bytes per plane). Nothing is cut at that point,
-because where a call lies depends on the scale, which is final only at `flush`.
-At `flush` the spool cuts the calls along the 512 grid: each call is decoded at
-most once per grid tile it touches, row by row and only as far as that tile
-needs, and no whole-page buffer is ever held. When calls overlap, the later
-append wins. The pipeline writes disjoint tiles; overlap is the caller's
-misuse, never corruption. Page 0 holds one 512×512 tile per plane plus one
-scratch tile for the encoder; each later page holds four source tiles and one
-output tile. None of this is charged to `MemoryBudget`, which `storage` does not
+spools the **whole call**: its raw `slideRect` and size, with each plane cut
+into 512×512 pieces on a grid local to the call (pieces on its right and bottom
+edges are smaller) and each piece compressed as its own zlib stream at level 1
+outside any lock but a shared lifecycle lock; the streams are then appended to
+the `.spool` file under the writer's mutex, which also guards a memory-resident
+index (`detail::SpoolEntry`, about 72 bytes per call, plus 16 bytes per piece
+per plane). The pieces are not aligned to the level's 512 grid, because where a
+call lies depends on the scale, which is final only at `flush`. At `flush` the
+spool composes the grid tiles one at a time, row by row: for each tile, every
+call that touches it in append order, and of that call only the pieces the tile
+meets, each decoded row by row only as far as the tile needs. A piece meets at
+most four grid tiles, so it is decoded at most four times, and the decode work
+is at most four times the call's size whatever its shape. When calls overlap,
+the later append wins. The pipeline writes disjoint tiles; overlap is the
+caller's misuse, never corruption. Page 0 holds one 512×512 tile per plane, one
+piece row and a 64 KiB read buffer, one inflate stream at a time (zlib's default
+32 KiB window plus its state, about 7 KiB), and one scratch tile for the
+encoder; each later page holds four source tiles and one output tile. None of this is charged to `MemoryBudget`, which `storage` does not
 hold.
 
 **One live writer per raster, and the publish protocol (S47).** A live writer

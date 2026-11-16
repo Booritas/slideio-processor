@@ -538,7 +538,7 @@ TEST(TileSpool, ConcurrentAppendsAreAllKept) {
 
 // The spool cuts nothing at append time: place() maps every call's slideRect to level
 // pixels at the scale it is given, rounding to the nearest pixel (half away from zero),
-// and a call that straddles grid lines is decoded once for each tile it touches.
+// and a call that straddles grid lines reaches every tile it touches.
 TEST(TileSpool, PlaceMapsSlideRectsAtTheScale) {
     const std::filesystem::path path = uniqueTempPath("spool_place", ".spool");
     TempFileGuard guard(path);
@@ -590,6 +590,57 @@ TEST(TileSpool, PlaceMapsSlideRectsAtTheScale) {
     EXPECT_EQ(spool.extentHeight(), 1001 + h);
     spool.append(Rect64{-8, 0, 4, 4}, 2, 2, planes, strides);
     EXPECT_THROW(spool.place(4.0, 4.0), InternalError);
+    spool.remove();
+}
+
+// A call is spooled as 512 x 512 pieces on its own grid, and a grid tile decodes only the
+// pieces it meets: with unaligned origins each piece meets at most 4 tiles, so the pieces
+// decoded stay within 4 x the pieces stored, and two overlapping calls still compose with
+// the later one on top.
+TEST(TileSpool, DecodesEachPieceAtMostFourTimes) {
+    constexpr int planes = 2;
+    const std::filesystem::path path = uniqueTempPath("spool_pieces", ".spool");
+    TempFileGuard guard(path);
+    detail::TileSpool spool(path, {DataType::Byte, planes, RasterCompression::Deflate});
+    struct Call {
+        int64_t x, y, w, h;
+        int salt;
+    };
+    // The first spans 3 x 3 grid tiles and 3 x 3 pieces; the second, appended later, lies
+    // over it across both grid lines and covers 2 x 2 pieces.
+    const Call calls[] = {{100, 200, 1300, 1250, 0}, {400, 450, 700, 600, 1}};
+    const auto value = [](const Call& c, int p, int64_t x, int64_t y) {
+        return static_cast<uint8_t>((x * 7 + y * 13 + p * 101 + c.salt * 59) & 0xff);
+    };
+    for (const Call& c : calls) {
+        std::vector<std::vector<uint8_t>> data(planes, std::vector<uint8_t>(c.w * c.h));
+        for (int p = 0; p < planes; ++p)
+            for (int64_t y = 0; y < c.h; ++y)
+                for (int64_t x = 0; x < c.w; ++x) data[p][y * c.w + x] = value(c, p, x, y);
+        appendBlock(spool, c.x, c.y, c.w, c.h, data);
+    }
+    EXPECT_EQ(spool.piecesStored(), (9 + 4) * planes);
+    spool.place(1.0, 1.0);
+
+    std::vector<std::pair<int32_t, int32_t>> visited;
+    size_t mismatches = 0;
+    spool.forEachGridTile([&](int32_t gx, int32_t gy, const std::vector<std::vector<uint8_t>>& tile) {
+        visited.emplace_back(gx, gy);
+        for (int p = 0; p < planes; ++p)
+            for (int64_t y = 0; y < kTile; ++y)
+                for (int64_t x = 0; x < kTile; ++x) {
+                    const int64_t ax = gx * kTile + x, ay = gy * kTile + y;
+                    uint8_t want = 0;
+                    for (const Call& c : calls)
+                        if (ax >= c.x && ax < c.x + c.w && ay >= c.y && ay < c.y + c.h)
+                            want = value(c, p, ax - c.x, ay - c.y);
+                    if (tile[p][y * kTile + x] != want) ++mismatches;
+                }
+    });
+    EXPECT_EQ(mismatches, 0u);
+    EXPECT_EQ(visited.size(), 9u);
+    EXPECT_GT(spool.piecesDecoded(), 0);
+    EXPECT_LE(spool.piecesDecoded(), 4 * spool.piecesStored());
     spool.remove();
 }
 

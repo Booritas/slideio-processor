@@ -3,15 +3,18 @@
 
 // The spool behind a raster writer (rulings S45 and S46, as amended in Task 4's fix
 // round). writeTile hands each call to append whole: its level-0 slideRect, its size in
-// level pixels, and its planes, each compressed as its own zlib stream (level 1) outside
-// any lock, then appended to the spool file under the spool's mutex beside a small
-// in-memory index entry. Where a call lies in level pixels depends on the raster's scale,
-// which is final only at flush, so the spool cuts nothing at append time: place() fixes
-// every call's origin from the final scale, and forEachGridTile composes each 512-pixel
-// grid tile from the calls that touch it, in append order, so a later overlapping call
-// wins. A call is decoded at most once per grid tile it touches, row by row, and only as
-// far as that tile needs; no whole-page buffer is ever held. The file format is private
-// to one process lifetime and carries no version: nothing but this spool ever reads it.
+// level pixels, and its planes. Each plane is cut into pieces of 512 x 512 samples on a
+// grid local to the call (pieces on its right and bottom edges are smaller), and each
+// piece is compressed as its own zlib stream (level 1) outside any lock, then appended to
+// the spool file under the spool's mutex beside a small in-memory index entry. Where a
+// call lies in level pixels depends on the raster's scale, which is final only at flush,
+// so the pieces are not aligned to the level's grid: place() fixes every call's origin
+// from the final scale, and forEachGridTile composes each 512-pixel grid tile from the
+// calls that touch it, in append order, so a later overlapping call wins, decoding only
+// the pieces the tile meets. A piece meets at most 4 grid tiles, so it is decoded at
+// most 4 times, row by row and only as far as each tile needs; no more than one tile
+// per plane is ever held. The file format is private to one process lifetime and
+// carries no version: nothing but this spool ever reads it.
 
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/geometry.hpp>
@@ -41,15 +44,19 @@ struct RasterFormat {
 // a caller can range-check it before converting.
 double levelOrigin(int64_t coordinate, double scale) noexcept;
 
-// One spooled call: its geometry, and where its planes' zlib streams lie in the file, one
-// after another from `offset`. The streams' sizes are in the spool's planeBytes_, from
-// `firstPlane` on.
+// Where one piece's zlib stream lies in the spool file.
+struct SpoolPiece {
+    int64_t offset = 0;
+    int64_t bytes = 0;
+};
+
+// One spooled call: its geometry, and where its pieces lie in the spool's pieces_: from
+// `firstPiece` on, plane by plane, each plane's pieces row by row, columns ascending.
 struct SpoolEntry {
     Rect64 slideRect{0, 0, 0, 0};  // the call's level-0 rectangle, as given
     int64_t width = 0;             // its size in level pixels
     int64_t height = 0;
-    int64_t offset = 0;      // where its first plane's compressed bytes start in the file
-    size_t firstPlane = 0;   // index of its first plane's size in planeBytes_
+    size_t firstPiece = 0;   // index of its first plane's first piece in pieces_
     int64_t originX = 0;     // its top-left in level pixels; set by place()
     int64_t originY = 0;
 };
@@ -98,7 +105,7 @@ public:
     // in row-major order (row by row, columns ascending). `planes` holds one vector per
     // plane of 512 x 512 samples, row-major: zero where no call reached, otherwise the
     // calls applied in append order. The vectors are reused between calls. Throws
-    // InternalError before place() or when a call does not decode to its size, IoError
+    // InternalError before place() or when a piece does not decode to its size, IoError
     // naming the file when it cannot be read back, and whatever fn throws.
     void forEachGridTile(
         const std::function<void(int32_t gridX, int32_t gridY, const std::vector<std::vector<uint8_t>>& planes)>&
@@ -108,13 +115,20 @@ public:
     // naming the file when it cannot be deleted. Further appends are an InternalError.
     void remove();
 
+    // Test seams. piecesStored: the pieces spooled so far, over every plane of every call.
+    // piecesDecoded: how many times forEachGridTile has started decoding a piece since
+    // the spool was created, counting a piece again each time a tile needs it, and
+    // counting runs that threw part way; never reset.
+    int64_t piecesStored() const;
+    int64_t piecesDecoded() const;
+
 private:
-    // Decodes rows [rowBegin, rowEnd) of plane `plane` of `entry` and copies columns
-    // [columnBegin, columnEnd) of each into `target` at (targetX, targetY + row -
-    // rowBegin), a 512 x 512 tile. Caller holds mutex_.
-    void decodeInto(const SpoolEntry& entry, int32_t plane, int64_t rowBegin, int64_t rowEnd, int64_t columnBegin,
-                    int64_t columnEnd, std::vector<uint8_t>& target, int64_t targetX, int64_t targetY,
-                    std::vector<uint8_t>& row, std::vector<uint8_t>& chunk) const;
+    // Decodes rows [0, rowEnd) of `piece`, `pieceWidth` samples wide, and copies columns
+    // [columnBegin, columnEnd) of rows [rowBegin, rowEnd) into `target` at (targetX,
+    // targetY + row - rowBegin), a 512 x 512 tile. Caller holds mutex_.
+    void decodeInto(const SpoolPiece& piece, int64_t pieceWidth, int64_t rowBegin, int64_t rowEnd,
+                    int64_t columnBegin, int64_t columnEnd, std::vector<uint8_t>& target, int64_t targetX,
+                    int64_t targetY, std::vector<uint8_t>& row, std::vector<uint8_t>& chunk) const;
 
     std::filesystem::path path_;
     RasterFormat format_;
@@ -126,7 +140,8 @@ private:
     int64_t extentWidth_ = 0;
     int64_t extentHeight_ = 0;
     std::vector<SpoolEntry> entries_;  // in append order
-    std::vector<int64_t> planeBytes_;  // every entry's planes' compressed sizes, in order
+    std::vector<SpoolPiece> pieces_;   // every entry's pieces, in order
+    mutable int64_t piecesDecoded_ = 0;  // see piecesDecoded()
 };
 
 } // namespace slideio::processor::detail
