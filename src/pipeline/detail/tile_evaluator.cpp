@@ -9,6 +9,7 @@
 #include <slideio/processor/core/object_record.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -29,7 +30,9 @@ bool holds(const Rect64& r, Point64 p) {
 
 // The object sink an operation sees on one tile: an object is kept only when its
 // anchor lies in the tile's level-0 rect, then only when the tile's mask is
-// set there. Flushing is the run's business, so flush() does nothing.
+// set there. Flushing is the run's business, so flush() does nothing. One
+// filter serves one tile, but an operation may emit from threads of its own, so
+// the count is atomic.
 class TileObjectFilter : public ObjectSink {
 public:
     TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters)
@@ -49,14 +52,14 @@ public:
         ++emitted_;
     }
     void flush() override {}
-    int64_t emittedCount() const override { return emitted_; }
+    int64_t emittedCount() const override { return emitted_.load(); }
 
 private:
     ObjectSink* target_;
     Rect64 tileRect_;
     const RasterMask* mask_;
     RunCounters& counters_;
-    int64_t emitted_ = 0;
+    std::atomic<int64_t> emitted_{0};
 };
 
 // Plane `plane` of `view` as a view of its own.

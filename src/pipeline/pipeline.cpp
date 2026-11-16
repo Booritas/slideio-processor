@@ -7,6 +7,7 @@
 #include <slideio/processor/pipeline/executor.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -34,15 +35,16 @@ void bindByName(std::vector<std::pair<std::string, T>>& bindings, const char* na
     }
 }
 
-// The object sink of run(): counts what it is given and keeps nothing.
+// The object sink of run(): counts what it is given and keeps nothing. Workers
+// emit concurrently, so the count is atomic.
 class DiscardingObjectSink : public ObjectSink {
 public:
     void emit(const ObjectRecord&) override { ++emitted_; }
     void flush() override {}
-    int64_t emittedCount() const override { return emitted_; }
+    int64_t emittedCount() const override { return emitted_.load(); }
 
 private:
-    int64_t emitted_ = 0;
+    std::atomic<int64_t> emitted_{0};
 };
 
 } // namespace
@@ -179,17 +181,27 @@ void Pipeline::validate() const {
     Impl& impl = *impl_;
     impl.plan.reset();
     if (!impl.reader) {
-        // Built together, so a failure leaves none of them set.
+        // Built together, so a failure leaves none of them set. The reader
+        // describes the scene first, reporting a SlideIO failure as IoError.
         auto reader = std::make_unique<detail::SceneReader>(impl.scene);
-        auto selector = std::make_unique<LevelSelector>(impl.scene);
-        impl.levels = detail::levelTable(*impl.scene);
+        std::unique_ptr<LevelSelector> selector;
+        try {
+            selector = std::make_unique<LevelSelector>(impl.scene);
+        } catch (const InternalError& e) {
+            // LevelSelector reports a SlideIO failure as InternalError; on this
+            // path it is a failure to describe the scene, so IoError.
+            ErrorContext context;
+            context.cause = e.cause()[0] != '\0' ? e.cause() : e.what();
+            throw IoError("Pipeline::validate: SlideIO failed to describe the scene", context);
+        }
+        impl.levels = reader->levels();
         impl.selector = std::move(selector);
         impl.reader = std::move(reader);
     }
     const std::vector<DataType> channelTypes = impl.reader->channelTypes();
-    detail::RunPlanInputs inputs{&impl.spec,       &impl.config,          impl.scene,
-                                 &channelTypes,    impl.selector.get(),   &impl.levels,
-                                 &impl.layers,     &impl.auxiliaries,     impl.maskSource != nullptr,
+    detail::RunPlanInputs inputs{&impl.spec,          &impl.config,  &channelTypes,
+                                 impl.selector.get(), &impl.levels,  &impl.layers,
+                                 &impl.auxiliaries,   impl.maskSource != nullptr,
                                  impl.budget->ceilingBytes()};
     impl.plan = std::make_unique<detail::RunPlan>(detail::buildRunPlan(inputs));
 }

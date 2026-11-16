@@ -1,6 +1,7 @@
 // Requirements: UR-IMG-4, UR-SEG-3
 #include <pipeline/detail/level_table.hpp>
 
+#include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 
 #include <slideio/core/levelinfo.hpp>
@@ -53,6 +54,16 @@ std::vector<LevelDims> levelTable(const slideio::Scene& scene) {
         ErrorContext context;
         context.cause = e.what();
         throw InternalError("LevelSelector: SlideIO failed to report the scene's levels", context);
+    }
+}
+
+void tileSizeOfLevel(const LevelDims& level, const Configuration& config, int32_t& widthOut, int32_t& heightOut) {
+    if (config.tileSizeFromSlide() && level.tileWidth > 0 && level.tileHeight > 0) {
+        widthOut = level.tileWidth;
+        heightOut = level.tileHeight;
+    } else {
+        widthOut = config.tileWidth();
+        heightOut = config.tileHeight();
     }
 }
 

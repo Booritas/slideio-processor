@@ -49,17 +49,16 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
     if (!scene_) {
         throw InvalidArgumentError("SceneReader: the scene is null");
     }
-    std::vector<LevelDims> table;
     try {
         const int channels = scene_->getNumChannels();
         for (int c = 0; c < channels; ++c) {
             types_.push_back(dataTypeFromSlideio(static_cast<int32_t>(scene_->getChannelDataType(c))));
         }
         const std::tuple<int, int, int, int> rect = scene_->getRect();
-        table = levelTable(scene_->getNumZoomLevels(), std::get<2>(rect), std::get<3>(rect), [this](int32_t level) {
+        levels_ = levelTable(scene_->getNumZoomLevels(), std::get<2>(rect), std::get<3>(rect), [this](int32_t level) {
             const slideio::LevelInfo* info = scene_->getLevelInfo(level);
             if (info == nullptr) {
-                throw InternalError("SceneReader: SlideIO reported no such level");
+                throw IoError("SceneReader: SlideIO reported no such level");
             }
             const slideio::Size size = info->getSize();
             const slideio::Size tile = info->getTileSize();
@@ -68,10 +67,9 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
     } catch (...) {
         rethrowAsIoError("SceneReader: SlideIO failed to describe the scene");
     }
-    for (const LevelDims& level : table) {
-        levelSizes_.emplace_back(level.width, level.height);
-    }
 }
+
+const std::vector<LevelDims>& SceneReader::levels() const noexcept { return levels_; }
 
 std::vector<DataType> SceneReader::channelTypes() const {
     return types_;
@@ -79,7 +77,7 @@ std::vector<DataType> SceneReader::channelTypes() const {
 
 void SceneReader::read(int32_t level, const Rect64& levelRect, const std::vector<int32_t>& channels,
                        PlaneBuffers& out) const {
-    if (level < 0 || static_cast<size_t>(level) >= levelSizes_.size()) {
+    if (level < 0 || static_cast<size_t>(level) >= levels_.size()) {
         throw InvalidArgumentError("SceneReader::read: the level is out of range");
     }
     if (channels.empty()) {
@@ -111,11 +109,11 @@ void SceneReader::read(int32_t level, const Rect64& levelRect, const std::vector
         std::memset(out.planeData(p), 0, static_cast<size_t>(out.rowStrideBytes(p) * out.height()));
     }
 
-    const auto& size = levelSizes_[static_cast<size_t>(level)];
+    const LevelDims& size = levels_[static_cast<size_t>(level)];
     const int64_t x0 = std::max<int64_t>(levelRect.x, 0);
     const int64_t y0 = std::max<int64_t>(levelRect.y, 0);
-    const int64_t x1 = std::min<int64_t>(levelRect.x + levelRect.width, size.first);
-    const int64_t y1 = std::min<int64_t>(levelRect.y + levelRect.height, size.second);
+    const int64_t x1 = std::min<int64_t>(levelRect.x + levelRect.width, size.width);
+    const int64_t y1 = std::min<int64_t>(levelRect.y + levelRect.height, size.height);
     if (x1 <= x0 || y1 <= y0) {
         return;
     }

@@ -18,10 +18,6 @@
 #include <utility>
 #include <vector>
 
-namespace slideio {
-class Scene;
-} // namespace slideio
-
 namespace slideio::processor::detail {
 
 /// Everything Pipeline::validate() resolved, kept for the run: the whole-level layout, the level,
@@ -42,8 +38,9 @@ struct RunPlan {
     std::vector<size_t> globalContextPositions;    ///< Chain positions of needsGlobalContext() operations.
     bool restricted;                               ///< A ROI, a polygon or a mask source is bound.
     /// Upper bound on one tile's buffers: the largest tile grown by chainHalo,
-    /// times the bytes per pixel of every step's planes, every auxiliary's planes
-    /// and the restriction masks (one byte, two with a mask source).
+    /// times the bytes per pixel of every step's planes, the reader's interleave
+    /// buffer, every auxiliary's planes and the restriction masks (one byte,
+    /// two with a polygon or a mask source).
     int64_t tileBytes;
     /// The analysis level's extent, {0, 0, width, height}: what lies outside it reads
     /// as zeros at every step of the chain.
@@ -55,7 +52,6 @@ struct RunPlan {
 struct RunPlanInputs {
     const PipelineSpec* spec;
     const Configuration* config;
-    std::shared_ptr<slideio::Scene> scene;
     const std::vector<DataType>* channelTypes;     ///< SceneReader::channelTypes(); Unknown allowed.
     const LevelSelector* selector;
     const std::vector<LevelDims>* levels;

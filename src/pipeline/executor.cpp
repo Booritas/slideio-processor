@@ -469,6 +469,9 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
             detail::Accumulation accumulation{g, instance.get()};
             const detail::TileOutcome outcome = evaluator.evaluate(tile, token, operation, &accumulation);
             *operation = name;
+            // combine() runs on whichever arrival unblocks the fold, so when it
+            // throws, the TileError names this arriving tile, not necessarily
+            // the tile whose instance failed to combine.
             if (outcome.skipped) {
                 fold.skip(tile);
             } else {

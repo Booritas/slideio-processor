@@ -279,6 +279,59 @@ TEST(Restriction, AnchorDecides) {
     }
 }
 
+
+// With a polygon and a mask source both bound, an object is stored exactly when its
+// anchor lies in the polygon and in the mask: no stored anchor lies outside their
+// intersection, and objects inside the polygon but outside the mask are dropped.
+TEST(Restriction, AnchorDecidesWithPolygonAndMaskSource) {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Polygon polygon = triangle(64, 64, 448, 448);
+    ts::DiscMaskSource disc(200.0, 200.0, 120.0);
+    PipelineSpec restrictedSpec = spec1("test.components");
+    restrictedSpec.restrictToPolygon(polygon);
+
+    ts::CollectingObjectSink all;
+    Pipeline unrestricted(scene, config(), spec1("test.components"));
+    unrestricted.bindLayer("objects", LayerId(3));
+    unrestricted.runInto(all, nullptr, CancellationToken());
+
+    ts::CollectingObjectSink stored;
+    Pipeline restricted(scene, config(), restrictedSpec);
+    restricted.bindLayer("objects", LayerId(3)).maskSource(&disc);
+    restricted.runInto(stored, nullptr, CancellationToken());
+
+    RasterMask polygonMask(Rect64{0, 0, kSide, kSide}, 0, 1.0);
+    rasteriseInto(polygonMask, polygon);
+    const auto inDisc = [&disc](const Point64& p) {
+        return disc.contains(static_cast<double>(p.x) + 0.5, static_cast<double>(p.y) + 0.5);
+    };
+
+    std::vector<ObjectId> expected;
+    int64_t inPolygonOutsideDisc = 0;
+    int64_t inDiscOutsidePolygon = 0;
+    for (const ObjectRecord& r : all.records()) {
+        const Point64 anchor = r.geometry().anchor();
+        const bool inPolygon = polygonMask.testLevel0(anchor);
+        if (inPolygon && inDisc(anchor)) {
+            expected.push_back(r.id());
+        } else if (inPolygon) {
+            ++inPolygonOutsideDisc;
+        } else if (inDisc(anchor)) {
+            ++inDiscOutsidePolygon;
+        }
+    }
+    std::sort(expected.begin(), expected.end());
+    ASSERT_GT(expected.size(), 20u);
+    ASSERT_GT(inPolygonOutsideDisc, 10) << "the fixture should have objects the mask alone excludes";
+    ASSERT_GT(inDiscOutsidePolygon, 10) << "the fixture should have objects the polygon alone excludes";
+    EXPECT_EQ(sortedIds(stored), expected);
+    for (const ObjectRecord& r : stored.records()) {
+        const Point64 anchor = r.geometry().anchor();
+        EXPECT_TRUE(polygonMask.testLevel0(anchor) && inDisc(anchor))
+            << "an object with its anchor outside the polygon and mask intersection was stored";
+    }
+}
+
 // Filtering never alters a pixel: the tiles a restricted run processes equal the unrestricted ones.
 TEST(Restriction, PixelsAreNeverAltered) {
     auto scene = ts::makeSyntheticScene(source(texture));

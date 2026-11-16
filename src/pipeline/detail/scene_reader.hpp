@@ -1,6 +1,7 @@
 // Requirements: UR-IMG-9, UR-IMG-4, UR-EXT-3
 #pragma once
 
+#include <pipeline/detail/level_table.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
 
 #include <slideio/processor/core/data_type.hpp>
@@ -22,13 +23,17 @@ namespace slideio::processor::detail {
 /// as a macro. Concurrent reads go through the scene's own thread-safety.
 class SceneReader {
 public:
-    /// Throws InvalidArgumentError for a null scene; IoError, with the cause, when SlideIO cannot
-    /// describe it.
+    /// Throws InvalidArgumentError for a null scene or a level of non-positive
+    /// size; IoError, with the cause, when SlideIO cannot describe the scene or
+    /// reports no level where it counted one.
     explicit SceneReader(std::shared_ptr<slideio::Scene> scene);
 
     /// The type of every scene channel; DataType::Unknown for a channel whose
     /// SlideIO type has no pipeline equivalent (read() rejects such a channel).
     std::vector<DataType> channelTypes() const;
+
+    /// The scene's pyramid, read once at construction, as levelTable() builds it.
+    const std::vector<LevelDims>& levels() const noexcept;
 
     /// Fills `out` with `channels` of `levelRect` at `level`. `out` must have
     /// levelRect's size, one plane per channel, each plane holding that channel
@@ -42,7 +47,7 @@ public:
 private:
     std::shared_ptr<slideio::Scene> scene_;
     std::vector<DataType> types_;                  // Unknown kept; read() rejects it for a selected channel
-    std::vector<std::pair<int64_t, int64_t>> levelSizes_;
+    std::vector<LevelDims> levels_;
 };
 
 } // namespace slideio::processor::detail

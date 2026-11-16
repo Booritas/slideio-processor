@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -301,12 +302,13 @@ TEST(PipelineValidate, AutoLevelAlsoFitsTheTile) {
     auto source = pyramid();
     WideAuxiliary auxiliary;
     // Level 0: the whole-level need is 105,000,000 bytes, but its one tile needs
-    // 1,000,000 x (1 + 4 + 800) = 805,000,000; level 1's tile needs 201,250,000.
+    // 1,000,000 x (1 + 4 + 1 + 800) = 806,000,000 (source, output, the reader's
+    // interleave buffer and the auxiliary); level 1's tile needs 201,500,000.
     Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.wholeLevel"));
     p.memoryBudget(makeMemoryBudget(300000000)).auxiliaryRaster("coarse", &auxiliary);
     p.validate();
     EXPECT_EQ(p.analysisLevel(), 1);
-    EXPECT_EQ(planOf(p).tileBytes, int64_t(500) * 500 * 805);
+    EXPECT_EQ(planOf(p).tileBytes, int64_t(500) * 500 * 806);
     EXPECT_EQ(source->readCount(), 0);
 }
 
@@ -322,7 +324,8 @@ TEST(PipelineValidate, AnalysisLevelBeforeValidateThrows) {
 TEST(PipelineValidate, TileLargerThanTheCeilingFails) {
     auto source = byteSource(2000, 2000);
     const auto scene = ts::makeSyntheticScene(source);
-    // A 1024 x 1024 tile grown by radius 1 is 1026 x 1026 pixels of 1 + 4 bytes.
+    // A 1024 x 1024 tile grown by radius 1 is 1026 x 1026 pixels of 1 + 4 bytes,
+    // plus 1 for the reader's interleave buffer.
     Pipeline p(scene, config(1024), specOf("test.boxMean"));
     p.memoryBudget(makeMemoryBudget(1000000));
     const std::string message = validateMessage<InvalidArgumentError>(p);
@@ -331,7 +334,7 @@ TEST(PipelineValidate, TileLargerThanTheCeilingFails) {
 
     Pipeline q(scene, config(1024), specOf("test.boxMean"));
     q.validate();
-    EXPECT_EQ(planOf(q).tileBytes, int64_t(1026) * 1026 * 5);
+    EXPECT_EQ(planOf(q).tileBytes, int64_t(1026) * 1026 * 6);
     EXPECT_EQ(source->readCount(), 0);
 }
 
@@ -392,4 +395,160 @@ TEST(PipelineValidate, TileBytesCountTheRestrictionMasks) {
     EXPECT_EQ(tileBytes(poly, false), base + 2 * area);
     EXPECT_EQ(tileBytes(both, false), base + 2 * area);
     EXPECT_EQ(tileBytes(specOf("test.threshold"), true), base + 2 * area);
+}
+
+namespace {
+
+// A raster source whose declarations are set per test. Never read here.
+class DeclaredAuxiliary : public TileRasterSource {
+public:
+    DeclaredAuxiliary(DataType type, int32_t count) : type_(type), count_(count) {}
+    void fillTile(BlockView&) override {}
+    DataType planeType() const override { return type_; }
+    int32_t planeCount() const override { return count_; }
+
+private:
+    DataType type_;
+    int32_t count_;
+};
+
+} // namespace
+
+// An auxiliary raster that declares no plane, or a plane type without a size, is
+// refused before any pixel is read, and the message names its binding.
+TEST(PipelineValidate, AuxiliaryWithoutPlanesIsRefused) {
+    auto source = byteSource();
+    const auto scene = ts::makeSyntheticScene(source);
+    DeclaredAuxiliary none(DataType::Byte, 0);
+    DeclaredAuxiliary negative(DataType::Byte, -1);
+    DeclaredAuxiliary unknown(DataType::Unknown, 1);
+    for (DeclaredAuxiliary* auxiliary : {&none, &negative, &unknown}) {
+        Pipeline p(scene, config(), specOf("test.threshold"));
+        p.auxiliaryRaster("coarse", auxiliary);
+        const std::string message = validateMessage<InvalidArgumentError>(p);
+        EXPECT_TRUE(contains(message, "\"coarse\"")) << message;
+        EXPECT_THROW(p.run(nullptr, CancellationToken()), InvalidArgumentError);
+    }
+    DeclaredAuxiliary good(DataType::Float32, 2);
+    Pipeline ok(scene, config(), specOf("test.threshold"));
+    ok.auxiliaryRaster("coarse", &good);
+    EXPECT_NO_THROW(ok.validate());
+    EXPECT_EQ(source->readCount(), 0);
+}
+
+// The reader's interleave buffer is part of a tile's bytes: one call reads every
+// channel of a uniform-type selection into a buffer as large as all the source
+// planes; a mixed-type selection reads one channel at a time into a buffer as
+// large as its widest plane.
+TEST(PipelineValidate, TileBytesCountTheReadersInterleaveBuffer) {
+    const int64_t area = 256 * 256;
+    {
+        auto source = sourceOf({{1000, 800, 0, 0}},
+                               {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte, slideio::DataType::DT_Byte});
+        Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.threshold"));
+        p.validate();
+        // Source 3 x 1 byte, threshold output 3 x 1 byte, buffer 3 x 1 byte.
+        EXPECT_EQ(planOf(p).tileBytes, area * 9);
+    }
+    {
+        auto source = sourceOf({{1000, 800, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
+        Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.threshold"));
+        p.validate();
+        // Source 1 + 4 bytes, threshold output 1 + 1 bytes, buffer one Float32 channel.
+        EXPECT_EQ(planOf(p).tileBytes, area * (5 + 2 + 4));
+    }
+}
+
+namespace {
+
+// Channel 0 (Byte) holds integers; channel 1 (Float32) holds k + 0.75, so a
+// threshold at 127.5 tells a value read as Float32 from one truncated to a byte.
+double mixed(int channel, int64_t x, int64_t y) {
+    const double k = static_cast<double>((x * 13 + y * 5) % 256);
+    return channel == 0 ? k : k + 0.75 - (x % 2 == 0 ? 1.0 : 0.0);
+}
+
+// Assembles every Byte plane of every tile it receives, by plane, into level-0 images.
+class PlaneCapturingSink : public RasterSink {
+public:
+    PlaneCapturingSink(int64_t width, int64_t height, int32_t planes)
+        : width_(width), planes_(static_cast<size_t>(planes),
+                                 std::vector<int>(static_cast<size_t>(width * height), -1)) {}
+
+    void writeTile(const BlockView& tile) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++tiles_;
+        if (tile.planeCount() != static_cast<int32_t>(planes_.size())) {
+            ++wrongShape_;
+            return;
+        }
+        const Rect64 r = tile.slideRect();
+        for (int32_t plane = 0; plane < tile.planeCount(); ++plane) {
+            if (tile.planeType(plane) != DataType::Byte || tile.planeSourceChannel(plane) != plane) {
+                ++wrongShape_;
+                continue;
+            }
+            for (int64_t y = 0; y < tile.height(); ++y) {
+                const auto* row =
+                    static_cast<const uint8_t*>(tile.planeData(plane)) + y * tile.planeRowStrideBytes(plane);
+                for (int64_t x = 0; x < tile.width(); ++x) {
+                    planes_[static_cast<size_t>(plane)][static_cast<size_t>((r.y + y) * width_ + r.x + x)] = row[x];
+                }
+            }
+        }
+    }
+    void flush() override {}
+    int64_t tilesWritten() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return tiles_;
+    }
+
+    int at(int32_t plane, int64_t x, int64_t y) const {
+        return planes_[static_cast<size_t>(plane)][static_cast<size_t>(y * width_ + x)];
+    }
+    int64_t wrongShape() const { return wrongShape_; }
+
+private:
+    int64_t width_;
+    mutable std::mutex mutex_;
+    std::vector<std::vector<int>> planes_;
+    int64_t tiles_ = 0;
+    int64_t wrongShape_ = 0;
+};
+
+} // namespace
+
+// A PerChannel chain over mixed Byte and Float32 channels runs end to end: each
+// tile is read one channel per SlideIO call, each plane keeps its own type through
+// the evaluator, and the output planes hold the threshold of each channel's values.
+TEST(PipelineValidate, PerChannelMixedTypesRunEndToEnd) {
+    ts::registerTestOperations();
+    constexpr int64_t width = 300;
+    constexpr int64_t height = 200;
+    auto source = std::make_shared<ts::SyntheticSource>(
+        std::vector<ts::SyntheticLevel>{{width, height, 0, 0}},
+        std::vector<slideio::DataType>{slideio::DataType::DT_Byte, slideio::DataType::DT_Float32}, mixed);
+    OperationParameters level;
+    level.setDouble("level", 127.5);
+    PlaneCapturingSink sink(width, height, 2);
+    Pipeline p(ts::makeSyntheticScene(source), ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(4).build(),
+               specOf("test.threshold", level));
+    p.rasterSink(&sink);
+    p.run(nullptr, CancellationToken());
+
+    const int64_t tiles = planOf(p).grid.tileCount();
+    ASSERT_EQ(tiles, 5 * 4);
+    EXPECT_EQ(sink.tilesWritten(), tiles);
+    EXPECT_EQ(sink.wrongShape(), 0);
+    EXPECT_EQ(source->readCount(), 2 * tiles) << "one SlideIO call per channel per tile";
+    int64_t mismatches = 0;
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            for (int32_t c = 0; c < 2; ++c) {
+                const int expected = mixed(c, x, y) >= 127.5 ? 255 : 0;
+                mismatches += sink.at(c, x, y) != expected ? 1 : 0;
+            }
+        }
+    }
+    EXPECT_EQ(mismatches, 0);
 }

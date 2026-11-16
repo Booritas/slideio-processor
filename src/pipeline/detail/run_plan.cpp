@@ -259,6 +259,16 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     // (h) Target layers.
     std::vector<LayerId> targetLayers = resolveTargetLayers(operations, spec, *inputs.layers);
 
+    // Bound auxiliary rasters: each declares at least one plane of a type with a size.
+    for (const auto& auxiliary : *inputs.auxiliaries) {
+        if (auxiliary.second->planeCount() <= 0) {
+            invalid("auxiliary raster \"" + auxiliary.first + "\" declares no plane");
+        }
+        if (dataTypeSizeBytes(auxiliary.second->planeType()) <= 0) {
+            invalid("auxiliary raster \"" + auxiliary.first + "\" declares a plane type without a size");
+        }
+    }
+
     // (i) Whole-level layout, budget and level.
     const auto whole = std::find_if(operations.begin(), operations.end(), [](const OperationPtr& op) {
         return op->tileRequirement() == TileRequirement::WholeLevel;
@@ -281,12 +291,23 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 std::to_string(inputs.ceilingBytes) + " bytes");
     };
 
-    // What one tile's buffers need: every step's planes, every auxiliary's
-    // planes and the restriction masks, over the tile grown by the chain's halo.
+    // What one tile's buffers need: every step's planes, the reader's interleave
+    // buffer, every auxiliary's planes and the restriction masks, over the tile
+    // grown by the chain's halo.
     const Halo chainHalo = sumHalos(operations);
     int64_t tilePixelBytes = bytesPerPixel;
+    // The reader reads every channel in one call when their types agree, into a
+    // buffer as large as all the source planes; otherwise one channel per call,
+    // into a buffer as large as the widest source plane.
+    const bool uniformSource = std::all_of(sourceTypes.begin(), sourceTypes.end(),
+                                           [&sourceTypes](DataType t) { return t == sourceTypes.front(); });
+    int64_t widestSource = 0;
+    for (DataType type : sourceTypes) {
+        widestSource = std::max<int64_t>(widestSource, dataTypeSizeBytes(type));
+    }
+    tilePixelBytes = addSat(tilePixelBytes, uniformSource ? planeBytes(sourceTypes) : widestSource);
     for (const auto& auxiliary : *inputs.auxiliaries) {
-        const int64_t count = std::max<int32_t>(0, auxiliary.second->planeCount());
+        const int64_t count = auxiliary.second->planeCount();
         tilePixelBytes = addSat(tilePixelBytes, mulSat(count, dataTypeSizeBytes(auxiliary.second->planeType())));
     }
     const bool restricted = spec.hasRoi() || spec.hasPolygon() || inputs.hasMaskSource;
@@ -353,7 +374,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         tileWidth = static_cast<int32_t>(region.width);
         tileHeight = static_cast<int32_t>(region.height);
     } else {
-        defaultTileSize(inputs.scene, level, *inputs.config, tileWidth, tileHeight);
+        tileSizeOfLevel(levels[static_cast<size_t>(level)], *inputs.config, tileWidth, tileHeight);
     }
     TileGrid grid(region, level, tileWidth, tileHeight, selector);
 

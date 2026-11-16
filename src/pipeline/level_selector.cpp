@@ -199,14 +199,7 @@ void defaultTileSize(std::shared_ptr<slideio::Scene> scene, int32_t level, const
                                     std::to_string(levels.size()) + ")")
                                        .c_str());
     }
-    const detail::LevelDims& dims = levels[static_cast<size_t>(level)];
-    if (config.tileSizeFromSlide() && dims.tileWidth > 0 && dims.tileHeight > 0) {
-        widthOut = dims.tileWidth;
-        heightOut = dims.tileHeight;
-    } else {
-        widthOut = config.tileWidth();
-        heightOut = config.tileHeight();
-    }
+    detail::tileSizeOfLevel(levels[static_cast<size_t>(level)], config, widthOut, heightOut);
 }
 
 } // namespace slideio::processor

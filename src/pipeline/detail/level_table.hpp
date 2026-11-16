@@ -5,6 +5,10 @@
 #include <functional>
 #include <vector>
 
+namespace slideio::processor {
+class Configuration;
+} // namespace slideio::processor
+
 namespace slideio {
 class Scene;
 } // namespace slideio
@@ -30,6 +34,11 @@ std::vector<LevelDims> levelTable(int32_t reportedLevels, int64_t sceneWidth, in
 /// The pyramid of a SlideIO scene, through the overload above. SlideIO failures
 /// become InternalError with the cause preserved.
 std::vector<LevelDims> levelTable(const slideio::Scene& scene);
+
+/// The tile size of a level: its native tile size when the configuration
+/// takes the tile size from the slide and the level has one on both sides,
+/// otherwise the configured tile size.
+void tileSizeOfLevel(const LevelDims& level, const Configuration& config, int32_t& widthOut, int32_t& heightOut);
 
 /// double(width(0)) / double(width(level)); the caller has checked the level.
 double scaleOfLevel(const std::vector<LevelDims>& table, int32_t level) noexcept;
