@@ -116,7 +116,9 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
   `tileRequirement()`, a declared per-pixel working set, and enforcement in
-  `Pipeline::validate()`. Design note; nothing amended.
+  `Pipeline::validate()`. **Adopted** with pipeline plan A, which amends SDS 05
+  and 08; the enforcement lands in plan B, and a whole-level chain is forced to
+  one tile.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

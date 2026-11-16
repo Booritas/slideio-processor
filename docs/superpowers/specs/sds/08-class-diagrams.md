@@ -1197,7 +1197,9 @@ caller reaches it.
 
 ## D.6 `pipeline`
 
-The only module that links OpenCV, and the framework UR-EXT-4 promises. Two
+The only module that links OpenCV, and the framework UR-EXT-4 promises. It is
+the first module of the `slideio-processor-engine` library, which links OpenCV
+privately and SlideIO publicly (`05-pipeline.md` 5.11). Two
 drawings: what an operation is and how a run is specified, then what executes
 it.
 
@@ -1221,6 +1223,10 @@ classDiagram
         +accumulate(OperationContext) void
         +combine(Operation other) void
         +finalizeAccumulation() void
+        +tileRequirement() TileRequirement
+        +workingSetBytesPerLevelPixel() int64_t
+        +producesObjects() bool
+        +outputPlaneCount(int32_t inputPlanes) int32_t
     }
 
     class OperationContext {
@@ -1243,7 +1249,7 @@ classDiagram
         +channels() ChannelSelection
         +cancellation() CancellationToken
         +mask() RasterMask* or null
-        +emitSeamFragment(Polygon, LayerId) void
+        +emitSeamFragment(Polygon, LayerId, const IntensityPartial* p, int32_t n) void
     }
 
     class RasterMask {
@@ -1266,6 +1272,25 @@ classDiagram
         Joint
     }
 
+    class TileRequirement {
+        <<enumeration>>
+        Halo
+        WholeLevel
+    }
+
+    class IntensityPartial {
+        <<POD>>
+        +int64_t count
+        +double sum, sumOfSquares
+        +double minimum, maximum
+        +int32_t channel
+    }
+
+    class StandardMeasurements {
+        <<free functions>>
+        +applyStandardMeasurements(Polygon level0, const IntensityPartial* p, int32_t n, MeasurementSet& out) void
+    }
+
     class OperationParameters {
         <<ThreadCompatible>>
         +setInt(cstr key, int64_t) OperationParameters
@@ -1283,10 +1308,15 @@ classDiagram
         +create(OperationParameters) OperationPtr
         +name() cstr
         +arity() ChannelArity
+        +requiresUniformTypes() bool
         +supportedTypes() DataTypeSet
         +halo() Halo
         +correctnessReference() cstr
         +complexityNote() cstr
+        +tileRequirement() TileRequirement
+        +workingSetBytesPerLevelPixel() int64_t
+        +producesObjects() bool
+        +outputPlaneCount(int32_t inputPlanes) int32_t
     }
 
     class OperationCatalog {
@@ -1298,6 +1328,10 @@ classDiagram
         +nameAt(int32_t) cstr
         +supportedTypes(cstr name) DataTypeSet
         +correctnessReference(cstr name) cstr
+        +tileRequirement(cstr name) TileRequirement
+        +workingSetBytesPerLevelPixel(cstr name) int64_t
+        +producesObjects(cstr name) bool
+        +outputPlaneCount(cstr name, int32_t inputPlanes) int32_t
         +writeSupportMatrix(cstr path) int64_t
     }
 
@@ -1330,6 +1364,9 @@ classDiagram
     Operation *-- OperationParameters : parameters() lowers it back to a spec entry
     Operation ..> Halo
     Operation ..> ChannelArity
+    Operation ..> TileRequirement : whole-level layout, forced and budgeted at validate
+    OperationContext ..> IntensityPartial : carried by a seam fragment
+    StandardMeasurements ..> IntensityPartial : one formula, in-tile and merged
     OperationFactory ..> Operation : creates
     OperationCatalog o-- OperationFactory : registered by name
     OperationCatalog ..> OperationParameters : create
@@ -1368,6 +1405,24 @@ anyone implement one and a forgotten check would silently violate UR-STG-3.
 The catalog is what keeps `algorithm` a leaf. `workspace` resolves stages
 against it by name and never links it, and a user-defined operation registers
 exactly as a built-in does (UR-EXT-5).
+
+`OperationFactory` mirrors the operation's declarations so the catalog can
+answer before constructing anything, but only five of them are checked on every
+`create`: `name`, `arity`, `requiresUniformTypes`, `supportedTypes` and
+`producesObjects`, which cannot depend on parameters. `halo`,
+`tileRequirement`, `workingSetBytesPerLevelPixel` and `outputPlaneCount` can,
+so on the factory and through the catalog they describe the operation built
+from default parameters, and the instance is authoritative (`05-pipeline.md`
+5.3).
+
+`TileRequirement` is how an operation says it needs the whole analysis level in
+one block. For such a chain `validate()` lays the run out as a single tile and
+refuses it, before a pixel is read, when the level and the declared
+`workingSetBytesPerLevelPixel` do not fit the budget (`05-pipeline.md` 5.1).
+`IntensityPartial` lives beside `Operation` because a seam fragment carries it
+and `applyStandardMeasurements` consumes it: one formula measures an object
+finished in one tile and the same object merged from fragments, which UR-SEG-3
+requires to agree.
 
 ### D.6.2 Execution
 
@@ -1433,11 +1488,7 @@ classDiagram
     }
 
     class IntensityPartial {
-        <<POD>>
-        +int64_t count
-        +double sum, sumOfSquares
-        +double minimum, maximum
-        +int32_t channel
+        <<POD, declared in operation.hpp>>
     }
 
     class Reduction {
@@ -1475,6 +1526,7 @@ classDiagram
         +name() cstr
         +version() cstr
         +supports(DataType) bool
+        +supportedTypes() DataTypeSet
         +toBackendDepth(DataType) int32_t
         +fromBackendDepth(int32_t) DataType
     }
@@ -1536,7 +1588,9 @@ order. Placing that rule in the framework rather than in each algorithm is
 what makes it enforceable — a float reduction combined in completion order
 makes UR-QA-3 fail intermittently and irreproducibly.
 
-`Pipeline::asScene()` returns a `slideio::ScenePtr` and is the lazy path of
+`Pipeline::asScene()` returns a `std::shared_ptr<slideio::Scene>` — drawn as
+`ScenePtr`, though the signatures cannot spell it that way because SlideIO
+defines `ScenePtr` as a macro (`05-pipeline.md` 5.5) — and is the lazy path of
 UR-EXE-1. It is implementable only through the SlideIO addition specified in
 [the scene-source design](../2026-10-08-scene-source-design.md); the spike
 found no route to it from the public reader API alone.
