@@ -20,8 +20,10 @@ namespace slideio::processor::detail {
 ///
 /// The ROI is rasterised by its edges: a level pixel is set when it lies inside
 /// LevelSelector::mapToLevel(roi), the outward mapping the grid region uses.
-/// Polygon and TileMaskSource restrictions are not implemented yet: the
-/// constructor throws InternalError for them.
+/// The polygon is rasterised with rasteriseInto (conservative even-odd) and the
+/// TileMaskSource fills a second mask over the same region; both are intersected
+/// with the tile mask. The mask source may be called from several workers at
+/// once, so it must be thread-safe.
 class RestrictionFilter {
 public:
     RestrictionFilter(const RunPlan& plan, const PipelineSpec& spec, const LevelSelector& selector,
@@ -44,13 +46,17 @@ public:
     bool admits(Point64 anchorLevel0) const;
 
 private:
-    // Clears every pixel of `mask` outside the restriction.
+    // Clears every pixel of `mask` outside the restriction: the ROI, then the polygon,
+    // then the mask source.
     void intersect(RasterMask& mask) const;
+    void intersectRoi(RasterMask& mask) const;
 
     const RunPlan& plan_;
     bool restricted_;
     bool hasRoi_;
     Rect64 roiAtLevel_;
+    const Polygon* polygon_;        // Null without a polygon restriction; borrowed from the spec.
+    TileMaskSource* maskSource_;    // Null without a bound source; borrowed.
 };
 
 } // namespace slideio::processor::detail

@@ -11,6 +11,7 @@ add_library(slideio_processor_pipeline_test_support STATIC
     test_support/operation_conformance.cpp
     test_support/test_operations.cpp
     test_support/executor_support.cpp
+    test_support/disc_mask_source.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine GTest::gtest
@@ -36,6 +37,7 @@ add_executable(slideio_processor_pipeline_tests
     test_operation_parameters.cpp
     test_pipeline_spec.cpp
     test_pipeline_validate.cpp
+    test_restriction.cpp
     test_reduction.cpp
     test_scene_reader.cpp
     test_tile_evaluator.cpp
@@ -49,6 +51,7 @@ add_executable(slideio_processor_pipeline_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/plane_buffers.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/restriction.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/scene_reader.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/type_contract.cpp
 )

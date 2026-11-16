@@ -11,10 +11,12 @@ namespace slideio::processor::detail {
 
 RestrictionFilter::RestrictionFilter(const RunPlan& plan, const PipelineSpec& spec, const LevelSelector& selector,
                                      TileMaskSource* maskSource)
-    : plan_(plan), restricted_(plan.restricted), hasRoi_(spec.hasRoi()), roiAtLevel_{0, 0, 0, 0} {
-    if (spec.hasPolygon() || maskSource != nullptr) {
-        throw InternalError("RestrictionFilter: polygon and mask-source restrictions are not implemented yet");
-    }
+    : plan_(plan),
+      restricted_(plan.restricted),
+      hasRoi_(spec.hasRoi()),
+      roiAtLevel_{0, 0, 0, 0},
+      polygon_(spec.hasPolygon() ? &spec.polygon() : nullptr),
+      maskSource_(maskSource) {
     if (hasRoi_) {
         roiAtLevel_ = selector.mapToLevel(spec.roi(), plan.level);
     }
@@ -22,10 +24,7 @@ RestrictionFilter::RestrictionFilter(const RunPlan& plan, const PipelineSpec& sp
 
 bool RestrictionFilter::restricted() const noexcept { return restricted_; }
 
-void RestrictionFilter::intersect(RasterMask& mask) const {
-    if (!hasRoi_) {
-        return;
-    }
+void RestrictionFilter::intersectRoi(RasterMask& mask) const {
     const Rect64 region = mask.regionAtLevel();
     const Rect64 keep = region.intersected(roiAtLevel_);
     for (int64_t y = 0; y < region.height; ++y) {
@@ -39,6 +38,37 @@ void RestrictionFilter::intersect(RasterMask& mask) const {
         const int64_t to = from + keep.width;
         std::memset(row, 0, static_cast<size_t>(from));
         std::memset(row + to, 0, static_cast<size_t>(region.width - to));
+    }
+}
+
+// Clears every pixel of `mask` that `keep` (the same region) leaves clear.
+static void andInto(RasterMask& mask, const RasterMask& keep) {
+    const Rect64 region = mask.regionAtLevel();
+    for (int64_t y = 0; y < region.height; ++y) {
+        uint8_t* row = mask.row(y);
+        const uint8_t* other = keep.row(y);
+        for (int64_t x = 0; x < region.width; ++x) {
+            row[x] = static_cast<uint8_t>(row[x] & other[x]);
+        }
+    }
+}
+
+void RestrictionFilter::intersect(RasterMask& mask) const {
+    if (hasRoi_) {
+        intersectRoi(mask);
+    }
+    const Rect64 region = mask.regionAtLevel();
+    if (polygon_ != nullptr) {
+        RasterMask covered(region, mask.level(), mask.levelScale());
+        rasteriseInto(covered, *polygon_);
+        andInto(mask, covered);
+    }
+    if (maskSource_ != nullptr) {
+        // The source fills a mask of its own: it may write every pixel, and the tile mask
+        // keeps what the earlier restrictions allowed.
+        RasterMask fromSource(region, mask.level(), mask.levelScale());
+        maskSource_->fillMask(fromSource);
+        andInto(mask, fromSource);
     }
 }
 
