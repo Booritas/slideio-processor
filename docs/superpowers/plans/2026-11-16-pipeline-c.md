@@ -41,6 +41,27 @@ Plan A's Global Constraints hold unchanged. Added: commits go on branch `feat/pi
 
 ---
 
+### Task 0: Prerequisites from plan B's final review
+
+Plan B leaves the run's state where only one eager run at a time can use it: `validate()` resets the plan in place, and a run swaps fresh global-context instances into `RunPlan::operations`. `asScene()` reads blocks concurrently and after later binding calls, so this task changes that before Task 2 or Task 6 builds on it. It changes no public signature.
+
+**Files:**
+- Modify: `src/pipeline/detail/pipeline_impl.hpp`, `src/pipeline/pipeline.cpp`, `src/pipeline/executor.cpp`, `src/pipeline/detail/tile_evaluator.hpp/.cpp`, `src/pipeline/detail/operation_context_state.hpp/.cpp`, `src/pipeline/detail/restriction.hpp/.cpp`; tests in `tests/pipeline/test_global_context.cpp`, `tests/pipeline/test_restriction.cpp`, `tests/pipeline/test_operation.cpp`.
+
+**Interfaces:**
+- (a) `Pipeline::Impl::plan` becomes `std::shared_ptr<const detail::RunPlan>`. `validate()` builds a new plan and swaps it in; it never resets or mutates one in place, and a binding call drops the pointer, never the plan another holder still uses.
+- (b) Each run's global-context instances live in a run-local `std::vector<OperationPtr>` (the plan's operations with the fresh instances in their positions) handed to `TileEvaluator`, which takes the operations to apply as an argument instead of reading `RunPlan::operations`. Nothing a run creates is written into the plan.
+- (c) `asScene()` captures a snapshot of the plan (the `shared_ptr` of (a)) together with the bindings P36 copies, so a later `validate()` or binding call on the `Pipeline` never changes a scene already handed out.
+- (d) Global-context chains on the lazy path: P35's ruling stands — `asScene`, `readBlock` and `levelCount` refuse them with `InvalidArgumentError`; running their accumulation passes eagerly inside `asScene()` is not done, since it would make construction compute pixels. Confirm this before Task 6 and record any change as a ruling.
+- (e) The `seamFragment` callback in `detail::OperationContextState` gains the emitting tile index: `std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t tileIndex)>`; the evaluator fills it in. `SeamMerger` needs it for P34's canonical fragment order (ties by tile index) and to tie fragments to `notifyTileComplete`.
+- (f) `RestrictionFilter::admits(anchor)` must not call `TileMaskSource::fillMask` once per merged object: at 10 million objects that is 10 million callbacks. It answers from the mask of the tile holding the anchor (built once per tile and kept while that tile's components can still close), or from a cache keyed by tile; a test counts `fillMask` calls for many merged objects in one tile.
+
+- [ ] **Step 1: Write the failing tests** (`// Requirements: UR-EXE-1, UR-QA-3, UR-STG-3`): a plan held across a `validate()` keeps its operations; two runs leave the plan's global-context positions holding the instances `validate()` created; the fragment callback receives the tile index; `admits` over many anchors in one tile calls `fillMask` once for that tile.
+- [ ] **Step 2: Run them; see them fail.**
+- [ ] **Step 3: Implement** (a)–(c), (e) and (f); write (d) into the plan's rulings if it changes.
+- [ ] **Step 4: Run** the whole pipeline suite, and `TileExecutor|GlobalContext` with `--gtest_repeat=3 --gtest_shuffle`; all PASS.
+- [ ] **Step 5: Commit.** `refactor(pipeline): immutable run plan and run-local global-context instances`
+
 ### Task 1: Exact fragment merging
 
 **Files:**
