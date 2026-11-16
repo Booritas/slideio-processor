@@ -8,6 +8,7 @@
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 
 #include <cstdint>
@@ -103,5 +104,41 @@ private:
     OperationParameters parameters_;
     bool seams_;
 };
+
+/// A factory whose declarations are read from a prototype operation built from
+/// default parameters, so it cannot disagree with the operation it creates (for
+/// default parameters; a parameter that changes a declaration, such as the
+/// BoxMean radius, is refused by the catalog's create()).
+class PrototypeFactory : public OperationFactory {
+public:
+    using Maker = OperationPtr (*)(const OperationParameters&);
+    PrototypeFactory(Maker maker, const char* correctnessReference, const char* complexityNote);
+    OperationPtr create(const OperationParameters& parameters) const override;
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    const char* correctnessReference() const override;
+    const char* complexityNote() const override;
+    TileRequirement tileRequirement() const override;
+    int64_t workingSetBytesPerLevelPixel() const override;
+    bool producesObjects() const override;
+    int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+
+private:
+    Maker maker_;
+    OperationPtr prototype_;
+    const char* correctnessReference_;
+    const char* complexityNote_;
+};
+
+/// Factories of the test operations. The catalog is a process singleton, so a
+/// test registers them through registerTestOperations().
+OperationFactoryPtr makeThresholdFactory();
+OperationFactoryPtr makeBoxMeanFactory();
+OperationFactoryPtr makeComponentsFactory();
+/// Registers the three factories above, skipping any already registered.
+void registerTestOperations();
 
 } // namespace slideio::processor::testing_support

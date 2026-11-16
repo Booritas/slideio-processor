@@ -53,7 +53,25 @@ private:
     int64_t bias_ = 0;
 };
 
+class InvertFactory : public OperationFactory {
+public:
+    OperationPtr create(const OperationParameters& parameters) const override {
+        return std::make_shared<InvertOperation>(parameters);
+    }
+    const char* name() const override { return "thirdparty.invert"; }
+    ChannelArity arity() const override { return ChannelArity::PerChannel; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte); }
+    Halo halo() const override { return Halo::uniform(1); }
+    const char* correctnessReference() const override { return "Analytic: out = max(0, 255 - in - bias)"; }
+    const char* complexityNote() const override { return "O(n) in the number of samples"; }
+};
+
 } // namespace
+
+slideio::processor::OperationFactoryPtr makeInvertFactory() {
+    return std::make_shared<InvertFactory>();
+}
 
 slideio::processor::OperationPtr makeInvertOperation(const slideio::processor::OperationParameters& parameters) {
     return std::make_shared<InvertOperation>(parameters);

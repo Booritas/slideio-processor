@@ -360,4 +360,55 @@ void ComponentsOperation::apply(OperationContext& context) {
     }
 }
 
+// --- Factories --------------------------------------------------------------------
+
+PrototypeFactory::PrototypeFactory(Maker maker, const char* correctnessReference, const char* complexityNote)
+    : maker_(maker),
+      prototype_(maker(OperationParameters())),
+      correctnessReference_(correctnessReference),
+      complexityNote_(complexityNote) {}
+
+OperationPtr PrototypeFactory::create(const OperationParameters& parameters) const { return maker_(parameters); }
+const char* PrototypeFactory::name() const { return prototype_->name(); }
+ChannelArity PrototypeFactory::arity() const { return prototype_->arity(); }
+bool PrototypeFactory::requiresUniformTypes() const { return prototype_->requiresUniformTypes(); }
+DataTypeSet PrototypeFactory::supportedTypes() const { return prototype_->supportedTypes(); }
+Halo PrototypeFactory::halo() const { return prototype_->halo(); }
+const char* PrototypeFactory::correctnessReference() const { return correctnessReference_; }
+const char* PrototypeFactory::complexityNote() const { return complexityNote_; }
+TileRequirement PrototypeFactory::tileRequirement() const { return prototype_->tileRequirement(); }
+int64_t PrototypeFactory::workingSetBytesPerLevelPixel() const { return prototype_->workingSetBytesPerLevelPixel(); }
+bool PrototypeFactory::producesObjects() const { return prototype_->producesObjects(); }
+int32_t PrototypeFactory::outputPlaneCount(int32_t inputPlaneCount) const {
+    return prototype_->outputPlaneCount(inputPlaneCount);
+}
+
+OperationFactoryPtr makeThresholdFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<ThresholdOperation>(p); },
+        "Analytic: out = 255 where in >= level, else 0", "O(n) in the number of samples");
+}
+
+OperationFactoryPtr makeBoxMeanFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<BoxMeanOperation>(p); },
+        "Analytic: the arithmetic mean of the (2r+1)^2 window", "O(n r^2) in the number of samples");
+}
+
+OperationFactoryPtr makeComponentsFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<ComponentsOperation>(p); },
+        "Definition: 4-connected components of the non-zero samples", "O(n) in the number of samples");
+}
+
+void registerTestOperations() {
+    OperationCatalog& catalog = OperationCatalog::instance();
+    for (const OperationFactoryPtr& factory :
+         {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory()}) {
+        if (!catalog.isRegistered(factory->name())) {
+            catalog.registerFactory(factory);
+        }
+    }
+}
+
 } // namespace slideio::processor::testing_support

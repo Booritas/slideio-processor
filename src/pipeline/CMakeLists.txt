@@ -2,12 +2,14 @@ add_library(slideio-processor-pipeline OBJECT
     backend.cpp
     operation.cpp
     operation_context.cpp
+    operation_catalog.cpp
     operation_parameters.cpp
     standard_measurements.cpp
     detail/combine_partials.cpp
     detail/level_mapping.cpp
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
+    detail/type_contract.cpp
 )
 set_target_properties(slideio-processor-pipeline PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled here, so the export switch is defined here (ruling P1).

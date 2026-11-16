@@ -7,6 +7,7 @@
 // can reach the engine's internals (UR-EXT-2).
 
 #include <slideio/processor/pipeline/operation.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 
 namespace thirdparty {
@@ -15,5 +16,8 @@ namespace thirdparty {
 /// there to prove the tile offset is honoured), output 255 - sample - "bias"
 /// (int parameter, default 0), floored at 0.
 slideio::processor::OperationPtr makeInvertOperation(const slideio::processor::OperationParameters& parameters);
+
+/// The factory of "thirdparty.invert", written against the public headers alone.
+slideio::processor::OperationFactoryPtr makeInvertFactory();
 
 } // namespace thirdparty
