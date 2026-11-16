@@ -145,12 +145,17 @@ public:
      * @brief Level-0 to level. Rounds outward: the result covers every level-0
      * pixel of the input, so a mapped ROI never loses a boundary pixel.
      *
-     * x0 = floor(x / s), x1 = ceil((x + width) / s), likewise y, in long double.
-     * @param level0Rect A rectangle in level-0 pixels.
+     * The inverse of mapToLevel0(), taken through that mapping in integers: x0
+     * is the largest level ordinate whose level-0 image is at most x, and x1 the
+     * smallest whose level-0 image is at least x + width; likewise y. The result
+     * is therefore the same on every platform, and mapToLevel0() of it contains
+     * @p level0Rect by construction.
+     * @param level0Rect A rectangle in level-0 pixels; width and height not
+     * negative.
      * @param level The target level.
      * @return The covering rectangle in level pixels; not clipped to the level.
-     * @throws InvalidArgumentError When @p level is out of range, or the result
-     * does not fit int64.
+     * @throws InvalidArgumentError When @p level is out of range, the width or
+     * height is negative, or the far edge or the result does not fit int64.
      * @par Thread-safety
      * Safe to call concurrently.
      * @par Requirements
@@ -180,8 +185,9 @@ public:
     /**
      * @brief Level to level-0 for one point, through the same mapping.
      * @param levelPoint A point in level pixels.
-     * @param level Its level, which must be in range: this overload cannot
-     * throw, so an out-of-range level returns @p levelPoint unchanged.
+     * @param level Its level. Precondition: in range. This overload cannot
+     * throw, so a debug build asserts on an out-of-range level and a release
+     * build returns @p levelPoint unchanged.
      * @return The point in level-0 pixels.
      * @throws Nothing.
      * @par Thread-safety

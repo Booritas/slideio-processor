@@ -1011,12 +1011,20 @@ its origin and size: `x0 = map(x)`, `x1 = map(x + width)`, width `x1 − x0`, an
 likewise for y. Two rectangles that share a level edge therefore share the
 level-0 edge exactly, which mapping a width separately would not guarantee. The
 point overload is `noexcept`, so an in-range level is its precondition; given
-an out-of-range level it returns the point unchanged. The polygon overload maps
+an out-of-range level a debug build asserts and a release build returns the
+point unchanged. The polygon overload maps
 every vertex and keeps ring order and hole flags.
 
-`mapToLevel` rounds outward, computed in `long double`: `x0 = floor(x / s)`,
-`x1 = ceil((x + width) / s)`, and likewise for y. It throws
-`InvalidArgumentError` when the result does not fit `int64_t`. The result is not
+`mapToLevel` rounds outward and is the inverse of the single mapping, taken
+in integers: `x0` is the largest level ordinate whose level-0 image is at most
+`x`, and `x1` the smallest whose level-0 image is at least `x + width`; likewise
+for y. A `double` division only seeds the search, and a bounded number of
+±1 steps against `map` decides the answer, so the result is the same on every
+platform (no `long double`, whose width differs between MSVC, x86-64 Linux and
+arm64 Linux), and `mapToLevel0(mapToLevel(r))` contains `r` by construction.
+On a 100000-wide level 0 over a 33333-wide level 1, the full width maps to
+exactly 33333. It throws `InvalidArgumentError` for a negative width or height
+and when the far edge or the result does not fit `int64_t`. The result is not
 clipped to the level.
 
 ### The grid, exactly

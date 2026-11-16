@@ -6,7 +6,10 @@
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/level_table.hpp>
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,15 +38,52 @@ public:
 
 namespace {
 
-// The outward bound of one ordinate, checked to fit int64.
-int64_t toInt64(long double v, const char* method) {
-    // 2^63 is exact in long double; anything at or beyond it, or NaN, does not fit.
-    constexpr long double limit = 9223372036854775808.0L;
-    if (!(v >= -limit && v < limit)) {
-        throw InvalidArgumentError(
-            (std::string("LevelSelector::") + method + ": the mapped rectangle does not fit int64").c_str());
+[[noreturn]] void mappedRectDoesNotFit() {
+    throw InvalidArgumentError("LevelSelector::mapToLevel: the mapped rectangle does not fit int64");
+}
+
+// detail::levelToLevel0, refused where llround would leave int64.
+int64_t forward(int64_t levelOrdinate, double scale) {
+    // 2^63 is exact in double; a product at or beyond it does not fit.
+    if (!(std::fabs(static_cast<double>(levelOrdinate) * scale) < 9223372036854775808.0)) {
+        mappedRectDoesNotFit();
     }
-    return static_cast<int64_t>(v);
+    return detail::levelToLevel0(levelOrdinate, scale);
+}
+
+// A level ordinate a few steps from the answer, kept clear of int64's ends so the
+// steps cannot overflow.
+int64_t seed(double estimate) {
+    if (!(std::fabs(estimate) < 4611686018427387904.0)) { // 2^62
+        mappedRectDoesNotFit();
+    }
+    return static_cast<int64_t>(estimate);
+}
+
+// The largest level ordinate whose level-0 image is at most v. Only the seed comes
+// from a division; the forward mapping alone decides the answer, in integers, so it
+// is the same on every platform.
+int64_t lastAtOrBelow(int64_t v, double scale) {
+    int64_t level = seed(std::floor(static_cast<double>(v) / scale));
+    while (forward(level, scale) > v) {
+        --level;
+    }
+    while (forward(level + 1, scale) <= v) {
+        ++level;
+    }
+    return level;
+}
+
+// The smallest level ordinate whose level-0 image is at least v.
+int64_t firstAtOrAbove(int64_t v, double scale) {
+    int64_t level = seed(std::ceil(static_cast<double>(v) / scale));
+    while (forward(level, scale) < v) {
+        ++level;
+    }
+    while (forward(level - 1, scale) >= v) {
+        --level;
+    }
+    return level;
 }
 
 } // namespace
@@ -101,15 +141,20 @@ double LevelSelector::scaleOfLevel(int32_t level) const {
 }
 
 Rect64 LevelSelector::mapToLevel(const Rect64& level0Rect, int32_t level) const {
-    const long double s = impl_->scale(level, "mapToLevel");
-    const int64_t x0 = toInt64(std::floor(static_cast<long double>(level0Rect.x) / s), "mapToLevel");
-    const int64_t y0 = toInt64(std::floor(static_cast<long double>(level0Rect.y) / s), "mapToLevel");
-    const int64_t x1 = toInt64(
-        std::ceil((static_cast<long double>(level0Rect.x) + static_cast<long double>(level0Rect.width)) / s),
-        "mapToLevel");
-    const int64_t y1 = toInt64(
-        std::ceil((static_cast<long double>(level0Rect.y) + static_cast<long double>(level0Rect.height)) / s),
-        "mapToLevel");
+    const double s = impl_->scale(level, "mapToLevel");
+    if (level0Rect.width < 0 || level0Rect.height < 0) {
+        throw InvalidArgumentError("LevelSelector::mapToLevel: the rectangle has a negative width or height");
+    }
+    if (level0Rect.x > std::numeric_limits<int64_t>::max() - level0Rect.width ||
+        level0Rect.y > std::numeric_limits<int64_t>::max() - level0Rect.height) {
+        mappedRectDoesNotFit();
+    }
+    const int64_t x0 = lastAtOrBelow(level0Rect.x, s);
+    const int64_t y0 = lastAtOrBelow(level0Rect.y, s);
+    // An empty input where the mapping is flat could put the far edge before the
+    // near one; it maps to an empty rectangle instead.
+    const int64_t x1 = std::max(x0, firstAtOrAbove(level0Rect.x + level0Rect.width, s));
+    const int64_t y1 = std::max(y0, firstAtOrAbove(level0Rect.y + level0Rect.height, s));
     return Rect64{x0, y0, x1 - x0, y1 - y0};
 }
 
@@ -118,6 +163,9 @@ Rect64 LevelSelector::mapToLevel0(const Rect64& levelRect, int32_t level) const 
 }
 
 Point64 LevelSelector::mapToLevel0(Point64 levelPoint, int32_t level) const noexcept {
+    // An out-of-range level is the caller's bug: caught in debug builds, passed
+    // through unchanged in release ones, since this overload cannot throw.
+    assert(impl_->inRange(level));
     if (!impl_->inRange(level)) {
         return levelPoint;
     }

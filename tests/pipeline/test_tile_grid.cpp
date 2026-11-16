@@ -146,10 +146,46 @@ TEST(LevelSelector, Validation) {
     EXPECT_THROW(s.levelForScale(std::numeric_limits<double>::infinity()), InvalidArgumentError);
     EXPECT_THROW(s.levelForSize(0, 10), InvalidArgumentError);
     EXPECT_THROW(s.levelForSize(10, -1), InvalidArgumentError);
-    // The far edge is computed in long double, so x + width past INT64_MAX is reported, not wrapped.
+    // x + width past INT64_MAX is reported, not wrapped.
     const int64_t big = std::numeric_limits<int64_t>::max();
     EXPECT_NO_THROW(s.mapToLevel(Rect64{0, 0, big / 2, 1}, 2));
     EXPECT_THROW(s.mapToLevel(Rect64{big, 0, big, 1}, 0), InvalidArgumentError);
+    EXPECT_THROW(s.mapToLevel(Rect64{0, big - 1, 1, 1}, 0), InvalidArgumentError);
+    EXPECT_THROW(s.mapToLevel(Rect64{0, 0, -1, 1}, 1), InvalidArgumentError);
+    EXPECT_THROW(s.mapToLevel(Rect64{0, 0, 1, -1}, 1), InvalidArgumentError);
+}
+
+TEST(LevelSelector, MapToLevelInvertsTheSingleMappingOnEveryPlatform) {
+    // s = 100000 / 33333 rounds below the true ratio, so 100000 / s is a hair above
+    // 33333: ceil gives 33334 in exact or extended precision and 33333 in double,
+    // which made the old long-double formula differ between MSVC and Linux. The
+    // inverse is now defined through llround(L * s), which maps 33333 to exactly
+    // 100000 (33333 * s is within 4e-12 of it), so the full width maps to 33333
+    // everywhere, and the round trip lands on the level-0 extent itself.
+    const LevelSelector s(sceneOf({{100000, 100000, 0, 0}, {33333, 33333, 0, 0}}));
+    const double scale = 100000.0 / 33333;
+    ASSERT_EQ(s.scaleOfLevel(1), scale);
+    ASSERT_EQ(detail::levelToLevel0(33333, scale), 100000);
+    ASSERT_EQ(detail::levelToLevel0(33332, scale), 99997);
+    expectRect(s.mapToLevel(Rect64{0, 0, 100000, 100000}, 1), 0, 0, 33333, 33333);
+    expectRect(s.mapToLevel0(s.mapToLevel(Rect64{0, 0, 100000, 100000}, 1), 1), 0, 0, 100000, 100000);
+    // An interior edge: 99998 lies in level pixel 33332 = [99997, 100000).
+    expectRect(s.mapToLevel(Rect64{99998, 99997, 1, 3}, 1), 33332, 33332, 1, 1);
+
+    // The defining property, ordinate by ordinate: x0 is the last level pixel
+    // starting at or before x, x1 the first one starting at or after x + width.
+    for (int64_t x = 99000; x < 100000; x += 7) {
+        for (int64_t width : {int64_t{0}, int64_t{1}, int64_t{2}, int64_t{3}, int64_t{10}}) {
+            const Rect64 m = s.mapToLevel(Rect64{x, 0, width, 1}, 1);
+            const int64_t x1 = m.x + m.width;
+            EXPECT_LE(detail::levelToLevel0(m.x, scale), x);
+            EXPECT_GT(detail::levelToLevel0(m.x + 1, scale), x);
+            EXPECT_GE(detail::levelToLevel0(x1, scale), x + width);
+            if (width > 0) {
+                EXPECT_LT(detail::levelToLevel0(x1 - 1, scale), x + width);
+            }
+        }
+    }
 }
 
 TEST(LevelSelector, CopiesAreIndependentValues) {
