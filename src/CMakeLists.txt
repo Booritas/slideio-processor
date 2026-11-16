@@ -1,6 +1,7 @@
 add_subdirectory(core)
 add_subdirectory(config)
 add_subdirectory(storage)
+add_subdirectory(pipeline)
 
 # Linking the object library (rather than $<TARGET_OBJECTS:...>) puts its
 # objects into the DLL and lets its usage requirements propagate.
@@ -38,3 +39,42 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
         endif()
     endforeach()
 endforeach()
+
+# The engine library (design 5.1, ruling P1): pipeline, later also algorithm and
+# workspace. Its public headers name slideio::Scene and the data library's types,
+# so both are PUBLIC; OpenCV is static and PRIVATE (ruling P2). SlideIO's DLLs carry
+# their own static OpenCV, and the two copies never meet: SlideIO's API is
+# buffer-based, so no cv:: object crosses it.
+add_library(slideio-processor-engine SHARED)
+target_link_libraries(slideio-processor-engine
+    PUBLIC slideio-processor-data slideio::slideio
+    PRIVATE slideio-processor-pipeline opencv_core opencv_imgproc)
+target_include_directories(slideio-processor-engine PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+target_compile_definitions(slideio-processor-engine PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)
+
+# The engine passes STL types across SlideIO's DLL boundary, so under MSVC its
+# configuration must match SlideIO's (Debug with SlideIO's _d libraries, anything
+# else with its Release ones). A single-config build is checked here; for a
+# multi-config generator, which picks the configuration at build time, the guard
+# target fails the build of a mismatched configuration before the engine compiles.
+if(MSVC)
+    get_target_property(SLIDEIO_IMPLIB slideio::slideio IMPORTED_IMPLIB)
+    if(NOT SLIDEIO_IMPLIB)
+        message(FATAL_ERROR "src: slideio::slideio has no import library")
+    endif()
+    set(SLIDEIO_LIBRARY "${SLIDEIO_IMPLIB}")
+    set(CONFIG "${CMAKE_BUILD_TYPE}")
+    include(${PROJECT_SOURCE_DIR}/cmake/check_slideio_configuration.cmake)
+    add_custom_target(slideio-configuration-guard
+        COMMAND ${CMAKE_COMMAND} -DCONFIG=$<CONFIG> -DSLIDEIO_LIBRARY=${SLIDEIO_IMPLIB}
+                -P ${PROJECT_SOURCE_DIR}/cmake/check_slideio_configuration.cmake
+        VERBATIM)
+    add_dependencies(slideio-processor-engine slideio-configuration-guard)
+endif()
+
+# The static OpenCV inside the engine must not interpose on, or be interposed by,
+# the copy SlideIO's libraries carry.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(slideio-processor-engine PRIVATE -Wl,--exclude-libs,ALL)
+endif()

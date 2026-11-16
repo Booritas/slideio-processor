@@ -8,8 +8,10 @@
 #
 # Usage: ./build.sh [options]
 #   -c, --config <release|debug>  Configuration of this project (default: release).
-#                                 SlideIO is always installed in release; the
-#                                 project uses only its headers.
+#                                 SlideIO is always installed in release. The
+#                                 engine links it across an STL-bearing API, so
+#                                 debug is refused on Windows, where MSVC's
+#                                 Debug and Release STL layouts differ.
 #       --rebuild-slideio         Reinstall SlideIO even if the installed copy
 #                                 matches the submodule commit.
 #       --skip-slideio            Do not touch the SlideIO install.
@@ -23,7 +25,7 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "build.sh: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
@@ -44,6 +46,18 @@ case "$config" in
     debug) build_type=Debug; build_dir=build-debug ;;
     *) die "--config must be release or debug, not '$config'" ;;
 esac
+# SlideIO's API passes std::string, std::vector and std::shared_ptr across its DLL
+# boundary. MSVC lays those out differently in Debug and Release and nothing detects
+# the mismatch, so a Debug build against the Release SlideIO installed below would
+# be undefined behaviour. SlideIO's install.py can build Debug, but that is a second
+# full SlideIO build plus every Conan dependency rebuilt in Debug, so it is not
+# offered here; CMake refuses the same mismatch (cmake/check_slideio_configuration.cmake).
+if [[ "$config" == debug ]]; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            die "--config debug is not supported on Windows: the Debug engine would link the Release"                 "SlideIO across an STL-bearing API, whose layout differs between MSVC Debug and Release."                 "Build release (the default), or install SlideIO in Debug yourself and configure against it." ;;
+    esac
+fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$root"
@@ -140,7 +154,19 @@ step "Installing Conan dependencies ($build_type)"
 if ! "$conan" profile path default >/dev/null 2>&1; then
     "$conan" profile detect
 fi
-"$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 --build=missing
+# The default profile's arch is whatever the first `profile detect` saw, and a restored
+# ~/.conan2 cache can carry the wrong one; SlideIO's install.py picks its profile from
+# the host, so on macOS name the host arch here or the two will not link.
+arch_setting=()
+if [[ "$(uname -s)" == Darwin ]]; then
+    case "$(uname -m)" in
+        arm64) arch_setting=(-s arch=armv8) ;;
+        x86_64) arch_setting=(-s arch=x86_64) ;;
+    esac
+fi
+# ${a[@]+...} because macOS's bash 3.2 treats an empty array as unbound under set -u.
+"$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 \
+    ${arch_setting[@]+"${arch_setting[@]}"} --build=missing
 
 step "Configuring ($build_type)"
 cmake -S . -B "$build_dir" \

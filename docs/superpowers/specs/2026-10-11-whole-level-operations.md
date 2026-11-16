@@ -1,6 +1,13 @@
 # Whole-level operations — making an unstated condition a declared contract
 
-**Status:** design note. Nothing amended; §3 is a proposal.
+**Status:** adopted. §3 is adopted by [pipeline implementation plan
+A](../plans/2026-11-16-pipeline-a.md), which declares `TileRequirement`,
+`tileRequirement()` and `workingSetBytesPerLevelPixel()` on `Operation` and
+`OperationFactory`, with matching `OperationCatalog` queries, and amends SDS
+[05](sds/05-pipeline.md) §5.1, §5.3 and §5.5 and [08](sds/08-class-diagrams.md)
+D.6. The enforcement of §3.3 lands in [plan
+B](../plans/2026-11-16-pipeline-b.md). §7's question of forcing or requiring a
+single tile is decided: **force**.
 **Date:** 2026-10-11
 **Raised by:** SDS 06 §6.7's coarse watershed, which already depends on this
 capability without saying so, and §6.10's unseeded watershed, which would.
@@ -217,7 +224,8 @@ coarser of the two levels it nominates is the only safe one.
   mechanism; they do not settle any operation's level. Each operation's real
   figure arrives with its implementation.
 - **Whether `WholeLevel` should force a single tile or merely require one.**
-  Forcing it (§3.3 rule 1) overrides an explicit `tileSize` silently. The
+  *Decided: force* (user decision, adopted with plan A). Forcing it (§3.3 rule
+  1) overrides an explicit `tileSize` silently. The
   alternative is to throw when the configured size does not cover the level,
   which is noisier but never surprises a caller who set the size deliberately.
   Forcing is proposed because the configuration default — `tileSizeFromSlide`

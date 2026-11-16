@@ -18,15 +18,40 @@ enum class ChannelArity : int32_t {
     Joint         // consumes the selected channels together
 };
 
+/// What an operation needs to see of a level to compute one tile.
+enum class TileRequirement : int32_t {
+    Halo,       // a tile grown by the declared Halo
+    WholeLevel  // the whole analysis level as a single tile
+};
+
 struct Halo {                              // POD
-    int32_t left, top, right, bottom;
-    static Halo uniform(int32_t n) noexcept;
+    int32_t left;
+    int32_t top;
+    int32_t right;
+    int32_t bottom;
+    static Halo uniform(int32_t n);        // n >= 0, else InvalidArgumentError
     static Halo none() noexcept;
     bool isEmpty() const noexcept;
 };
 
+/// Partial intensity statistics for one fragment, carried because the pixels
+/// are gone by the time the fragment's component closes. Integer count,
+/// float sums; combined in canonical order (5.8).
+struct IntensityPartial {                  // POD, exempt from pimpl per C-2
+    int64_t count;
+    double  sum;
+    double  sumOfSquares;
+    double  minimum;
+    double  maximum;
+    int32_t channel;
+};
+
 class OperationContext {
 public:
+    ~OperationContext();
+    OperationContext(const OperationContext&) = delete;
+    OperationContext& operator=(const OperationContext&) = delete;
+
     const BlockView& input() const noexcept;
     BlockView&       output() noexcept;
 
@@ -89,7 +114,10 @@ public:
 
     /// Records a fragment touching a tile seam, for cross-tile merging.
     /// Level-0 coordinates, like every emitted polygon.
-    void emitSeamFragment(const Polygon&, LayerId);
+    /// Equivalent to the four-argument form with no partials.
+    void emitSeamFragment(const Polygon& fragment, LayerId layer);
+    void emitSeamFragment(const Polygon& fragment, LayerId layer,
+                          const IntensityPartial* partials, int32_t partialCount);
 };
 
 class Operation {
@@ -109,13 +137,20 @@ public:
     /// PipelineSpec (5.4) and recorded against a stage (UR-STG-4).
     virtual const OperationParameters& parameters() const = 0;
 
-    virtual void apply(OperationContext&) = 0;
+    virtual void apply(OperationContext& context) = 0;
 
     // Global-context operations only; default implementations do nothing.
     virtual bool needsGlobalContext() const;
-    virtual void accumulate(const OperationContext&);
+    virtual void accumulate(const OperationContext& context);
     virtual void combine(const Operation& other);
     virtual void finalizeAccumulation();
+
+    // Layout and output declarations; the defaults are those of an ordinary
+    // tiled, raster-only operation.
+    virtual TileRequirement tileRequirement() const;                  // Halo
+    virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
+    virtual bool producesObjects() const;                             // false
+    virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
@@ -145,6 +180,52 @@ run starts:
   halo of 0 for an operation that needs one produces a detectable seam, which
   is the test that confirms the mechanism is what provides correctness.
 
+Four further declarations have defaults, so an ordinary tiled operation that
+only produces a raster overrides none of them:
+
+- `tileRequirement()` — `Halo` says the operation needs its tile plus
+  `halo()`; `WholeLevel` says it needs the analysis level in one block,
+  because its result is not decomposable (flooding that propagates the length
+  of a component, a region-adjacency graph). An enum rather than a `bool`, so
+  a third layout can arrive without another virtual, and not a sentinel inside
+  `Halo`, which is used arithmetically on every rect path. For a chain
+  containing a `WholeLevel` operation, `Pipeline::validate()` (5.5) lays the
+  run out as a single tile whatever the configured tile size, and refuses it
+  before any pixel is read when the level does not fit the memory budget
+  ([whole-level operations](../2026-10-11-whole-level-operations.md) §3.3).
+  Forcing one tile rather than throwing on a configured size that does not
+  cover the level is deliberate: the default size comes from
+  `tileSizeFromSlide`, which is not a choice about this operation.
+- `workingSetBytesPerLevelPixel()` — the operation's private state per level
+  pixel, excluding the input and output blocks the framework already counts.
+  It is what turns "fits at level 4" into a check with numbers in it.
+- `producesObjects()` — true when the operation emits objects, and therefore
+  has a target layer: the string parameter `"targetLayer"`, which
+  `validate()` resolves against `Pipeline::bindLayer` (5.5) and
+  `OperationContext::targetLayer()` returns.
+- `outputPlaneCount(n)` — how many planes a `Joint` operation writes for `n`
+  input planes. Not consulted for `PerChannel` operations, which are applied
+  one plane at a time and so yield one plane per input plane.
+
+Every declaration, these four included, must be constant for the life of the
+operation; the framework reads them once, before the run.
+
+`Halo::uniform` throws `InvalidArgumentError` for a negative width and is
+therefore not `noexcept`: a negative halo is refused, never silently clamped.
+`Halo::none()` is all zeros, and `isEmpty()` is true when all four widths are
+zero. The members of `Halo` and `IntensityPartial` are declared one per line
+only so that each carries its own documentation; the layout is the same.
+
+**Only the framework builds an `OperationContext`.** It is pimpl'd and not
+copyable, and its constructor is private to the library, so an operation can
+receive one but never make one. Every pointer it hands out is borrowed from the
+run and valid only during the call. Where the run supplied nothing, the
+accessors still return something safe: a null `BlockView` for `input()` and
+`output()`, `ChannelSelection::all()` for `channels()`, and a token that is
+never cancelled for `cancellation()`. `auxiliary(nullptr)` returns null.
+`toLevel0` maps through the single mapping of 5.6, and the polygon overload
+maps vertex by vertex, keeping rings, their order and which are holes.
+
 `parameters()` costs an extension author one stored member — the bag their
 factory was handed — and it is the pivot the whole recording story turns on.
 Without it a constructed `OperationPtr` is opaque: it can be executed but not
@@ -165,7 +246,15 @@ authors rounding differently at a shared seam produce objects that never join
 
 `emitSeamFragment` is how an object-producing operation hands a
 boundary-touching region to `SeamMerger` (5.7) instead of emitting it as a
-finished object.
+finished object. A fragment brings its intensity partials with it, because
+the pixels are gone by the time its component closes (5.7), so the
+four-argument form carries one `IntensityPartial` per channel; the two-argument
+form passes none. `IntensityPartial` is declared here rather than in
+`seam_merger.hpp` because the context, the merger and the measurement formula
+below all need it. A negative `partialCount`, or null `partials` with a
+positive count, throws `InvalidArgumentError`. A run with no seam merger
+throws `InternalError` from either form, so an operation emitting fragments
+into a run that cannot merge them fails rather than losing objects.
 
 **`mask()` is an optimisation, never a correctness obligation.** Making it
 advisory is deliberate: UR-EXT-2 requires a built-in operation to be
@@ -185,21 +274,52 @@ The global-context group serves two-pass operations such as whole-slide Otsu:
 `finalizeAccumulation` computes the result, then `apply` runs with it
 (UR-PIX-5, UR-EXE-1).
 
+### One formula for object measurements — `pipeline/standard_measurements.hpp`
+
+```cpp
+void applyStandardMeasurements(const Polygon& level0Polygon,
+                               const IntensityPartial* partials,
+                               int32_t partialCount,
+                               MeasurementSet& out);
+```
+
+**Thread-safety:** Reentrant; `out` is ThreadCompatible. **Requirements:**
+UR-SEG-3, UR-SEG-5.
+
+UR-SEG-3 requires an object finished inside one tile and the same object merged
+from seam fragments (5.7) to carry identical measurements. That holds only if
+both are measured by one formula, and since `algorithm` compiles against
+public headers only, the formula is public. It sets `area` from
+`Polygon::area()` in `SquarePixels` and `perimeter` from
+`Polygon::perimeter()` in `Pixels`, both in level-0 pixels, and for each
+partial with a positive count, in `Intensity`: `intensity.<channel>.mean` =
+sum / count, `intensity.<channel>.stddev` =
+√max(0, sumOfSquares / count − mean²) (population), `intensity.<channel>.min`
+and `intensity.<channel>.max`. A partial with count 0 contributes nothing.
+Partials of one channel must already be combined — counts and sums added,
+minimum and maximum taken — and a repeated channel throws
+`InvalidArgumentError`, as do a negative count and null partials with a
+positive count; `out` is then unchanged. Measurements of other names in `out`
+are kept and those of the same name replaced. Calibrated units are added by
+`algorithm` (`06-algorithm.md` 6.8).
+
 ## 5.2 Operation parameters — `pipeline/operation_parameters.hpp`
 
 ```cpp
 class OperationParameters {
 public:
     OperationParameters();
-    OperationParameters(const OperationParameters&);
+    OperationParameters(const OperationParameters& other);
+    OperationParameters(OperationParameters&& other) noexcept;
+    OperationParameters& operator=(const OperationParameters& other);
+    OperationParameters& operator=(OperationParameters&& other) noexcept;
     ~OperationParameters();
 
-    OperationParameters& setInt(const char* key, int64_t);
-    OperationParameters& setDouble(const char* key, double);
-    OperationParameters& setBool(const char* key, bool);
-    OperationParameters& setString(const char* key, const char*);
-    OperationParameters& setDoubleArray(const char* key,
-                                        const double* values, int32_t count);
+    OperationParameters& setInt(const char* key, int64_t value);
+    OperationParameters& setDouble(const char* key, double value);
+    OperationParameters& setBool(const char* key, bool value);
+    OperationParameters& setString(const char* key, const char* value);
+    OperationParameters& setDoubleArray(const char* key, const double* values, int32_t count);
 
     bool getInt(const char* key, int64_t& out) const noexcept;
     bool getDouble(const char* key, double& out) const noexcept;
@@ -219,13 +339,46 @@ A typed key-value bag rather than per-operation structs, because operations are
 resolved by name from the catalog and their parameters must round-trip through
 the stage configuration recorded in the store. `toJson` produces that record.
 
+**Keys and values.** Keys are UTF-8, non-null and non-empty; a setter given
+anything else throws `InvalidArgumentError` naming the setter. Entries are kept
+in ascending bytewise key order, so `keyAt(i)` ascends and two bags with the
+same entries are equal, and serialise identically, whatever order they were set
+in. Setting an existing key replaces it, type included. `setDouble` and
+`setDoubleArray` refuse a NaN or infinite value with `InvalidArgumentError`
+naming the key, because JSON cannot hold one and a recorded stage must replay.
+`setDoubleArray` accepts `count == 0`, an empty array, and refuses a negative
+count or null `values` with a positive count, leaving the bag unchanged.
+`setString` reads a null value as empty. The moved-from bag is empty and
+reusable.
+
+**Getters never coerce.** `getInt` on a key holding a double returns false and
+leaves `out` untouched, and the same holds for every typed getter. `getString`
+returns `fallback` when the key is absent or not a string, and its pointer is
+valid until the next non-const call. `getDoubleArray` follows C-5: it returns
+the stored count, fills up to `capacity`, and a null buffer queries; an absent
+or differently typed key returns 0. `keyAt` out of range throws
+`InvalidArgumentError`.
+
+**The JSON form** is one object, keys in stored order, no insignificant
+whitespace. An integer is written as a JSON integer and a double always with a
+fraction or exponent, in the shortest form that round-trips, so the type
+survives the trip: `1.0` reads back as a double, not an integer. Booleans,
+strings and arrays of such numbers are written as JSON writes them. Reading
+inverts it: a JSON integer reads as an integer, a number with a fraction or
+exponent as a double, and an array, whose every element must be a number, as an
+array of double. An integer outside the signed 64-bit range throws
+`InvalidArgumentError` rather than being read as a double, which would change
+its type. `PipelineSpec::equals` (5.4) holds two bags equal when they have the
+same keys with the same types and values, doubles compared with `==` and arrays
+element-wise.
+
 ## 5.3 Operation catalog — `pipeline/operation_catalog.hpp`
 
 ```cpp
 class OperationFactory {
 public:
     virtual ~OperationFactory();
-    virtual OperationPtr create(const OperationParameters&) const = 0;
+    virtual OperationPtr create(const OperationParameters& parameters) const = 0;
     virtual const char*  name() const = 0;
     virtual ChannelArity arity() const = 0;
     virtual bool         requiresUniformTypes() const = 0;
@@ -233,6 +386,13 @@ public:
     virtual Halo         halo() const = 0;
     virtual const char*  correctnessReference() const = 0;
     virtual const char*  complexityNote() const = 0;
+
+    // Mirrors of the Operation declarations, with the same defaults, so the
+    // catalog can answer before constructing anything.
+    virtual TileRequirement tileRequirement() const;                  // Halo
+    virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
+    virtual bool producesObjects() const;                             // false
+    virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
 };
 using OperationFactoryPtr = std::shared_ptr<OperationFactory>;
 
@@ -240,10 +400,10 @@ class OperationCatalog {
 public:
     static OperationCatalog& instance() noexcept;
 
-    void registerFactory(OperationFactoryPtr);
+    void registerFactory(OperationFactoryPtr factory);
     bool isRegistered(const char* name) const noexcept;
 
-    OperationPtr create(const char* name, const OperationParameters&) const;
+    OperationPtr create(const char* name, const OperationParameters& parameters) const;
 
     int32_t     count() const noexcept;
     const char* nameAt(int32_t index) const;
@@ -253,6 +413,11 @@ public:
     Halo         halo(const char* name) const;
     const char*  correctnessReference(const char* name) const;
     const char*  complexityNote(const char* name) const;
+
+    TileRequirement tileRequirement(const char* name) const;
+    int64_t workingSetBytesPerLevelPixel(const char* name) const;
+    bool producesObjects(const char* name) const;
+    int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
 
     /// Emits the operation-by-type support matrix as CSV, generated from the
     /// same declarations the runtime enforces.
@@ -277,34 +442,72 @@ each algorithm to name its reference — an analytic result, a published
 implementation, or a peer-reviewed definition. The catalog takes no numerical
 compatibility with OpenCV, so nothing external supplies that proof.
 
+**Registration.** `instance()` is a function-local static. `registerFactory`
+throws `InvalidArgumentError` for a null factory, a null or empty `name()`, a
+null or empty `correctnessReference()`, a null `complexityNote()` (which may be
+empty), or a name already registered, and the message names it. A factory is
+never removed, so a pointer a query returns stays valid for the life of the
+process. Names are kept in ascending bytewise order, so `nameAt(i)` does not
+depend on registration order, though positions shift when a smaller name is
+registered later. Every by-name query and `create` throws `InvalidArgumentError`
+naming a null or unknown name.
+
+**What `create` checks, and which declarations the factory only predicts.**
+`create` throws `InternalError` when the factory returns null, and also when the
+operation's `name()`, `arity()`, `requiresUniformTypes()`, `supportedTypes()` or
+`producesObjects()` differs from the factory's, naming the field. Those five do
+not depend on the parameters, so the factory can state them exactly. `halo()`,
+`tileRequirement()`, `workingSetBytesPerLevelPixel()` and `outputPlaneCount()`
+can — a box filter's halo is its `radius` parameter — and a factory sees no
+parameters when asked. On a factory, and through the matching catalog queries,
+those four therefore describe the operation built from **default** parameters,
+and are not compared; the operation instance is authoritative for its own
+parameters, and `Pipeline::validate()` asks the instance. An exception other
+than a `ProcessorError` thrown by a factory surfaces as `InternalError` with the
+original kept as `cause()`.
+
+**The support matrix.** CSV, UTF-8, `\n` line endings. The header is
+`operation,Byte,Int8,UInt16,Int16,UInt32,Int32,UInt64,Int64,Float16,Float32,Float64`,
+then one row per operation in `nameAt` order, each cell `yes` or `no`. A cell is
+`yes` exactly when the operation declares the type **and** the backend computes
+it (5.10), and that test is the same internal function `validate()` applies, so
+the published matrix and the runtime cannot disagree. On OpenCV 4 the `UInt32`,
+`UInt64` and `Int64` columns are therefore `no` for every operation. The path is
+UTF-8, taken through `std::filesystem::u8path`; the file is replaced if it
+exists; the return value is the bytes written; a null or empty path throws
+`InvalidArgumentError`, and a failure to open or write throws `IoError` naming
+the path.
+
 ## 5.4 Pipeline specification — `pipeline/pipeline_spec.hpp`
 
 ```cpp
 class PipelineSpec {
 public:
     PipelineSpec();
-    PipelineSpec(const PipelineSpec&);
-    PipelineSpec& operator=(const PipelineSpec&);
+    PipelineSpec(const PipelineSpec& other);
+    PipelineSpec(PipelineSpec&& other) noexcept;
+    PipelineSpec& operator=(const PipelineSpec& other);
+    PipelineSpec& operator=(PipelineSpec&& other) noexcept;
     ~PipelineSpec();
 
-    PipelineSpec& channels(const ChannelSelection&);
-    PipelineSpec& restrictTo(const Rect64&);
-    PipelineSpec& restrictToPolygon(const Polygon&);
+    PipelineSpec& channels(const ChannelSelection& selection);
+    PipelineSpec& restrictTo(const Rect64& roi);
+    PipelineSpec& restrictToPolygon(const Polygon& polygon);
 
     /// The pyramid level to read from; -1 (the default) lets `LevelSelector`
     /// choose the coarsest adequate one (UR-IMG-4). A property of the run,
     /// not of any one operation — the tile grid is laid out at this level
     /// (5.6), so a chain cannot mix levels.
-    PipelineSpec& analysisLevel(int32_t);
+    PipelineSpec& analysisLevel(int32_t level);
 
     /// Appends an operation by catalog name. Nothing is resolved here; an
     /// unknown name fails at Pipeline::validate(), not at append.
-    PipelineSpec& operation(const char* name, const OperationParameters&);
+    PipelineSpec& operation(const char* name, const OperationParameters& parameters);
 
     /// Appends an already-constructed operation, lowered to its name and
     /// parameters. The typed factories of `algorithm` return `OperationPtr`,
     /// and this is how a C++ caller who used them builds a spec.
-    PipelineSpec& then(const OperationPtr&);
+    PipelineSpec& then(const OperationPtr& operation);
 
     int32_t     operationCount() const noexcept;
     const char* operationName(int32_t index) const;
@@ -323,7 +526,7 @@ public:
     int32_t toJson(char* buffer, int32_t capacity) const;
     static PipelineSpec fromJson(const char* json);
 
-    bool equals(const PipelineSpec&) const noexcept;
+    bool equals(const PipelineSpec& other) const noexcept;
 };
 ```
 
@@ -389,12 +592,43 @@ C-10 describes and the value that builder produces, and splitting it into a
 would double the type count to remove an overload that is unambiguous at every
 call site. Noted here so a reviewer reads it as a decision.
 
+**What the builder refuses.** `restrictTo` with an empty rectangle and
+`restrictToPolygon` with an empty polygon throw `InvalidArgumentError`, since
+an empty restriction would describe a run over nothing. So do `analysisLevel`
+below −1, `operation` with a null or empty name, `then` with a null pointer or
+an operation whose name is null or empty, and `operationName` or
+`operationParameters` out of range. An unknown name does not throw at append;
+it fails at `validate()`, as above. Without a restriction, `roi()` returns an
+empty rectangle and `polygon()` an empty polygon. A moved-from spec is reset to
+the default: all channels, level −1, no restriction, no operations.
+
+**The recorded form, version 1**, is one object:
+
+```text
+{"specVersion":1,"channels":"all"|[c,…],"analysisLevel":L,
+ "roi":[x,y,w,h],"polygon":[{"hole":bool,"points":[[x,y],…]},…],
+ "operations":[{"name":"…","parameters":{…}},…]}
+```
+
+`roi` and `polygon` are present only when set, coordinates are JSON integers,
+and each `parameters` member is the bag's own JSON form (5.2). `fromJson`
+throws `InvalidArgumentError` for null text, a parse error (the message carries
+RapidJSON's offset), a missing member or one of the wrong type or value (the
+message names it), or a `specVersion` other than 1.
+
+**What `equals` compares.** The channels — all against an explicit list, and
+an explicit list element by element, **in order**, because the order of the
+selection is the order of the planes an operation receives — the level, the
+presence and value of each restriction, a polygon ring by ring with hole flags,
+and the operations by name and by parameter equality (5.2). Parameter
+insertion order never matters, because a bag has none.
+
 ## 5.5 Pipeline — `pipeline/pipeline.hpp`
 
 ```cpp
 class Pipeline {
 public:
-    Pipeline(slideio::ScenePtr, const Configuration&, const PipelineSpec&);
+    Pipeline(std::shared_ptr<slideio::Scene>, const Configuration&, const PipelineSpec&);
     ~Pipeline();
 
     Pipeline& memoryBudget(MemoryBudgetPtr);
@@ -444,7 +678,7 @@ public:
 
     /// Lazy: evaluated per requested block. Construction computes no pixels,
     /// and the result is a valid input to another Pipeline.
-    slideio::ScenePtr asScene() const;
+    std::shared_ptr<slideio::Scene> asScene() const;
 
     /// Eager: streams the whole slide or ROI.
     void runInto(ObjectSink&, ProgressObserver*, const CancellationToken&);
@@ -463,6 +697,12 @@ public:
 **Thread-safety:** ThreadConfined for configuration; the scene returned by
 `asScene()` is ThreadSafe for reads. **Requirements:** UR-EXE-1, UR-ALG-1,
 UR-ALG-5, UR-PIX-6, UR-IMG-5, UR-STG-3.
+
+Every `pipeline` signature that takes or returns a scene spells the type
+`std::shared_ptr<slideio::Scene>`, never `slideio::ScenePtr`: SlideIO defines
+`ScenePtr` as a preprocessor macro rather than a type alias, so the qualified
+name expands to `slideio::std::shared_ptr<…>` and does not compile. The type is
+the same one SlideIO hands out.
 
 A `Pipeline` is a spec bound to a scene, a configuration and a budget. It has
 no configuration surface of its own beyond the six runtime bindings above:
@@ -600,10 +840,18 @@ layer when a target is unnamed, unbound, or — where the run bound several
 layers — omitted. `OperationContext::targetLayer()` (5.1) returns what it
 resolved, so an operation author never resolves a layer name and the same
 operation object behaves identically whether a stage or a direct caller ran it.
+The operations it resolves are those whose `producesObjects()` is true (5.1),
+and the parameter it reads is the string `"targetLayer"`. For a chain
+containing a `WholeLevel` operation it also forces a single tile and checks the
+level against the budget, as 5.1 describes.
 
 ## 5.6 Tiling and level selection — `pipeline/tile_grid.hpp`
 
 ```cpp
+namespace slideio {
+class Scene;
+} // namespace slideio
+
 class TileGrid {
 public:
     /// The grid is laid out in LEVEL coordinates. `regionAtLevel` and the
@@ -611,7 +859,12 @@ public:
     /// exact level pixel edge.
     TileGrid(const Rect64& regionAtLevel, int32_t level,
              int32_t tileWidth, int32_t tileHeight,
-             const LevelSelector&);
+             const LevelSelector& selector);
+    TileGrid(const TileGrid& other) noexcept;
+    TileGrid(TileGrid&& other) noexcept;
+    TileGrid& operator=(const TileGrid& other) noexcept;
+    TileGrid& operator=(TileGrid&& other) noexcept;
+    ~TileGrid();
 
     int32_t level() const noexcept;
 
@@ -622,13 +875,13 @@ public:
     /// Level coordinates: what an operation indexes, and what `BlockView`
     /// covers. Halo is in level pixels too.
     Rect64 tileRectAtLevel(int64_t index) const;
-    Rect64 tileRectAtLevelWithHalo(int64_t index, const Halo&) const;
+    Rect64 tileRectAtLevelWithHalo(int64_t index, const Halo& halo) const;
 
     /// Level-0 coordinates, derived from the level rect through the same
     /// mapping for every tile. Adjacent tiles therefore share an exact
     /// level-0 boundary with no gap and no overlap.
     Rect64 tileRect(int64_t index) const;
-    Rect64 tileRectWithHalo(int64_t index, const Halo&) const;
+    Rect64 tileRectWithHalo(int64_t index, const Halo& halo) const;
 
     int64_t tileIndex(int64_t column, int64_t row) const;
     bool    isEdgeTile(int64_t index) const;
@@ -636,7 +889,12 @@ public:
 
 class LevelSelector {
 public:
-    explicit LevelSelector(slideio::ScenePtr);
+    explicit LevelSelector(std::shared_ptr<slideio::Scene> scene);
+    LevelSelector(const LevelSelector& other) noexcept;
+    LevelSelector(LevelSelector&& other) noexcept;
+    LevelSelector& operator=(const LevelSelector& other) noexcept;
+    LevelSelector& operator=(LevelSelector&& other) noexcept;
+    ~LevelSelector();
 
     /// The coarsest level whose resolution still satisfies `scale`, so a
     /// request at 1/16 never decodes level 0 and downsamples.
@@ -654,17 +912,17 @@ public:
     /// coordinate no matter which tile or thread asks.
     Rect64  mapToLevel0(const Rect64& levelRect, int32_t level) const;
     Point64 mapToLevel0(Point64 levelPoint, int32_t level) const noexcept;
-    Polygon mapToLevel0(const Polygon&, int32_t level) const;
+    Polygon mapToLevel0(const Polygon& levelPolygon, int32_t level) const;
 };
 
 /// The tile size, in level pixels: the slide's native tiling for that level
 /// when available and tileSizeFromSlide is set, otherwise the configured size.
-void defaultTileSize(slideio::ScenePtr, int32_t level, const Configuration&,
+void defaultTileSize(std::shared_ptr<slideio::Scene> scene, int32_t level, const Configuration& config,
                      int32_t& widthOut, int32_t& heightOut);
 ```
 
 **Thread-safety:** Immutable. **Requirements:** UR-IMG-4, UR-EXE-6, UR-EXT-3,
-**UR-SEG-3**, UR-QA-2, UR-QA-3, UR-IMG-5.
+**UR-SEG-3**, UR-QA-2, UR-QA-3, UR-IMG-5, UR-IMG-1.
 
 All tile indices and coordinates are `int64_t`: the reference slide at 512 px
 tiles is already ~30,000 tiles, and nothing here may cap image size (UR-IMG-1).
@@ -720,17 +978,84 @@ neighbourhood is a property of its kernel, which works on the pixels it is
 given — a 5-pixel radius means five of the pixels being processed, at any
 level, and the framework never rescales it.
 
+### The pyramid, exactly
+
+`LevelSelector` copies the scene's level sizes at construction and keeps no
+reference to the scene, so it and every grid built from it are plain values;
+copies share only immutable state. A null scene, or a level reporting a
+non-positive size, throws `InvalidArgumentError`; a failure inside SlideIO
+surfaces as `InternalError` with the cause kept. The level count is the scene's
+zoom-level count, and a scene that reports none has one level, level 0, the
+scene rect. The scene type is spelled out for the reason given in 5.5.
+
+**Two scale vocabularies, and they point in opposite directions.**
+`scaleOfLevel(L)` is the level-to-level-0 factor,
+`double(width(0)) / double(width(L))`: 1 for level 0, at least 1 elsewhere, and
+not necessarily a power of two (4.0005 for a 2000-pixel level under an
+8001-pixel level 0). It is the one factor per level that `RasterMask` carries.
+`levelForScale(scale)` takes a **resolution fraction** instead, in (0, 1],
+where 1/16 means a sixteenth of full resolution, and returns the coarsest level
+`L` with `1 / scaleOfLevel(L) >= scale × (1 − 10⁻⁹)`, or 0 when no coarser level
+qualifies. The tolerance absorbs only floating-point rounding, so a level
+answers a request for exactly its own resolution; it is far too small to admit
+a level that is genuinely coarser than asked, such as one with factor 4.0001 for
+a request of 1/4.
+`levelForSize(w, h)` returns the coarsest level whose width is at least `w` and
+height at least `h`, or 0. An out-of-range level, a non-positive or non-finite
+scale and a non-positive size throw `InvalidArgumentError`.
+
+**The single mapping** is `llround(v × scaleOfLevel(level))` per ordinate, and
+it has one implementation, which `mapToLevel0`, `OperationContext::toLevel0`
+and `TileGrid::tileRect` all call. **A rectangle maps by its edges**, not by
+its origin and size: `x0 = map(x)`, `x1 = map(x + width)`, width `x1 − x0`, and
+likewise for y. Two rectangles that share a level edge therefore share the
+level-0 edge exactly, which mapping a width separately would not guarantee. The
+point overload is `noexcept`, so an in-range level is its precondition; given
+an out-of-range level a debug build asserts and a release build returns the
+point unchanged. The polygon overload maps
+every vertex and keeps ring order and hole flags.
+
+`mapToLevel` rounds outward and is the inverse of the single mapping, taken
+in integers: `x0` is the largest level ordinate whose level-0 image is at most
+`x`, and `x1` the smallest whose level-0 image is at least `x + width`; likewise
+for y. A `double` division only seeds the search, and a bounded number of
+±1 steps against `map` decides the answer, so the result is the same on every
+platform (no `long double`, whose width differs between MSVC, x86-64 Linux and
+arm64 Linux), and `mapToLevel0(mapToLevel(r))` contains `r` by construction.
+On a 100000-wide level 0 over a 33333-wide level 1, the full width maps to
+exactly 33333. It throws `InvalidArgumentError` for a negative width or height
+and when the far edge or the result does not fit `int64_t`. The result is not
+clipped to the level.
+
+### The grid, exactly
+
+Tile sides must be at least 1, the level in range, and the tile count must fit
+`int64_t`; otherwise the constructor throws `InvalidArgumentError`. The region
+is not checked against the level's size, and a region with a non-positive side
+has no tiles. Tiles are numbered row-major from the region's top-left,
+`tileIndex(c, r) = r × columns() + c`, and the last column and row are clipped
+to the region. `isEdgeTile` is true in the first or last column or row. An
+out-of-range index, column or row throws `InvalidArgumentError`, as does a halo
+with a negative side.
+
+**The halo rect is not clipped.** `tileRectAtLevelWithHalo` is the tile grown
+by the halo on each side, whatever lies there. Halo beyond the level reads as
+zeros, and halo beyond the region but inside the level reads **real pixels**.
+The second is what UR-IMG-5's "results match those obtained by processing the
+whole slide and cropping" needs: a blur at the edge of an ROI must see the
+pixels beyond the ROI, exactly as it would have in the whole-slide run.
+`tileRect` and `tileRectWithHalo` are the level rects mapped by their edges.
+
+`defaultTileSize` takes the level's native tile size when
+`tileSizeFromSlide()` is set and both of its sides are positive, and otherwise
+`tileWidth()` × `tileHeight()` from the configuration. A null scene or an
+out-of-range level throws `InvalidArgumentError` and leaves the outputs
+unchanged.
+
 ## 5.7 Seam merging — `pipeline/seam_merger.hpp`
 
 ```cpp
-/// Partial intensity statistics for one fragment, carried because the pixels
-/// are gone by the time the fragment's component closes. Integer count,
-/// float sums; combined in canonical order (5.8).
-struct IntensityPartial {                  // POD, exempt from pimpl per C-2
-    int64_t count;
-    double  sum, sumOfSquares, minimum, maximum;
-    int32_t channel;
-};
+// IntensityPartial is declared in operation.hpp (5.1).
 
 class SeamMerger {
 public:
@@ -871,23 +1196,42 @@ order would make intensity statistics differ between runs at different worker
 counts, and UR-QA-3 would fail intermittently and irreproducibly, which is the
 hardest kind of failure to attribute to its cause.
 
+The merged polygon and the combined partials then go through
+`applyStandardMeasurements` (5.1), the same formula an operation applies to an
+object it finished inside one tile, so the two paths cannot disagree on a
+definition.
+
 ## 5.8 Reductions — `pipeline/reduction.hpp`
 
 ```cpp
 class Reduction {
 public:
     virtual ~Reduction();
-    virtual void accumulate(const BlockView&, int64_t tileIndex) = 0;
+    virtual void accumulate(const BlockView& block, int64_t tileIndex) = 0;
     virtual void combine(const Reduction& other) = 0;
     virtual bool isOrderIndependent() const = 0;
+
+protected:
+    Reduction();
+    Reduction(const Reduction& other);
+    Reduction& operator=(const Reduction& other);
 };
 
 class Histogram64 : public Reduction {
 public:
     Histogram64(int32_t binCount, double minValue, double maxValue);
+    Histogram64(const Histogram64& other);
+    Histogram64(Histogram64&& other) noexcept;
+    Histogram64& operator=(const Histogram64& other);
+    Histogram64& operator=(Histogram64&& other) noexcept;
+    ~Histogram64() override;
+
+    void accumulate(const BlockView& block, int64_t tileIndex) override;
+    void combine(const Reduction& other) override;
+    bool isOrderIndependent() const override;   // true
+
     int64_t bin(int32_t index) const;
     int64_t totalCount() const;           // int64: UR-IMG-2
-    bool    isOrderIndependent() const override;   // true
 };
 ```
 
@@ -908,6 +1252,27 @@ framework rather than in each algorithm is what makes it enforceable.
 UR-PIX-5's acceptance criterion depends on this: a streamed whole-slide Otsu
 must equal the value computed from a full in-memory histogram of the same
 slide.
+
+`Reduction`'s copy members are protected, so a derived class can be copied
+while a `Reduction&` cannot be sliced.
+
+**`Histogram64`, exactly.** The constructor requires `binCount >= 1`, finite
+bounds with `minValue < maxValue`, and a span `maxValue − minValue` that is
+itself finite, else `InvalidArgumentError`. `accumulate` reads every plane of
+the view, each sample as a `double` by its plane's `DataType` — `Float16`
+included, through the engine's own half-to-double conversion, since `core`
+has none public — and bins `v` into
+`floor((v − min) / (max − min) × binCount)`; `v == max` goes in the last bin,
+and `v` outside `[min, max]` or NaN is ignored and not counted. A null view or a
+plane of an unsupported type throws `InvalidArgumentError`. `tileIndex` is
+unused. The bins are atomic, updated with relaxed ordering, so `accumulate` is
+ThreadSafe and its result depends on neither thread count nor order; readers
+need the accumulation to have finished. `combine` requires another
+`Histogram64` with the same three parameters, else `InvalidArgumentError`, and
+adds the bins. `bin(i)` out of range throws `InvalidArgumentError`, and
+`totalCount()` is the sum of the bins. Copies copy the bin values. A moved-from
+histogram may only be destroyed or assigned to; every other call on it throws
+`InvalidArgumentError`.
 
 ## 5.9 Worker pool and execution — `pipeline/executor.hpp`
 
@@ -967,12 +1332,15 @@ public:
     const char* name() const noexcept;
     const char* version() const noexcept;
 
-    bool        supports(DataType) const noexcept;
+    bool        supports(DataType type) const noexcept;
     DataTypeSet supportedTypes() const noexcept;
 
     /// Throws UnsupportedDataTypeError naming the type and the backend.
-    int32_t toBackendDepth(DataType) const;
-    DataType fromBackendDepth(int32_t) const noexcept;
+    int32_t toBackendDepth(DataType type) const;
+    DataType fromBackendDepth(int32_t depth) const noexcept;
+
+    Backend(const Backend&) = delete;
+    Backend& operator=(const Backend&) = delete;
 };
 ```
 
@@ -988,3 +1356,81 @@ a fixed limitation. UR-BLD-4's acceptance criterion is a review confirming
 exactly that, and the generated support matrix of UR-IMG-12 derives from the
 backend in use, so migration widens declarations without changing a
 requirement, an API, or a stored artifact.
+
+`name()` is `"OpenCV"`. `version()` is OpenCV's own version string, read once
+and cached for the life of the process. The depth mapping is:
+
+| `DataType` | OpenCV depth | Available |
+|---|---|---|
+| `Byte` | `CV_8U` | always |
+| `Int8` | `CV_8S` | always |
+| `UInt16` | `CV_16U` | always |
+| `Int16` | `CV_16S` | always |
+| `Int32` | `CV_32S` | always |
+| `Float16` | `CV_16F` | always |
+| `Float32` | `CV_32F` | always |
+| `Float64` | `CV_64F` | always |
+| `UInt32` | `CV_32U` | OpenCV 5 and later |
+| `UInt64` | `CV_64U` | OpenCV 5 and later |
+| `Int64` | `CV_64S` | OpenCV 5 and later |
+
+The last three rows are compiled in only when OpenCV's major version is 5 or
+more, so on the pinned OpenCV 4 they do not exist and the types are not
+supported. `supportedTypes()` is exactly the mapped set, and it **equals
+`BackendCapabilities::instance().supportedTypes()`**, which `config` derives
+without linking OpenCV (`02-config.md`); a test asserts the two agree, so the
+data library and the engine can never report different type sets.
+`toBackendDepth` of a type outside the set, `Unknown` included, throws
+`UnsupportedDataTypeError` whose message names the type and `"OpenCV"`.
+`fromBackendDepth` of a depth the table does not hold returns
+`DataType::Unknown`.
+
+## 5.11 The engine library — `slideio-processor-engine`
+
+`pipeline` is the first module of the second shared library of design 5.1,
+`slideio-processor-engine`; `algorithm` and `workspace` join it later. It is
+assembled from object libraries, as `slideio-processor-data` is:
+`src/pipeline/` builds the OBJECT library `slideio-processor-pipeline`, and
+the shared library links it.
+
+**Requirements:** UR-API-1, UR-BLD-3, UR-BLD-4, UR-EXT-2.
+
+**Exports.** `pipeline/export.hpp` defines `SLIDEIO_PROCESSOR_ENGINE_EXPORTS`,
+which every exported class, free function and interface of the library
+carries. On Windows it is `__declspec(dllexport)` while the library is built,
+which the build signals by defining `SLIDEIO_PROCESSOR_ENGINE_API` privately on
+the library and its object libraries, and `__declspec(dllimport)` for
+consumers; elsewhere it is `__attribute__((visibility("default")))`.
+
+**Links.** The engine links `slideio-processor-data` and `slideio::slideio`
+**publicly**, because its public headers name the data library's types and
+SlideIO's `Scene`, and links `opencv_core` and `opencv_imgproc` **privately**,
+from the static Conan build. SlideIO's own libraries carry a second, static
+copy of OpenCV. The two copies never meet, because SlideIO's public API is
+buffer-based — a `void*` and a size — so no `cv::` object ever crosses it. On
+Linux the engine links with `-Wl,--exclude-libs,ALL`, as the data library
+does, so its static OpenCV neither interposes on SlideIO's copy nor is
+interposed by it. The data library's configure-time guard, which fails the
+build if `config`, `storage` or the data library ever lists OpenCV or a
+`slideio::` target, is unchanged and still holds.
+
+**No OpenCV in a public header, checked by the build.** The target
+`pipeline_headers_are_opencv_free` compiles every header under
+`include/slideio/processor/pipeline/` on its own, with the SlideIO and data
+include paths but **no OpenCV include path**. It is part of the default build,
+so a header that reaches OpenCV fails the build rather than a review. A second
+object library compiles a third-party operation against `include/` and
+SlideIO's headers alone, with no `src/` and nothing linked, which is the
+standing proof of UR-EXT-2.
+
+**Tests that load SlideIO.** The engine's tests load SlideIO's shared
+libraries, which live in SlideIO's install tree rather than beside the test.
+On Windows each test has that directory prepended to `PATH` through
+`ENVIRONMENT_MODIFICATION`, the directory taken from the imported
+`slideio::slideio` target's `IMPORTED_LOCATION_RELEASE`, falling back to
+`IMPORTED_LOCATION`. Tests are discovered with `DISCOVERY_MODE PRE_TEST`, so the
+build never runs the executable; but discovery at test time runs outside
+`ENVIRONMENT_MODIFICATION`, so the same prepend also goes through the target's
+`TEST_LAUNCHER` (`cmake -E env --modify PATH=path_list_prepend:<dir> --`),
+which wraps discovery and every run alike. `TEST_LAUNCHER` needs CMake 3.29 or
+later on Windows. On Linux and macOS the imported library's RPATH suffices.

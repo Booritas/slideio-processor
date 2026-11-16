@@ -18,8 +18,11 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
+# SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
 find_package(slideio 2.10 REQUIRED)
-# OpenCV is used for its version only: nothing links it (see src/CMakeLists.txt).
+# The data library uses OpenCV for its version only; the engine links it statically
+# and privately (see src/CMakeLists.txt).
 # No version in find_package: the Conan-generated OpenCVConfigVersion.cmake accepts
 # only an exact major match, which would reject OpenCV 5 (UR-BLD-4).
 find_package(OpenCV REQUIRED)

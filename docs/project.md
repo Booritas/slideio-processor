@@ -75,7 +75,8 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   seven and of the dependencies between them.
 - [Observation requirements (draft)](requirements-9a-observation-draft.md) —
   UR-OBS-1..7 for live observation of a running analysis by a separate viewer
-  process, plus two amendments to `requirements.md`. Not yet merged.
+  process, plus two amendments to `requirements.md`. **Merged** into
+  `requirements.md` v0.2 as §9a; the draft is kept only for its traceability table.
 - [Scene source design](superpowers/specs/2026-10-08-scene-source-design.md) —
   the SlideIO addition (`ISceneSource`, `SceneMetadata`, `makeScene`) that makes
   "lazy pipeline exposed as a `Scene`" achievable, and the `Pipeline::asScene()`
@@ -88,20 +89,36 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   plan A of three for the `storage` module: the SQLite store file and its schema,
   the layer and vocabulary registries, the object writer and queries, stage
   state and the event journal with cross-process observation. Edges, annotations,
-  GeoJSON import and rasters follow in plans B and C.
+  GeoJSON import and rasters follow in plans B and C. **Delivered** as PR #7
+  (merged 2026-11-03).
 - [Storage implementation plan B](superpowers/plans/2026-11-03-storage-b.md) —
   plan B of three for the `storage` module: parent and derived-from edges, label and
   measurement annotations, the effective-label raster, primitive-layer drop and
-  GeoJSON import.
+  GeoJSON import. **Delivered** with plan C as PR #8 (merged 2026-11-16).
 - [Storage implementation plan C](superpowers/plans/2026-11-03-storage-c.md) —
   plan C of three for the `storage` module: persisted rasters (declaration, writer,
   registry, pyramidal BigTIFF files through libtiff), their journal events, the
   unreferenced-file sweep, and the freeze of store format v1. Completes the module.
+  **Delivered** as PR #8 (merged 2026-11-16).
+- [Pipeline implementation plan A](superpowers/plans/2026-11-16-pipeline-a.md) —
+  plan A of three for the `pipeline` module: the engine library and the OpenCV
+  backend adapter, the operation contract, parameters and catalog with its support
+  matrix, `PipelineSpec` and its JSON record, level selection and the tile grid, and
+  reductions. Adopts the whole-level operations proposal.
+- [Pipeline implementation plan B](superpowers/plans/2026-11-16-pipeline-b.md) —
+  plan B of three: `Pipeline` validation, planar block reads, per-tile chain
+  evaluation, the worker pool and tile executor, restrictions, sinks, auxiliary
+  rasters and the two-pass global context.
+- [Pipeline implementation plan C](superpowers/plans/2026-11-16-pipeline-c.md) —
+  plan C of three: `SeamMerger`, the UR-SEG-3 tiling-invariance suite and
+  `Pipeline::asScene()`. Completes the module.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
   `tileRequirement()`, a declared per-pixel working set, and enforcement in
-  `Pipeline::validate()`. Design note; nothing amended.
+  `Pipeline::validate()`. **Adopted** with pipeline plan A, which amends SDS 05
+  and 08; the enforcement lands in plan B, and a whole-level chain is forced to
+  one tile.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
