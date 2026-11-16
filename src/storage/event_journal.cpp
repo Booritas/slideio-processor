@@ -27,6 +27,7 @@ struct Event::Impl {
     int64_t objectCount = 0;
     Rect64 boundingBox{0, 0, 0, 0};
     StageStatus stageStatus = StageStatus::Pending;
+    RasterId raster;
 };
 
 namespace detail {
@@ -34,7 +35,7 @@ namespace detail {
 // Builds an Event from a journal row; the only way a library event gets its fields.
 struct EventAccess {
     // Decodes the row `select` is on: seq, kind, stage_id, layer_id, label_id,
-    // object_count, min_x, min_y, max_x, max_y, stage_status, timestamp_ms.
+    // object_count, min_x, min_y, max_x, max_y, stage_status, timestamp_ms, raster_id.
     static Event fromRow(const Statement& select) {
         auto fields = std::make_unique<Event::Impl>();
         fields->sequence = select.columnInt64(0);
@@ -48,6 +49,7 @@ struct EventAccess {
         fields->boundingBox = Rect64{minX, minY, select.columnInt64(8) - minX, select.columnInt64(9) - minY};
         if (!select.columnIsNull(10)) fields->stageStatus = static_cast<StageStatus>(select.columnInt64(10));
         fields->timestampUnixMs = select.columnInt64(11);
+        fields->raster = RasterId(static_cast<int32_t>(select.columnInt64(12)));
         Event event;
         event.impl_ = std::move(fields);
         return event;
@@ -89,6 +91,7 @@ LabelId Event::label() const noexcept { return impl_ ? impl_->label : LabelId();
 int64_t Event::objectCount() const noexcept { return impl_ ? impl_->objectCount : 0; }
 Rect64 Event::boundingBox() const noexcept { return impl_ ? impl_->boundingBox : Rect64{0, 0, 0, 0}; }
 StageStatus Event::stageStatus() const noexcept { return impl_ ? impl_->stageStatus : StageStatus::Pending; }
+RasterId Event::raster() const noexcept { return impl_ ? impl_->raster : RasterId(); }
 
 EventCursor::~EventCursor() = default;
 
@@ -220,7 +223,7 @@ private:
         throwIfTruncated(db, position_);
         detail::Statement select(db,
                                  "SELECT seq, kind, stage_id, layer_id, label_id, object_count, min_x, min_y, "
-                                 "max_x, max_y, stage_status, timestamp_ms FROM events WHERE seq > ? "
+                                 "max_x, max_y, stage_status, timestamp_ms, raster_id FROM events WHERE seq > ? "
                                  "ORDER BY seq LIMIT ?");
         select.bindInt64(1, position_);
         select.bindInt64(2, kPageRows);

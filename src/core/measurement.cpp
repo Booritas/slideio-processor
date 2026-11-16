@@ -14,6 +14,10 @@ Measurement::Measurement() noexcept : name_(""), value_(0.0), unit_(MeasurementU
 Measurement::Measurement(const char* name, double value, MeasurementUnit unit) noexcept
     : name_(name), value_(value), unit_(unit) {}
 
+Measurement Measurement::restored(const char* name, double value, MeasurementUnit unit) noexcept {
+    return Measurement(name != nullptr ? name : "", value, unit);
+}
+
 const char* Measurement::name() const noexcept { return name_; }
 
 double Measurement::value() const noexcept { return value_; }

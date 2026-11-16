@@ -14,38 +14,60 @@ else()
 endif()
 
 add_executable(slideio_processor_storage_tests
+    test_annotation_store.cpp
     test_cross_process.cpp
+    test_edge_store.cpp
     test_event_journal.cpp
+    test_geojson_import.cpp
+    test_label_raster.cpp
     test_stage_state.cpp
     test_geometry_codec.cpp
     test_layer_registry.cpp
     test_object_query.cpp
     test_object_writer.cpp
+    test_pyramid_tiff_writer.cpp
+    test_raster_lifecycle.cpp
+    test_raster_registry.cpp
+    test_raster_source.cpp
+    test_raster_writer.cpp
     test_store.cpp
+    test_store_format_v1.cpp
     test_store_impl.cpp
+    test_tiff_io.cpp
     test_types.cpp
     test_umbrella.cpp
     test_vocabulary_registry.cpp
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/${STORAGE_CHANGE_SIGNAL_SOURCE}
     ${PROJECT_SOURCE_DIR}/src/storage/detail/event_log.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/file_io.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/geometry_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/half_float.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/label_aliases.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/polygon_predicates.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/pyramid_tiff_writer.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/raster_files.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/schema.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/sqlite.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/store_impl.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_io.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tiff_raster_reader.cpp
+    ${PROJECT_SOURCE_DIR}/src/storage/detail/tile_spool.cpp
     ${PROJECT_SOURCE_DIR}/src/storage/detail/writer_lock.cpp
 )
-# SQLite is linked directly to probe the R*Tree module of the Conan build.
+# SQLite is linked directly to probe the R*Tree module of the Conan build, and libtiff
+# and zlib for the tiff_io wrapper compiled in above and the spool's compression.
 target_link_libraries(slideio_processor_storage_tests PRIVATE
-    slideio-processor-data SQLite::SQLite3 rapidjson Threads::Threads GTest::gtest_main)
+    slideio-processor-data SQLite::SQLite3 rapidjson TIFF::TIFF ZLIB::ZLIB Threads::Threads GTest::gtest_main)
 target_include_directories(slideio_processor_storage_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
 add_dependencies(slideio_processor_storage_tests store_observer_helper)
 target_compile_definitions(slideio_processor_storage_tests PRIVATE
-    SLIDEIO_PROCESSOR_TEST_OBSERVER_HELPER="$<TARGET_FILE:store_observer_helper>")
+    SLIDEIO_PROCESSOR_TEST_OBSERVER_HELPER="$<TARGET_FILE:store_observer_helper>"
+    # The format-v1 fixtures (ruling S53), and where a failing snapshot test writes its dump.
+    SLIDEIO_PROCESSOR_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    SLIDEIO_PROCESSOR_TEST_BUILD_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 # A hung waiter fails after 60 s instead of blocking the run.
 gtest_discover_tests(slideio_processor_storage_tests TEST_PREFIX "storage." PROPERTIES TIMEOUT 60)
 

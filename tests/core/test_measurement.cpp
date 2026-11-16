@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <utility>
 
 using namespace slideio::processor;
@@ -59,4 +60,19 @@ TEST(MeasurementSet, RemoveThenSetAppends) {
     MeasurementSet s; s.set("a", 1, MeasurementUnit::Pixels); s.set("b", 2, MeasurementUnit::Pixels);
     s.remove("a"); s.set("a", 3, MeasurementUnit::Pixels);
     EXPECT_EQ(s.count(), 2); EXPECT_STREQ(s.at(0).name(), "b"); EXPECT_STREQ(s.at(1).name(), "a");
+}
+
+TEST(Measurement, RestoredBorrowsItsName) {
+    const std::string name = "ki67";
+    const Measurement m = Measurement::restored(name.c_str(), 0.4, MeasurementUnit::Dimensionless);
+    EXPECT_EQ(m.name(), name.c_str());  // not copied
+    EXPECT_EQ(m.value(), 0.4);
+    EXPECT_EQ(m.unit(), MeasurementUnit::Dimensionless);
+    EXPECT_TRUE(m.isCalibrated());
+    const Measurement copy = m;
+    EXPECT_EQ(copy.name(), name.c_str());
+    const Measurement unnamed = Measurement::restored(nullptr, 2.0, MeasurementUnit::SquarePixels);
+    EXPECT_STREQ(unnamed.name(), "");
+    EXPECT_EQ(unnamed.value(), 2.0);
+    EXPECT_FALSE(unnamed.isCalibrated());
 }

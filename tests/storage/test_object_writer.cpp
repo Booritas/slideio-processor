@@ -5,11 +5,14 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/object_store.hpp>
 #include <slideio/processor/storage/store.hpp>
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <memory>
 #include <string>
@@ -66,16 +69,44 @@ class ObjectWriterTest : public StoreFixture {
 protected:
     void SetUp() override {
         StoreFixture::SetUp();
-        cells = store().layers().declareSemantic("cells", store().layers().pixelLayer());
+        tissue = store().layers().declareSemantic("tissue", store().layers().pixelLayer());
+        cells = store().layers().declareSemantic("cells", tissue);
         nuclei = store().layers().declareSemantic("nuclei", cells);
+        sp = store().layers().declarePrimitive("sp");
         a = store().stageStateWriter().declare("a", "");
         b = store().stageStateWriter().declare("b", "");
     }
     ObjectStore& objects() { return store().objects(); }
     void complete(StageId stage) { store().stageStateWriter().setStatus(stage, StageStatus::Complete); }
+    // The rowid SQLite gave an object, read on a connection of its own; -1 when absent.
+    // A failure to open or prepare is a test failure, so -1 never stands in for a rowid.
+    int64_t rowidOf(ObjectId id) {
+        sqlite3* db = nullptr;
+        int64_t rowid = -1;
+        if (sqlite3_open_v2(pathUtf8().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+            ADD_FAILURE() << "rowidOf: cannot open the store: " << sqlite3_errmsg(db);
+            sqlite3_close(db);
+            return rowid;
+        }
+        sqlite3_stmt* select = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT rowid FROM objects WHERE layer_id = ? AND anchor_id = ?", -1, &select,
+                               nullptr) != SQLITE_OK) {
+            ADD_FAILURE() << "rowidOf: " << sqlite3_errmsg(db);
+            sqlite3_close(db);
+            return rowid;
+        }
+        sqlite3_bind_int64(select, 1, id.layer().value());
+        sqlite3_bind_int64(select, 2, id.anchorPacked());
+        if (sqlite3_step(select) == SQLITE_ROW) rowid = sqlite3_column_int64(select, 0);
+        sqlite3_finalize(select);
+        sqlite3_close(db);
+        return rowid;
+    }
 
+    LayerId tissue;
     LayerId cells;
     LayerId nuclei;
+    LayerId sp;
     StageId a;
     StageId b;
 };
@@ -305,6 +336,124 @@ TEST_F(ObjectWriterTest, DiscardStageRemovesOnlyItsObjects) {  // UR-STG-6
     EXPECT_EQ(eventsOfKind(store(), EventKind::StageDiscarded).back().objectCount(), 3);
 }
 
+TEST_F(ObjectWriterTest, DiscardStageTakesWhatIsAboutItsObjects) {  // Review Focus 3, UR-STG-6
+    const StageId d = store().stageStateWriter().declare("d", "");
+    const ObjectId c1 = rec(cells, 0, 0, 4).id(), c2 = rec(cells, 10, 0, 4).id();
+    const ObjectId n1 = rec(nuclei, 1, 1, 2).id(), t = rec(tissue, 0, 0, 100).id(), s = rec(sp, 0, 0, 100).id();
+    {
+        ObjectWriterPtr wa = objects().writerForStage(a);
+        wa->emit(rec(cells, 0, 0, 4));
+        wa->emit(rec(cells, 10, 0, 4));
+        wa->flush();
+        ObjectWriterPtr wb = objects().writerForStage(b);
+        wb->emit(rec(nuclei, 1, 1, 2));
+        wb->emit(rec(tissue, 0, 0, 100));
+        wb->emit(rec(sp, 0, 0, 100));
+        wb->flush();
+    }
+    {
+        EdgeWriterPtr eb = store().edges().writerForStage(b);
+        eb->assertParent(n1, c1);
+        eb->assertParent(c1, t);
+        eb->assertDerivedFrom(t, s);
+        eb->flush();
+        AnnotationWriterPtr ad = store().annotations().writerForStage(d);
+        ad->assertLabel(c1, LabelId(2));
+        ad->assertMeasurement(c2, "area", 5.0, MeasurementUnit::SquarePixels);
+        ad->flush();
+        AnnotationWriterPtr aa = store().annotations().writerForStage(a);
+        aa->assertLabel(n1, LabelId(3));
+        aa->flush();
+    }
+    for (StageId stage : {a, b, d}) complete(stage);
+    AnnotationStore& annotations = store().annotations();
+    EdgeStore& edges = store().edges();
+    ASSERT_EQ(annotations.labelAnnotationCount(), 2);
+    ASSERT_EQ(annotations.measurementAnnotationCount(), 1);
+    ASSERT_EQ(edges.parentEdgeCount(), 2);
+    ASSERT_TRUE(edges.isAttached(n1));
+
+    objects().discardStage(a);
+
+    // a's own label on b's n1 is not about a's objects, so it stays.
+    EXPECT_EQ(annotations.labelAnnotationCount(), 1);
+    EXPECT_EQ(annotations.labelCount(n1), 1);
+    EXPECT_EQ(annotations.measurementAnnotationCount(), 0);
+    EXPECT_FALSE(edges.isAttached(n1));
+    ObjectId parent;
+    EXPECT_FALSE(edges.parentOf(c1, parent));
+    EXPECT_EQ(edges.parentEdgeCount(), 0);
+    EXPECT_EQ(edges.derivedFromEdgeCount(), 1);  // t and s are b's
+    CursorPtr origins = edges.originsOf(t);
+    ASSERT_TRUE(origins->next());
+    EXPECT_EQ(origins->current().id(), s);
+    const std::vector<Event> discarded = eventsOfKind(store(), EventKind::StageDiscarded);
+    ASSERT_EQ(discarded.size(), 1u);
+    EXPECT_EQ(discarded[0].stage(), a);
+    EXPECT_EQ(discarded[0].objectCount(), 2);
+}
+
+TEST_F(ObjectWriterTest, NothingReattachesToAReusedRowid) {  // Review Focus 3, UR-STG-6
+    const StageId d = store().stageStateWriter().declare("d", "");
+    const ObjectId t = rec(tissue, 0, 0, 100).id(), s = rec(sp, 0, 0, 100).id();
+    const ObjectId c1 = rec(cells, 0, 0, 4).id(), c2 = rec(cells, 10, 0, 4).id();
+    const ObjectId t2 = rec(tissue, 200, 0, 50).id(), s2 = rec(sp, 300, 0, 10).id();
+    {
+        ObjectWriterPtr wb = objects().writerForStage(b);
+        wb->emit(rec(tissue, 0, 0, 100));
+        wb->emit(rec(sp, 0, 0, 100));
+        wb->flush();
+        // a's objects take the highest rowids, so the re-run below receives them again.
+        ObjectWriterPtr wa = objects().writerForStage(a);
+        wa->emit(rec(cells, 0, 0, 4));
+        wa->emit(rec(cells, 10, 0, 4));
+        wa->emit(rec(tissue, 200, 0, 50));
+        wa->emit(rec(sp, 300, 0, 10));  // a primitive of a's, which b derives t from
+        wa->flush();
+    }
+    const int64_t rowids[] = {rowidOf(c1), rowidOf(c2), rowidOf(t2)};
+    for (int64_t rowid : rowids) ASSERT_GT(rowid, 0);  // else the reuse below proves nothing
+    {
+        EdgeWriterPtr eb = store().edges().writerForStage(b);
+        eb->assertParent(c1, t);
+        eb->assertDerivedFrom(t2, s);
+        eb->assertDerivedFrom(t, s2);
+        eb->flush();
+        AnnotationWriterPtr ad = store().annotations().writerForStage(d);
+        ad->assertLabel(c1, LabelId(2));
+        ad->assertMeasurement(c2, "area", 5.0, MeasurementUnit::SquarePixels);
+        ad->flush();
+    }
+    for (StageId stage : {a, b, d}) complete(stage);
+
+    objects().discardStage(a);
+    // The re-run: two cells elsewhere, and t2 again at its own anchor.
+    const ObjectId fresh1 = rec(cells, 50, 50, 4).id(), fresh2 = rec(cells, 60, 50, 4).id();
+    {
+        ObjectWriterPtr rerun = objects().writerForStage(a);
+        rerun->emit(rec(cells, 50, 50, 4));
+        rerun->emit(rec(cells, 60, 50, 4));
+        rerun->emit(rec(tissue, 200, 0, 50));
+        rerun->flush();
+    }
+    ASSERT_EQ(rowidOf(fresh1), rowids[0]);
+    ASSERT_EQ(rowidOf(fresh2), rowids[1]);
+    ASSERT_EQ(rowidOf(t2), rowids[2]);
+
+    AnnotationStore& annotations = store().annotations();
+    EdgeStore& edges = store().edges();
+    for (ObjectId fresh : {fresh1, fresh2}) {
+        EXPECT_EQ(annotations.labelCount(fresh), 0);
+        EXPECT_EQ(annotations.assertedMeasurementCount(fresh), 0);
+        EXPECT_FALSE(edges.isAttached(fresh));
+    }
+    EXPECT_FALSE(edges.originsOf(t2)->next());  // a coincident anchor does not inherit origins
+    EXPECT_FALSE(edges.originsOf(t)->next());
+    EXPECT_EQ(edges.derivedFromEdgeCount(), 0);
+    EXPECT_EQ(objects().count(ObjectQuery().attachment(AttachmentFilter::AttachedOnly)), 0);
+    EXPECT_EQ(objects().count(ObjectQuery().labelFilter(LabelFilter::LabelledOnly)), 0);
+}
+
 TEST_F(ObjectWriterTest, MeasurementsAndLabelRoundTrip) {
     ObjectRecord first = rec(cells, 0, 0, 4);
     first.setLabel(LabelId(2));
@@ -399,6 +548,37 @@ TEST(ObjectHandleLifetime, CloseFlushesEveryWriterAndReportsTheFirstFailure) {
     EXPECT_EQ(store->objects().totalObjectCount(), 2);  // the second writer's object was committed
 }
 
+// close() flushes the object writers before the edge and annotation writers, whatever
+// order they were made in: pending edges and annotations may reference pending objects.
+TEST(ObjectHandleLifetime, CloseFlushesObjectWritersBeforeEdgeAndAnnotationWriters) {
+    StoreFilesGuard files("objectorder");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const LayerId tissue = store->layers().declareSemantic("tissue", store->layers().pixelLayer());
+    const LayerId cells = store->layers().declareSemantic("cells", tissue);
+    const StageId a = store->stageStateWriter().declare("a", "");
+    EdgeWriterPtr edges = store->edges().writerForStage(a);
+    AnnotationWriterPtr annotations = store->annotations().writerForStage(a);
+    ObjectWriterPtr objects = store->objects().writerForStage(a);
+    const ObjectRecord parent = rec(tissue, 0, 0, 40);
+    const ObjectRecord child = rec(cells, 20, 0, 4);
+    objects->emit(parent);
+    objects->emit(child);
+    edges->assertParent(child.id(), parent.id());
+    annotations->assertLabel(child.id(), LabelId(2));
+    annotations->assertMeasurement(child.id(), "area", 16.0, MeasurementUnit::Dimensionless);
+    EXPECT_NO_THROW(store->close());
+    edges.reset();
+    annotations.reset();
+    objects.reset();
+
+    store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
+    EXPECT_EQ(store->objects().totalObjectCount(), 2);
+    EXPECT_EQ(store->edges().parentEdgeCount(), 1);
+    EXPECT_EQ(store->annotations().labelAnnotationCount(), 1);
+    EXPECT_EQ(store->annotations().measurementAnnotationCount(), 1);
+}
+
 namespace {
 
 // Tracked on the gate after `writer`, so close() calls it once the writer is flushed and
@@ -433,7 +613,7 @@ TEST(ObjectHandleLifetime, EmitDuringCloseIsRefusedNotDropped) {
     writer->setBatchSizeObjects(1000);
     writer->emit(rec(cells, 0, 0, 4));  // pending; close() commits it
     const auto late = std::make_shared<LateEmitter>(*writer, rec(cells, 10, 0, 4));
-    detail::StoreAccess::gate(*store)->track(late);
+    detail::trackForCloseTesting(*store, late);
     store->close();
     EXPECT_NE(late->refusal.find("store is closed"), std::string::npos) << "refusal: '" << late->refusal << "'";
     EXPECT_EQ(writer->emittedCount(), 1);

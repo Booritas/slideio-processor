@@ -12,7 +12,6 @@ namespace slideio::processor::detail {
 namespace {
 
 // Bounding boxes are int64 and half-open: [min_x, max_x) x [min_y, max_y).
-// Edge, annotation and raster tables belong to plans B and C.
 constexpr const char* kDdl = R"sql(
 CREATE TABLE meta(
     key   TEXT PRIMARY KEY,
@@ -26,7 +25,10 @@ CREATE TABLE layers(
     parent_id      INTEGER REFERENCES layers(id),
     depth          INTEGER NOT NULL,
     dropped        INTEGER NOT NULL DEFAULT 0,
-    analysis_level INTEGER NOT NULL DEFAULT 0
+    analysis_level INTEGER NOT NULL DEFAULT 0,
+    -- Set by the first ObjectWriter commit into the layer, never cleared (ruling S16).
+    ever_populated       INTEGER NOT NULL DEFAULT 0,
+    dropped_object_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE labels(
@@ -88,6 +90,63 @@ CREATE TABLE measurements(
     PRIMARY KEY(object_rowid, ordinal)
 ) WITHOUT ROWID;
 
+-- One parent per child, store-wide (ruling S18).
+CREATE TABLE parent_edges(
+    child_rowid  INTEGER PRIMARY KEY REFERENCES objects(rowid),
+    parent_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id)
+) WITHOUT ROWID;
+CREATE INDEX parent_edges_parent ON parent_edges(parent_rowid);
+
+-- Keyed by ObjectId, not rowid: rows outlive a dropped primitive layer (ruling S18).
+CREATE TABLE derived_from(
+    derived_layer    INTEGER NOT NULL,
+    derived_anchor   INTEGER NOT NULL,
+    primitive_layer  INTEGER NOT NULL,
+    primitive_anchor INTEGER NOT NULL,
+    stage_id         INTEGER NOT NULL REFERENCES stages(id),
+    PRIMARY KEY(derived_layer, derived_anchor, primitive_layer, primitive_anchor, stage_id)
+) WITHOUT ROWID;
+CREATE INDEX derived_from_primitive ON derived_from(primitive_layer, primitive_anchor);
+
+-- Labels and measurements asserted about existing objects (ruling S22).
+CREATE TABLE label_assertions(
+    object_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id),
+    label_id     INTEGER NOT NULL REFERENCES labels(id),
+    PRIMARY KEY(object_rowid, stage_id, label_id)
+) WITHOUT ROWID;
+
+CREATE TABLE measurement_assertions(
+    object_rowid INTEGER NOT NULL REFERENCES objects(rowid),
+    stage_id     INTEGER NOT NULL REFERENCES stages(id),
+    name_id      INTEGER NOT NULL REFERENCES measurement_names(id),
+    value        REAL    NOT NULL,
+    unit         INTEGER NOT NULL,
+    PRIMARY KEY(object_rowid, stage_id, name_id)
+) WITHOUT ROWID;
+
+-- A raster row names its file, never a path (ruling S44). Every column from
+-- writer_stage_id on describes the published file, and is cleared with it.
+CREATE TABLE rasters(
+    id              INTEGER PRIMARY KEY,
+    name            TEXT    NOT NULL UNIQUE,
+    data_type       INTEGER NOT NULL,
+    plane_count     INTEGER NOT NULL,
+    compression     INTEGER NOT NULL,
+    description     TEXT    NOT NULL DEFAULT '',
+    writer_stage_id INTEGER REFERENCES stages(id),
+    level           INTEGER NOT NULL DEFAULT 0,
+    scale_x         REAL    NOT NULL DEFAULT 0,
+    scale_y         REAL    NOT NULL DEFAULT 0,
+    width           INTEGER NOT NULL DEFAULT 0,
+    height          INTEGER NOT NULL DEFAULT 0,
+    file_name       TEXT,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    populated       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX rasters_writer ON rasters(writer_stage_id);
+
 CREATE TABLE events(
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind         INTEGER NOT NULL,
@@ -100,7 +159,8 @@ CREATE TABLE events(
     max_x        INTEGER NOT NULL DEFAULT 0,
     max_y        INTEGER NOT NULL DEFAULT 0,
     stage_status INTEGER,
-    timestamp_ms INTEGER NOT NULL
+    timestamp_ms INTEGER NOT NULL,
+    raster_id    INTEGER
 );
 )sql";
 
@@ -135,6 +195,22 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     // Nothing is truncated yet: every sequence (they start at 1) is retained.
     StoreImpl::setMetaInt64(db, kMetaJournalTruncatedBelow, 1);
     StoreImpl::setMetaText(db, kMetaStoreUuid, storeUuid);
+    StoreImpl::setMetaInt64(db, kMetaLayersRevision, 0);
+    StoreImpl::setMetaInt64(db, kMetaRastersRevision, 0);
 }
+
+namespace {
+
+void bumpRevision(sqlite3* db, const char* key) {
+    Statement bump(db, "INSERT INTO meta(key, value) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET value = value + 1");
+    bump.bindText(1, key);
+    bump.run();
+}
+
+} // namespace
+
+void bumpLayersRevision(sqlite3* db) { bumpRevision(db, kMetaLayersRevision); }
+
+void bumpRastersRevision(sqlite3* db) { bumpRevision(db, kMetaRastersRevision); }
 
 } // namespace slideio::processor::detail

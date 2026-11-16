@@ -7,17 +7,20 @@
  * Including this file is equivalent to including each header under
  * slideio/processor/storage/ individually. It currently covers types.hpp,
  * store_format.hpp, store.hpp, event_journal.hpp, stage_state_reader.hpp,
- * stage_state_writer.hpp, layer_registry.hpp, vocabulary_registry.hpp and
- * object_store.hpp. The edge, annotation, GeoJSON-import and raster parts of the
- * module will add edge_store.hpp, annotation_store.hpp, geojson_import.hpp and
- * raster_store.hpp, and this header will include them too.
+ * stage_state_writer.hpp, layer_registry.hpp, vocabulary_registry.hpp,
+ * object_store.hpp, edge_store.hpp, annotation_store.hpp, raster_store.hpp and
+ * geojson_import.hpp: the whole storage module.
  *
  * Thread-safety: not applicable (declarations only).
  */
 
+#include <slideio/processor/storage/annotation_store.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
+#include <slideio/processor/storage/geojson_import.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>

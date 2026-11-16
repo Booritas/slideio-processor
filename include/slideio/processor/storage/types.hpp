@@ -59,7 +59,7 @@ enum class EventKind : int32_t {
     StageDiscarded,     ///< A stage's output was discarded.
     LayerDropped,       ///< A layer was dropped.
     RasterDeclared,     ///< A raster was declared.
-    RasterWritten,      ///< A raster block was written.
+    RasterWritten,      ///< A raster was published.
     RasterDropped       ///< A raster was dropped.
 };
 

@@ -89,6 +89,14 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   the layer and vocabulary registries, the object writer and queries, stage
   state and the event journal with cross-process observation. Edges, annotations,
   GeoJSON import and rasters follow in plans B and C.
+- [Storage implementation plan B](superpowers/plans/2026-11-03-storage-b.md) —
+  plan B of three for the `storage` module: parent and derived-from edges, label and
+  measurement annotations, the effective-label raster, primitive-layer drop and
+  GeoJSON import.
+- [Storage implementation plan C](superpowers/plans/2026-11-03-storage-c.md) —
+  plan C of three for the `storage` module: persisted rasters (declaration, writer,
+  registry, pyramidal BigTIFF files through libtiff), their journal events, the
+  unreferenced-file sweep, and the freeze of store format v1. Completes the module.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

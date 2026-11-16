@@ -388,6 +388,9 @@ public:
     double value() const noexcept;
     MeasurementUnit unit() const noexcept;
     bool isCalibrated() const noexcept;
+
+    static Measurement restored(const char* name, double value,
+                                MeasurementUnit unit) noexcept;
 };
 
 class MeasurementSet {
@@ -412,7 +415,12 @@ public:
 **Thread-safety:** ThreadCompatible. **Requirements:** UR-SEG-5, UR-SEG-6.
 
 `Measurement` has a public default constructor so a caller can declare the
-`out` argument of `find`; populated instances come only from a set. The set
+`out` argument of `find`; populated instances come from a set, or from
+`Measurement::restored(name, value, unit)` for a source that reads measurements
+back outside a set, such as `AnnotationStore` (`03-storage.md` 3.7). `restored`
+does not copy the name, which must outlive the measurement and every copy
+(null reads as ""), and it lets `core` serve storage without naming a storage
+class ([storage plan B](../../plans/2026-11-03-storage-b.md), Task 4 ruling). The set
 has the full copy and move set, keeps insertion order, and `set` on an
 existing name replaces its value and unit in place.
 
@@ -1242,6 +1250,10 @@ public:
     const char* propertyName(int32_t index) const;
     const char* propertyValue(int32_t index) const;
     int64_t featuresRead() const noexcept;
+    bool provenance(Provenance& out) const;   // false until the member is read
+    int64_t featuresSkipped() const noexcept;
+    int64_t featureIndex() const noexcept;    // -1 when there is no current feature
+    void setWarningsEnabled(bool enabled) noexcept;
 };
 
 class GeoJsonWriter {
@@ -1268,8 +1280,8 @@ public:
 };
 ```
 
-**Thread-safety:** ThreadConfined. **Requirements:** UR-RES-8, UR-RES-15,
-UR-RES-18.
+**Thread-safety:** ThreadConfined. **Requirements:** UR-RES-8, UR-RES-11,
+UR-RES-15, UR-RES-18.
 
 One codec, used from both directions by different modules: `storage` holds the
 reader for import (decision 3), `reporting` holds the writer for export. That
@@ -1295,7 +1307,10 @@ away from zero.
 missing, empty, or of any type other than Polygon or MultiPolygon is skipped
 with a `LogLevel::Warning` message naming its index and type, because one
 feature the library cannot represent should not stop the rest of the file
-being read. Malformed JSON, or a top-level value that
+being read. The type is named only when it is one of the seven RFC 7946
+geometry types (Point, MultiPoint, LineString, MultiLineString, Polygon,
+MultiPolygon, GeometryCollection); any other `type` is reported as "an
+unrecognised geometry type", because it is file text. Malformed JSON, or a top-level value that
 is neither an object nor an array, throws `InvalidArgumentError` naming the
 path and byte offset, and is final: every later `next()` throws again. A
 feature with an invalid ring — fewer than 3 distinct points after rounding,
@@ -1305,9 +1320,48 @@ feature, but leaves the reader usable: the next call continues with the
 following feature. Properties are the scalar members of `properties` other
 than `classification` and `layer`, then the scalar members of
 `properties.measurements` as `measurements.<key>`; nulls,
-arrays and nested objects are skipped. That includes the array form of
-`measurements` that QuPath wrote before 0.3, which therefore yields no
-measurement properties (`03-storage.md` 3.11).
+arrays and nested objects are skipped. QuPath before 0.3 wrote
+`measurements` as an array of `{"name": s, "value": v}` objects instead; each
+entry with a string `name` and a non-null scalar `value` becomes
+`measurements.<name>`, in array order, after the top-level properties, and
+any other entry is skipped. The object form keeps its document order.
+
+**What it reports about the file.** `provenance(out)` returns true once a
+FeatureCollection's top-level `provenance` object member has been read: by the
+first `next()` when the member precedes `features`, as the writer puts it, and
+by the time `next()` returns false when it follows, because the reader only
+sees the member as the stream passes it. It then sets `out` through
+`Provenance::restored` (1.13), reading a missing or mistyped member, a
+number that is not an integer in range, or a negative `sceneIndex` (which
+`setSceneIndex` refuses), as `""` or 0. It is false for a
+top-level array, a single Feature, or a member that is not an object, and
+leaves `out` unchanged. `featuresSkipped()` counts the features skipped for null,
+missing, empty or unsupported geometry, whether or not a warning was logged
+for them; a feature whose `next()` threw, and a list element that is not an
+object, is not counted. A moved-from reader reports false and 0.
+
+**Feature indices.** Every message names a feature by its 0-based position in
+the feature list, counting skipped features and list elements that are not
+objects (each of which is skipped, with a Warning unless warnings are off); a
+single Feature is 0.
+`featureIndex()` returns that index for the feature the last `next()` returned
+or rejected for its geometry, and -1 before the first `next()`, after it
+returns false or throws another error, and on a moved-from reader, so a caller
+that adds its own messages names a feature as the reader does.
+`setWarningsEnabled(false)` silences one reader's Warning messages, from the
+call on, without changing what it skips or counts; `storage`'s importer uses it
+for the pre-pass that only counts features, so each skip is logged once. No
+message the reader logs or throws copies text from the file other than an
+RFC 7946 geometry type name: none names a provenance field, a property value
+or an unrecognised geometry type, since any of them may carry a patient
+identifier.
+
+The array form and the provenance are the "two things `core::GeoJsonReader`
+leaves to this module" of `03-storage.md` 3.11. They are now `core`'s, with
+the skip count, so the importer reads all three through this reader
+([storage plan B](../../plans/2026-11-03-storage-b.md), ruling S17). Whether
+a file's provenance may replace a store's is `storage`'s decision, not the
+reader's.
 
 **Holes get an owner on the way out.** `Polygon` deliberately has none (1.3),
 but GeoJSON's MultiPolygon nests each hole inside one polygon. A polygon with

@@ -10,6 +10,16 @@ class SlideioProcessorConan(ConanFile):
         self.requires("rapidjson/cci.20250205")
         # The store engine. SlideIO's converter pins the same version.
         self.requires("sqlite3/3.44.2")
+        # Raster TIFF I/O for the storage module (ruling S40). libtiff directly, never
+        # SlideIO or OpenCV: the SlideIO DLLs embed OpenCV statically, and design 5.1
+        # keeps OpenCV out of the data library. 4.7.1 is ConanCenter's 4.7 release with
+        # TIFFClientOpenExt and TIFFOpenOptions (4.5+); SlideIO pins 4.6.0, but both
+        # copies are static and private, so they need not match.
+        self.requires("libtiff/4.7.1")
+        # Storage uses zlib directly (the raster spool's compression, ruling S46), so it is
+        # a direct requirement: through libtiff alone its headers would not be visible.
+        # The version libtiff/4.7.1 resolves.
+        self.requires("zlib/1.3.2")
         # Used for its version only: nothing links OpenCV.
         self.requires("opencv/4.14.0")
 
@@ -17,6 +27,13 @@ class SlideioProcessorConan(ConanFile):
         # The storage module's spatial index is an R*Tree virtual table. It is
         # on by default; stated here so the requirement is visible (UR-BLD-5).
         self.options["sqlite3"].enable_rtree = True
+        # Rasters are written with None, LZW or Deflate only (ruling S42), so libtiff
+        # needs zlib and no other codec, and no C++ stream API. The recipe has no lerc
+        # option: it always builds libtiff with lerc off.
+        self.options["libtiff"].zlib = True
+        self.options["libtiff"].jpeg = False
+        for name in ["jbig", "lzma", "zstd", "webp", "libdeflate", "cxx"]:
+            setattr(self.options["libtiff"], name, False)
         # The options SlideIO's profiles set, so the OpenCV binary SlideIO
         # already built in the same Conan cache is reused.
         disabled = [

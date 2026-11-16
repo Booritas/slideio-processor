@@ -1,4 +1,4 @@
-// Requirements: UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-SEG-4, UR-IMG-4
+// Requirements: UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-RES-16, UR-SEG-4, UR-IMG-4
 #pragma once
 
 /**
@@ -27,9 +27,10 @@ class StoreImpl;
  * moment the store is created. Declared layers number from 2 upward, in declaration
  * order. Names are unique across all layers and compared exactly. A semantic layer
  * lies beneath one parent; `vessels` and `glands` may both sit above `tissue` without
- * relating to each other. Layers are never removed in this version, so ids and
- * positions are stable. A ReadOnly store answers every query, and sees layers a
- * writer in another process declares later.
+ * relating to each other. Layers are never removed, so ids and positions are stable:
+ * dropping a primitive layer (dropPrimitive()) deletes its objects but keeps the layer.
+ * A ReadOnly store answers every query, and sees the layers a writer in another
+ * process declares, and the drops it makes, without reopening.
  *
  * Every member throws IoError on a closed store (the noexcept ones answer as
  * documented instead), and every declaring member also on a ReadOnly store. A
@@ -39,7 +40,7 @@ class StoreImpl;
  * ThreadSafe: every member may be called from any thread with no external locking.
  * Declarations are serialised with every other write.
  * @par Requirements
- * UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-SEG-4, UR-IMG-4
+ * UR-STG-10, UR-RES-13, UR-RES-14, UR-STG-12, UR-RES-16, UR-SEG-4, UR-IMG-4
  */
 class SLIDEIO_PROCESSOR_DATA_EXPORTS LayerRegistry {
 public:
@@ -171,8 +172,8 @@ public:
      *
      * The predicate edges are validated against (UR-RES-14). A layer is not above
      * itself, and siblings are not above one another.
-     * @param descendant The candidate lower layer.
-     * @param ancestor The candidate higher layer.
+     * @param descendant The candidate upper layer, further from the pixel layer.
+     * @param ancestor The candidate lower layer, nearer the pixel layer.
      * @return True when ancestor is a proper ancestor of descendant.
      * @throws InvalidArgumentError When either layer is unknown or primitive.
      * @throws IoError When the store is closed, or when SQLite fails.
@@ -183,10 +184,55 @@ public:
      * @brief Tells whether a layer has been dropped.
      * @param layer The layer.
      * @return True when dropped; false for an unknown layer, a closed store or a
-     * SQLite failure. Nothing in this version drops a layer.
+     * SQLite failure. Only a primitive layer is ever dropped (dropPrimitive()).
      * @throws Nothing.
      */
     bool isDropped(LayerId layer) const noexcept;
+
+    /**
+     * @brief Drops a primitive layer: deletes its objects, keeping the layer.
+     *
+     * One write transaction deletes the layer's objects with their measurements,
+     * spatial index rows and the label and measurement assertions on them, marks the
+     * layer dropped, records how many objects it held (droppedObjectCount()) and
+     * appends LayerDropped (the layer set, count 0, an empty box). The derived-from
+     * edges into the layer are kept: EdgeStore::originsOf() resolves them to nothing,
+     * and EdgeStore::derivedFromEdgeCount() still counts them. They can never resolve
+     * again, since nothing may be emitted into a dropped layer. Objects derived from
+     * the layer stay, and no stage is marked stale (UR-STG-12, UR-RES-16).
+     *
+     * An ObjectWriter still holding pending objects for the layer fails at its next
+     * commit, naming the layer; a later emit into the layer is refused. Dropping a
+     * dropped layer does nothing and appends no event.
+     *
+     * The acceptance at the reference object count (10 million superpixels) is a
+     * manual performance check, not a unit test; the unit tests drop 50,000 objects.
+     * @param layer A primitive layer.
+     * @throws InvalidArgumentError When the layer is unknown, semantic or the pixel
+     * layer (the message names it).
+     * @throws IoError When the store is closed or read-only, or when SQLite fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    void dropPrimitive(LayerId layer);
+    /**
+     * @brief Tells whether any object was ever committed to a layer.
+     *
+     * Set by the first ObjectWriter commit into the layer and never cleared, neither
+     * by ObjectStore::discardStage() nor by dropPrimitive().
+     * @param layer The layer.
+     * @return True when the layer ever held an object; false for an unknown layer, a
+     * closed store or a SQLite failure.
+     * @throws Nothing.
+     */
+    bool wasEverPopulated(LayerId layer) const noexcept;
+    /**
+     * @brief Returns the number of objects dropPrimitive() deleted from a layer.
+     * @param layer The layer.
+     * @return The count; 0 for a layer not dropped, an unknown layer, a closed store or
+     * a SQLite failure.
+     * @throws Nothing.
+     */
+    int64_t droppedObjectCount(LayerId layer) const noexcept;
 
     /**
      * @brief Returns the number of stages declared to write a layer, before any runs.

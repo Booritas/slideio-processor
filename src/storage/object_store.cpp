@@ -1,6 +1,8 @@
 #include <slideio/processor/storage/object_store.hpp>
 
+#include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
+#include "storage/detail/object_lookup.hpp"
 #include "storage/detail/query_builder.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
@@ -11,21 +13,6 @@
 #include <utility>
 
 namespace slideio::processor {
-
-namespace {
-
-[[noreturn]] void throwUnknownStage(const char* operation, StageId stage) {
-    const std::string message = std::string(operation) + ": there is no stage " + std::to_string(stage.value());
-    throw InvalidArgumentError(message.c_str());
-}
-
-bool stageExists(sqlite3* db, StageId stage) {
-    detail::Statement select(db, "SELECT 1 FROM stages WHERE id = ?");
-    select.bindInt64(1, stage.value());
-    return select.step();
-}
-
-} // namespace
 
 class ObjectStore::Impl {
 public:
@@ -42,8 +29,8 @@ ObjectWriterPtr ObjectStore::writerForStage(StageId stage) {
     detail::StoreImpl& store = impl_->store;
     store.checkWritable(kOperation);
     const bool exists =
-        store.withReadConnection(kOperation, [stage](sqlite3* db) { return stageExists(db, stage); });
-    if (!exists) throwUnknownStage(kOperation, stage);
+        store.withReadConnection(kOperation, [stage](sqlite3* db) { return detail::stageExists(db, stage); });
+    if (!exists) detail::throwUnknownStage(kOperation, stage);
     return ObjectWriterPtr(new ObjectWriter(store.gate(), stage, store.configuration().objectBatchSize()));
 }
 
@@ -109,23 +96,9 @@ void ObjectStore::discardStage(StageId stage) {
     constexpr const char* kOperation = "ObjectStore::discardStage";
     detail::StoreImpl& store = impl_->store;
     store.withWriteTransaction(kOperation, [&](sqlite3* db) {
-        if (!stageExists(db, stage)) throwUnknownStage(kOperation, stage);
-        int64_t removed = 0;
-        {
-            detail::Statement count(db, "SELECT COUNT(*) FROM objects WHERE stage_id = ?");
-            count.bindInt64(1, stage.value());
-            if (count.step()) removed = count.columnInt64(0);
-        }
-        // Measurements reference objects, so they go first; plan B adds edges and
-        // annotations to the cascade.
-        for (const char* sql : {"DELETE FROM measurements WHERE object_rowid IN "
-                                "(SELECT rowid FROM objects WHERE stage_id = ?)",
-                                "DELETE FROM object_rtree WHERE rowid IN (SELECT rowid FROM objects WHERE stage_id = ?)",
-                                "DELETE FROM objects WHERE stage_id = ?"}) {
-            detail::Statement remove(db, sql);
-            remove.bindInt64(1, stage.value());
-            remove.run();
-        }
+        if (!detail::stageExists(db, stage)) detail::throwUnknownStage(kOperation, stage);
+        // Everything about the stage's objects, by any stage, goes with them (ruling S25).
+        const int64_t removed = detail::deleteObjects(db, detail::ObjectsOf::Stage, stage.value());
         detail::EventRow event;
         event.kind = EventKind::StageDiscarded;
         event.stageId = stage.value();

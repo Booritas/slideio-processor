@@ -18,8 +18,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(slideio-processor-data PRIVATE -Wl,--exclude-libs,ALL)
 endif()
 
-# OpenCV is used for its version only. Fail the configure if it ever reaches
-# the link line of the library or of any of its modules.
+# OpenCV is used for its version only, and SlideIO for its headers only: its DLLs
+# embed OpenCV statically (design 5.1, ruling S40). Fail the configure if either
+# ever reaches the link line of the library or of any of its modules. Our own
+# slideio-processor-* targets do not match "^slideio::".
 foreach(target slideio-processor-config slideio-processor-storage slideio-processor-data)
     get_target_property(link_libs ${target} LINK_LIBRARIES)
     get_target_property(interface_link_libs ${target} INTERFACE_LINK_LIBRARIES)
@@ -28,6 +30,11 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
             message(FATAL_ERROR
                 "${target} must not link OpenCV (found '${libs}'): "
                 "OpenCV is a version-only dependency.")
+        endif()
+        if(libs MATCHES "^slideio::")
+            message(FATAL_ERROR
+                "${target} must not link SlideIO (found '${libs}'): "
+                "its DLLs embed OpenCV, which the data library must not carry.")
         endif()
     endforeach()
 endforeach()

@@ -9,9 +9,12 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/export.hpp>
 #include <slideio/processor/core/provenance.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store_format.hpp>
@@ -23,11 +26,18 @@
 
 namespace slideio::processor {
 
-namespace detail {
-struct StoreAccess;
-} // namespace detail
-
 class Store;
+
+namespace detail {
+/** @brief Library-internal; not API. */
+class GateClient;
+/** @brief Test seam, not API: library-internal test access to Store::close(). */
+SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client);
+/** @brief Library-internal; not API. */
+class StoreImpl;
+/** @brief Library-internal, not API and not exported: the shared core of an open Store. */
+StoreImpl& storeImplOf(Store& store) noexcept;
+} // namespace detail
 /** @brief Shared ownership of an open Store. */
 using StorePtr = std::shared_ptr<Store>;
 
@@ -147,6 +157,16 @@ public:
     /** @copydoc layers() */
     const LayerRegistry& layers() const noexcept;
     /**
+     * @brief Returns the raster registry of this store.
+     * @return The registry, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every query and refuses declarations, writers and
+     * discards.
+     * @throws Nothing.
+     */
+    RasterRegistry& rasters() noexcept;
+    /** @copydoc rasters() */
+    const RasterRegistry& rasters() const noexcept;
+    /**
      * @brief Returns the vocabulary registry of this store.
      * @return The registry, valid while this store lives. Usable until close(); a
      * ReadOnly store answers every query and refuses additions.
@@ -163,6 +183,22 @@ public:
      * @throws Nothing.
      */
     ObjectStore& objects() noexcept;
+    /**
+     * @brief Returns the edge store of this store.
+     * @return The edge store, valid while this store lives. Usable until close(); a
+     * ReadOnly store answers every read and refuses writers and discards. A writer it
+     * returned throws IoError once the store is closed or destroyed.
+     * @throws Nothing.
+     */
+    EdgeStore& edges() noexcept;
+    /**
+     * @brief Returns the annotation store of this store.
+     * @return The annotation store, valid while this store lives. Usable until close();
+     * a ReadOnly store answers every read and refuses writers and discards. A writer it
+     * returned throws IoError once the store is closed or destroyed.
+     * @throws Nothing.
+     */
+    AnnotationStore& annotations() noexcept;
     /**
      * @brief Returns the stage state reader of this store.
      * @return The reader, valid while this store lives. Usable until close(); a
@@ -184,20 +220,31 @@ public:
      * @brief Flushes pending batches and releases every connection and the writer
      * lock. Idempotent.
      *
-     * Every live ObjectWriter first commits what it holds pending, as by flush(); a
-     * writer used afterwards throws IoError, and an ObjectWriter::emit() racing close()
-     * is refused with IoError "store is closed" rather than accepted and lost. The
+     * Every live ObjectWriter, EdgeWriter and AnnotationWriter first commits what it
+     * holds pending, as by
+     * flush(); a writer used afterwards throws IoError, and an emit() or assert racing
+     * close() is refused with IoError "store is closed" rather than accepted and lost. The
      * store is closed even when a flush fails: every writer is tried, and the first
      * failure is then reported. Errors during teardown are reported here rather than
      * in the destructor, which logs them.
+     *
+     * A live RasterWriter is abandoned, never flushed: its spool and any partial file are
+     * deleted and nothing is published, because closing must not build a pyramid. Its
+     * raster keeps the state it had.
      * @throws InvalidArgumentError When a writer's pending batch collides with a
-     * committed object's anchor; that batch is rolled back and dropped.
+     * committed object's anchor, holds an edge whose endpoint does not exist or that
+     * conflicts with a committed parent edge, or holds an annotation whose object does
+     * not exist or that conflicts with a committed measurement; that batch is rolled
+     * back and dropped.
      * @throws IoError When a writer's commit or releasing the store fails.
      */
     void close();
 
 private:
-    friend struct detail::StoreAccess;  // test seam, not API: library-internal test access only
+    // Test seam, not API: library-internal test access only.
+    friend void detail::trackForCloseTesting(Store& store, const std::shared_ptr<detail::GateClient>& client);
+    // Library-internal: GeoJsonImporter reaches the store core through it.
+    friend detail::StoreImpl& detail::storeImplOf(Store& store) noexcept;
     class Impl;
     explicit Store(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

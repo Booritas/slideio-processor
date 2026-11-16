@@ -15,15 +15,18 @@ namespace slideio::processor {
 class Store::Impl {
 public:
     Impl(const char* path, OpenMode mode, const Configuration& configuration)
-        : core(path, mode, configuration), journal(core), layerRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core) {}
+        : core(path, mode, configuration), journal(core), layerRegistry(core), rasterRegistry(core), vocabularyRegistry(core), stageReader(core), stageWriter(core), objectStore(core), edgeStore(core, layerRegistry), annotationStore(core, layerRegistry, objectStore) {}
 
     detail::StoreImpl core;
     EventJournal journal;
     LayerRegistry layerRegistry;
+    RasterRegistry rasterRegistry;
     VocabularyRegistry vocabularyRegistry;
     StageStateReader stageReader;
     StageStateWriter stageWriter;
     ObjectStore objectStore;
+    EdgeStore edgeStore;
+    AnnotationStore annotationStore;
 };
 
 Store::Store(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -87,6 +90,8 @@ EventJournal& Store::events() noexcept { return impl_->journal; }
 LayerRegistry& Store::layers() noexcept { return impl_->layerRegistry; }
 
 const LayerRegistry& Store::layers() const noexcept { return impl_->layerRegistry; }
+RasterRegistry& Store::rasters() noexcept { return impl_->rasterRegistry; }
+const RasterRegistry& Store::rasters() const noexcept { return impl_->rasterRegistry; }
 
 VocabularyRegistry& Store::vocabulary() noexcept { return impl_->vocabularyRegistry; }
 
@@ -94,12 +99,20 @@ const VocabularyRegistry& Store::vocabulary() const noexcept { return impl_->voc
 
 ObjectStore& Store::objects() noexcept { return impl_->objectStore; }
 
+EdgeStore& Store::edges() noexcept { return impl_->edgeStore; }
+
+AnnotationStore& Store::annotations() noexcept { return impl_->annotationStore; }
+
 StageStateReader& Store::stageStates() noexcept { return impl_->stageReader; }
 
 StageStateWriter& Store::stageStateWriter() noexcept { return impl_->stageWriter; }
 
 void Store::close() { impl_->core.close(); }
 
-std::shared_ptr<detail::StoreGate> detail::StoreAccess::gate(Store& store) { return store.impl_->core.gate(); }
+detail::StoreImpl& detail::storeImplOf(Store& store) noexcept { return store.impl_->core; }
+
+void detail::trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client) {
+    store.impl_->core.gate()->track(client);
+}
 
 } // namespace slideio::processor

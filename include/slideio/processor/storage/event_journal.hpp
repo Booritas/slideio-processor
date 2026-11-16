@@ -126,6 +126,13 @@ public:
      * @throws Nothing.
      */
     StageStatus stageStatus() const noexcept;
+    /**
+     * @brief Returns the raster concerned.
+     * @return The raster of a RasterDeclared, RasterWritten or RasterDropped event; an
+     * invalid id for any other kind.
+     * @throws Nothing.
+     */
+    RasterId raster() const noexcept;
 
 private:
     friend struct detail::EventAccess;
@@ -160,7 +167,8 @@ public:
      * @param timeoutMs 0 polls without blocking, -1 waits indefinitely, a positive
      * value waits at most that many milliseconds.
      * @return True when current() is the next event; false on timeout.
-     * @throws InvalidArgumentError When timeoutMs is below -1.
+     * @throws InvalidArgumentError When timeoutMs is below -1, or when events the
+     * cursor has not yet returned were truncated away (UR-OBS-7).
      * @throws IoError When the cursor or the store is closed, or when SQLite fails.
      * @throws std::bad_alloc When memory is exhausted.
      */

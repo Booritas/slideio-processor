@@ -299,6 +299,25 @@ ReadLease StoreImpl::acquireRead(const char* operation) const {
     return ReadLease(pool_, pool_->acquire(operation));
 }
 
+StoreImpl::SynchronousScope::SynchronousScope(StoreImpl& store, const char* operation, bool durable)
+    : store_(store), durable_(durable) {
+    if (!durable_) return;
+    sqlite3* db = store_.writeConnection_.get();
+    const int rc = sqlite3_exec(db, "PRAGMA synchronous=FULL", nullptr, nullptr, nullptr);
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, store_.path_.c_str());
+}
+
+StoreImpl::SynchronousScope::~SynchronousScope() {
+    if (!durable_) return;
+    // The transaction has committed or rolled back: a failure here must not make the
+    // caller believe otherwise. The connection then stays at FULL, which is safe.
+    sqlite3* db = store_.writeConnection_.get();
+    if (sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        logMessage(LogLevel::Warning, "Store: cannot restore synchronous=NORMAL on '%s': %s", store_.path_.c_str(),
+                   sqlite3_errmsg(db));
+    }
+}
+
 void StoreImpl::beginWrite(const char* operation) {
     sqlite3* db = writeConnection_.get();
     const int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr);

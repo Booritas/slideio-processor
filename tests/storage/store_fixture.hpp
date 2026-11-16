@@ -15,7 +15,8 @@
 
 namespace slideio::processor {
 
-// Removes a store file and every file that sits beside it: -wal, -shm and -writer.lock.
+// Removes a store file and everything that sits beside it: -wal, -shm, -writer.lock and
+// the -rasters directory with its contents.
 inline void removeStoreFiles(const std::filesystem::path& path) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -24,6 +25,9 @@ inline void removeStoreFiles(const std::filesystem::path& path) {
         side += suffix;
         std::filesystem::remove(side, ec);
     }
+    std::filesystem::path rasters = path;
+    rasters += "-rasters";
+    std::filesystem::remove_all(rasters, ec);
 }
 
 // A unique store path whose files are removed when the guard goes out of scope.

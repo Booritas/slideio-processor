@@ -68,14 +68,15 @@ flowchart TB
     workspace --> storage
 ```
 
-`storage` additionally depends on **SlideIO**, for raster I/O only: a
-persisted raster is a pyramidal TIFF beside the store (`03-storage.md` 3.8),
-and reading one back is SlideIO opening it. That is a module edge, not a
-library one — the data library already links SlideIO through `reporting`'s
-`MaskWriter`. The alternative home was `reporting`, which fails because
-`workspace` does not depend on it and must not start to; persistence with
-attribution and discard is `storage`'s subject, while `reporting` exports
-finished results.
+`storage` reads and writes rasters with **libtiff**, linked privately into the data
+library and never SlideIO or OpenCV: a persisted raster is a pyramidal TIFF beside
+the store (`03-storage.md` 3.8), and the SlideIO libraries embed OpenCV statically,
+which design 5.1 keeps out of the viewer's data library. The files are standard
+tiled BigTIFFs that SlideIO is expected to open (not yet tested; `03-storage.md`
+3.8). The alternative home was
+`reporting`, which fails because `workspace` does not depend on it and must not
+start to; persistence with attribution and discard is `storage`'s subject, while
+`reporting` exports finished results.
 
 An arrow is *depends on*. Three absences carry the design:
 
@@ -531,6 +532,8 @@ classDiagram
         +classification() cstr
         +layerName() cstr
         +featuresRead() int64_t
+        +featureIndex() int64_t
+        +setWarningsEnabled(bool) void
     }
 
     class GeoJsonWriter {
@@ -778,7 +781,8 @@ classDiagram
 
 Every sub-object is **owned by the `Store` and handed out by reference**,
 valid until `close()` (C-8). A `Store` is `ThreadSafe` throughout: WAL mode,
-one connection per accessing thread, which is what lets a `ReadOnly` store in
+one mutex-guarded write connection and a pool of read connections (03 §3.2),
+which is what lets a `ReadOnly` store in
 a viewer process read while a `ReadWrite` store in a script process writes —
 UR-OBS-1, measured in the [spike](../2026-10-07-spike-q3-q4-findings.md) §2.3.
 

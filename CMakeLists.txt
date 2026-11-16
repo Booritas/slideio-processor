@@ -29,6 +29,9 @@ endif()
 find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
 find_package(SQLite3 REQUIRED)
+# Raster TIFF I/O in storage, linked privately (see src/storage/CMakeLists.txt).
+find_package(TIFF REQUIRED)
+find_package(ZLIB REQUIRED)
 # The storage wake-up signal uses sem_*, in libpthread on glibc before 2.34.
 find_package(Threads REQUIRED)
 

@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
+#include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
@@ -14,15 +15,8 @@ namespace slideio::processor {
 
 namespace {
 
-[[noreturn]] void throwInvalid(const char* operation, const std::string& what) {
-    const std::string message = std::string(operation) + ": " + what;
-    throw InvalidArgumentError(message.c_str());
-}
-
 void requireStage(sqlite3* db, const char* operation, StageId stage) {
-    detail::Statement select(db, "SELECT 1 FROM stages WHERE id = ?");
-    select.bindInt64(1, stage.value());
-    if (!select.step()) throwInvalid(operation, "there is no stage " + std::to_string(stage.value()));
+    if (!detail::stageExists(db, stage)) detail::throwUnknownStage(operation, stage);
 }
 
 int64_t nowMs() {
@@ -45,12 +39,12 @@ StageStateWriter::~StageStateWriter() = default;
 StageId StageStateWriter::declare(const char* name, const char* configurationJson) {
     constexpr const char* kOperation = "StageStateWriter::declare";
     return impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
-        if (name == nullptr || *name == '\0') throwInvalid(kOperation, "the stage name is null or empty");
+        if (name == nullptr || *name == '\0') detail::throwInvalid(kOperation, "the stage name is null or empty");
         const std::string stageName = name;
         {
             detail::Statement existing(db, "SELECT 1 FROM stages WHERE name = ?");
             existing.bindText(1, stageName);
-            if (existing.step()) throwInvalid(kOperation, "a stage named '" + stageName + "' already exists");
+            if (existing.step()) detail::throwInvalid(kOperation, "a stage named '" + stageName + "' already exists");
         }
         detail::Statement insert(db, "INSERT INTO stages(name, configuration) VALUES (?, ?)");
         insert.bindText(1, stageName);
@@ -67,7 +61,7 @@ void StageStateWriter::setStatus(StageId stage, StageStatus status) {
         requireStage(db, kOperation, stage);
         const int32_t raw = static_cast<int32_t>(status);
         if (raw < static_cast<int32_t>(StageStatus::Pending) || raw > static_cast<int32_t>(StageStatus::Failed)) {
-            throwInvalid(kOperation, "status " + std::to_string(raw) + " is not a StageStatus");
+            detail::throwInvalid(kOperation, "status " + std::to_string(raw) + " is not a StageStatus");
         }
         if (status == StageStatus::Complete) {
             detail::Statement update(db, "UPDATE stages SET status = ?, completed_at_ms = ? WHERE id = ?");
@@ -120,7 +114,7 @@ void StageStateWriter::addDependency(StageId stage, StageId dependsOn) {
         requireStage(db, kOperation, stage);
         requireStage(db, kOperation, dependsOn);
         if (stage == dependsOn) {
-            throwInvalid(kOperation, "stage " + std::to_string(stage.value()) + " cannot depend on itself");
+            detail::throwInvalid(kOperation, "stage " + std::to_string(stage.value()) + " cannot depend on itself");
         }
         detail::Statement insert(db, "INSERT OR IGNORE INTO stage_deps(stage_id, depends_on_id) VALUES (?, ?)");
         insert.bindInt64(1, stage.value());
@@ -143,11 +137,11 @@ void StageStateWriter::addWrittenLayer(StageId stage, LayerId layer) {
     constexpr const char* kOperation = "StageStateWriter::addWrittenLayer";
     impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         requireStage(db, kOperation, stage);
-        if (layer.value() == detail::kPixelLayerId) throwInvalid(kOperation, "the pixel layer is not written by a stage");
+        if (layer.value() == detail::kPixelLayerId) detail::throwInvalid(kOperation, "the pixel layer is not written by a stage");
         {
             detail::Statement existing(db, "SELECT 1 FROM layers WHERE id = ?");
             existing.bindInt64(1, layer.value());
-            if (!existing.step()) throwInvalid(kOperation, "there is no layer " + std::to_string(layer.value()));
+            if (!existing.step()) detail::throwInvalid(kOperation, "there is no layer " + std::to_string(layer.value()));
         }
         detail::Statement insert(db, "INSERT OR IGNORE INTO stage_layers(layer_id, stage_id) VALUES (?, ?)");
         insert.bindInt64(1, layer.value());

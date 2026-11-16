@@ -70,6 +70,12 @@ Clearing at open is what keeps a crashed run from growing the archive
 indefinitely, and it is safe precisely because nothing durable is ever written
 there.
 
+`open` also calls `store()->rasters().removeUnreferencedFiles()` and reports the
+bytes reclaimed, beside its scratch clear: a raster file that no row names is what
+a crashed run or a failed delete left behind, and the sweep removes it (03 3.8).
+Only names the library generates are touched, and a file a live writer owns is
+spared.
+
 `openReadOnly` is the observer's entry point when it wants stage state and
 objects together rather than opening the store directly. It takes no writer
 lock and is safe alongside a running script process (UR-OBS-1).
