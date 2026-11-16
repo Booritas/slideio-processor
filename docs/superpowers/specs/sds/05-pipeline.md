@@ -633,6 +633,11 @@ public:
 
     Pipeline& memoryBudget(MemoryBudgetPtr);
 
+    /// The name reported as `stageName` to `ProgressObserver::onProgress` and
+    /// put in every `TileError`'s context. Default "pipeline"; null or empty
+    /// throws `InvalidArgumentError`. `StageRunner` passes the stage's name.
+    Pipeline& stageName(const char* name);
+
     /// Where operations assert containment. Borrowed, may be null, must
     /// outlive the run. `StageRunner` passes the stage's `EdgeWriter`.
     Pipeline& edgeSink(EdgeSink*);
@@ -705,7 +710,8 @@ name expands to `slideio::std::shared_ptr<…>` and does not compile. The type i
 the same one SlideIO hands out.
 
 A `Pipeline` is a spec bound to a scene, a configuration and a budget. It has
-no configuration surface of its own beyond the six runtime bindings above:
+no configuration surface of its own beyond the runtime bindings and the stage
+name above:
 everything about *what* to compute comes from the spec, and everything here is
 about *where and with what resources*. Building one reads:
 
@@ -832,18 +838,163 @@ A three-operation chain runs within the memory ceiling with no intermediate
 written to disk (UR-ALG-5). The same call works unchanged on a thumbnail and on
 the reference slide; only the input differs (UR-ALG-1).
 
-`validate()` raises `UnsupportedDataTypeError` or `ChannelArityError` before
-any pixel is read, so a mis-specified stage fails in seconds rather than hours.
-It also resolves every object-producing operation's `targetLayer` parameter
-against `bindLayer`, raising `InvalidArgumentError` naming the operation and the
-layer when a target is unnamed, unbound, or — where the run bound several
-layers — omitted. `OperationContext::targetLayer()` (5.1) returns what it
-resolved, so an operation author never resolves a layer name and the same
-operation object behaves identically whether a stage or a direct caller ran it.
-The operations it resolves are those whose `producesObjects()` is true (5.1),
-and the parameter it reads is the string `"targetLayer"`. For a chain
-containing a `WholeLevel` operation it also forces a single tile and checks the
-level against the budget, as 5.1 describes.
+### What `validate()` checks
+
+`validate()` runs these checks, in this order, before any pixel is read, so a
+mis-specified stage fails in seconds rather than hours. Each failure is an
+`InvalidArgumentError` unless another type is named.
+
+1. The scene is non-null (also checked at construction).
+2. The spec has at least one operation.
+3. Every operation name is registered in the catalog; the message names it.
+4. An explicit channel index is below the scene's channel count.
+5. An explicit `analysisLevel` is within the scene's levels.
+6. The grid region (5.6) is non-empty; otherwise the message is "the
+   restriction does not intersect the scene".
+7. Types. The check walks the chain with the per-plane types: the scene's
+   channel types for the first operation, then each operation's `outputType`.
+   For every operation and plane type `detail::operationAccepts` (5.3) must
+   hold, else `UnsupportedDataTypeError` names the operation and the type. A
+   `Joint` operation whose `requiresUniformTypes()` is true and whose planes
+   have mixed types throws `ChannelArityError` naming the operation and the
+   channels.
+8. Target layers (below).
+9. Whole-level layout, budget and level, then the per-tile memory check (below).
+
+The results (resolved level, target layer per operation, plane types per step,
+the grid) are cached until the next binding call or the next `validate()`.
+`run` and `runInto` call `validate()` first, and `analysisLevel()` before a
+successful `validate()` throws `InvalidArgumentError`.
+
+**Target layers.** For an operation whose `producesObjects()` (5.1) is true,
+the `"targetLayer"` string parameter must name a layer bound with `bindLayer`.
+When it is absent and exactly one layer is bound, that layer is the target.
+Otherwise `validate()` raises `InvalidArgumentError` naming the operation and
+the layer, or "no target layer" when none was named.
+`OperationContext::targetLayer()` (5.1) returns what was resolved, so an
+operation author never resolves a layer name and the same operation object
+behaves identically whether a stage or a direct caller ran it. Operations that
+do not produce objects are not consulted.
+
+**Stage name.** `stageName(name)` sets the name the run reports: the
+`stageName` of every `ProgressObserver::onProgress` call and the stage in every
+`TileError`'s `ErrorContext`. The default is `"pipeline"`; a null or empty name
+throws `InvalidArgumentError`. `StageRunner` sets it to the stage's name
+(`04-workspace.md` 4.4).
+
+**Whole-level chains.** If any operation reports `TileRequirement::WholeLevel`,
+the run is a single tile covering the grid region, whatever the configured tile
+size. The configured size is the `tileSizeFromSlide` default, not a choice about
+this operation, so the chain is laid out for what it needs rather than refused.
+`validate()` then checks the level against the memory ceiling:
+
+```
+needed = levelPixels × (Σ input plane bytes + Σ output plane bytes over the chain
+                        + Σ workingSetBytesPerLevelPixel)
+```
+
+where `levelPixels` is the area of the grid region at the analysis level. When
+`needed` exceeds `MemoryBudget::ceilingBytes()`, `InvalidArgumentError` names
+the first whole-level operation, the level, `needed` and the ceiling. A chain of
+`Halo` operations is subject to neither rule.
+
+**The analysis level.** An explicit `analysisLevel(n)` is used as given, and
+`analysisLevel(-1)`, the default, resolves automatically. The spec carries no
+requested output resolution, so "the coarsest adequate level" would have nothing
+to be adequate to; the automatic choice is instead the finest level the chain
+can run at. That is level 0 for a chain of `Halo` operations. For a chain with
+a `WholeLevel` operation it is the finest level at which both the whole-level
+budget and the per-tile bytes (below) fit the ceiling, skipping levels whose
+mapped region is empty; when no level fits, the whole-level budget error is
+reported. A caller that wants a coarser level states it, with `analysisLevel(n)`
+or `LevelSelector::levelForScale`.
+
+**Memory.** Before it reads a tile a worker reserves that tile's bytes with
+`reserveOrWait` and releases them when the tile is done. The bytes are the
+source read, every intermediate, the auxiliary rasters (once, over the tile
+grown by the chain's halo) and the restriction mask, which is 1 byte per pixel
+for a rectangle-only restriction and 2 when a polygon or a `TileMaskSource` is
+involved. A tile whose bytes exceed the ceiling on its own throws
+`InvalidArgumentError` from `validate()`, naming the tile size and the ceiling,
+instead of waiting forever. `memoryBudget(nullptr)` restores the default budget,
+`makeMemoryBudget(config.memoryCeilingBytes())`, which is also what a run uses
+when none was bound.
+
+**Bindings.** `auxiliaryRaster(name, nullptr)` removes that binding, and the
+same name twice replaces. Every binding call invalidates the cached result of
+`validate()`.
+
+**Reading source pixels.** `detail::SceneReader` reads a rect of one level as
+planes. The rect is clipped to the level, the clipped part is read with
+`Scene::readResampledLevelBlockChannels`, and everything outside the level is
+zero-filled by the reader itself, so a result never depends on SlideIO's
+background value. When every selected channel has one type, one call reads them
+all and the reader de-interleaves them into planes; otherwise it makes one call
+per channel. A channel whose SlideIO type has no `DataType` is reported as
+`Unknown`; validation and reads reject it, with `UnsupportedDataTypeError`
+naming the channel, only when that channel is selected. Every SlideIO failure,
+including one while describing the scene, surfaces as `IoError` carrying the
+cause. The buffers are owned by `detail::PlaneBuffers`, one array per plane with
+a row stride of width × sample size, which also produces the `BlockView`; its
+`slideRect` is the level-0 edge mapping of the rect (5.6).
+
+### Evaluating the chain on one tile
+
+The chain's halo is the sum, edge by edge, of every operation's halo. Operation
+*k* runs on the tile grown by the halos of operations *k+1…n*, and its input is
+the previous output (the source read for *k = 1*) covering that region grown by
+its own halo. Each operation's context reports its own output region as
+`tileRectAtLevel` and its input region as `haloRectAtLevel`, so a context means
+the same thing at every position of the chain.
+
+A `PerChannel` operation is applied once per plane, on single-plane views. A
+`Joint` operation is applied once on all planes and produces
+`outputPlaneCount(n)` output planes. The evaluator allocates the output buffers
+from `outputType` before `apply`. For a `Joint` operation every output plane
+takes `outputType` of the type of its first input plane, and output plane *i*
+carries the source channel of input plane *i* (plane 0's when there are more
+outputs than inputs). The final output, exactly the tile rect, goes to
+`rasterSink` when one is bound.
+
+**Pixels outside the analysis level are zero in every intermediate.** The
+source read zero-fills outside the level, and between operations the evaluator
+zeroes the part of each intermediate that lies outside the level as well. An
+operation near the level border therefore sees the same neighbourhood in a tiled
+run as in a whole-level pass, so a tiled run equals the whole-level pass at the
+level border too (UR-IMG-5, UR-SEG-3).
+
+**Auxiliary rasters** are filled once per tile over the first operation's input
+rect, and each operation sees a view over its own input (halo) rect.
+
+Only operations whose `producesObjects()` is true get a non-null `objectSink()`;
+every operation gets the edge and annotation sinks bound to the run.
+
+**Which tile owns an object.** A finished object emitted through `objectSink()`
+is kept only when its anchor lies in the emitting tile's level-0 `tileRect`
+(half-open). An operation that sees halo pixels may therefore emit the same
+object from two tiles without duplicating it in the store; an object outside is
+dropped silently and counted. This ownership test comes before the restriction
+filter.
+
+### The tile mask
+
+Per tile, before any pixel is read, the worker builds the tile's mask over its
+**halo** rect at the level, and only when the run is restricted: all pixels set,
+intersected with the ROI rectangle, then with the polygon, then with the bound
+`TileMaskSource` (which fills a second mask that is intersected in). When the
+mask has no set pixel inside the **tile** rect, the tile is skipped: no pixel is
+read and it counts as complete. `OperationContext::mask()` returns the tile's
+mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
+the `ObjectSink` and admits an object when the mask is set at its anchor; for
+objects emitted outside a tile, such as merged objects (5.7), it exposes
+`admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
+from the same three sources. Filtering never alters pixels.
+
+### Running
+
+`run(progress, token)` is `runInto` with an internal sink that counts and drops
+what it is given. `runInto` flushes the object, edge, annotation and raster
+sinks, in that order, only on success (5.9).
 
 ## 5.6 Tiling and level selection — `pipeline/tile_grid.hpp`
 
@@ -967,6 +1118,12 @@ computation that `04-workspace.md` 4.4 exists to avoid. Restricting to a layer
 therefore lays out a grid over the whole scene and skips empty tiles at
 dispatch, which costs one spatial query per non-overlapping tile and no pixel
 reads.
+
+The region is intersected with the level's extent after mapping, and its tile
+size is `defaultTileSize` unless the chain contains a `WholeLevel` operation, in
+which case the grid is one tile covering the region (5.5). When
+`analysisLevel` is left automatic, a level whose mapped region is empty is never
+chosen for a whole-level chain.
 
 `tilesTotal` counts the grid, not the tiles that did work, so a heavily
 restricted run reports fast progress through its empty region rather than
@@ -1243,6 +1400,29 @@ order-independently, so worker count cannot affect them, and
 `isOrderIndependent()` returns `true`. Floating-point accumulators must return
 `false`, and the framework then combines them in canonical tile order.
 
+**Canonical order, exactly.** `detail::OrderedFold<T>` is the one mechanism.
+Workers hand in `(tileIndex, T)`, and the fold applies `combine` to the
+accumulated value strictly in ascending tile index, holding an out-of-order
+result until its predecessors have arrived. A tile the restriction skips counts
+as arrived, so the fold never waits on it. The fold is used for every
+global-context operation, always, because an operation does not declare whether
+its arithmetic is order-independent, and for any `Reduction` whose
+`isOrderIndependent()` is false. An order-independent `Reduction` may combine in
+completion order.
+
+**Global-context passes.** With global-context operations at chain positions
+g₁ < g₂ < …, a run makes one accumulation pass per gᵢ, then the final pass.
+Pass *i* evaluates operations 1…gᵢ−1, which are already finalised, and calls
+`accumulate` on a fresh instance of operation gᵢ per tile
+(`OperationCatalog::create(name, parameters)`). The per-tile instances fold into
+the run's instance in canonical order, then `finalizeAccumulation()` is called.
+The final pass applies the whole chain with the finalised instances, and
+`tilesTotal` counts every pass (passes × `tileCount`). Each run creates fresh
+global-context instances, so repeated runs never accumulate into each other. A
+failure while creating them, or in `finalizeAccumulation`, is a `TileError` with
+no tile. A failure or a cancellation in an accumulation pass ends the run before
+the final pass, with no sink written or flushed.
+
 That distinction is not pedantry. Float addition is not associative, so a
 float reduction combined in completion order produces results that differ
 between runs on the same machine with the same input — and UR-QA-3 would fail
@@ -1314,6 +1494,30 @@ stage is recorded failed, not complete.
 Tiles are dispatched and completed in any order. Nothing downstream depends on
 that order, because identifiers come from geometry and reductions either combine
 order-independently or are canonically ordered.
+
+**Workers.** `WorkerPool(workerCount, budget)` requires `workerCount >= 1`, else
+`InvalidArgumentError`. Its threads start in the constructor and stop in
+`shutdown()`, which is idempotent and is called by the destructor.
+`TileExecutor::run` hands out tile indices from an atomic counter in ascending
+order, so dispatch is ordered and completion is free.
+
+**Failure.** The first tile failure stops dispatch, lets in-flight tiles finish,
+and is rethrown as `TileError` with an `ErrorContext` of the stage name, the
+operation name when an operation threw, the original `what()` as the cause, and
+the tile's column and row. A `ProcessorError` thrown by an operation is
+translated the same way; only `CancelledError` keeps its own type and is
+rethrown as is. If a failure cannot even be recorded, the run ends with
+`InternalError` rather than reporting success. Sinks are never flushed on the
+failure path, which is what lets the workspace record the stage failed (`04-workspace.md`
+4.4). On success `runInto` flushes the object, edge, annotation and raster sinks
+in that order.
+
+**Cancellation** is checked before each tile and between operations, and
+surfaces as `CancelledError`.
+
+**Progress.** `onProgress(stageName, done / total, done, total)` is called after
+each tile, with `total` equal to `tileCount()` (5.6) for a single pass and
+`done` counting skipped tiles. Observer calls are serialised.
 
 The executor calls `SeamMerger::notifyTileComplete` as each tile finishes, which
 is what lets seam-crossing objects be emitted during the pass instead of piling

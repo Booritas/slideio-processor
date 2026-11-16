@@ -24,8 +24,8 @@ class Scene;
 
 namespace slideio::processor::detail {
 
-/// Everything Pipeline::validate() resolved, kept for the run (rulings P13, P19,
-/// P21, P23, P26). Built only by buildRunPlan, which reads no pixel.
+/// Everything Pipeline::validate() resolved, kept for the run: the whole-level layout, the level,
+/// the grid and the tile bytes. Built only by buildRunPlan, which reads no pixel.
 struct RunPlan {
     int32_t level;                                 ///< The analysis level.
     double levelScale;                             ///< LevelSelector::scaleOfLevel(level).
@@ -65,7 +65,7 @@ struct RunPlanInputs {
     int64_t ceilingBytes;                          ///< The budget's ceilingBytes().
 };
 
-/// Runs the checks of ruling P19 in its order, then P13 and P26, and returns the
+/// Runs the checks in the order SDS 05 5.5 lists them, and returns the
 /// plan. Throws InvalidArgumentError, UnsupportedDataTypeError or
 /// ChannelArityError as Pipeline::validate() documents. Never reads a pixel.
 RunPlan buildRunPlan(const RunPlanInputs& inputs);

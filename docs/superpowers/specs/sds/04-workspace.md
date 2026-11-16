@@ -584,6 +584,7 @@ for (int32_t i = 0; i < def.readRasterCount(); ++i)
 Pipeline p(ws_.scene(), ws_.scratchConfiguration(), spec);   // scratch inside
 p.memoryBudget(ws_.memoryBudget())                           // the workspace
  .edgeSink(edges.get())                                      // UR-RES-5
+ .stageName(def.name())                                     // progress, errors
  .annotationSink(notes.get())                                // 3.7
  .maskSource(mask.get());                        // null when unrestricted
 for (int32_t i = 0; i < def.rasterLayerCount(); ++i)             // coarse-to-
@@ -711,6 +712,18 @@ writes" becomes enforceable rather than documentary:
 
 Raster-only operations are not consulted, and a stage whose chain produces no
 objects may legally declare no layer at all.
+
+**The stage name travels with the run.** `StageRunner` passes `def.name()` to
+`Pipeline::stageName` (5.5), so the `stageName` of every `onProgress` call and
+the stage in every `TileError`'s context are the stage's own, which is what lets
+the `StageError` it raises name the stage and the tile (UR-EXE-5).
+
+**Whole-level chains need nothing here.** When the chain contains a
+`WholeLevel` operation, `Pipeline::validate()` (5.5) lays the run out as a
+single tile and checks the level against the memory budget before any pixel is
+read. A level that does not fit surfaces as an `InvalidArgumentError` from
+`p.validate()`, ahead of `runInto`, so the stage has written nothing and is
+recorded failed like any other fault.
 
 Annotation targets are checked the same way and at the same time: an operation
 that asserts a label or a measurement against a layer the stage did not name in

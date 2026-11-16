@@ -259,7 +259,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     // (h) Target layers.
     std::vector<LayerId> targetLayers = resolveTargetLayers(operations, spec, *inputs.layers);
 
-    // (i) Whole-level layout, budget and level (P13, P21).
+    // (i) Whole-level layout, budget and level.
     const auto whole = std::find_if(operations.begin(), operations.end(), [](const OperationPtr& op) {
         return op->tileRequirement() == TileRequirement::WholeLevel;
     });
@@ -281,7 +281,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 std::to_string(inputs.ceilingBytes) + " bytes");
     };
 
-    // What one tile's buffers need (P26): every step's planes, every auxiliary's
+    // What one tile's buffers need: every step's planes, every auxiliary's
     // planes and the restriction masks, over the tile grown by the chain's halo.
     const Halo chainHalo = sumHalos(operations);
     int64_t tilePixelBytes = bytesPerPixel;
@@ -311,7 +311,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         level = 0;
         region = requireRegion(regionAtLevel(region0, level, selector, levels));
     } else {
-        // The finest level whose single tile passes both P13 and P26. Levels whose
+        // The finest level whose single tile passes both the whole-level budget and the per-tile bytes. Levels whose
         // mapped region is empty are skipped.
         int32_t coarsest = -1;
         Rect64 coarsestRegion{};
@@ -335,13 +335,13 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
             if (wholeNeed(coarsestRegion) > inputs.ceilingBytes) {
                 tooBig(coarsest, wholeNeed(coarsestRegion), "no level fits the memory ceiling: ");
             }
-            // P13 fits there but P26 does not: the tile check below reports it.
+            // The whole-level budget fits there but the tile bytes do not: the tile check below reports it.
             level = coarsest;
             region = coarsestRegion;
         }
     }
 
-    // The grid (P23), one tile for a whole-level chain.
+    // The grid, one tile for a whole-level chain.
     int32_t tileWidth = 0;
     int32_t tileHeight = 0;
     if (wholeLevel) {
@@ -357,7 +357,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     }
     TileGrid grid(region, level, tileWidth, tileHeight, selector);
 
-    // One tile's buffers against the ceiling (P26).
+    // One tile's buffers against the ceiling.
     const int64_t tileW = std::min<int64_t>(tileWidth, region.width);
     const int64_t tileH = std::min<int64_t>(tileHeight, region.height);
     const int64_t tileBytes = tileNeed(tileW, tileH);

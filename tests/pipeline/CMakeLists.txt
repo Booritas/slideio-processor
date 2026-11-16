@@ -65,7 +65,7 @@ target_include_directories(slideio_processor_pipeline_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/tests)
 
 # The tests load SlideIO's DLLs, which live in SlideIO's install tree rather than
-# beside the test (ruling P3). On Windows each test gets that bin directory prepended
+# beside the test. On Windows each test gets that bin directory prepended
 # to PATH; on Linux and macOS the imported library's RPATH suffices. PRE_TEST
 # discovery means the build never runs the executable. Discovery at ctest time does
 # run it, outside the tests' ENVIRONMENT_MODIFICATION, so the same PATH also goes
@@ -100,7 +100,7 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
     PROPERTIES ${PIPELINE_TEST_PROPERTIES})
 
 # Every public header must compile on its own, with the SlideIO and data include
-# paths but no OpenCV include path (ruling P2): a header that reaches OpenCV fails
+# paths but no OpenCV include path: a header that reaches OpenCV fails
 # the normal build. One source per public header.
 add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_backend.cpp

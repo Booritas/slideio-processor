@@ -12,7 +12,7 @@
 
 namespace slideio::processor::detail {
 
-/// Combines per-tile results in canonical order (ruling P15): workers hand in
+/// Combines per-tile results in canonical order: workers hand in
 /// (tileIndex, value) in any order, and the fold calls `combine` strictly in
 /// ascending tile index, holding a result that arrives early until every
 /// predecessor has arrived. A skipped tile counts as arrived and combines nothing.

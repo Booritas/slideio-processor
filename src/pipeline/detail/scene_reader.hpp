@@ -17,7 +17,7 @@ class Scene;
 
 namespace slideio::processor::detail {
 
-/// Reads planar blocks of one pyramid level from a SlideIO scene (ruling P18).
+/// Reads planar blocks of one pyramid level from a SlideIO scene.
 /// Spelled with std::shared_ptr<slideio::Scene> because SlideIO defines ScenePtr
 /// as a macro. Concurrent reads go through the scene's own thread-safety.
 class SceneReader {

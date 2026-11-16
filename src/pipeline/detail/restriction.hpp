@@ -13,7 +13,7 @@
 
 namespace slideio::processor::detail {
 
-/// The run's restriction (ruling P24): the per-tile mask, built before any pixel
+/// The run's restriction: the per-tile mask, built before any pixel
 /// is read, and the anchor test for objects emitted outside a tile. Built once
 /// per run; every member is const, so workers share it. Every pointer and
 /// reference is borrowed and must outlive the filter.

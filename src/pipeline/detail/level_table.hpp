@@ -20,7 +20,7 @@ struct LevelDims {
     int32_t tileHeight;
 };
 
-/// The pyramid from a reported level count (ruling P10): `levelAt(L)` for each of
+/// The pyramid from a reported level count: `levelAt(L)` for each of
 /// `reportedLevels` levels, or one level the size of the scene, without native
 /// tiling, when the count is 0. A level with a non-positive side throws
 /// InvalidArgumentError.

@@ -22,7 +22,7 @@ TEST(Backend, NameAndVersion) {
 }
 
 // config derives the set without linking OpenCV; the engine maps it from the
-// OpenCV it links. The two must never disagree (ruling P4).
+// OpenCV it links. The two must never disagree.
 TEST(Backend, AgreesWithBackendCapabilities) {
     EXPECT_TRUE(Backend::instance().supportedTypes() == BackendCapabilities::instance().supportedTypes());
     for (int32_t i = 0; i < DataTypeSet::all().count(); ++i) {

@@ -5,8 +5,8 @@ A](../plans/2026-11-16-pipeline-a.md), which declares `TileRequirement`,
 `tileRequirement()` and `workingSetBytesPerLevelPixel()` on `Operation` and
 `OperationFactory`, with matching `OperationCatalog` queries, and amends SDS
 [05](sds/05-pipeline.md) §5.1, §5.3 and §5.5 and [08](sds/08-class-diagrams.md)
-D.6. The enforcement of §3.3 lands in [plan
-B](../plans/2026-11-16-pipeline-b.md). §7's question of forcing or requiring a
+D.6. The enforcement of §3.3 is implemented by [plan
+B](../plans/2026-11-16-pipeline-b.md) in `Pipeline::validate()`. §7's question of forcing or requiring a
 single tile is decided: **force**.
 **Date:** 2026-10-11
 **Raised by:** SDS 06 §6.7's coarse watershed, which already depends on this

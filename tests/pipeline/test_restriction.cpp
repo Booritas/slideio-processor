@@ -198,7 +198,7 @@ TEST(Restriction, PolygonGridSpansItsBoundingBox) {
     EXPECT_LT(calls.back().second, (kSide / kTile) * (kSide / kTile));
 }
 
-// Tiles whose restriction mask is empty read no pixel but still count as complete (P24, P27).
+// Tiles whose restriction mask is empty read no pixel but still count as complete.
 TEST(Restriction, EmptyMaskTilesReadNoPixels) {
     auto src = source(texture);
     auto scene = ts::makeSyntheticScene(src);
@@ -307,7 +307,7 @@ TEST(Restriction, PixelsAreNeverAltered) {
     }
 }
 
-// A bound TileMaskSource never narrows the grid (P23).
+// A bound TileMaskSource never narrows the grid.
 TEST(Restriction, MaskSourceDoesNotNarrowTheGrid) {
     auto src = source(texture);
     auto scene = ts::makeSyntheticScene(src);

@@ -29,7 +29,7 @@ void applyStandardMeasurements(const Polygon& level0Polygon, const IntensityPart
         }
     }
 
-    // Ruling P6a: level-0 pixels; calibrated units are the algorithm module's.
+    // Level-0 pixels; calibrated units are the algorithm module's.
     out.set("area", level0Polygon.area(), MeasurementUnit::SquarePixels);
     out.set("perimeter", level0Polygon.perimeter(), MeasurementUnit::Pixels);
     for (int32_t i = 0; i < partialCount; ++i) {

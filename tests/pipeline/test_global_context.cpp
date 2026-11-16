@@ -123,7 +123,7 @@ double ascendingFold(const TileGrid& grid, const ts::PixelFunction& pixel) {
 } // namespace
 
 // UR-QA-3: an order-sensitive float accumulator gives bitwise the same result for
-// any worker count, because partials combine in ascending tile index (P15).
+// any worker count, because partials combine in ascending tile index.
 TEST(GlobalContext, FloatAccumulationIsWorkerCountInvariant) {
     // Deterministic part. Every tile sums to 1 and tile 0 carries 2^53: in ascending
     // order each later 1 is rounded away (2^53 + 1 ties to 2^53), whereas any order
@@ -213,7 +213,7 @@ TEST(GlobalContext, StreamedOtsuEqualsInMemoryOtsu) {
     EXPECT_EQ(op->threshold(), inMemory);
 }
 
-// P28: two global-context operations make three passes; progress counts every
+// Two global-context operations make three passes; progress counts every
 // tile of every pass, and pass 2 accumulates over the finalised first operation.
 TEST(GlobalContext, PassesAndProgress) {
     auto s = scene();
@@ -263,7 +263,7 @@ TEST(GlobalContext, PassesAndProgress) {
     EXPECT_EQ(again.calls.back(), std::make_pair(3 * tiles, 3 * tiles));
 }
 
-// P15: results arriving out of order are held until their predecessors arrive.
+// Results arriving out of order are held until their predecessors arrive.
 TEST(GlobalContext, OrderedFoldHoldsOutOfOrderResults) {
     std::vector<int> combined;
     detail::OrderedFold<int> fold(4, [&combined](int& v) { combined.push_back(v); });
@@ -302,7 +302,7 @@ TEST(GlobalContext, OrderedFoldHoldsOutOfOrderResults) {
     EXPECT_THROW(strict.submit(0, 0), InvalidArgumentError);
 }
 
-// P15, P24: tiles the restriction skips count as arrived, so the fold completes.
+// Tiles the restriction skips count as arrived, so the fold completes.
 TEST(GlobalContext, SkippedTilesDoNotStallTheFold) {
     auto s = scene();
     ts::DiscMaskSource disc(150.0, 170.0, 70.0);

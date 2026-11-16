@@ -28,8 +28,8 @@ bool holds(const Rect64& r, Point64 p) {
 }
 
 // The object sink an operation sees on one tile: an object is kept only when its
-// anchor lies in the tile's level-0 rect (P20), then only when the tile's mask is
-// set there (P24). Flushing is the run's business, so flush() does nothing.
+// anchor lies in the tile's level-0 rect, then only when the tile's mask is
+// set there. Flushing is the run's business, so flush() does nothing.
 class TileObjectFilter : public ObjectSink {
 public:
     TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters)
@@ -152,7 +152,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     const Rect64 tile = grid.tileRectAtLevel(tileIndex);
     int64_t bytes = 0;
 
-    // The mask comes first: an excluded tile reads no pixel (P24).
+    // The mask comes first: an excluded tile reads no pixel.
     const RasterMask mask = restriction_.buildTileMask(tileIndex);
     if (!mask.isNull()) {
         bytes += mask.regionAtLevel().width * mask.regionAtLevel().height;
@@ -165,12 +165,12 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     }
     const RasterMask* tileMask = mask.isNull() ? nullptr : &mask;
 
-    // The chain runs up to its end, or up to and including the accumulating operation
-    // (P28), which accumulates instead of applying; `end` is one past it.
+    // The chain runs up to its end, or up to and including the accumulating operation,
+    // which accumulates instead of applying; `end` is one past it.
     const bool finalPass = accumulation == nullptr;
     const size_t end = finalPass ? operations.size() : accumulation->position + 1;
 
-    // Operation k writes the tile grown by the halos of the operations after it, up to `end` (P25).
+    // Operation k writes the tile grown by the halos of the operations after it, up to `end`.
     std::vector<Rect64> outputRects(end);
     Rect64 sourceRect = tile;
     for (size_t k = end; k-- > 0;) {

@@ -348,7 +348,7 @@ TEST(PipelineValidate, BindingsCheckTheirArguments) {
     EXPECT_TRUE(p.spec().equals(specOf("test.threshold")));
 }
 
-TEST(PipelineValidate, PlanCNotYetImplemented) {
+TEST(PipelineValidate, LazySceneViewNotYetImplemented) {
     auto source = byteSource();
     Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.threshold"));
     EXPECT_THROW(p.asScene(), InternalError);
@@ -361,7 +361,7 @@ TEST(PipelineValidate, PlanCNotYetImplemented) {
     EXPECT_EQ(source->readCount(), 0);
 }
 
-// P26: the tile mask plus the one temporary mask that a polygon or a mask source needs at its peak.
+// The tile mask plus the one temporary mask that a polygon or a mask source needs at its peak.
 TEST(PipelineValidate, TileBytesCountTheRestrictionMasks) {
     auto source = byteSource(2000, 2000);
     const auto scene = ts::makeSyntheticScene(source);

@@ -14,7 +14,7 @@ namespace slideio::processor {
 
 namespace {
 
-[[noreturn]] void notUntilPlanC() { throw InternalError("not implemented until plan C"); }
+[[noreturn]] void notImplementedYet() { throw InternalError("not implemented yet"); }
 
 void requireName(const char* name, const char* method) {
     if (name == nullptr || name[0] == '\0') {
@@ -34,7 +34,7 @@ void bindByName(std::vector<std::pair<std::string, T>>& bindings, const char* na
     }
 }
 
-// The object sink of run() (ruling P29): counts what it is given and keeps nothing.
+// The object sink of run(): counts what it is given and keeps nothing.
 class DiscardingObjectSink : public ObjectSink {
 public:
     void emit(const ObjectRecord&) override { ++emitted_; }
@@ -129,7 +129,7 @@ int32_t Pipeline::analysisLevel() const {
     return impl_->plan->level;
 }
 
-std::shared_ptr<slideio::Scene> Pipeline::asScene() const { notUntilPlanC(); }
+std::shared_ptr<slideio::Scene> Pipeline::asScene() const { notImplementedYet(); }
 
 void Pipeline::runInto(ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token) {
     validate();
@@ -143,7 +143,7 @@ void Pipeline::runInto(ObjectSink& sink, ProgressObserver* progress, const Cance
         pool.shutdown();
     }
 
-    // On success only, in this order (ruling P27).
+    // On success only, in this order.
     sink.flush();
     if (impl.edgeSink != nullptr) {
         impl.edgeSink->flush();
@@ -161,18 +161,18 @@ void Pipeline::run(ProgressObserver* progress, const CancellationToken& token) {
     runInto(discard, progress, token);
 }
 
-int32_t Pipeline::levelCount() const { notUntilPlanC(); }
+int32_t Pipeline::levelCount() const { notImplementedYet(); }
 
 Rect64 Pipeline::rect(int32_t level) const {
     (void)level;
-    notUntilPlanC();
+    notImplementedYet();
 }
 
 void Pipeline::readBlock(int32_t level, const Rect64& region, BlockView& out) const {
     (void)level;
     (void)region;
     (void)out;
-    notUntilPlanC();
+    notImplementedYet();
 }
 
 void Pipeline::validate() const {

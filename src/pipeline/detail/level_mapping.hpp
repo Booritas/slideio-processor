@@ -7,7 +7,7 @@
 
 namespace slideio::processor::detail {
 
-/// The library's single level-to-level-0 mapping (ruling P9): llround(v * scale).
+/// The library's single level-to-level-0 mapping: llround(v * scale).
 /// LevelSelector, OperationContext and TileGrid all call it, so two components
 /// never round one seam differently.
 int64_t levelToLevel0(int64_t v, double scale) noexcept;

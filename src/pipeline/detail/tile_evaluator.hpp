@@ -23,9 +23,9 @@ namespace slideio::processor::detail {
 /// What a run counts besides what reaches the sinks. Shared by every worker of
 /// the run, hence atomic; reset at the start of each run.
 struct RunCounters {
-    std::atomic<int64_t> droppedOutsideTile{0};    ///< Objects whose anchor left the emitting tile (P20).
-    std::atomic<int64_t> droppedByRestriction{0};  ///< Objects whose anchor the tile's mask excludes (P24).
-    std::atomic<int64_t> tilesSkipped{0};          ///< Tiles whose mask is empty inside the tile (P24).
+    std::atomic<int64_t> droppedOutsideTile{0};    ///< Objects whose anchor left the emitting tile.
+    std::atomic<int64_t> droppedByRestriction{0};  ///< Objects whose anchor the tile's mask excludes.
+    std::atomic<int64_t> tilesSkipped{0};          ///< Tiles whose mask is empty inside the tile.
 
     void reset() noexcept {
         droppedOutsideTile = 0;
@@ -37,13 +37,13 @@ struct RunCounters {
 /// The run's bindings the evaluator hands to operations. Every pointer is
 /// borrowed and must outlive the evaluator; a null sink means unbound.
 struct Bindings {
-    ObjectSink* objectSink = nullptr;              ///< The run's object sink, behind the P20 and P24 filters.
+    ObjectSink* objectSink = nullptr;              ///< The run's object sink, behind the tile-ownership and restriction filters.
     EdgeSink* edgeSink = nullptr;
     AnnotationSink* annotationSink = nullptr;
     RasterSink* rasterSink = nullptr;
     std::vector<std::pair<std::string, TileRasterSource*>> auxiliaries;
     TileMaskSource* maskSource = nullptr;
-    /// The seam merger's entry point; empty in this plan (plan C supplies it).
+    /// The seam merger's entry point; empty when the run has none.
     std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> seamFragment;
     const PipelineSpec* spec = nullptr;            ///< For the channels and the restriction; required.
     const LevelSelector* selector = nullptr;       ///< For the restriction's mapping; required.
@@ -56,7 +56,7 @@ struct TileOutcome {
     int64_t bytesUsed;  ///< Bytes of every buffer the tile allocated (source, intermediates, auxiliaries, mask).
 };
 
-/// One tile of a global-context accumulation pass (ruling P28): the operations
+/// One tile of a global-context accumulation pass: the operations
 /// before `position` are applied (already finalised), then `accumulator`, a fresh
 /// instance of operation `position`, accumulates their output in its place.
 /// Nothing reaches a sink in such a pass and the operations after `position` do
@@ -66,9 +66,9 @@ struct Accumulation {
     Operation* accumulator;   ///< Borrowed; not null.
 };
 
-/// Evaluates the chain on one tile (ruling P25): builds the tile's mask (P24),
+/// Evaluates the chain on one tile: builds the tile's mask,
 /// reads the source over the tile grown by the chain's halo, applies each
-/// operation on its own region, filters emitted objects by anchor (P20, P24) and
+/// operation on its own region, filters emitted objects by anchor and
 /// hands the final output to the raster sink. Pure per tile: evaluate() may run
 /// concurrently on different tiles, as far as the operations and sinks allow.
 class TileEvaluator {

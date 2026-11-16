@@ -122,7 +122,7 @@ private:
     RunState& state_;
 };
 
-// Rethrows `failure` as the run reports it (P27): a CancelledError as is, anything
+// Rethrows `failure` as the run reports it: a CancelledError as is, anything
 // else as a TileError naming the stage, the operation and, when there is one, the tile.
 [[noreturn]] void reportFailure(const std::exception_ptr& failure, const std::string& stageName,
                                 const char* operationName, const TileGrid& grid, int64_t tile) {
@@ -323,7 +323,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     }
     WorkerPool::Impl& pool = *impl_->pool.impl_;
     MemoryBudget& budget = *pool.budget;
-    // The plan's tileBytes bounds every tile's peak buffers (P26), in every pass; reserve it whole.
+    // The plan's tileBytes bounds every tile's peak buffers, in every pass; reserve it whole.
     const int64_t tileBytes = plan.tileBytes;
     if (tileBytes > budget.ceilingBytes()) {
         throw InvalidArgumentError(("TileExecutor::run: one tile needs " + std::to_string(tileBytes) +
@@ -332,7 +332,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                                        .c_str());
     }
 
-    // One accumulation pass per global-context operation, then the final pass (P28).
+    // One accumulation pass per global-context operation, then the final pass.
     const std::vector<size_t>& globalPositions = plan.globalContextPositions;
     const int64_t tileCount = impl_->grid.tileCount();
     const int64_t total = static_cast<int64_t>(globalPositions.size() + 1) * tileCount;
@@ -456,7 +456,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
 
     for (size_t g : globalPositions) {
         // Pass for operation g: each tile accumulates into a fresh instance, and the
-        // instances fold into the run's instance in ascending tile index (P15).
+        // instances fold into the run's instance in ascending tile index.
         Operation& runInstance = *plan.operations[g];
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);

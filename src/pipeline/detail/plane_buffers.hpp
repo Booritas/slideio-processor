@@ -10,7 +10,7 @@
 
 namespace slideio::processor::detail {
 
-/// The owned memory behind one raster block (ruling P18): one zero-initialised
+/// The owned memory behind one raster block: one zero-initialised
 /// std::vector<uint8_t> per plane, row stride width x sample size. Not shared
 /// between threads; the BlockView it produces points into it and is valid until
 /// the buffers are destroyed or moved.
@@ -24,7 +24,7 @@ public:
                  const std::vector<int32_t>& sourceChannels);
 
     /// A view of the planes as the block `levelRect` of `level`. Its slideRect is
-    /// the level-0 edge mapping of the rect (ruling P9) with `levelScale`. Throws
+    /// the level-0 edge mapping of the rect with `levelScale`. Throws
     /// InvalidArgumentError when the rect's size is not the buffers' size.
     BlockView view(int32_t level, const Rect64& levelRect, double levelScale);
 
