@@ -1,13 +1,38 @@
 include(GoogleTest)
 
+# Shared test helpers (synthetic scenes, test operations) that plans B and C
+# build on. They see only the public headers: the include path is the engine's
+# public interface plus tests/, never src/.
+add_library(slideio_processor_pipeline_test_support STATIC
+    test_support/synthetic_scene.cpp
+    test_support/test_operations.cpp
+)
+target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine)
+target_include_directories(slideio_processor_pipeline_test_support PUBLIC ${PROJECT_SOURCE_DIR}/tests)
+
+# A third-party operation compiled against the public headers alone (UR-EXT-2):
+# its include path is include/ and SlideIO's, with no src/ and no OpenCV, and it
+# links nothing, so it cannot reach an internal symbol either.
+add_library(pipeline_public_only OBJECT
+    public_only/third_party_operation.cpp
+)
+target_include_directories(pipeline_public_only PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    $<TARGET_PROPERTY:slideio::slideio,INTERFACE_INCLUDE_DIRECTORIES>)
+
 add_executable(slideio_processor_pipeline_tests
     test_backend.cpp
+    test_operation.cpp
     test_operation_parameters.cpp
+    $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly.
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_tests PRIVATE
-    slideio-processor-engine rapidjson GTest::gtest_main)
+    slideio-processor-engine slideio_processor_pipeline_test_support rapidjson GTest::gtest_main)
 target_include_directories(slideio_processor_pipeline_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
@@ -46,7 +71,9 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_backend.cpp
     header_check/check_export.cpp
+    header_check/check_operation.cpp
     header_check/check_operation_parameters.cpp
+    header_check/check_standard_measurements.cpp
 )
 target_include_directories(pipeline_headers_are_opencv_free PRIVATE
     ${PROJECT_SOURCE_DIR}/include

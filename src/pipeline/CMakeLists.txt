@@ -1,6 +1,12 @@
 add_library(slideio-processor-pipeline OBJECT
     backend.cpp
+    operation.cpp
+    operation_context.cpp
     operation_parameters.cpp
+    standard_measurements.cpp
+    detail/combine_partials.cpp
+    detail/level_mapping.cpp
+    detail/operation_context_state.cpp
     detail/parameters_json.cpp
 )
 set_target_properties(slideio-processor-pipeline PROPERTIES POSITION_INDEPENDENT_CODE ON)
