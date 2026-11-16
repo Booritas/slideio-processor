@@ -9,6 +9,7 @@
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/test_support/disc_mask_source.hpp>
+#include <pipeline/test_support/executor_support.hpp>
 #include <pipeline/test_support/global_ops.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
@@ -39,10 +40,14 @@ double bimodal(int, int64_t x, int64_t y) {
     return ((x / 23 + y / 41) % 3 == 0) ? 170.0 + static_cast<double>(texture) : 30.0 + static_cast<double>(texture);
 }
 
-std::shared_ptr<slideio::Scene> scene() {
+// A 1 at the top-left pixel of every tile, 0 elsewhere: every tile sums to 1.
+double onePerTile(int, int64_t x, int64_t y) { return x % kTile == 0 && y % kTile == 0 ? 1.0 : 0.0; }
+
+std::shared_ptr<slideio::Scene> scene(ts::PixelFunction pixel = bimodal) {
     ts::registerTestOperations();
     ts::registerGlobalOperations();
-    return ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, bimodal);
+    ts::registerProbeOperation();
+    return ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, std::move(pixel));
 }
 
 Configuration config(int32_t workers) {
@@ -71,11 +76,11 @@ uint64_t bitsOf(double v) {
 }
 
 // The exact sample sum of a level-0 rect.
-double sampleSum(const Rect64& r) {
+double sampleSum(const Rect64& r, const ts::PixelFunction& pixel = bimodal) {
     double s = 0.0;
     for (int64_t y = r.y; y < r.y + r.height; ++y) {
         for (int64_t x = r.x; x < r.x + r.width; ++x) {
-            s += bimodal(0, x, y);
+            s += pixel(0, x, y);
         }
     }
     return s;
@@ -103,23 +108,68 @@ private:
 
 } // namespace
 
+namespace {
+
+// The canonical fold by hand: the run's instance starts at zero and adds each
+// tile's partial in ascending tile index.
+double ascendingFold(const TileGrid& grid, const ts::PixelFunction& pixel) {
+    double sum = 0.0;
+    for (int64_t i = 0; i < grid.tileCount(); ++i) {
+        sum += ts::FloatSumOperation::tilePartial(grid.tileRectAtLevel(i), sampleSum(grid.tileRect(i), pixel), true);
+    }
+    return sum;
+}
+
+} // namespace
+
 // UR-QA-3: an order-sensitive float accumulator gives bitwise the same result for
 // any worker count, because partials combine in ascending tile index (P15).
 TEST(GlobalContext, FloatAccumulationIsWorkerCountInvariant) {
+    // Deterministic part. Every tile sums to 1 and tile 0 carries 2^53: in ascending
+    // order each later 1 is rounded away (2^53 + 1 ties to 2^53), whereas any order
+    // combining two or more other tiles before tile 0 ends at 2^53 + 2 or above.
+    // With more than one worker, tile 0's accumulate is held until every other
+    // tile's has finished, so its partial certainly arrives late: a fold that
+    // combined in arrival order would fail on every run.
+    {
+        auto s = scene(onePerTile);
+        PipelineSpec referenceSpec;
+        referenceSpec.operation("test.floatSum", offset(1));
+        Pipeline reference(s, config(1), referenceSpec);
+        reference.validate();
+        const TileGrid& grid = detail::PipelineAccess::plan(reference).grid;
+        const int64_t tiles = grid.tileCount();
+        const double expected = ascendingFold(grid, onePerTile);
+        ASSERT_EQ(expected, 9007199254740992.0);
+        double tileZeroLast = 0.0;
+        for (int64_t i = 1; i < tiles; ++i) {
+            tileZeroLast += ts::FloatSumOperation::tilePartial(grid.tileRectAtLevel(i), 1.0, true);
+        }
+        tileZeroLast += ts::FloatSumOperation::tilePartial(grid.tileRectAtLevel(0), 1.0, true);
+        ASSERT_NE(bitsOf(tileZeroLast), bitsOf(expected)) << "the fixture must tell the orders apart";
+
+        for (int32_t workers : {1, 2, 4, 8}) {
+            OperationParameters parameters = offset(1);
+            parameters.setInt("holdFirstTile", workers > 1 ? tiles - 1 : 0);
+            PipelineSpec spec;
+            spec.operation("test.floatSum", parameters);
+            Pipeline p(s, config(workers), spec);
+            ts::FloatSumOperation::resetHold();
+            p.run(nullptr, CancellationToken());
+            const auto op = runInstance<ts::FloatSumOperation>(p, 0);
+            EXPECT_TRUE(op->finalised());
+            EXPECT_EQ(op->count(), kSide * kSide) << workers << " workers";
+            EXPECT_EQ(bitsOf(op->sum()), bitsOf(expected)) << workers << " workers, tile 0 held";
+        }
+    }
+
+    // A textured scene, no hold: still bitwise equal across worker counts.
     auto s = scene();
     PipelineSpec spec;
     spec.operation("test.floatSum", offset(1));
-
-    // The canonical fold, by hand: the run's instance starts at zero and adds each
-    // tile's partial in ascending tile index.
     Pipeline reference(s, config(1), spec);
     reference.validate();
-    const TileGrid& grid = detail::PipelineAccess::plan(reference).grid;
-    double expected = 0.0;
-    for (int64_t i = 0; i < grid.tileCount(); ++i) {
-        const Rect64 tile = grid.tileRectAtLevel(i);
-        expected += ts::FloatSumOperation::tilePartial(tile, sampleSum(grid.tileRect(i)), true);
-    }
+    const double expected = ascendingFold(detail::PipelineAccess::plan(reference).grid, bimodal);
 
     for (int32_t workers : {1, 2, 4, 8}) {
         Pipeline p(s, config(workers), spec);
@@ -296,4 +346,100 @@ TEST(GlobalContext, SkippedTilesDoNotStallTheFold) {
     EXPECT_EQ(observer.calls.back(), std::make_pair(2 * tiles, 2 * tiles));
     EXPECT_EQ(detail::PipelineAccess::impl(p).counters.tilesSkipped.load(), skipped)
         << "skipped tiles are counted once, in the final pass";
+}
+
+namespace {
+
+// Cancels its source once `after` tiles have completed.
+class CancellingObserver : public ProgressObserver {
+public:
+    CancellingObserver(CancellationSource& source, int64_t after) : source_(source), after_(after) {}
+    void onProgress(const char*, double, int64_t completed, int64_t) override {
+        maxCompleted_ = std::max(maxCompleted_.load(), completed);
+        if (completed >= after_) {
+            source_.cancel();
+        }
+    }
+    int64_t maxCompleted() const { return maxCompleted_; }
+
+private:
+    CancellationSource& source_;
+    int64_t after_;
+    std::atomic<int64_t> maxCompleted_{0};
+};
+
+} // namespace
+
+// A tile failing in an accumulation pass fails the run as a TileError; the final
+// pass never runs, so no sink is written or flushed.
+TEST(GlobalContext, AccumulationPassFailureStopsTheRun) {
+    auto s = scene();
+    ts::ProbeOperation::setFailuresArmed(true);
+    OperationParameters probe;
+    probe.setInt("failX", 100);
+    probe.setInt("failY", 100);
+    probe.setInt("copy", 1);
+    PipelineSpec spec;
+    spec.operation("test.probe", probe);
+    spec.operation("test.floatSum", offset(0));
+    Pipeline p(s, config(4), spec);
+    ts::FlushLog log;
+    ts::LoggingObjectSink objects(log);
+    ts::LoggingRasterSink raster(log);
+    p.rasterSink(&raster);
+    try {
+        p.runInto(objects, nullptr, CancellationToken());
+        FAIL() << "the run should fail";
+    } catch (const TileError& e) {
+        EXPECT_TRUE(e.hasTile());
+        EXPECT_EQ(e.tileX(), 1);
+        EXPECT_EQ(e.tileY(), 1);
+        ASSERT_NE(e.operationName(), nullptr);
+        EXPECT_STREQ(e.operationName(), "test.probe");
+    }
+    EXPECT_EQ(raster.tilesWritten(), 0);
+    EXPECT_TRUE(log.entries().empty());
+}
+
+// finalizeAccumulation() throwing fails the run as a TileError naming no tile.
+TEST(GlobalContext, FinalizeFailureIsTileErrorWithoutTile) {
+    auto s = scene();
+    OperationParameters parameters = offset(0);
+    parameters.setInt("failFinalize", 1);
+    PipelineSpec spec;
+    spec.operation("test.floatSum", parameters);
+    Pipeline p(s, config(4), spec);
+    ts::FlushLog log;
+    ts::LoggingObjectSink objects(log);
+    ts::LoggingRasterSink raster(log);
+    p.rasterSink(&raster);
+    try {
+        p.runInto(objects, nullptr, CancellationToken());
+        FAIL() << "the run should fail";
+    } catch (const TileError& e) {
+        EXPECT_FALSE(e.hasTile());
+        ASSERT_NE(e.operationName(), nullptr);
+        EXPECT_STREQ(e.operationName(), "test.floatSum");
+    }
+    EXPECT_EQ(raster.tilesWritten(), 0);
+    EXPECT_TRUE(log.entries().empty());
+}
+
+// Cancelling during an accumulation pass ends the run with CancelledError before
+// the final pass.
+TEST(GlobalContext, CancellationInAccumulationPass) {
+    auto s = scene();
+    PipelineSpec spec;
+    spec.operation("test.floatSum", offset(0));
+    Pipeline p(s, config(4), spec);
+    ts::FlushLog log;
+    ts::LoggingObjectSink objects(log);
+    ts::LoggingRasterSink raster(log);
+    p.rasterSink(&raster);
+    CancellationSource source;
+    CancellingObserver observer(source, 3);
+    EXPECT_THROW(p.runInto(objects, &observer, source.token()), CancelledError);
+    EXPECT_LT(observer.maxCompleted(), 64) << "the accumulation pass did not finish";
+    EXPECT_EQ(raster.tilesWritten(), 0);
+    EXPECT_TRUE(log.entries().empty());
 }

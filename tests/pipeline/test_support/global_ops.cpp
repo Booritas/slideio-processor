@@ -6,7 +6,11 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 
 namespace slideio::processor::testing_support {
@@ -54,6 +58,11 @@ const T& sameKind(const Operation& self, const Operation& other) {
     return *typed;
 }
 
+// The accumulate() calls finished on tiles other than (0, 0) since resetHold(), for "holdFirstTile".
+std::mutex gHoldMutex;
+std::condition_variable gHoldChanged;
+int64_t gOthersDone = 0;
+
 } // namespace
 
 // --- FloatSumOperation --------------------------------------------------------------
@@ -65,6 +74,13 @@ FloatSumOperation::FloatSumOperation(const OperationParameters& parameters) : pa
         throw InvalidArgumentError("test.floatSum: offset must be 0 or 1");
     }
     offset_ = offset == 1;
+    parameters_.getInt("holdFirstTile", holdFirstTile_);
+    if (holdFirstTile_ < 0) {
+        throw InvalidArgumentError("test.floatSum: holdFirstTile must not be negative");
+    }
+    int64_t failFinalize = 0;
+    parameters_.getInt("failFinalize", failFinalize);
+    failFinalize_ = failFinalize != 0;
 }
 
 const char* FloatSumOperation::name() const { return "test.floatSum"; }
@@ -82,11 +98,24 @@ double FloatSumOperation::tilePartial(const Rect64& tileRectAtLevel, double samp
     if (!offset) {
         return sampleSum;
     }
-    const int64_t cell = tileRectAtLevel.x / 64 + tileRectAtLevel.y / 64;
-    return sampleSum + (cell % 2 == 0 ? 1e16 : -1e16);
+    const bool first = tileRectAtLevel.x == 0 && tileRectAtLevel.y == 0;
+    return sampleSum + (first ? 9007199254740992.0 : 0.0);  // 2^53
+}
+
+void FloatSumOperation::resetHold() {
+    std::lock_guard<std::mutex> lock(gHoldMutex);
+    gOthersDone = 0;
 }
 
 void FloatSumOperation::accumulate(const OperationContext& context) {
+    const Rect64 tile = context.tileRectAtLevel();
+    const bool first = tile.x == 0 && tile.y == 0;
+    if (first && holdFirstTile_ > 0) {
+        std::unique_lock<std::mutex> lock(gHoldMutex);
+        if (!gHoldChanged.wait_for(lock, std::chrono::seconds(10), [this] { return gOthersDone >= holdFirstTile_; })) {
+            throw std::runtime_error("test.floatSum: the held first tile timed out");
+        }
+    }
     const BlockView view = tileView(context);
     double sampleSum = 0.0;
     for (int32_t plane = 0; plane < view.planeCount(); ++plane) {
@@ -98,6 +127,13 @@ void FloatSumOperation::accumulate(const OperationContext& context) {
     }
     sum_ += tilePartial(context.tileRectAtLevel(), sampleSum, offset_);
     count_ += view.width() * view.height() * view.planeCount();
+    if (!first) {
+        {
+            std::lock_guard<std::mutex> lock(gHoldMutex);
+            ++gOthersDone;
+        }
+        gHoldChanged.notify_all();
+    }
 }
 
 void FloatSumOperation::combine(const Operation& other) {
@@ -107,6 +143,9 @@ void FloatSumOperation::combine(const Operation& other) {
 }
 
 void FloatSumOperation::finalizeAccumulation() {
+    if (failFinalize_) {
+        throw IoError("deliberate failure");
+    }
     mean_ = count_ > 0 ? sum_ / static_cast<double>(count_) : 0.0;
     finalised_ = true;
 }
