@@ -18,7 +18,9 @@ add_library(slideio-processor-pipeline OBJECT
     detail/parameters_json.cpp
     detail/plane_buffers.cpp
     detail/run_plan.cpp
+    detail/restriction.cpp
     detail/scene_reader.cpp
+    detail/tile_evaluator.cpp
     detail/type_contract.cpp
 )
 set_target_properties(slideio-processor-pipeline PROPERTIES POSITION_INDEPENDENT_CODE ON)

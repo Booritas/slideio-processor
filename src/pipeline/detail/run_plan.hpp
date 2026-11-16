@@ -45,6 +45,9 @@ struct RunPlan {
     /// times the bytes per pixel of every step's planes, every auxiliary's planes
     /// and the restriction masks (one byte, two with a mask source).
     int64_t tileBytes;
+    /// The analysis level's extent, {0, 0, width, height}: what lies outside it reads
+    /// as zeros at every step of the chain.
+    Rect64 levelRect;
 };
 
 /// What buildRunPlan validates against. Every pointer and reference is borrowed

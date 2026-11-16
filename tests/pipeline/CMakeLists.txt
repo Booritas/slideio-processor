@@ -36,6 +36,7 @@ add_executable(slideio_processor_pipeline_tests
     test_pipeline_validate.cpp
     test_reduction.cpp
     test_scene_reader.cpp
+    test_tile_evaluator.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly

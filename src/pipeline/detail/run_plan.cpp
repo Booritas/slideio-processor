@@ -384,7 +384,8 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                    chainHalo,
                    std::move(globalContextPositions),
                    restricted,
-                   tileBytes};
+                   tileBytes,
+                   Rect64{0, 0, levels[static_cast<size_t>(level)].width, levels[static_cast<size_t>(level)].height}};
 }
 
 } // namespace slideio::processor::detail

@@ -4,6 +4,7 @@
 #include <pipeline/detail/level_table.hpp>
 #include <pipeline/detail/run_plan.hpp>
 #include <pipeline/detail/scene_reader.hpp>
+#include <pipeline/detail/tile_evaluator.hpp>
 
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -48,6 +49,9 @@ public:
 
     /// What the last successful validate() resolved; dropped by every binding call.
     std::unique_ptr<detail::RunPlan> plan;
+
+    /// What the last run counted; reset when a run starts.
+    detail::RunCounters counters;
 };
 
 namespace detail {
