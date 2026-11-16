@@ -1,13 +1,16 @@
 add_library(slideio-processor-pipeline OBJECT
     backend.cpp
+    level_selector.cpp
     operation.cpp
     operation_context.cpp
     operation_catalog.cpp
     operation_parameters.cpp
     pipeline_spec.cpp
     standard_measurements.cpp
+    tile_grid.cpp
     detail/combine_partials.cpp
     detail/level_mapping.cpp
+    detail/level_table.cpp
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
     detail/type_contract.cpp

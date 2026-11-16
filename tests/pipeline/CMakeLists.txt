@@ -30,10 +30,12 @@ add_executable(slideio_processor_pipeline_tests
     test_operation_catalog.cpp
     test_operation_parameters.cpp
     test_pipeline_spec.cpp
+    test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly.
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/type_contract.cpp
@@ -83,6 +85,7 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_operation_parameters.cpp
     header_check/check_pipeline_spec.cpp
     header_check/check_standard_measurements.cpp
+    header_check/check_tile_grid.cpp
 )
 target_include_directories(pipeline_headers_are_opencv_free PRIVATE
     ${PROJECT_SOURCE_DIR}/include
