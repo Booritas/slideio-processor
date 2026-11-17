@@ -14,6 +14,7 @@ add_library(slideio_processor_pipeline_test_support STATIC
     test_support/executor_support.cpp
     test_support/disc_mask_source.cpp
     test_support/global_ops.cpp
+    test_support/blob_scene.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/fragment_merge.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
@@ -49,6 +50,7 @@ add_executable(slideio_processor_pipeline_tests
     test_seam_merger.cpp
     test_seam_run.cpp
     test_seam_spill.cpp
+    test_seg3_tiling_invariance.cpp
     test_tile_evaluator.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
