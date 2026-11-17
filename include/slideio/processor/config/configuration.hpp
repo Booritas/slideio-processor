@@ -173,6 +173,13 @@ public:
     /**
      * @brief Returns where a directly-constructed Pipeline spills seam
      * fragments; "" means the platform temporary directory (default "").
+     *
+     * The spill files hold derived object geometry (polygons in slide
+     * coordinates) and per-object intensity statistics, so the directory should
+     * be access-controlled like the results themselves. Each run works in a
+     * directory of its own under this one and removes it after the run, on
+     * failure and cancellation too; a failure to remove it is ignored, leaving
+     * the files behind.
      * @return The directory. Never null; valid while this object lives and is not
      * modified or moved from. A Workspace overrides it with a subdirectory of its own.
      * @throws Nothing.

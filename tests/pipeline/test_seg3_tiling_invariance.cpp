@@ -218,12 +218,18 @@ bool hasStandardMeasurements(const ObjectRecord& record, int32_t channel) {
     return true;
 }
 
-// How many objects of `records` are cut by a seam of `tile`-pixel tiles.
-int64_t cutBySeams(const std::vector<ObjectRecord>& records, int64_t tile) {
+// How many objects of `records` are cut by a seam of `tile`-pixel tiles of a
+// level `scale` times coarser than level 0: a seam lies strictly inside the
+// object's box mapped to that level.
+int64_t cutBySeams(const std::vector<ObjectRecord>& records, int64_t tile, double scale = 1.0) {
     int64_t cut = 0;
     for (const ObjectRecord& r : records) {
         const Rect64 box = r.boundingBox();
-        const auto crosses = [tile](int64_t from, int64_t extent) { return (from / tile + 1) * tile < from + extent; };
+        const auto crosses = [tile, scale](int64_t from0, int64_t extent0) {
+            const auto from = static_cast<int64_t>(std::floor(static_cast<double>(from0) / scale));
+            const auto to = static_cast<int64_t>(std::ceil(static_cast<double>(from0 + extent0) / scale));
+            return (from / tile + 1) * tile < to;
+        };
         cut += crosses(box.x, box.width) || crosses(box.y, box.height) ? 1 : 0;
     }
     return cut;
@@ -358,6 +364,7 @@ TEST(Seg3, IdenticalOnANonDyadicLevel) {
     const std::vector<ObjectRecord> reference = objectsOf(scene, {2000, 1500, 4, 1});
     expectMeaningfulReference(reference, Rect64{0, 0, 8001, 6001}, 0);
     for (const int32_t tile : {64, 100, 257}) {
+        ASSERT_GE(cutBySeams(reference, tile, 8001.0 / 2000.0), 5) << tile << "-pixel seams should cut many objects";
         EXPECT_TRUE(identicalObjects(reference, objectsOf(scene, {tile, tile, 4, 1}), IntensityMatch::Exact))
             << tile << "-pixel tiles";
     }

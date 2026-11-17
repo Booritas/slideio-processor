@@ -59,7 +59,10 @@ struct SeamMergerAccess;
  * concurrently: the sink must be ThreadSafe, as every object sink of a run is.
  *
  * Peak memory is the fragments of open objects plus the largest single merged
- * polygon; largestComponentFragmentCount() reports the largest object met.
+ * polygon, plus about 50 bytes of joining bookkeeping for every fragment ever
+ * recorded, kept until the merger is destroyed; neither of the last two is
+ * reserved in the budget. largestComponentFragmentCount() reports the largest
+ * object met.
  * Each fragment held in memory reserves its bytes in the run's memory budget (16
  * per ring point, one IntensityPartial per partial, and 64 more), given back
  * when its object closes or the merger is destroyed. When the budget is short,

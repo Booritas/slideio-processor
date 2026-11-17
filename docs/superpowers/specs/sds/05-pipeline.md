@@ -254,7 +254,10 @@ form passes none. `IntensityPartial` is declared here rather than in
 below all need it. A negative `partialCount`, or null `partials` with a
 positive count, throws `InvalidArgumentError`. A run with no seam merger
 throws `InternalError` from either form, so an operation emitting fragments
-into a run that cannot merge them fails rather than losing objects.
+into a run that cannot merge them fails rather than losing objects. Where no
+object is wanted by design, fragments are dropped silently instead: in a lazy
+read (`readBlock`, `asScene`), which calls no sink, and in a global-context
+accumulation pass, which writes none.
 
 **`mask()` is an optimisation, never a correctness obligation.** Making it
 advisory is deliberate: UR-EXT-2 requires a built-in operation to be
@@ -956,7 +959,12 @@ deadlock: every outer worker holds its tile's bytes and waits for inner bytes
 that only those same workers' tiles would free. The cost is bounded and stated:
 the ceiling can be overshot by at most one inner tile per outer worker, for as
 long as that inner tile is evaluated. The seam merger follows the same rule from
-the other side: it never waits for memory at all (5.7).
+the other side: it never waits for memory at all (5.7). The mark is
+thread-local, so it does not follow work an operation hands to other threads
+(a parallel loop reading a lazy auxiliary, say): those threads are unmarked and
+wait as any other. A lazy read on an unmarked thread that waits for memory has
+no cancellation token, so it cannot be cancelled; it returns once the bytes
+fit.
 
 **Bindings.** `auxiliaryRaster(name, nullptr)` removes that binding, and the
 same name twice replaces. Every binding call invalidates the cached result of
@@ -1535,7 +1543,11 @@ matter of clearing one known directory when a workspace opens after a crash. A
 `Pipeline` used directly gives the merger a directory of the run's own under
 `Configuration::scratchDirectory()`, removed when the run ends (5.5). Failure to
 create, write or read the spill file surfaces as `IoError` naming the file,
-never as a silently dropped fragment.
+never as a silently dropped fragment. A spill file holds derived object
+geometry and intensity statistics, so the scratch directory should be
+access-controlled like the results. A failure to remove the file or the run's
+directory is ignored, leaving them behind; removal cannot be reported from a
+destructor.
 
 ### What is not bounded by the budget
 
@@ -1547,6 +1559,16 @@ can report what it actually hit. In practice this is tens of megabytes and
 comfortably inside a 2 GB ceiling; it is documented because it is the one part
 of this component that does not scale down with the ceiling, and a caller
 setting a very small budget should know which term will defeat them.
+
+Two smaller terms are not reserved either. The merger keeps a union-find entry
+and a bookkeeping slot for every fragment it has ever recorded — about 50 bytes
+each — for the whole run, whether the fragment is resident, spilled or already
+closed, so this term grows with the number of seam fragments the run emits
+(about 50 MB for a million fragments). And a lazy read of a pipeline's scene on
+a thread that already holds a tile reservation (5.5, `memoryBudget()`)
+evaluates its tile unreserved when the bytes do not fit at once, so a run whose
+input or auxiliary is such a scene can exceed the ceiling by up to one nested
+tile's bytes per worker reading it.
 
 ### Measurements across a seam
 

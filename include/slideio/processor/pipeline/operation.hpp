@@ -375,7 +375,11 @@ public:
     /// Equivalent to the four-argument form with no partials.
     /// @param fragment The fragment, in level-0 coordinates.
     /// @param layer The layer the merged object belongs to.
-    /// @throws InternalError When this run has no seam merger.
+    /// @throws InternalError When the run has no seam merger: an eager run
+    /// makes one only when an operation of the chain declares producesObjects().
+    /// Where fragments have nowhere to go by design, they are dropped silently
+    /// instead: in a lazy read (Pipeline::readBlock(), the scene asScene()
+    /// returns) and in a global-context accumulation pass.
     /// @par Thread-safety
     /// ThreadConfined; the merger behind it is ThreadSafe.
     /// @par Requirements
@@ -392,7 +396,11 @@ public:
      * @param partialCount Number of partials; not negative.
      * @throws InvalidArgumentError When @p partialCount is negative, or
      * @p partials is null while @p partialCount is positive.
-     * @throws InternalError When this run has no seam merger.
+     * @throws InternalError When the run has no seam merger: an eager run
+     * makes one only when an operation of the chain declares producesObjects().
+     * Where fragments have nowhere to go by design, they are dropped silently
+     * instead: in a lazy read (Pipeline::readBlock(), the scene asScene()
+     * returns) and in a global-context accumulation pass.
      * @par Thread-safety
      * ThreadConfined; the merger behind it is ThreadSafe.
      * @par Requirements

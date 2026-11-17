@@ -86,6 +86,11 @@ public:
      * for bytes that only that thread's own tiles can free could deadlock. One
      * budget may therefore be shared by a pipeline and the pipelines reading it,
      * at the cost of the ceiling being exceeded by such unreserved tiles.
+     * Holding a tile reservation is a property of the thread: work an operation
+     * hands to other threads (a parallel loop reading a lazy auxiliary, say) does
+     * not inherit it, and those threads wait for memory as any other. A lazy read
+     * on a thread holding no tile reservation (a viewer's, say) waits until the
+     * bytes fit and cannot be cancelled while it waits.
      * @param budget The budget; null restores the default, a budget whose
      * ceiling is the configuration's memoryCeilingBytes().
      * @return This pipeline, for chaining.
@@ -272,7 +277,11 @@ public:
      * declares concurrent reads, and each read evaluates its own tiles.
      * Each tile a read evaluates reserves memory from this pipeline's budget as
      * memoryBudget() describes, so another pipeline reading the scene may share
-     * that budget without deadlocking.
+     * that budget without deadlocking. That holds for reads on the threads
+     * evaluating that pipeline's tiles; threads an operation hands work to wait
+     * for memory as any other, and a read on a thread holding no tile
+     * reservation (a viewer's, say) waits until the bytes fit and cannot be
+     * cancelled while it waits.
      * @return The scene.
      * @throws InvalidArgumentError As validate(); when the chain has a
      * global-context operation ("global-context operations need runInto"), since a
