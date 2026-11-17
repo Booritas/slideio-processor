@@ -317,7 +317,9 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     if (!state.plan) {
         pipeline.validate();
     }
-    detail::RunPlan& plan = *state.plan;
+    // The run holds the plan it started with; the plan is never written.
+    const std::shared_ptr<const detail::RunPlan> heldPlan = state.plan;
+    const detail::RunPlan& plan = *heldPlan;
     if (!sameGrid(plan.grid, impl_->grid)) {
         throw InvalidArgumentError("TileExecutor::run: the pipeline's tile grid differs from the executor's");
     }
@@ -342,23 +344,20 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     impl_->total = total;
     state.counters.reset();
 
-    // Each run accumulates into fresh instances, never on top of an earlier run's.
-    // All are created first and then swapped in together, so a failed create
-    // leaves the plan as it was.
-    std::vector<OperationPtr> fresh;
-    fresh.reserve(globalPositions.size());
+    // Each run accumulates into fresh instances of its own, never on top of an
+    // earlier run's and never in the plan: the run applies the plan's operations
+    // with its fresh instances in their positions.
+    std::vector<OperationPtr> operations = plan.operations;
     for (size_t g : globalPositions) {
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);
         try {
-            fresh.push_back(catalog.create(name, state.spec.operationParameters(k)));
+            operations[g] = catalog.create(name, state.spec.operationParameters(k));
         } catch (...) {
             reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
         }
     }
-    for (size_t i = 0; i < globalPositions.size(); ++i) {
-        plan.operations[globalPositions[i]] = std::move(fresh[i]);
-    }
+    state.lastRunOperations = operations;
 
     detail::Bindings bindings;
     bindings.objectSink = &sink;
@@ -370,7 +369,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
-    const detail::TileEvaluator evaluator(plan, *state.reader, std::move(bindings));
+    const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));
 
     std::atomic<int64_t>& completed = impl_->completed;
 
@@ -457,7 +456,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     for (size_t g : globalPositions) {
         // Pass for operation g: each tile accumulates into a fresh instance, and the
         // instances fold into the run's instance in ascending tile index.
-        Operation& runInstance = *plan.operations[g];
+        Operation& runInstance = *operations[g];
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);
         const OperationParameters& parameters = state.spec.operationParameters(k);

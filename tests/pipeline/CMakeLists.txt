@@ -56,6 +56,7 @@ add_executable(slideio_processor_pipeline_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/plane_buffers.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/restriction.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/scene_reader.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/tile_evaluator.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/type_contract.cpp
 )
 target_link_libraries(slideio_processor_pipeline_tests PRIVATE

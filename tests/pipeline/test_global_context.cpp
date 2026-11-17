@@ -1,4 +1,4 @@
-// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1
+// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-STG-3
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -60,9 +60,11 @@ OperationParameters offset(int64_t value) {
     return p;
 }
 
+// The instance the last run applied at `position`: for a global-context operation,
+// the run's own accumulated instance.
 template <typename T>
 std::shared_ptr<T> runInstance(const Pipeline& p, size_t position) {
-    auto op = std::dynamic_pointer_cast<T>(detail::PipelineAccess::plan(p).operations.at(position));
+    auto op = std::dynamic_pointer_cast<T>(detail::PipelineAccess::impl(p).lastRunOperations.at(position));
     if (!op) {
         throw InternalError("the run's operation has an unexpected type");
     }
@@ -442,4 +444,92 @@ TEST(GlobalContext, CancellationInAccumulationPass) {
     EXPECT_LT(observer.maxCompleted(), 64) << "the accumulation pass did not finish";
     EXPECT_EQ(raster.tilesWritten(), 0);
     EXPECT_TRUE(log.entries().empty());
+}
+
+// A run accumulates into instances of its own: runs leave the plan's operations as
+// validate() created them.
+TEST(GlobalContext, RunsLeaveThePlanUnchanged) {
+    auto s = scene(onePerTile);
+    PipelineSpec spec;
+    spec.operation("test.floatSum", offset(0));
+    Pipeline p(s, config(2), spec);
+    p.validate();
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const Operation* created = plan.operations.at(0).get();
+    ASSERT_NE(created, nullptr);
+
+    WorkerPool pool(2, makeMemoryBudget(int64_t(1) << 30));
+    TileExecutor executor(plan.grid, pool, config(2));
+    std::vector<std::shared_ptr<ts::FloatSumOperation>> applied;
+    for (int run = 0; run < 2; ++run) {
+        ts::CollectingObjectSink sink;
+        executor.run(p, sink, nullptr, CancellationToken());
+        EXPECT_EQ(&detail::PipelineAccess::plan(p), &plan) << "run " << run << " revalidated";
+        EXPECT_EQ(plan.operations.at(0).get(), created) << "run " << run << " wrote into the plan";
+        applied.push_back(runInstance<ts::FloatSumOperation>(p, 0));
+        EXPECT_NE(applied.back().get(), created) << "run " << run << " accumulated into the plan's instance";
+        EXPECT_TRUE(applied.back()->finalised());
+    }
+    pool.shutdown();
+    EXPECT_NE(applied[0], applied[1]) << "each run has instances of its own";
+    EXPECT_EQ(applied[0]->count(), kSide * kSide);
+    EXPECT_EQ(applied[1]->count(), kSide * kSide) << "the second run starts afresh";
+    EXPECT_EQ(bitsOf(applied[0]->sum()), bitsOf(applied[1]->sum()));
+}
+
+// A plan held across validate() or a binding call keeps its operations: validate()
+// swaps a new plan in and a binding call drops the pointer; neither touches the old plan.
+TEST(GlobalContext, HeldPlanSurvivesValidateAndBinding) {
+    auto s = scene();
+    PipelineSpec spec;
+    spec.operation("test.otsu", OperationParameters());
+    spec.operation("test.floatSum", offset(0));
+    Pipeline p(s, config(2), spec);
+    p.validate();
+    const std::shared_ptr<const detail::RunPlan> held = detail::PipelineAccess::impl(p).plan;
+    ASSERT_TRUE(held);
+    const std::vector<OperationPtr> operations = held->operations;
+
+    p.validate();
+    const std::shared_ptr<const detail::RunPlan> next = detail::PipelineAccess::impl(p).plan;
+    ASSERT_TRUE(next);
+    EXPECT_NE(next.get(), held.get()) << "validate() builds a new plan";
+    p.stageName("other");
+    EXPECT_FALSE(detail::PipelineAccess::impl(p).plan) << "a binding call drops the pointer";
+
+    ASSERT_EQ(held->operations.size(), operations.size());
+    for (size_t k = 0; k < operations.size(); ++k) {
+        EXPECT_EQ(held->operations[k], operations[k]) << "operation " << k;
+        EXPECT_NE(next->operations[k], operations[k]) << "operation " << k << " shared between plans";
+    }
+    EXPECT_EQ(held->globalContextPositions, (std::vector<size_t>{0, 1}));
+}
+
+// A snapshot holds the plan and the pixel bindings as they were: a later validate(),
+// binding call or run on the pipeline leaves it unchanged.
+TEST(GlobalContext, SnapshotIgnoresLaterCalls) {
+    auto s = scene();
+    ts::DiscMaskSource disc(256.0, 256.0, 100.0);
+    PipelineSpec spec;
+    spec.operation("test.otsu", OperationParameters());
+    Pipeline p(s, config(2), spec);
+    p.maskSource(&disc);
+    const detail::PipelineSnapshot snapshot = detail::PipelineAccess::snapshot(p);
+    ASSERT_TRUE(snapshot.plan) << "snapshot() validates when no plan is held";
+    ASSERT_TRUE(snapshot.reader);
+    ASSERT_TRUE(snapshot.selector);
+    EXPECT_EQ(snapshot.scene, s);
+    EXPECT_EQ(snapshot.maskSource, &disc);
+    EXPECT_TRUE(snapshot.plan->restricted);
+    const Operation* otsu = snapshot.plan->operations.at(0).get();
+
+    p.maskSource(nullptr);
+    p.validate();
+    EXPECT_FALSE(detail::PipelineAccess::plan(p).restricted);
+    p.run(nullptr, CancellationToken());
+
+    EXPECT_EQ(snapshot.maskSource, &disc);
+    EXPECT_TRUE(snapshot.plan->restricted);
+    EXPECT_EQ(snapshot.plan->operations.at(0).get(), otsu);
+    EXPECT_NE(detail::PipelineAccess::impl(p).plan, snapshot.plan);
 }

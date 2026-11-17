@@ -72,17 +72,21 @@ void RestrictionFilter::intersect(RasterMask& mask) const {
     }
 }
 
-RasterMask RestrictionFilter::buildTileMask(int64_t tileIndex) const {
-    if (!restricted_) {
-        return RasterMask();
-    }
-    RasterMask mask(plan_.grid.tileRectAtLevelWithHalo(tileIndex, plan_.chainHalo), plan_.level, plan_.levelScale);
+RasterMask RestrictionFilter::buildMask(const Rect64& regionAtLevel) const {
+    RasterMask mask(regionAtLevel, plan_.level, plan_.levelScale);
     const Rect64 region = mask.regionAtLevel();
     for (int64_t y = 0; y < region.height; ++y) {
         std::memset(mask.row(y), 255, static_cast<size_t>(region.width));
     }
     intersect(mask);
     return mask;
+}
+
+RasterMask RestrictionFilter::buildTileMask(int64_t tileIndex) const {
+    if (!restricted_) {
+        return RasterMask();
+    }
+    return buildMask(plan_.grid.tileRectAtLevelWithHalo(tileIndex, plan_.chainHalo));
 }
 
 bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {
@@ -109,10 +113,58 @@ bool RestrictionFilter::admits(Point64 anchorLevel0) const {
     const double scale = plan_.levelScale;
     const Point64 pixel{static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.x) / scale)),
                         static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.y) / scale))};
-    RasterMask mask(Rect64{pixel.x, pixel.y, 1, 1}, plan_.level, plan_.levelScale);
-    mask.row(0)[0] = 255;
-    intersect(mask);
-    return mask.testLevel0(anchorLevel0);
+    const int64_t tile = tileHolding(pixel);
+    if (tile < 0) {
+        // In no tile of the grid: rare, so a one-pixel mask, uncached.
+        return buildMask(Rect64{pixel.x, pixel.y, 1, 1}).testLevel0(anchorLevel0);
+    }
+
+    // The tile's entry is found or made under the lock; its mask is built outside
+    // it, once: concurrent callers in the same tile wait on the entry's once_flag,
+    // and a build that throws leaves the flag unset for the next caller.
+    std::shared_ptr<CachedMask> entry;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        std::shared_ptr<CachedMask>& slot = cache_[tile];
+        if (!slot) {
+            slot = std::make_shared<CachedMask>();
+        }
+        entry = slot;
+    }
+    std::call_once(entry->built,
+                   [this, tile, &entry]() { entry->mask = buildMask(plan_.grid.tileRectAtLevel(tile)); });
+    return entry->mask.testLevel0(anchorLevel0);
+}
+
+void RestrictionFilter::releaseTileMask(int64_t tileIndex) const {
+    // A caller still holding the entry keeps it alive until it is done.
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    cache_.erase(tileIndex);
+}
+
+int64_t RestrictionFilter::cachedTileMaskCount() const {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    return static_cast<int64_t>(cache_.size());
+}
+
+int64_t RestrictionFilter::tileHolding(Point64 levelPixel) const {
+    const TileGrid& grid = plan_.grid;
+    if (grid.tileCount() == 0) {
+        return -1;
+    }
+    // Tile 0 has the grid's origin and, unless the grid has a single column or row,
+    // its full tile size; tiles are laid out row-major from it.
+    const Rect64 first = grid.tileRectAtLevel(0);
+    if (levelPixel.x < first.x || levelPixel.y < first.y) {
+        return -1;
+    }
+    const int64_t column = (levelPixel.x - first.x) / first.width;
+    const int64_t row = (levelPixel.y - first.y) / first.height;
+    if (column >= grid.columns() || row >= grid.rows()) {
+        return -1;
+    }
+    const int64_t tile = grid.tileIndex(column, row);
+    return grid.tileRectAtLevel(tile).contains(levelPixel) ? tile : -1;
 }
 
 } // namespace slideio::processor::detail

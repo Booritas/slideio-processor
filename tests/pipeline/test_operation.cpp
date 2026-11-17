@@ -1,4 +1,5 @@
-// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-ALG-3, UR-ALG-4, UR-IMG-11
+// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-EXE-1, UR-STG-3
+#include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/channel_selection.hpp>
 #include <slideio/processor/core/control.hpp>
@@ -9,11 +10,15 @@
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
+#include <slideio/processor/pipeline/pipeline.hpp>
+#include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/standard_measurements.hpp>
 
 #include <pipeline/detail/combine_partials.hpp>
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
+#include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/tile_evaluator.hpp>
 
 #include <pipeline/public_only/third_party_operation.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -312,12 +317,15 @@ TEST(OperationContext, SeamFragmentReachesCallback) {
         Rect64 box;
         LayerId layer;
         std::vector<IntensityPartial> partials;
+        int64_t tileIndex;
     };
     std::vector<Call> calls;
     detail::OperationContextState state;
+    state.tileIndex = 17;
     state.seamFragment = [&calls](const Polygon& p, LayerId layer, const IntensityPartial* partials,
-                                  int32_t count) {
-        calls.push_back({p.boundingBox(), layer, std::vector<IntensityPartial>(partials, partials + count)});
+                                  int32_t count, int64_t tileIndex) {
+        calls.push_back(
+            {p.boundingBox(), layer, std::vector<IntensityPartial>(partials, partials + count), tileIndex});
     };
     const auto ctx = detail::makeOperationContext(std::move(state));
 
@@ -334,6 +342,8 @@ TEST(OperationContext, SeamFragmentReachesCallback) {
     ASSERT_EQ(calls[1].partials.size(), 2u);
     EXPECT_EQ(calls[1].partials[1].channel, 1);
     EXPECT_EQ(calls[1].partials[1].sumOfSquares, 29.0);
+    EXPECT_EQ(calls[0].tileIndex, 17) << "the emitting tile reaches the callback";
+    EXPECT_EQ(calls[1].tileIndex, 17);
 
     EXPECT_THROW(ctx->emitSeamFragment(square(0, 0, 1), LayerId(1), partials, -1), InvalidArgumentError);
     EXPECT_THROW(ctx->emitSeamFragment(square(0, 0, 1), LayerId(1), nullptr, 1), InvalidArgumentError);
@@ -498,7 +508,8 @@ TEST(TestSupport, ComponentsTwoPlaneFormMeasuresAFloatIntensityPlane) {
     state.output = &output;
     state.objectSink = &sink;
     state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 4, 3};
-    state.seamFragment = [&fragments](const Polygon&, LayerId, const IntensityPartial* partials, int32_t count) {
+    state.seamFragment = [&fragments](const Polygon&, LayerId, const IntensityPartial* partials, int32_t count,
+                                      int64_t) {
         ASSERT_EQ(count, 1);
         fragments.push_back(partials[0]);
     };
@@ -636,7 +647,7 @@ TEST(TestSupport, ComponentsSendsEdgeTouchingComponentsToSeamsWhenAsked) {
     state.objectSink = &sink;
     state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 5, 4};
     state.seamFragment = [&fragments](const Polygon& p, LayerId, const IntensityPartial* partials,
-                                      int32_t count) {
+                                      int32_t count, int64_t) {
         EXPECT_EQ(p.boundingBox(), (Rect64{0, 0, 1, 1}));
         ASSERT_EQ(count, 1);
         fragments.push_back(partials[0]);
@@ -681,7 +692,8 @@ TEST(TestSupport, ComponentsIgnoreTheHaloAndClipToTheTile) {
     state.objectSink = &sink;
     state.haloRectAtLevel = Rect64{8, 19, 8, 5};
     state.tileRectAtLevel = Rect64{10, 20, 4, 3};
-    state.seamFragment = [&fragments](const Polygon& p, LayerId, const IntensityPartial* partials, int32_t) {
+    state.seamFragment = [&fragments](const Polygon& p, LayerId, const IntensityPartial* partials, int32_t,
+                                      int64_t) {
         fragments.emplace_back(p.boundingBox(), partials[0].count);
     };
     ts::ComponentsOperation seams{OperationParameters().setBool("seams", true)};
@@ -794,4 +806,48 @@ TEST(PublicOnly, ThirdPartyOperationBuildsFromPublicHeaders) {
     state.tileRectAtLevel = Rect64{1, 1, 1, 1};
     op->apply(*detail::makeOperationContext(std::move(state)));
     EXPECT_EQ(out, 255 - 10 - 5);
+}
+
+// The evaluator hands each seam fragment the index of the tile that emitted it, in
+// the final pass, and the fragment lies in that tile.
+TEST(OperationContext, EvaluatorPassesTheEmittingTileIndex) {
+    namespace sp = slideio::processor;
+    ts::registerTestOperations();
+    // 15 x 15 blobs on a 20-pixel pitch: every tile has blobs on its edges.
+    auto scene = ts::makeSyntheticScene({{256, 256, 0, 0}}, {slideio::DataType::DT_Byte}, [](int, int64_t x, int64_t y) {
+        return x % 20 < 15 && y % 20 < 15 ? 255.0 : 0.0;
+    });
+    sp::PipelineSpec spec;
+    spec.operation("test.components", OperationParameters().setBool("seams", true));
+    sp::Pipeline p(scene, sp::ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(1).build(),
+                   spec);
+    p.bindLayer("objects", LayerId(3));
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+
+    std::vector<std::pair<int64_t, Rect64>> fragments;  // (tile index, bounding box)
+    ts::CollectingObjectSink sink;
+    detail::Bindings bindings;
+    bindings.objectSink = &sink;
+    bindings.seamFragment = [&fragments](const Polygon& polygon, LayerId, const IntensityPartial*, int32_t,
+                                         int64_t tileIndex) {
+        fragments.emplace_back(tileIndex, polygon.boundingBox());
+    };
+    bindings.spec = &impl.spec;
+    bindings.selector = impl.selector.get();
+    bindings.counters = &impl.counters;
+    const detail::TileEvaluator evaluator(plan, plan.operations, *impl.reader, std::move(bindings));
+
+    ASSERT_EQ(plan.grid.tileCount(), 16);
+    for (int64_t tile = 0; tile < plan.grid.tileCount(); ++tile) {
+        const size_t before = fragments.size();
+        evaluator.evaluate(tile, CancellationToken());
+        ASSERT_GT(fragments.size(), before) << "tile " << tile << " emitted no fragment";
+        for (size_t i = before; i < fragments.size(); ++i) {
+            EXPECT_EQ(fragments[i].first, tile);
+            EXPECT_EQ(plan.grid.tileRect(tile).intersected(fragments[i].second), fragments[i].second)
+                << "a fragment of tile " << tile << " lies outside it";
+        }
+    }
 }

@@ -179,14 +179,14 @@ void Pipeline::readBlock(int32_t level, const Rect64& region, BlockView& out) co
 
 void Pipeline::validate() const {
     Impl& impl = *impl_;
-    impl.plan.reset();
+    impl.plan.reset();  // Drops the pointer only: a failed validate() leaves no plan.
     if (!impl.reader) {
         // Built together, so a failure leaves none of them set. The reader
         // describes the scene first, reporting a SlideIO failure as IoError.
-        auto reader = std::make_unique<detail::SceneReader>(impl.scene);
-        std::unique_ptr<LevelSelector> selector;
+        auto reader = std::make_shared<const detail::SceneReader>(impl.scene);
+        std::shared_ptr<const LevelSelector> selector;
         try {
-            selector = std::make_unique<LevelSelector>(impl.scene);
+            selector = std::make_shared<const LevelSelector>(impl.scene);
         } catch (const InternalError& e) {
             // LevelSelector reports a SlideIO failure as InternalError; on this
             // path it is a failure to describe the scene, so IoError.
@@ -203,7 +203,8 @@ void Pipeline::validate() const {
                                  impl.selector.get(), &impl.levels,  &impl.layers,
                                  &impl.auxiliaries,   impl.maskSource != nullptr,
                                  impl.budget->ceilingBytes()};
-    impl.plan = std::make_unique<detail::RunPlan>(detail::buildRunPlan(inputs));
+    // A new plan is swapped in; a plan a run or a snapshot still holds is never touched.
+    impl.plan = std::make_shared<const detail::RunPlan>(detail::buildRunPlan(inputs));
 }
 
 } // namespace slideio::processor

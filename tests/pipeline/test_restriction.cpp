@@ -1,4 +1,4 @@
-// Requirements: UR-IMG-5, UR-STG-3
+// Requirements: UR-IMG-5, UR-STG-3, UR-EXE-1, UR-QA-3
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -23,6 +23,7 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -556,4 +557,136 @@ TEST(Restriction, HoleRefusesItsAnchors) {
     EXPECT_FALSE(filter.admits(Point64{260, 260}));
     EXPECT_TRUE(filter.admits(Point64{100, 100}));
     EXPECT_FALSE(filter.admits(Point64{30, 30}));
+}
+
+// admits() over many anchors in one tile builds that tile's mask once: the mask
+// source is called once per tile, not once per anchor.
+TEST(Restriction, AdmitsFillsOneMaskPerTile) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, texture);
+    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    Pipeline p(scene, config(), spec1("test.boxMean", radius(3)));
+    p.maskSource(&disc);
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+
+    // Tiles 25 and 26 hold (100, 230), the disc's left edge: some anchors in, some out.
+    const int64_t before = disc.fillCount();
+    int64_t admitted = 0;
+    int64_t refused = 0;
+    for (const int64_t tile : {plan.grid.tileIndex(1, 3), plan.grid.tileIndex(2, 3)}) {
+        const Rect64 r = plan.grid.tileRect(tile);
+        for (int64_t y = r.y; y < r.y + r.height; ++y) {
+            for (int64_t x = r.x; x < r.x + r.width; ++x) {
+                const bool expected = disc.contains(static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+                ASSERT_EQ(filter.admits(Point64{x, y}), expected) << x << "," << y;
+                (expected ? admitted : refused)++;
+            }
+        }
+    }
+    EXPECT_GT(admitted, 100);
+    EXPECT_GT(refused, 100);
+    EXPECT_EQ(disc.fillCount() - before, 2) << "one fillMask per tile, for 2 x 4096 anchors";
+}
+
+// A released tile's mask is built again on the next admits() in that tile; the other
+// tiles' masks stay cached.
+TEST(Restriction, ReleasedTileMaskIsRebuilt) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, texture);
+    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    Pipeline p(scene, config(), spec1("test.boxMean", radius(3)));
+    p.maskSource(&disc);
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+
+    const int64_t first = plan.grid.tileIndex(1, 3);
+    const int64_t second = plan.grid.tileIndex(2, 3);
+    const int64_t before = disc.fillCount();
+    EXPECT_EQ(filter.cachedTileMaskCount(), 0);
+    filter.admits(Point64{100, 230});  // tile (1, 3)
+    filter.admits(Point64{140, 230});  // tile (2, 3)
+    EXPECT_EQ(filter.cachedTileMaskCount(), 2);
+    filter.releaseTileMask(first);
+    filter.releaseTileMask(first);  // releasing twice, or a tile never cached, is harmless
+    filter.releaseTileMask(plan.grid.tileIndex(7, 7));
+    EXPECT_EQ(filter.cachedTileMaskCount(), 1);
+    EXPECT_EQ(filter.admits(Point64{101, 231}), disc.contains(101.5, 231.5));
+    EXPECT_EQ(filter.admits(Point64{141, 231}), disc.contains(141.5, 231.5));
+    EXPECT_EQ(disc.fillCount() - before, 3) << "only the released tile is built again";
+    filter.releaseTileMask(first);
+    filter.releaseTileMask(second);
+    EXPECT_EQ(filter.cachedTileMaskCount(), 0);
+
+    // An unrestricted filter caches nothing.
+    Pipeline open(scene, config(), spec1("test.boxMean", radius(3)));
+    open.validate();
+    auto& openImpl = detail::PipelineAccess::impl(open);
+    const detail::RestrictionFilter none(detail::PipelineAccess::plan(open), openImpl.spec, *openImpl.selector,
+                                         openImpl.maskSource);
+    EXPECT_TRUE(none.admits(Point64{100, 230}));
+    EXPECT_EQ(none.cachedTileMaskCount(), 0);
+}
+
+// admits() from several threads at once answers as from one, and still fills each
+// tile's mask once.
+TEST(Restriction, AdmitsIsThreadSafe) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, texture);
+    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    PipelineSpec spec = spec1("test.boxMean", radius(3));
+    spec.restrictToPolygon(triangle(40, 50, 480, 470));
+    Pipeline p(scene, config(), spec);
+    p.maskSource(&disc);
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+    const detail::RestrictionFilter reference(plan, impl.spec, *impl.selector, impl.maskSource);
+
+    // Four tiles along the disc's edge and the triangle's hypotenuse.
+    const std::vector<int64_t> tiles{plan.grid.tileIndex(1, 3), plan.grid.tileIndex(2, 3),
+                                     plan.grid.tileIndex(3, 4), plan.grid.tileIndex(4, 3)};
+    std::vector<Point64> anchors;
+    for (const int64_t tile : tiles) {
+        const Rect64 r = plan.grid.tileRect(tile);
+        for (int64_t y = r.y; y < r.y + r.height; y += 3) {
+            for (int64_t x = r.x; x < r.x + r.width; x += 2) {
+                anchors.push_back(Point64{x, y});
+            }
+        }
+    }
+    std::vector<uint8_t> expected;
+    for (const Point64& a : anchors) {
+        expected.push_back(reference.admits(a) ? 1 : 0);
+    }
+    ASSERT_NE(std::count(expected.begin(), expected.end(), 1), 0);
+    ASSERT_NE(std::count(expected.begin(), expected.end(), 0), 0);
+
+    const int64_t before = disc.fillCount();
+    constexpr int kThreads = 8;
+    std::vector<std::vector<uint8_t>> answers(kThreads);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t]() {
+            // Each thread walks the anchors from a different start, so threads meet in every tile.
+            const size_t n = anchors.size();
+            answers[t].assign(n, 0);
+            for (size_t i = 0; i < n; ++i) {
+                const size_t j = (i + static_cast<size_t>(t) * n / kThreads) % n;
+                answers[t][j] = filter.admits(anchors[j]) ? 1 : 0;
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    for (int t = 0; t < kThreads; ++t) {
+        EXPECT_EQ(answers[t], expected) << "thread " << t;
+    }
+    EXPECT_EQ(disc.fillCount() - before, static_cast<int64_t>(tiles.size())) << "one fillMask per tile";
 }

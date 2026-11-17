@@ -11,6 +11,7 @@
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/ids.hpp>
 #include <slideio/processor/core/memory_budget.hpp>
+#include <slideio/processor/pipeline/operation.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
@@ -43,18 +44,42 @@ public:
     std::string stageName = "pipeline";
 
     // Scene metadata, read at the first validate() and kept: it never changes.
-    std::unique_ptr<detail::SceneReader> reader;
-    std::unique_ptr<LevelSelector> selector;
+    // Shared, so a snapshot outlives the Pipeline.
+    std::shared_ptr<const detail::SceneReader> reader;
+    std::shared_ptr<const LevelSelector> selector;
     std::vector<detail::LevelDims> levels;
 
-    /// What the last successful validate() resolved; dropped by every binding call.
-    std::unique_ptr<detail::RunPlan> plan;
+    /// What the last successful validate() resolved. Immutable once built: validate()
+    /// swaps a new plan in and every binding call drops the pointer, so a run or a
+    /// snapshot holding the old plan keeps it unchanged.
+    std::shared_ptr<const detail::RunPlan> plan;
 
     /// What the last run counted; reset when a run starts.
     detail::RunCounters counters;
+
+    /// The operations the last run applied: the plan's, with the run's own
+    /// accumulated global-context instances in their positions. Set when a run
+    /// starts; empty before the first. Never read by a run.
+    std::vector<OperationPtr> lastRunOperations;
 };
 
 namespace detail {
+
+/// What a lazy scene evaluates from: the plan and the bindings that matter to
+/// pixels, taken at one moment. Later validate() or binding calls on the Pipeline
+/// leave a snapshot unchanged. The mask source and the auxiliaries stay borrowed
+/// from the caller; sinks are not part of it.
+struct PipelineSnapshot {
+    std::shared_ptr<const RunPlan> plan;           ///< Never null.
+    std::shared_ptr<slideio::Scene> scene;
+    Configuration config;
+    PipelineSpec spec;
+    std::shared_ptr<const SceneReader> reader;     ///< Never null.
+    std::shared_ptr<const LevelSelector> selector; ///< Never null.
+    std::vector<LevelDims> levels;
+    std::vector<std::pair<std::string, TileRasterSource*>> auxiliaries;
+    TileMaskSource* maskSource = nullptr;
+};
 
 /// The engine's way into a Pipeline's state (the executor and tests use it), so
 /// no public signature grows.
@@ -67,6 +92,18 @@ struct PipelineAccess {
             throw InternalError("PipelineAccess::plan: the pipeline has not been validated");
         }
         return *pipeline.impl_->plan;
+    }
+
+    /// The current plan and pixel bindings, validating first when no plan is held.
+    /// Throws what Pipeline::validate() throws.
+    static PipelineSnapshot snapshot(const Pipeline& pipeline) {
+        if (!pipeline.impl_->plan) {
+            pipeline.validate();
+        }
+        const Pipeline::Impl& impl = *pipeline.impl_;
+        return PipelineSnapshot{impl.plan,   impl.scene,  impl.config,      impl.spec,
+                                impl.reader, impl.selector, impl.levels, impl.auxiliaries,
+                                impl.maskSource};
     }
 };
 

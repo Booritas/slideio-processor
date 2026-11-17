@@ -1,6 +1,7 @@
 // Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3
 #pragma once
 
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/restriction.hpp>
 #include <pipeline/detail/run_plan.hpp>
 #include <pipeline/detail/scene_reader.hpp>
@@ -43,8 +44,9 @@ struct Bindings {
     RasterSink* rasterSink = nullptr;
     std::vector<std::pair<std::string, TileRasterSource*>> auxiliaries;
     TileMaskSource* maskSource = nullptr;
-    /// The seam merger's entry point; empty when the run has none.
-    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> seamFragment;
+    /// The seam merger's entry point, called with the emitting tile's index; empty
+    /// when the run has none.
+    SeamFragmentCallback seamFragment;
     const PipelineSpec* spec = nullptr;            ///< For the channels and the restriction; required.
     const LevelSelector* selector = nullptr;       ///< For the restriction's mapping; required.
     RunCounters* counters = nullptr;               ///< Required.
@@ -73,9 +75,13 @@ struct Accumulation {
 /// concurrently on different tiles, as far as the operations and sinks allow.
 class TileEvaluator {
 public:
-    /// Throws InvalidArgumentError when a required binding is null, and what
-    /// RestrictionFilter's constructor throws.
-    TileEvaluator(const RunPlan& plan, const SceneReader& reader, Bindings bindings);
+    /// `operations` are the operations to apply, one per position of
+    /// `plan.operations`: the plan's own, or a run's copy with its fresh
+    /// global-context instances in their positions. The plan is only read.
+    /// Throws InvalidArgumentError when a required binding is null or `operations`
+    /// does not match the plan's chain, and what RestrictionFilter's constructor throws.
+    TileEvaluator(const RunPlan& plan, std::vector<OperationPtr> operations, const SceneReader& reader,
+                  Bindings bindings);
 
     /// Evaluates tile `tileIndex`. Throws CancelledError when `token` is
     /// cancelled (checked before the tile and between operations), and whatever
@@ -97,6 +103,7 @@ public:
 
 private:
     const RunPlan& plan_;
+    std::vector<OperationPtr> operations_;
     const SceneReader& reader_;
     Bindings bindings_;
     RestrictionFilter restriction_;
