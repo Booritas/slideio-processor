@@ -1,16 +1,22 @@
-// Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3
+// Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
 #include <slideio/processor/pipeline/executor.hpp>
 
+#include <pipeline/detail/fragment_spill.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/restriction.hpp>
+#include <pipeline/detail/seam_merger_access.hpp>
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
+#include <slideio/processor/pipeline/seam_merger.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -60,6 +66,49 @@ public:
 private:
     MemoryBudget& budget_;
     int64_t bytes_;
+};
+
+// A directory of one run's own, `<base>/pipeline-<32 random lowercase hex>`
+// (the platform's temporary directory when `base` is empty), created on
+// construction and removed with everything in it on destruction.
+class RunScratchDirectory {
+public:
+    explicit RunScratchDirectory(const char* base) {
+        std::error_code error;
+        std::filesystem::path root;
+        if (base == nullptr || base[0] == '\0') {
+            root = std::filesystem::temp_directory_path(error);
+        } else {
+            root = std::filesystem::u8path(base);
+        }
+        if (!error) {
+            path_ = root / ("pipeline-" + detail::randomHexName());
+            std::filesystem::create_directories(path_, error);
+        }
+        if (error) {
+            const std::string cause = error.message();
+            ErrorContext context;
+            context.cause = cause.c_str();
+            throw IoError(("TileExecutor::run: cannot create a scratch directory under '" +
+                           (base != nullptr ? std::string(base) : std::string()) + "'")
+                              .c_str(),
+                          context);
+        }
+        text_ = path_.u8string();
+    }
+    ~RunScratchDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+    RunScratchDirectory(const RunScratchDirectory&) = delete;
+    RunScratchDirectory& operator=(const RunScratchDirectory&) = delete;
+
+    /// The directory, UTF-8.
+    const char* path() const noexcept { return text_.c_str(); }
+
+private:
+    std::filesystem::path path_;
+    std::string text_;
 };
 
 // What the workers of one pass share. Held by shared_ptr by run() and by every
@@ -359,6 +408,19 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     }
     state.lastRunOperations = operations;
 
+    // A chain that produces objects gets a seam merger for the run, working in a
+    // scratch directory of the run's own. Declared before the evaluator, whose
+    // callback reaches the merger, so the evaluator goes first, then the merger,
+    // removing its scratch file, then the directory: on every way out of run().
+    const bool producesObjects = std::any_of(operations.begin(), operations.end(),
+                                             [](const OperationPtr& op) { return op->producesObjects(); });
+    std::unique_ptr<RunScratchDirectory> scratch;
+    std::unique_ptr<SeamMerger> merger;
+    if (producesObjects) {
+        scratch = std::make_unique<RunScratchDirectory>(impl_->config.scratchDirectory());
+        merger = std::make_unique<SeamMerger>(impl_->grid, pool.budget, scratch->path());
+    }
+
     detail::Bindings bindings;
     bindings.objectSink = &sink;
     bindings.edgeSink = state.edgeSink;
@@ -369,7 +431,33 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
+    if (merger) {
+        // Fragments are partial by definition, so they bypass the tile-ownership
+        // and restriction filters; the merged object's anchor is tested instead.
+        bindings.seamFragment = [target = merger.get()](const Polygon& fragment, LayerId layer,
+                                                        const IntensityPartial* partials, int32_t count,
+                                                        int64_t tileIndex) {
+            target->addFragment(tileIndex, fragment, layer, partials, count);
+        };
+    }
     const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));
+
+    // A merged object is stored only when the restriction admits its anchor. The
+    // tile masks admits() caches are released as tiles settle, which keeps the
+    // cache to the tiles in progress. The merger calls the filter only from
+    // notifyTileComplete() and resolve(), never after run() leaves them.
+    std::unique_ptr<detail::TileMaskRelease> maskRelease;
+    if (merger && evaluator.restriction().restricted()) {
+        maskRelease = std::make_unique<detail::TileMaskRelease>(evaluator.restriction(), plan.grid);
+        detail::SeamMergerAccess::setFilter(
+            *merger, [release = maskRelease.get(), counters = &state.counters](Point64 anchor) {
+                const bool admitted = release->admits(anchor);
+                if (!admitted) {
+                    ++counters->droppedByRestriction;
+                }
+                return admitted;
+            });
+    }
 
     std::atomic<int64_t>& completed = impl_->completed;
 
@@ -487,7 +575,22 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
             reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
         }
     }
-    runPass([&](int64_t tile, const char** operation) { evaluator.evaluate(tile, token, operation); });
+    // The final pass. Every tile, a skipped one included, is reported to the
+    // merger as it completes, so objects close during the pass; a failure there is
+    // the tile's. After a failure or a cancellation nothing is resolved: the
+    // merger is destroyed with whatever it still holds.
+    runPass([&](int64_t tile, const char** operation) {
+        evaluator.evaluate(tile, token, operation);
+        if (merger) {
+            merger->notifyTileComplete(tile, sink);
+            if (maskRelease) {
+                maskRelease->tileCompleted(tile);
+            }
+        }
+    });
+    if (merger) {
+        merger->resolve(sink, progress, token);
+    }
 }
 
 } // namespace slideio::processor

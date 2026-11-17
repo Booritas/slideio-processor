@@ -9,10 +9,12 @@
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace slideio::processor::detail {
 
@@ -61,6 +63,10 @@ public:
     /// through the same sources, uncached. True when the run is unrestricted.
     bool admits(Point64 anchorLevel0) const;
 
+    /// The grid tile whose cached mask admits() answers from for a level-0
+    /// anchor; -1 when the anchor lies in no tile of the grid.
+    int64_t tileOf(Point64 anchorLevel0) const;
+
     /// Drops the cached mask of tile `tileIndex`; nothing when none is cached.
     void releaseTileMask(int64_t tileIndex) const;
 
@@ -68,11 +74,16 @@ public:
     int64_t cachedTileMaskCount() const;
 
 private:
-    // One tile's cached mask; `built` guards its single build.
+    // One tile's cached mask, built once under `mutex`; a build that throws
+    // leaves `built` false, so the next caller tries again.
     struct CachedMask {
-        std::once_flag built;
+        std::mutex mutex;
+        bool built = false;
         RasterMask mask;
     };
+
+    // The level pixel holding a level-0 point, as RasterMask::testLevel0 finds it.
+    Point64 levelPixelOf(Point64 anchorLevel0) const;
 
     // A mask over `regionAtLevel` holding exactly the restriction.
     RasterMask buildMask(const Rect64& regionAtLevel) const;
@@ -92,6 +103,45 @@ private:
 
     mutable std::mutex cacheMutex_; // Guards cache_ (the map, not the masks it points to).
     mutable std::unordered_map<int64_t, std::shared_ptr<CachedMask>> cache_;
+};
+
+/// Releases a RestrictionFilter's cached tile masks as the run's tiles complete,
+/// so the cache stays bounded by the tiles still in progress instead of growing
+/// to one byte per level pixel.
+///
+/// A tile is settled once it and every tile around it (the up to eight
+/// neighbours) have completed. A settled tile's mask is released by the
+/// completion that settles it: the objects anchored there have closed by then,
+/// except those reaching beyond the neighbouring tiles, which are few. An anchor
+/// tested in a tile already settled builds the mask again; that tile is noted
+/// and released at the next completion, so a burst of such tests in one tile
+/// builds its mask once. Releasing never changes an answer: a released mask is
+/// built again when asked for. Every member may be called from several threads
+/// at once. The filter and the grid are borrowed.
+class TileMaskRelease {
+public:
+    TileMaskRelease(const RestrictionFilter& filter, const TileGrid& grid);
+
+    TileMaskRelease(const TileMaskRelease&) = delete;
+    TileMaskRelease& operator=(const TileMaskRelease&) = delete;
+
+    /// RestrictionFilter::admits(), noting the anchor's tile when it has settled.
+    bool admits(Point64 anchorLevel0) const;
+
+    /// Records that tile `tileIndex` has completed, once everything its
+    /// completion closed has been tested; releases the masks of the tiles this
+    /// settles and of the settled tiles whose masks were built again.
+    /// Throws InvalidArgumentError when the index is outside the grid.
+    void tileCompleted(int64_t tileIndex);
+
+private:
+    bool settled(int64_t tileIndex) const;
+
+    const RestrictionFilter& filter_;
+    const TileGrid& grid_;
+    std::unique_ptr<std::atomic<bool>[]> completed_; // Per tile.
+    mutable std::mutex lateMutex_;                   // Guards late_.
+    mutable std::vector<int64_t> late_;              // Settled tiles whose masks were built again.
 };
 
 } // namespace slideio::processor::detail

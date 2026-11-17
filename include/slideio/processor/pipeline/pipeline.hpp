@@ -255,13 +255,21 @@ public:
      * the object, edge, annotation and raster sinks are flushed, once each, in
      * that order; on failure or cancellation none is, and no worker thread
      * outlives the call.
+     *
+     * Objects cut by tile seams are merged during the run, as
+     * TileExecutor::run() describes, so each reaches @p sink once and whole,
+     * before the sinks are flushed. The run's scratch directory,
+     * `pipeline-<32 random lowercase hex digits>` under the configuration's
+     * scratch directory, exists only while a chain producing objects runs and is
+     * removed on every path.
      * @param sink Receives the objects the chain emits; called concurrently.
      * @param progress Receives progress reports; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws IoError As validate().
+     * @throws IoError As validate(); when the run's scratch directory cannot
+     * be created; when merged fragments cannot be read back from it.
      * @throws TileError When a tile fails: the stage, the operation when one
      * threw, the tile's column and row (hasTile() is true), and the original
      * text as the cause. Also when creating or finalising a global-context
@@ -269,12 +277,13 @@ public:
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded, or as validate(); nothing is flushed.
+     * recorded, when seam fragments do not merge, or as validate(); nothing is
+     * flushed.
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements
-     * UR-EXE-1, UR-ALG-5, UR-IMG-5, UR-STG-3
+     * UR-EXE-1, UR-ALG-5, UR-IMG-5, UR-STG-3, UR-SEG-3
      */
     void runInto(ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token);
     /**

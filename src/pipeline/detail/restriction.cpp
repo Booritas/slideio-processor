@@ -104,24 +104,31 @@ bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {
     return true;
 }
 
+Point64 RestrictionFilter::levelPixelOf(Point64 anchorLevel0) const {
+    // The level pixel whose square holds the point, computed as RasterMask::testLevel0
+    // computes it (double division, then floor).
+    const double scale = plan_.levelScale;
+    return Point64{static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.x) / scale)),
+                   static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.y) / scale))};
+}
+
+int64_t RestrictionFilter::tileOf(Point64 anchorLevel0) const { return tileHolding(levelPixelOf(anchorLevel0)); }
+
 bool RestrictionFilter::admits(Point64 anchorLevel0) const {
     if (!restricted_) {
         return true;
     }
-    // The level pixel whose square holds the point, computed as RasterMask::testLevel0
-    // computes it (double division, then floor).
-    const double scale = plan_.levelScale;
-    const Point64 pixel{static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.x) / scale)),
-                        static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.y) / scale))};
+    const Point64 pixel = levelPixelOf(anchorLevel0);
     const int64_t tile = tileHolding(pixel);
     if (tile < 0) {
         // In no tile of the grid: rare, so a one-pixel mask, uncached.
         return buildMask(Rect64{pixel.x, pixel.y, 1, 1}).testLevel0(anchorLevel0);
     }
 
-    // The tile's entry is found or made under the lock; its mask is built outside
-    // it, once: concurrent callers in the same tile wait on the entry's once_flag,
-    // and a build that throws leaves the flag unset for the next caller.
+    // The tile's entry is found or made under the cache lock; its mask is built
+    // under the entry's own lock, once: concurrent callers in the same tile wait
+    // for that build, and a build that throws leaves the entry unbuilt, so the
+    // next caller builds it again.
     std::shared_ptr<CachedMask> entry;
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
@@ -131,8 +138,14 @@ bool RestrictionFilter::admits(Point64 anchorLevel0) const {
         }
         entry = slot;
     }
-    std::call_once(entry->built,
-                   [this, tile, &entry]() { entry->mask = buildMask(plan_.grid.tileRectAtLevel(tile)); });
+    {
+        std::lock_guard<std::mutex> lock(entry->mutex);
+        if (!entry->built) {
+            entry->mask = buildMask(plan_.grid.tileRectAtLevel(tile));
+            entry->built = true;
+        }
+    }
+    // Never written once built, and the lock above ordered the build before this read.
     return entry->mask.testLevel0(anchorLevel0);
 }
 
@@ -165,6 +178,69 @@ int64_t RestrictionFilter::tileHolding(Point64 levelPixel) const {
     }
     const int64_t tile = grid.tileIndex(column, row);
     return grid.tileRectAtLevel(tile).contains(levelPixel) ? tile : -1;
+}
+
+TileMaskRelease::TileMaskRelease(const RestrictionFilter& filter, const TileGrid& grid)
+    : filter_(filter),
+      grid_(grid),
+      completed_(std::make_unique<std::atomic<bool>[]>(static_cast<size_t>(grid.tileCount()))) {
+    for (int64_t t = 0; t < grid.tileCount(); ++t) {
+        completed_[static_cast<size_t>(t)] = false;
+    }
+}
+
+bool TileMaskRelease::settled(int64_t tileIndex) const {
+    const int64_t columns = grid_.columns();
+    const int64_t column = tileIndex % columns;
+    const int64_t row = tileIndex / columns;
+    for (int64_t r = std::max<int64_t>(row - 1, 0); r <= std::min<int64_t>(row + 1, grid_.rows() - 1); ++r) {
+        for (int64_t c = std::max<int64_t>(column - 1, 0); c <= std::min<int64_t>(column + 1, columns - 1); ++c) {
+            if (!completed_[static_cast<size_t>(grid_.tileIndex(c, r))]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool TileMaskRelease::admits(Point64 anchorLevel0) const {
+    const bool admitted = filter_.admits(anchorLevel0);
+    // Checked after the build: when the tile settles in between, the completion
+    // settling it releases the mask if it came after the build, and this note
+    // does if it came before.
+    const int64_t tile = filter_.tileOf(anchorLevel0);
+    if (tile >= 0 && settled(tile)) {
+        std::lock_guard<std::mutex> lock(lateMutex_);
+        late_.push_back(tile);
+    }
+    return admitted;
+}
+
+void TileMaskRelease::tileCompleted(int64_t tileIndex) {
+    if (tileIndex < 0 || tileIndex >= grid_.tileCount()) {
+        throw InvalidArgumentError("TileMaskRelease::tileCompleted: the tile index is outside the grid");
+    }
+    completed_[static_cast<size_t>(tileIndex)] = true;
+    // Only the tile and its neighbours can settle with it.
+    const int64_t columns = grid_.columns();
+    const int64_t column = tileIndex % columns;
+    const int64_t row = tileIndex / columns;
+    for (int64_t r = std::max<int64_t>(row - 1, 0); r <= std::min<int64_t>(row + 1, grid_.rows() - 1); ++r) {
+        for (int64_t c = std::max<int64_t>(column - 1, 0); c <= std::min<int64_t>(column + 1, columns - 1); ++c) {
+            const int64_t tile = grid_.tileIndex(c, r);
+            if (settled(tile)) {
+                filter_.releaseTileMask(tile);
+            }
+        }
+    }
+    std::vector<int64_t> late;
+    {
+        std::lock_guard<std::mutex> lock(lateMutex_);
+        late.swap(late_);
+    }
+    for (const int64_t tile : late) {
+        filter_.releaseTileMask(tile);
+    }
 }
 
 } // namespace slideio::processor::detail
