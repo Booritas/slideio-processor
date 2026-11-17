@@ -556,3 +556,135 @@ TEST(LazyScene, NestedPipelinesShareOneBudget) {
     EXPECT_TRUE(sink->plane(0) == expected);
     EXPECT_EQ(shared->reservedBytes(), 0);
 }
+
+namespace {
+
+// Assembles the Float32 tiles of an eager run at analysis level `level` of a
+// dyadic pyramid into one image of that level.
+class LevelCaptureSink : public RasterSink {
+public:
+    LevelCaptureSink(int64_t width, int64_t height, int64_t downsample)
+        : width_(width), downsample_(downsample), image_(static_cast<size_t>(width * height), 0.0f) {}
+    void writeTile(const BlockView& tile) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const Rect64 r = tile.slideRect();
+        const int64_t x0 = r.x / downsample_;
+        const int64_t y0 = r.y / downsample_;
+        for (int64_t y = 0; y < tile.height(); ++y) {
+            const auto* row = static_cast<const uint8_t*>(tile.planeData(0)) + y * tile.planeRowStrideBytes(0);
+            std::memcpy(&image_[static_cast<size_t>((y0 + y) * width_ + x0)], row,
+                        static_cast<size_t>(tile.width()) * sizeof(float));
+        }
+    }
+    void flush() override {}
+    int64_t tilesWritten() const override { return 0; }
+    const std::vector<float>& image() const { return image_; }
+
+private:
+    int64_t width_;
+    int64_t downsample_;
+    std::mutex mutex_;
+    std::vector<float> image_;
+};
+
+// The samples of `image` (`width` wide) over `r`, row by row.
+std::vector<float> crop(const std::vector<float>& image, int64_t width, const Rect64& r) {
+    std::vector<float> out;
+    for (int64_t y = r.y; y < r.y + r.height; ++y) {
+        out.insert(out.end(), image.begin() + y * width + r.x, image.begin() + y * width + r.x + r.width);
+    }
+    return out;
+}
+
+std::vector<float> asFloats(const std::vector<uint8_t>& bytes) {
+    std::vector<float> out(bytes.size() / sizeof(float));
+    std::memcpy(out.data(), bytes.data(), out.size() * sizeof(float));
+    return out;
+}
+
+} // namespace
+
+// A coarse level of the lazy scene of a chain with a halo is the chain run on
+// the matching source level: read as an output level, through Pipeline::readBlock
+// (from one thread and from eight at once), and as a scene rectangle read at a
+// reduced block size, it equals, bit for bit, an eager run at that source level.
+TEST(LazyScene, CoarseLevelsEqualTheEagerRunAtThatLevel) {
+    const std::vector<ts::SyntheticLevel> levels{
+        {1024, 768, 0, 0}, {512, 384, 0, 0}, {256, 192, 0, 0}, {128, 96, 0, 0}};
+    auto source = textureSource(levels);
+    constexpr int64_t width = 256;  // Source level 2: output level 1 of analysis level 1.
+    constexpr int64_t height = 192;
+
+    PipelineSpec atTwo = boxMean(2);
+    atTwo.analysisLevel(2);
+    LevelCaptureSink sink(width, height, 4);
+    {
+        Pipeline eagerRun(ts::makeSyntheticScene(source), config(64), atTwo);
+        eagerRun.rasterSink(&sink);
+        eagerRun.run(nullptr, CancellationToken());
+    }
+    const std::vector<float>& expected = sink.image();
+
+    PipelineSpec atOne = boxMean(2);
+    atOne.analysisLevel(1);
+    Pipeline p(ts::makeSyntheticScene(source), config(64), atOne);
+    ASSERT_EQ(p.rect(1), (Rect64{0, 0, width, height}));
+
+    // (a) The output level, whole.
+    {
+        OwnedBlock block(width, height, {DataType::Float32});
+        p.readBlock(1, Rect64{0, 0, width, height}, block.view);
+        EXPECT_TRUE(asFloats(block.storage[0]) == expected) << "output level 1 differs from the eager run";
+    }
+
+    // (a) From eight threads at once, over blocks that cross tile seams.
+    {
+        std::mt19937 random(20261118);
+        std::vector<Rect64> blocks;
+        for (int i = 0; i < 32; ++i) {
+            const int64_t w = std::uniform_int_distribution<int64_t>(1, 130)(random);
+            const int64_t h = std::uniform_int_distribution<int64_t>(1, 130)(random);
+            const int64_t x = std::uniform_int_distribution<int64_t>(0, width - w)(random);
+            const int64_t y = std::uniform_int_distribution<int64_t>(0, height - h)(random);
+            blocks.push_back(Rect64{x, y, w, h});
+        }
+        std::atomic<int64_t> mismatches{0};
+        std::atomic<int64_t> failures{0};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t) {
+            threads.emplace_back([&, t]() {
+                for (size_t i = 0; i < blocks.size(); ++i) {
+                    const Rect64& r = blocks[(i * 5 + static_cast<size_t>(t) * 3) % blocks.size()];
+                    try {
+                        OwnedBlock block(r.width, r.height, {DataType::Float32});
+                        p.readBlock(1, r, block.view);
+                        if (asFloats(block.storage[0]) != crop(expected, width, r)) {
+                            ++mismatches;
+                        }
+                    } catch (...) {
+                        ++failures;
+                    }
+                }
+            });
+        }
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+        EXPECT_EQ(failures.load(), 0);
+        EXPECT_EQ(mismatches.load(), 0);
+    }
+
+    // (b) The scene's rectangle (the analysis level's size) read at half its
+    // size, a quarter of the slide's resolution: output level 1, unresampled.
+    {
+        const auto scene = p.asScene();
+        ASSERT_EQ(std::get<2>(scene->getRect()), 512);
+        ASSERT_EQ(std::get<3>(scene->getRect()), 384);
+        const int64_t before = static_cast<int64_t>(source->readLevels().size());
+        const auto block = readScene(scene, 0, 0, 512, 384, static_cast<int>(width), static_cast<int>(height), 4);
+        const std::vector<int> read = source->readLevels();
+        ASSERT_GT(static_cast<int64_t>(read.size()), before);
+        EXPECT_TRUE(std::all_of(read.begin() + before, read.end(), [](int level) { return level == 2; }));
+        EXPECT_TRUE(asFloats(block) == expected) << "the scene read at a quarter resolution differs from the eager run";
+    }
+}
