@@ -12,6 +12,7 @@ add_library(slideio-processor-pipeline OBJECT
     tile_grid.cpp
     executor.cpp
     detail/combine_partials.cpp
+    detail/fragment_merge.cpp
     detail/half.cpp
     detail/level_mapping.cpp
     detail/level_table.cpp

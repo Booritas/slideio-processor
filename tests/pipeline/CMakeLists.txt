@@ -3,9 +3,10 @@ include(GoogleTest)
 # Shared test helpers (synthetic scenes, test operations) that plans B and C
 # build on. The synthetic scene and the test operations use only the public
 # headers; operation_conformance.cpp also compares parameters through the
-# engine's detail header, so src/ is on the library's private include path. The
-# comparison is not exported from the engine, so its source is compiled into the
-# library, and every executable that links the library gets it from there.
+# engine's detail header, and test_operations.cpp normalises rings through the
+# engine's fragment_merge.hpp, so src/ is on the library's private include path.
+# Neither is exported from the engine, so their sources are compiled into the
+# library, and every executable that links the library gets them from there.
 add_library(slideio_processor_pipeline_test_support STATIC
     test_support/synthetic_scene.cpp
     test_support/operation_conformance.cpp
@@ -13,6 +14,7 @@ add_library(slideio_processor_pipeline_test_support STATIC
     test_support/executor_support.cpp
     test_support/disc_mask_source.cpp
     test_support/global_ops.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/fragment_merge.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/parameters_json.cpp
 )
 target_link_libraries(slideio_processor_pipeline_test_support PUBLIC slideio-processor-engine GTest::gtest
@@ -34,6 +36,7 @@ add_executable(slideio_processor_pipeline_tests
     test_backend.cpp
     test_bindings.cpp
     test_executor.cpp
+    test_fragment_merge.cpp
     test_global_context.cpp
     test_operation.cpp
     test_operation_catalog.cpp
@@ -47,7 +50,7 @@ add_executable(slideio_processor_pipeline_tests
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly
-    # (parameters_json.cpp comes with the test-support library).
+    # (fragment_merge.cpp and parameters_json.cpp come with the test-support library).
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/half.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
