@@ -442,6 +442,8 @@ TEST(SeamMerger, ConstructionValidatesItsArguments) {
     EXPECT_THROW(SeamMerger(grid, makeMemoryBudget(1024), nullptr), InvalidArgumentError);
     EXPECT_THROW(SeamMerger(grid, makeMemoryBudget(1024), "no/such/directory/for/the/seam/merger"),
                  InvalidArgumentError);
+    // Not UTF-8: the path cannot even be formed on some platforms; still the documented error.
+    EXPECT_THROW(SeamMerger(grid, makeMemoryBudget(1024), "\xff\xfe-not-utf8"), InvalidArgumentError);
 }
 
 TEST(SeamMerger, AddFragmentValidatesItsArguments) {

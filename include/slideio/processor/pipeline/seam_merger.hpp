@@ -88,7 +88,8 @@ public:
     /// memory budget.
     /// @param scratchDirectory UTF-8 path of an existing directory.
     /// @throws InvalidArgumentError When @p budget or @p scratchDirectory is
-    /// null, or @p scratchDirectory is not an existing directory.
+    /// null, or @p scratchDirectory is not an existing directory, a path that
+    /// cannot be formed from it (not UTF-8, say) included.
     /// @throws std::bad_alloc When memory is exhausted.
     /// @par Thread-safety
     /// Safe to call concurrently.

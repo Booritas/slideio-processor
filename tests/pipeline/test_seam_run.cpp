@@ -11,6 +11,7 @@
 
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/restriction.hpp>
+#include <pipeline/detail/seam_merge_failure.hpp>
 #include <pipeline/test_support/disc_mask_source.hpp>
 #include <pipeline/test_support/executor_support.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -23,11 +24,16 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -468,3 +474,96 @@ TEST(SeamRun, TightBudgetDoesNotWaitForMemory) {
         EXPECT_EQ(stored, roomy.emittedCount()) << workers << " workers";
     }
 }
+
+namespace {
+
+// Collects objects, but fails, with a standard exception, on the first object
+// cut by a seam of 64-pixel tiles: one only the seam merge produces.
+class FailingOnMergedSink : public ObjectSink {
+public:
+    void emit(const ObjectRecord& record) override {
+        if (crossesSeam(record, 64, 0)) {
+            throw std::runtime_error("the store refused a merged object");
+        }
+        ++emitted_;
+    }
+    void flush() override {}
+    int64_t emittedCount() const override { return emitted_; }
+
+private:
+    std::atomic<int64_t> emitted_{0};
+};
+
+std::exception_ptr thrown(const std::function<void()>& raise) {
+    try {
+        raise();
+    } catch (...) {
+        return std::current_exception();
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// A standard exception from the object sink while merged objects are emitted
+// reaches the caller as a TileError, the original text as its cause.
+TEST(SeamRun, ObjectSinkFailureWhileMergingIsTranslated) {
+    FailingOnMergedSink sink;
+    Pipeline p(blobScene(), config(64, 4), components(true));
+    p.bindLayer("objects", LayerId(3));
+    try {
+        p.runInto(sink, nullptr, CancellationToken());
+        FAIL() << "the sink's failure was lost";
+    } catch (const TileError& e) {
+        EXPECT_TRUE(e.hasTile());
+        EXPECT_STREQ(e.cause(), "the store refused a merged object");
+    }
+}
+
+// What the seam merge after the last tile throws reaches the caller as the run
+// reports failures: a ProcessorError (a cancellation included) and
+// std::bad_alloc as they are, anything else as a TileError with no tile.
+TEST(SeamRun, SeamMergeFailuresAreTranslated) {
+    const auto translated = [](const std::exception_ptr& failure) {
+        return thrown([&] { detail::rethrowSeamMergeFailure(failure, "stage"); });
+    };
+    for (const std::exception_ptr& failure :
+         {thrown([] { throw std::runtime_error("the store refused an object"); }),
+          thrown([] { throw std::system_error(std::make_error_code(std::errc::resource_deadlock_would_occur)); }),
+          thrown([] { throw 7; })}) {
+        try {
+            std::rethrow_exception(translated(failure));
+        } catch (const TileError& e) {
+            EXPECT_FALSE(e.hasTile());
+            EXPECT_STREQ(e.stageName(), "stage");
+            EXPECT_STRNE(e.cause(), "");
+        } catch (...) {
+            ADD_FAILURE() << "not translated to a TileError";
+        }
+    }
+    EXPECT_THROW(std::rethrow_exception(translated(thrown([] { throw IoError("read back"); }))), IoError);
+    EXPECT_THROW(std::rethrow_exception(translated(thrown([] { throw CancelledError("cancelled"); }))),
+                 CancelledError);
+    EXPECT_THROW(std::rethrow_exception(translated(thrown([] { throw InternalError("still open"); }))),
+                 InternalError);
+    EXPECT_THROW(std::rethrow_exception(translated(thrown([] { throw std::bad_alloc(); }))), std::bad_alloc);
+}
+
+#ifdef _WIN32
+// A scratch directory whose path cannot be formed (not UTF-8) is an IoError
+// naming the run's scratch directory, not a raw standard exception.
+TEST(SeamRun, UnusableScratchDirectoryIsAnIoError) {
+    ts::CollectingObjectSink stored;
+    Pipeline p(blobScene(), config(64, 1, "\xff\xfe-not-utf8"), components(true));
+    p.bindLayer("objects", LayerId(3));
+    try {
+        p.runInto(stored, nullptr, CancellationToken());
+        FAIL() << "the run did not fail";
+    } catch (const IoError& e) {
+        EXPECT_NE(std::string(e.what()).find("scratch directory"), std::string::npos) << e.what();
+        EXPECT_STRNE(e.cause(), "");
+    } catch (const std::exception& e) {
+        FAIL() << "untranslated: " << e.what();
+    }
+}
+#endif

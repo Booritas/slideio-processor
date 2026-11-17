@@ -10,8 +10,10 @@
 #include <slideio/processor/pipeline/standard_measurements.hpp>
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <map>
+#include <new>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -409,10 +411,23 @@ SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char*
     if (scratchDirectory == nullptr) {
         throw InvalidArgumentError("SeamMerger: the scratch directory must not be null");
     }
-    std::error_code error;
-    if (!std::filesystem::is_directory(std::filesystem::u8path(scratchDirectory), error)) {
+    // A path that cannot be formed (not UTF-8, say) is no directory either.
+    bool isDirectory = false;
+    std::string cause;
+    try {
+        std::error_code error;
+        isDirectory = std::filesystem::is_directory(std::filesystem::u8path(scratchDirectory), error);
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& e) {
+        cause = e.what();
+    }
+    if (!isDirectory) {
+        ErrorContext context;
+        context.cause = cause.c_str();
         throw InvalidArgumentError(
-            (std::string("SeamMerger: the scratch directory '") + scratchDirectory + "' is not a directory").c_str());
+            (std::string("SeamMerger: the scratch directory '") + scratchDirectory + "' is not a directory").c_str(),
+            context);
     }
     impl_ = std::make_unique<Impl>(grid, std::move(budget), std::string(scratchDirectory));
 }

@@ -319,7 +319,9 @@ public:
      * @throws TileError When a tile fails: the stage, the operation when one
      * threw, the tile's column and row (hasTile() is true), and the original
      * text as the cause. Also when creating or finalising a global-context
-     * operation fails; hasTile() is then false. Nothing is flushed then.
+     * operation fails, or when the seam merge after the last tile fails with
+     * anything but a ProcessorError or std::bad_alloc (a standard exception from
+     * @p sink, say); hasTile() is then false. Nothing is flushed then.
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be
@@ -342,8 +344,8 @@ public:
      * @throws IoError As validate(); as runInto(), when the run's scratch
      * directory cannot be created or merged fragments cannot be read back from it.
      * @throws TileError As runInto(): hasTile() is true for a tile failure and
-     * false for a failure creating or finalising a global-context operation.
-     * Nothing is flushed then.
+     * false for a failure creating or finalising a global-context operation or
+     * of the seam merge after the last tile. Nothing is flushed then.
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be

@@ -193,11 +193,15 @@ public:
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
      * @throws IoError As Pipeline::validate(); when the run's scratch
-     * directory cannot be created; as SeamMerger::resolve().
+     * directory cannot be created, its path not being formable (not UTF-8,
+     * say) included, with the reason as the cause; as SeamMerger::resolve().
      * @throws TileError When a tile fails, merging the objects its completion
      * closes included; hasTile() is true, tileX() and tileY() are its column
-     * and row. When creating or finalising a global-context operation fails;
-     * hasTile() is then false.
+     * and row. When creating or finalising a global-context operation fails, or
+     * when the seam merge after the last tile (SeamMerger::resolve()) throws
+     * anything but a ProcessorError or std::bad_alloc, such as a standard
+     * exception from @p sink, with its what() as the cause; hasTile() is then
+     * false.
      * @throws CancelledError When @p token is cancelled or an operation throws it.
      * @throws InternalError When a tile failed and its failure could not be
      * recorded, or as Pipeline::validate() or SeamMerger::resolve().

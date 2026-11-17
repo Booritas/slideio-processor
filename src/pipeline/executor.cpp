@@ -5,6 +5,7 @@
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/restriction.hpp>
+#include <pipeline/detail/seam_merge_failure.hpp>
 #include <pipeline/detail/seam_merger_access.hpp>
 #include <pipeline/detail/tile_reservation.hpp>
 
@@ -21,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -74,28 +76,40 @@ private:
 // construction and removed with everything in it on destruction.
 class RunScratchDirectory {
 public:
+    // Forming the path (not UTF-8, say) or drawing the random name can throw a
+    // standard exception; it is reported as the IoError a failed creation is.
     explicit RunScratchDirectory(const char* base) {
-        std::error_code error;
-        std::filesystem::path root;
-        if (base == nullptr || base[0] == '\0') {
-            root = std::filesystem::temp_directory_path(error);
-        } else {
-            root = std::filesystem::u8path(base);
+        std::string cause;
+        try {
+            std::error_code error;
+            std::filesystem::path root;
+            if (base == nullptr || base[0] == '\0') {
+                root = std::filesystem::temp_directory_path(error);
+            } else {
+                root = std::filesystem::u8path(base);
+            }
+            if (!error) {
+                path_ = root / ("pipeline-" + detail::randomHexName());
+                std::filesystem::create_directories(path_, error);
+            }
+            if (!error) {
+                text_ = path_.u8string();
+                return;
+            }
+            cause = error.message();
+        } catch (const std::bad_alloc&) {
+            removeCreated();
+            throw;
+        } catch (const std::exception& e) {
+            cause = e.what();
         }
-        if (!error) {
-            path_ = root / ("pipeline-" + detail::randomHexName());
-            std::filesystem::create_directories(path_, error);
-        }
-        if (error) {
-            const std::string cause = error.message();
-            ErrorContext context;
-            context.cause = cause.c_str();
-            throw IoError(("TileExecutor::run: cannot create a scratch directory under '" +
-                           (base != nullptr ? std::string(base) : std::string()) + "'")
-                              .c_str(),
-                          context);
-        }
-        text_ = path_.u8string();
+        removeCreated();
+        ErrorContext context;
+        context.cause = cause.c_str();
+        throw IoError(("TileExecutor::run: cannot create a scratch directory under '" +
+                       (base != nullptr ? std::string(base) : std::string()) + "'")
+                          .c_str(),
+                      context);
     }
     ~RunScratchDirectory() {
         std::error_code error;
@@ -108,6 +122,15 @@ public:
     const char* path() const noexcept { return text_.c_str(); }
 
 private:
+    // On a failed construction no destructor runs: removes the directory if it
+    // was created before the failure.
+    void removeCreated() {
+        std::error_code ignored;
+        if (!path_.empty()) {
+            std::filesystem::remove_all(path_, ignored);
+        }
+    }
+
     std::filesystem::path path_;
     std::string text_;
 };
@@ -595,7 +618,11 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         }
     });
     if (merger) {
-        merger->resolve(sink, progress, token);
+        try {
+            merger->resolve(sink, progress, token);
+        } catch (...) {
+            detail::rethrowSeamMergeFailure(std::current_exception(), stageName);
+        }
     }
 }
 

@@ -1110,8 +1110,10 @@ workspace instead (5.7). A chain producing no objects gets neither merger nor
 directory.
 
 `runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
-tile (`hasTile()` true) or for a failure creating or finalising a
-global-context operation (`hasTile()` false); `CancelledError` when the token
+tile (`hasTile()` true), or for a failure creating or finalising a
+global-context operation or a failure of the seam merge after the last tile
+that is neither a `ProcessorError` nor `std::bad_alloc`, such as a standard
+exception from the object sink (`hasTile()` false); `CancelledError` when the token
 is cancelled or an operation throws it; `IoError` when the run's scratch
 directory cannot be created or a spilled fragment cannot be read back; and
 `InternalError` when a tile failed and its failure could not be recorded, or
