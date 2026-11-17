@@ -190,8 +190,9 @@ private:
     // components while the budget is short. False when nothing more can be
     // spilled and the caller must wait for the budget outside the lock.
     bool reserveFor(int64_t id, int64_t bytes);
-    // Ends the waits for the budget in progress, so the waiters spill again:
-    // called whenever a resident fragment has reserved memory.
+    // Ends the waits for the budget in progress, so the waiters look again:
+    // called when a resident fragment reserves memory, and when one holding
+    // no memory (perhaps a waiter's own) is written out.
     void wakeWaiters();
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.

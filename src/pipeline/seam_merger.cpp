@@ -271,6 +271,10 @@ void SeamMerger::Impl::spillFragment(int64_t fragment) {
     }
     if (held > 0) {
         budget->release(held);
+    } else {
+        // A fragment holding no bytes may be one whose thread is waiting for
+        // the budget; written out, it needs none, so the waiter must look again.
+        wakeWaiters();
     }
 }
 
