@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace slideio::processor;
@@ -218,6 +219,23 @@ TEST(FragmentMerge, OpenEdgesAreInternalError) {
     const Polygon overlapping = rectangle(5, 0, 5, 4);
     EXPECT_THROW(merge({&left, &overlapping}), InternalError);
     EXPECT_THROW(merge({}), InternalError);
+}
+
+TEST(FragmentMerge, ErrorsCarryCountsNotCoordinates) {
+    // Distinctive coordinates, so any of them leaking into the message is visible.
+    const Polygon left = rectangle(91357, 24683, 6, 4);
+    const Polygon gapped = rectangle(91364, 24683, 3, 4);
+    try {
+        merge({&left, &gapped});
+        FAIL() << "expected InternalError";
+    } catch (const InternalError& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("2 outer rings"), std::string::npos) << what;
+        EXPECT_NE(what.find("2 fragments, 2 rings"), std::string::npos) << what;
+        for (const char* coordinate : {"91357", "91363", "91364", "91367", "24683", "24687"}) {
+            EXPECT_EQ(what.find(coordinate), std::string::npos) << what;
+        }
+    }
 }
 
 TEST(FragmentMerge, NonDyadicSeamsCoincideExactly) {

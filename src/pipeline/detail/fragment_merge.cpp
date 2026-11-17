@@ -70,22 +70,15 @@ bool turnsSharperRight(Point64 back, Point64 d1, Point64 d2) {
     return cross(d1, d2) < 0;
 }
 
-std::string boxText(const std::vector<const Polygon*>& fragments) {
-    Rect64 box{0, 0, 0, 0};
-    bool any = false;
-    for (const Polygon* fragment : fragments) {
-        if (fragment == nullptr || fragment->isEmpty()) {
-            continue;
-        }
-        box = any ? box.united(fragment->boundingBox()) : fragment->boundingBox();
-        any = true;
-    }
-    return "(bounding box x " + std::to_string(box.x) + ", y " + std::to_string(box.y) + ", " +
-           std::to_string(box.width) + "x" + std::to_string(box.height) + ")";
-}
-
+// Errors carry counts only: an object's coordinates could carry clinical data.
 [[noreturn]] void fail(const std::string& what, const std::vector<const Polygon*>& fragments) {
-    throw InternalError(("seam merge: " + what + " " + boxText(fragments)).c_str());
+    int64_t rings = 0;
+    for (const Polygon* fragment : fragments) {
+        rings += fragment == nullptr ? 0 : fragment->ringCount();
+    }
+    throw InternalError(("seam merge: " + what + " (" + std::to_string(fragments.size()) + " fragments, " +
+                         std::to_string(rings) + " rings)")
+                            .c_str());
 }
 
 // Appends the pieces of edge a -> b split at the vertices in `along` (the

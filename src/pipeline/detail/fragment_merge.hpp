@@ -45,11 +45,13 @@ bool contactsJoin(const SeamContact& a, const SeamContact& b);
 /// rings that touch at a point stay apart. Positive rings are outer, negative
 /// ones holes. The result is normalised by normaliseRings.
 ///
-/// Throws InternalError, naming the bounding box of the fragments, when there
-/// are no fragments, when fragments overlap (a directed edge survives twice),
-/// when the edges do not close into rings, when a ring has zero area, or when
-/// the union has other than exactly one outer ring (the fragments are not one
-/// 4-connected object). Coordinates are level-0 slide coordinates; edge-vector
+/// Throws InternalError when there are no fragments, when fragments overlap (a
+/// directed edge survives twice), when the edges do not close into rings, when
+/// a ring has zero area, or when the union has other than exactly one outer
+/// ring (the fragments are not one 4-connected object). The message carries the
+/// fragment and ring counts, never coordinates, which could carry clinical
+/// data; this function does not know the layer, so the caller adds the layer
+/// name when it reports the error. Coordinates are level-0 slide coordinates; edge-vector
 /// cross products must fit int64, which holds for any coordinate below 2^31.
 Polygon mergeFragments(const std::vector<const Polygon*>& fragments);
 
