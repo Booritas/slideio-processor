@@ -248,7 +248,7 @@ public:
      *
      * Validates first when no validation result is held (metadata only), then
      * returns a SlideIO scene whose pixels are computed on demand through
-     * readBlock(). The scene keeps the plan and the bindings that matter to pixels
+     * readBlock(). The scene keeps the validation result and the bindings that matter to pixels
      * (the spec, the source scene, the configuration, the memory budget, the mask
      * source and the auxiliary rasters) as they are now: later binding calls or
      * validate() on this Pipeline do not change it, and it may outlive the
@@ -339,14 +339,16 @@ public:
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws IoError As validate().
+     * @throws IoError As validate(); as runInto(), when the run's scratch
+     * directory cannot be created or merged fragments cannot be read back from it.
      * @throws TileError As runInto(): hasTile() is true for a tile failure and
      * false for a failure creating or finalising a global-context operation.
      * Nothing is flushed then.
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded, or as validate(); nothing is flushed.
+     * recorded, when seam fragments do not merge, or as validate(); nothing is
+     * flushed.
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
@@ -402,8 +404,8 @@ public:
      * @brief Computes one block of the output.
      *
      * Evaluates every tile of the level's grid that meets @p region, one at a
-     * time on the calling thread, each reserving the plan's tile bytes from the
-     * memory budget while it is evaluated (the caller's view itself is not
+     * time on the calling thread, each reserving the per-tile memory a run
+     * reserves from the memory budget while it is evaluated (the caller's view itself is not
      * reserved), as memoryBudget() describes, and copies the part over @p region
      * into @p out. The region may extend beyond rect(@p level): what lies outside
      * it, or outside the restriction (ROI, polygon, mask source), reads as zero.

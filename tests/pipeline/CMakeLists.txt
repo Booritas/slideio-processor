@@ -54,6 +54,7 @@ add_executable(slideio_processor_pipeline_tests
     test_seg3_tiling_invariance.cpp
     test_tile_evaluator.cpp
     test_tile_grid.cpp
+    test_umbrella.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly
     # (fragment_merge.cpp and parameters_json.cpp come with the test-support library).
@@ -120,6 +121,7 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_operation_catalog.cpp
     header_check/check_operation_parameters.cpp
     header_check/check_pipeline.cpp
+    header_check/check_pipeline_all.cpp
     header_check/check_pipeline_spec.cpp
     header_check/check_reduction.cpp
     header_check/check_seam_merger.cpp

@@ -944,6 +944,20 @@ instead of waiting forever. `memoryBudget(nullptr)` restores the default budget,
 `makeMemoryBudget(config.memoryCeilingBytes())`, which is also what a run uses
 when none was bound.
 
+**A thread holding a tile reservation never waits for more memory.** While a
+worker evaluates a tile it is marked, thread-locally, as holding that tile's
+reservation (`detail::TileReservationMark`, which nests and is restored on every
+exit path). A lazy read (below) on a marked thread — a worker of one pipeline
+whose input is another pipeline's `asScene()` — reserves its inner tile's bytes
+with `tryReserve` and, when they do not fit, evaluates the inner tile
+unreserved. An unmarked thread, such as a viewer reading the scene, keeps the
+waiting `reserveOrWait`. Without the rule two pipelines sharing one budget can
+deadlock: every outer worker holds its tile's bytes and waits for inner bytes
+that only those same workers' tiles would free. The cost is bounded and stated:
+the ceiling can be overshot by at most one inner tile per outer worker, for as
+long as that inner tile is evaluated. The seam merger follows the same rule from
+the other side: it never waits for memory at all (5.7).
+
 **Bindings.** `auxiliaryRaster(name, nullptr)` removes that binding, and the
 same name twice replaces. Every binding call invalidates the cached result of
 `validate()`.
@@ -1016,6 +1030,60 @@ objects emitted outside a tile, such as merged objects (5.7), it exposes
 `admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
 from the same three sources. Filtering never alters pixels.
 
+### The lazy mode: `levelCount`, `rect`, `readBlock`, `asScene`
+
+**The output pyramid mirrors the source from the analysis level down.**
+`levelCount()` is the source scene's level count minus `analysisLevel()`; output
+level *k* is the chain evaluated on source level `analysisLevel() + k`, laid out
+as `validate()` would lay the run out at that level, with every halo in that
+level's pixels — never rescaled (5.6). `rect(k)` is the grid region (5.6) at
+that source level, in its coordinates. The plan of every output level is
+resolved once, on the first lazy call, from a snapshot of the bindings that
+matter to pixels — spec, scene, configuration, budget, mask source and
+auxiliary rasters; never the sinks. That first call validates when no
+validation result is held; the build runs under a mutex, so concurrent first
+calls build it once, and a build that throws leaves nothing, so the next call
+tries again. Any binding call drops the snapshot. A chain containing a
+global-context operation throws `InvalidArgumentError("global-context
+operations need runInto")` from `levelCount`, `rect`, `readBlock` and
+`asScene`: a block evaluated on demand has no accumulation pass, which is the
+eager mode's job (UR-EXE-1).
+
+**`readBlock(level, rect, out)`** requires `out` to have the chain's final plane
+count and types and `rect`'s size (`InvalidArgumentError` otherwise). The rect
+may extend beyond `rect(level)`; pixels outside it, or outside the restriction,
+read as zero. Every tile of that level's grid meeting the rect is evaluated on
+the calling thread by the same tile evaluator the eager run uses — with no
+object, edge or annotation sink, and with seam fragments dropped — and its
+final output is copied into `out`. Each tile reserves its bytes from the budget
+while it is evaluated, under the rule above for marked threads. It is const and
+ThreadSafe. A tile failure surfaces as `TileError`, as in a run.
+
+**`asScene()` computes no pixels.** It validates (metadata only), builds the
+lazy source (`detail::PipelineSceneSource`, a SlideIO `ISceneSource`) and
+returns `slideio::makeScene(source, metadata)`; a test proves zero source
+reads at construction. The scene keeps the snapshot and may outlive the
+`Pipeline`; the mask source and auxiliaries stay borrowed. Its description:
+
+| Field | Value |
+|---|---|
+| `name` | the source scene's name + `"/pipeline"` |
+| levels | one per output level; **level 0 is the analysis level, at scale 1**, and level *k* has source level `analysisLevel() + k`'s size and magnification, its scale relative to the analysis level's, and `defaultTileSize` (5.6) |
+| `rect` | the source scene's origin with the analysis level's size, so the source rect itself when the analysis level is 0 |
+| resolution, magnification | the source's, converted to the analysis level |
+| colour profile | the source's |
+| channels | one per final plane, named `"c0"`, `"c1"`, …, typed with `dataTypeToSlideio` |
+
+Level 0 must be the analysis level because SlideIO requires a scene's level 0
+to have scale 1 and to match its rect; describing a pipeline analysed at level
+2 with the source's level-0 rect would be refused by `makeScene`. A level read
+evaluates through `readBlock` and interleaves into SlideIO's buffer; channels
+of different types are read one type per call, as SlideIO requires. A
+scene-rectangle read picks the coarsest output level whose resolution is at
+least the one requested on both axes, reads it and resamples to the block size
+nearest-neighbour (the mapping of `cv::INTER_NEAREST`), so no value is
+invented. The source declares concurrent reads.
+
 ### Running
 
 `run(progress, token)` is `runInto` with an internal sink that counts and drops
@@ -1026,11 +1094,29 @@ same reason. Edge and annotation emissions pass through no filter (5.1).
 `runInto` flushes the object, edge, annotation and raster sinks, once each and
 in that order, after every worker has stopped, and only on success (5.9).
 
+**Seam merging inside a run.** When any operation of the chain produces
+objects, the executor's run owns a `SeamMerger` (5.7) for that run and routes
+every `emitSeamFragment` to it; fragments bypass the ownership and restriction
+filters, being partial by definition, and the merged object's anchor is tested
+instead, through `RestrictionFilter::admits` handed to the merger. Merged
+objects reach the same `ObjectSink` as single-tile ones, during the pass, before
+any flush. The merger works in a scratch directory of the run's own,
+`pipeline-<32 random lowercase hex digits>` under
+`Configuration::scratchDirectory()` (the platform's temporary directory when
+that is empty), created when the run starts and removed with everything in it
+on every way out of the run, failure and cancellation included. That is what a
+`Pipeline` used directly does; `StageRunner` is to pass a subdirectory of the
+workspace instead (5.7). A chain producing no objects gets neither merger nor
+directory.
+
 `runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
 tile (`hasTile()` true) or for a failure creating or finalising a
 global-context operation (`hasTile()` false); `CancelledError` when the token
-is cancelled or an operation throws it; and `InternalError` when a tile failed
-and its failure could not be recorded. Nothing is flushed on any of these.
+is cancelled or an operation throws it; `IoError` when the run's scratch
+directory cannot be created or a spilled fragment cannot be read back; and
+`InternalError` when a tile failed and its failure could not be recorded, or
+when seam fragments do not merge into one object. Nothing is flushed on any of
+these.
 
 ## 5.6 Tiling and level selection — `pipeline/tile_grid.hpp`
 
@@ -1307,6 +1393,68 @@ defined at level 0 and mapped down would leave the two edges up to a level
 pixel apart on a non-dyadic pyramid, and fragments that should join would not —
 splitting one object into two, each plausible, with no error raised.
 
+### When two fragments are one object
+
+A fragment's **seam contacts** are the maximal stretches of its rings lying on a
+seam line of the grid — the level-0 edge `tileRect(c).x` of an interior column
+boundary, likewise `y` for a row boundary; the outer boundary of the grid region
+is not a seam — recorded as a line and a half-open interval in level-0
+integers. Two fragments of the same layer, in the tiles on either side of one
+seam line, join when they have contacts on that line whose intervals **overlap
+with positive length**. Touching at a single point — a corner — does not join:
+the merger is 4-connected, matching `ComponentsOperation`, so an operation that
+wants 8-connected objects must not split them at corners. Joining is
+union-find; which fragment represents a component never reaches the output,
+because identity comes from the merged object's anchor (decision 8).
+
+### When an object closes
+
+A fragment in tile *t* with a contact on seam line *s* **expects** the tile on
+the other side of *s* at that contact. A component closes when every tile
+holding one of its fragments and every tile one of them expects has completed —
+reported through `notifyTileComplete`, which the executor calls for every tile,
+**a tile skipped by the restriction included**. `notifyTileComplete(t, sink)`
+re-examines only the components touching *t*; reporting a tile twice does
+nothing more. A closed component is merged, measured, tested against the
+restriction at its anchor (through the filter the executor hands the merger;
+5.5) and emitted to `sink`, then forgotten. Objects are emitted from the
+thread that completed the tile, outside the merger's lock, so the sink must be
+ThreadSafe, as every object sink of a run is.
+
+`resolve` runs after the pass and emits whatever remains — after a pass that
+reported every tile, nothing does, except a fragment that arrived for a tile
+already reported complete, which is held until then. A component still open at
+`resolve`, some tile it holds or expects never having been reported, is a
+broken run: `resolve` throws `InternalError` naming the layer and counts. That
+is why the executor **does not call `resolve` after a cancellation or a tile
+failure**: the run is failing anyway, and the merger's destructor releases
+every reservation it holds and removes its spill file, so a failed run leaves
+nothing behind.
+
+### Merging fragments into one polygon
+
+Merging is **edge cancellation, exact, in integers**. Core's `addRing` takes an
+explicit hole flag rather than fixing orientation, so every input ring is first
+oriented by its flag: outer rings to positive shoelace area in level-0
+coordinates, holes to negative, putting the object on the same side of every
+edge. Every axis-parallel ring edge is split at every fragment vertex lying
+inside it (seam lines are axis-parallel, so no other edge can need it);
+directed edges that coincide with opposite directions — the shared seams —
+cancel; the rest are linked into rings, taking at a vertex with several
+outgoing edges the one turning most sharply right, so rings touching at a point
+separate rather than cross. Positive rings are outer, negative ones holes. The
+result is normalised exactly as `ComponentsOperation` normalises what it emits:
+collinear vertices removed, each ring starting at its topmost-then-leftmost
+vertex, the single outer ring first, then the holes ordered by first vertex (y,
+then x). A merged object and the same object found whole in one tile therefore
+compare equal point for point.
+
+A component whose edges do not close into rings, whose fragments overlap, or
+that yields other than exactly one outer ring — positive-length joins make a
+component connected, so more than one is a defect — throws `InternalError`.
+The message names the layer and the fragment and ring counts, **never
+coordinates or a bounding box**, which could carry clinical data.
+
 ### Holding fragments, and why most of them are not held for long
 
 An earlier draft said only that "fragments are spilled rather than allowed to
@@ -1314,8 +1462,8 @@ grow unbounded," which named a mechanism without specifying one. The bound it
 implied was also far worse than it needed to be, because it assumed every
 fragment is held until the entire tile pass ends.
 
-**A component closes as soon as every tile bordering it has completed.** It
-does not need the pass to finish — it needs its own neighbourhood to finish.
+**A component closes as soon as every tile it holds or expects has
+completed** (above). It does not need the pass to finish — it needs its own neighbourhood to finish.
 `notifyTileComplete` is where that is decided, and it is why the interface
 takes an `ObjectSink`: most merged objects are emitted during the tile pass,
 not after it. Tiles complete in any order (5.9), so the rule is stated over
@@ -1345,22 +1493,47 @@ tissue region can span an entire slide, and its component stays open until
 nearly every tile is done. Those components are few and individually large,
 which is the shape spilling suits.
 
-When `MemoryBudget::tryReserve` fails, the merger writes the fragments of its
-**oldest-opened components** to `scratchDirectory` and keeps their union-find
-entries and bounding boxes resident — those are small and fixed-size, so
-merging decisions never require a read. Fragments come back only when their
-component closes. Choosing oldest-first is deliberate: a long-open component is
-by definition one whose tiles are not finishing soon, so it is the cheapest to
-evict and the least likely to be wanted again this minute.
+Each fragment held in memory reserves its bytes in the run's budget when it
+arrives: 16 per ring point, `sizeof(IntensityPartial)` per partial, and a fixed
+64. The bytes are given back once its component has closed and been merged and measured,
+when it is spilled, or when the merger is destroyed.
+
+**`addFragment` never waits for memory.** It reserves with
+`MemoryBudget::tryReserve`. When that fails, it writes out the fragments of the
+**oldest-opened** other component still in memory (by the sequence number of
+its first fragment) and tries again, until the reservation succeeds or nothing
+else is left in memory; then it writes out the incoming fragment itself. A
+fragment larger than the whole ceiling goes straight to the file. Waiting is
+never right here: `addFragment` is called from inside a tile, whose own bytes
+are part of what is taken, and the memory still taken may be held by the very
+workers that would have to finish to free it, so a wait could never end. Union-
+find entries, contacts and per-component bookkeeping stay resident — they are
+small and fixed-size, so joining and closing decisions never require a read.
+Choosing oldest-first is deliberate: a long-open component is by definition one
+whose tiles are not finishing soon, so it is the cheapest to evict and the
+least likely to be wanted again this minute.
+
+Spilled fragments are appended to one file per merger,
+`seam-<32 random lowercase hex digits>.bin` in the scratch directory, created on
+the first spill. A record is `int32 ringCount`; per ring `uint8 hole, int64
+pointCount`, then the `int64 x, y` pairs; `int32 partialCount` and the partials.
+Only its offset stays in memory. Spilled fragments are read back when their
+component closes; that read-back is **not reserved**, since it is transient,
+lasting only while the object is merged and measured, and refusing it would
+leave the object nowhere to go. Joining, closing and the results are the same
+whether or not anything was spilled. `spilledFragmentCount`, `spilledBytes`,
+`residentFragmentCount` and `largestComponentFragmentCount` report what
+happened.
 
 Spill files belong to the merger and to one run. They are removed on
 destruction, including on the failure path, so a stage that throws leaves
-nothing behind. `StageRunner` passes a subdirectory of the workspace, which
+nothing behind. `StageRunner` is to pass a subdirectory of the workspace, which
 keeps UR-STG-9's "copy or archive as one unit" true and makes orphan cleanup a
 matter of clearing one known directory when a workspace opens after a crash. A
-`Pipeline` used directly takes the path from `Configuration`. Failures writing
-or reading spill files surface as `IoError`, never as a silently dropped
-fragment.
+`Pipeline` used directly gives the merger a directory of the run's own under
+`Configuration::scratchDirectory()`, removed when the run ends (5.5). Failure to
+create, write or read the spill file surfaces as `IoError` naming the file,
+never as a silently dropped fragment.
 
 ### What is not bounded by the budget
 
@@ -1381,9 +1554,10 @@ single-tile processing would produce and nothing needs carrying.
 
 Intensity statistics cannot be: the pixels are gone once a tile is done. Each
 fragment therefore carries `IntensityPartial` per channel, and the merger
-combines them. `count` is integer and combines order-independently; `sum` and
-`sumOfSquares` are floating point and **must be combined in canonical fragment
-order** — by anchor, not by the order components happened to close — for
+combines them with `detail::combinePartials`, per channel. `count` is integer
+and combines order-independently; `sum` and `sumOfSquares` are floating point
+and **must be combined in canonical fragment order** — ascending fragment
+anchor (y, then x), ties by tile index, never arrival or close order — for
 exactly the reason 5.8 gives for float reductions. Combining them in completion
 order would make intensity statistics differ between runs at different worker
 counts, and UR-QA-3 would fail intermittently and irreproducibly, which is the
@@ -1392,7 +1566,26 @@ hardest kind of failure to attribute to its cause.
 The merged polygon and the combined partials then go through
 `applyStandardMeasurements` (5.1), the same formula an operation applies to an
 object it finished inside one tile, so the two paths cannot disagree on a
-definition.
+definition. The merged `ObjectRecord` carries the merged polygon, the layer and
+those measurements; its identifier follows from its layer and anchor (decision
+8), so it is the one a single-tile run would give the same object.
+
+**What "identical across tile sizes" means, exactly.** Changing the tile size
+regroups the float sums, so the claim depends on the sample type:
+
+- **Byte** samples: every partial sum is an integer below 2⁵³ in `double`
+  (`count × 255² < 2⁵³` holds for any component below about 1.4 × 10¹¹
+  pixels), so the sums are exact and the measurements bitwise identical across
+  tile sizes.
+- **Float32** samples: the grouping of a float sum differs between tile sizes,
+  so the UR-SEG-3 suite asserts a relative difference of at most 10⁻¹² for
+  intensity statistics, and says why. Geometry is still exact.
+- Wider integer types are not claimed: UInt16 loses exactness at about 2.1 M
+  pixels, which a level-spanning region exceeds. `ComponentsOperation` admits
+  only Byte and Float32 intensities.
+
+Worker-count invariance (UR-QA-3) is exact for every type, because the
+canonical order does not depend on the schedule.
 
 ## 5.8 Reductions — `pipeline/reduction.hpp`
 
@@ -1567,9 +1760,16 @@ pipeline, through the same executor or another, while `run` is in progress.
 each tile, with `total` equal to `tileCount()` (5.6) for a single pass and
 `done` counting skipped tiles. Observer calls are serialised.
 
-The executor calls `SeamMerger::notifyTileComplete` as each tile finishes, which
-is what lets seam-crossing objects be emitted during the pass instead of piling
-up until the end (5.7). Completion order therefore changes *when* a merged
+The executor calls `SeamMerger::notifyTileComplete` as each tile of the final
+pass finishes, a tile skipped by the restriction included, which is what lets
+seam-crossing objects be emitted during the pass instead of piling up until the
+end (5.7). After the pass it calls `resolve`, on success only: after a
+cancellation or a tile failure the merger is destroyed with whatever it still
+holds. When the run is restricted, the tile masks the restriction filter caches
+to test merged anchors are released as tiles settle — a tile's mask once it and
+its up to eight neighbours have completed — so the cache stays bounded by the
+tiles in progress rather than growing to one byte per level pixel; a released
+mask is rebuilt if asked for again, so releasing never changes an answer. Completion order therefore changes *when* a merged
 object is emitted but never *what* it is: a component closes only once every
 tile bordering it is done, and its intensity partials are combined in canonical
 fragment order regardless of the order they arrived.
@@ -1674,6 +1874,12 @@ so a header that reaches OpenCV fails the build rather than a review. A second
 object library compiles a third-party operation against `include/` and
 SlideIO's headers alone, with no `src/` and nothing linked, which is the
 standing proof of UR-EXT-2.
+
+**Umbrella header.** `pipeline/pipeline_all.hpp` includes every public header of
+the module; the name `pipeline.hpp` belongs to the `Pipeline` class, so the
+umbrella cannot use the module name as `core.hpp`, `config.hpp` and
+`storage.hpp` do. It is compiled by the same OpenCV-free header check, and a
+test that includes nothing else touches one name from each header (UR-API-2).
 
 **Tests that load SlideIO.** The engine's tests load SlideIO's shared
 libraries, which live in SlideIO's install tree rather than beside the test.

@@ -25,7 +25,7 @@ namespace detail {
 struct SeamMergerAccess;
 } // namespace detail
 
-// IntensityPartial is declared in operation.hpp (5.1).
+// IntensityPartial is declared in operation.hpp.
 
 /**
  * @brief Joins the fragments of objects that cross tile seams into whole
