@@ -46,6 +46,7 @@ add_executable(slideio_processor_pipeline_tests
     test_restriction.cpp
     test_reduction.cpp
     test_scene_reader.cpp
+    test_seam_merger.cpp
     test_tile_evaluator.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
@@ -116,6 +117,7 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_pipeline.cpp
     header_check/check_pipeline_spec.cpp
     header_check/check_reduction.cpp
+    header_check/check_seam_merger.cpp
     header_check/check_standard_measurements.cpp
     header_check/check_tile_grid.cpp
 )

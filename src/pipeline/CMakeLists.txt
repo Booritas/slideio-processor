@@ -8,6 +8,7 @@ add_library(slideio-processor-pipeline OBJECT
     pipeline.cpp
     pipeline_spec.cpp
     reduction.cpp
+    seam_merger.cpp
     standard_measurements.cpp
     tile_grid.cpp
     executor.cpp
