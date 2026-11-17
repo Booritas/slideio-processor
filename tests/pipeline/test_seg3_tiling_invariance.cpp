@@ -178,9 +178,15 @@ double relativeDifference(double a, double b) {
                 return ::testing::AssertionFailure() << object << ": the unit of " << name << " differs";
             }
             if (isIntensity(name)) {
+                // A NaN or an infinity would make the relative difference NaN, which
+                // no comparison rejects, so the values must be finite first.
+                if (match == IntensityMatch::Relative &&
+                    (!std::isfinite(em1.value()) || !std::isfinite(am1.value()))) {
+                    return ::testing::AssertionFailure() << object << ": " << name << " is not finite";
+                }
                 const double difference = relativeDifference(em1.value(), am1.value());
                 worst = std::max(worst, difference);
-                if (match == IntensityMatch::Relative ? difference > kRelativeTolerance
+                if (match == IntensityMatch::Relative ? !(difference <= kRelativeTolerance)
                                                       : em1.value() != am1.value()) {
                     return ::testing::AssertionFailure()
                            << object << ": " << name << " differs, relative difference " << difference;
