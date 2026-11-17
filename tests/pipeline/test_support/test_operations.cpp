@@ -199,13 +199,19 @@ void ThresholdOperation::apply(OperationContext& context) {
 // --- BoxMeanOperation -------------------------------------------------------------
 
 BoxMeanOperation::BoxMeanOperation(const OperationParameters& parameters)
-    : parameters_(parameters), radius_(1) {
+    : parameters_(parameters), radius_(1), declaredHalo_(1) {
     int64_t radius = 1;
     parameters_.getInt("radius", radius);
     if (radius < 0 || radius > 1024) {
         throw InvalidArgumentError("test.boxMean: radius must be in [0, 1024]");
     }
     radius_ = static_cast<int32_t>(radius);
+    int64_t declared = radius;
+    parameters_.getInt("declaredHalo", declared);
+    if (declared < 0 || declared > 1024) {
+        throw InvalidArgumentError("test.boxMean: declaredHalo must be in [0, 1024]");
+    }
+    declaredHalo_ = static_cast<int32_t>(declared);
 }
 
 const char* BoxMeanOperation::name() const { return "test.boxMean"; }
@@ -214,7 +220,7 @@ bool BoxMeanOperation::requiresUniformTypes() const { return false; }
 DataTypeSet BoxMeanOperation::supportedTypes() const {
     return DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32);
 }
-Halo BoxMeanOperation::halo() const { return Halo::uniform(radius_); }
+Halo BoxMeanOperation::halo() const { return Halo::uniform(declaredHalo_); }
 DataType BoxMeanOperation::outputType(DataType) const { return DataType::Float32; }
 const OperationParameters& BoxMeanOperation::parameters() const { return parameters_; }
 
@@ -230,8 +236,13 @@ void BoxMeanOperation::apply(OperationContext& context) {
             for (int64_t x = 0; x < out.width(); ++x) {
                 double sum = 0;
                 for (int64_t dy = -radius_; dy <= radius_; ++dy) {
+                    const int64_t sy = y + offset.y + dy;
                     for (int64_t dx = -radius_; dx <= radius_; ++dx) {
-                        sum += sampleAt(in, plane, x + offset.x + dx, y + offset.y + dy);
+                        const int64_t sx = x + offset.x + dx;
+                        // Only an under-declared halo reaches outside the input.
+                        if (sx >= 0 && sy >= 0 && sx < in.width() && sy < in.height()) {
+                            sum += sampleAt(in, plane, sx, sy);
+                        }
                     }
                 }
                 const float mean = static_cast<float>(sum / window);
@@ -244,8 +255,15 @@ void BoxMeanOperation::apply(OperationContext& context) {
 // --- ComponentsOperation ----------------------------------------------------------
 
 ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
-    : parameters_(parameters), seams_(false) {
+    : parameters_(parameters), seams_(false), haloScan_(false), halo_(0) {
     parameters_.getBool("seams", seams_);
+    parameters_.getBool("haloScan", haloScan_);
+    int64_t halo = 0;
+    parameters_.getInt("halo", halo);
+    if (halo < 0 || halo > 1024) {
+        throw InvalidArgumentError("test.components: halo must be in [0, 1024]");
+    }
+    halo_ = static_cast<int32_t>(halo);
 }
 
 const char* ComponentsOperation::name() const { return "test.components"; }
@@ -254,7 +272,7 @@ bool ComponentsOperation::requiresUniformTypes() const { return false; }
 DataTypeSet ComponentsOperation::supportedTypes() const {
     return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
 }
-Halo ComponentsOperation::halo() const { return Halo::none(); }
+Halo ComponentsOperation::halo() const { return Halo::uniform(halo_); }
 DataType ComponentsOperation::outputType(DataType) const { return DataType::Byte; }
 const OperationParameters& ComponentsOperation::parameters() const { return parameters_; }
 bool ComponentsOperation::producesObjects() const { return true; }
@@ -271,27 +289,33 @@ void ComponentsOperation::apply(OperationContext& context) {
     const int32_t intensityPlane = in.planeCount() - 1;
     requireType(name(), in.planeType(intensityPlane), supportedTypes());
     BlockView& out = context.output();
-    const Point64 offset = tileOffset(context);
+    Point64 offset = tileOffset(context);
 
     // Components are found in the tile alone, never in the halo around it: every
     // component is then anchored in this tile, and one that continues past the tile
     // edge is the tile-clipped piece, which abuts its neighbour's piece exactly at
-    // the seam. Coordinates below are tile-local.
+    // the seam. With "haloScan" they are found in the whole input instead.
+    // Coordinates below are local to the scanned rect.
     const Rect64 tile = context.tileRectAtLevel();
-    const int64_t width = tile.width;
-    const int64_t height = tile.height;
-    if (offset.x < 0 || offset.y < 0 || offset.x + width > in.width() || offset.y + height > in.height()) {
+    if (offset.x < 0 || offset.y < 0 || offset.x + tile.width > in.width() || offset.y + tile.height > in.height()) {
         throw InvalidArgumentError("test.components: the tile rect must lie inside the input");
     }
-    if (out.width() != width || out.height() != height || out.planeCount() != 1 ||
+    if (out.width() != tile.width || out.height() != tile.height || out.planeCount() != 1 ||
         out.planeType(0) != DataType::Byte) {
         throw InvalidArgumentError("test.components: the output must be one Byte plane the size of the tile");
     }
-    for (int64_t y = 0; y < height; ++y) {
-        std::memcpy(mutableRowOf(out, 0, y), rowOf(in, 0, y + offset.y) + offset.x, static_cast<size_t>(width));
+    for (int64_t y = 0; y < tile.height; ++y) {
+        std::memcpy(mutableRowOf(out, 0, y), rowOf(in, 0, y + offset.y) + offset.x,
+                    static_cast<size_t>(tile.width));
     }
 
-    const Point64 origin{tile.x, tile.y};
+    const Rect64 scanned = haloScan_ ? context.haloRectAtLevel() : tile;
+    const int64_t width = scanned.width;
+    const int64_t height = scanned.height;
+    const Point64 origin{scanned.x, scanned.y};
+    if (haloScan_) {
+        offset = Point64{0, 0};
+    }
     auto sample = [&in, offset](int64_t x, int64_t y) { return rowOf(in, 0, y + offset.y)[x + offset.x]; };
     auto intensity = [&in, offset, intensityPlane](int64_t x, int64_t y) {
         return sampleAt(in, intensityPlane, x + offset.x, y + offset.y);
@@ -374,6 +398,101 @@ void ComponentsOperation::apply(OperationContext& context) {
     }
 }
 
+// --- Tile copies shared by the operations below ------------------------------------
+
+namespace {
+
+// Copies the tile part of every plane of the input into the output plane of the
+// same index, converting each sample to Float32.
+void copyTileAsFloat(OperationContext& context, int32_t planes) {
+    const BlockView& in = context.input();
+    BlockView& out = context.output();
+    const Point64 offset = tileOffset(context);
+    for (int32_t plane = 0; plane < planes; ++plane) {
+        for (int64_t y = 0; y < out.height(); ++y) {
+            unsigned char* row = mutableRowOf(out, plane, y);
+            for (int64_t x = 0; x < out.width(); ++x) {
+                const float v = static_cast<float>(sampleAt(in, plane, x + offset.x, y + offset.y));
+                std::memcpy(row + x * 4, &v, sizeof v);
+            }
+        }
+    }
+}
+
+} // namespace
+
+// --- WholeLevelOperation ----------------------------------------------------------
+
+WholeLevelOperation::WholeLevelOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+
+const char* WholeLevelOperation::name() const { return "test.wholeLevel"; }
+ChannelArity WholeLevelOperation::arity() const { return ChannelArity::PerChannel; }
+bool WholeLevelOperation::requiresUniformTypes() const { return false; }
+DataTypeSet WholeLevelOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
+Halo WholeLevelOperation::halo() const { return Halo::none(); }
+DataType WholeLevelOperation::outputType(DataType) const { return DataType::Float32; }
+const OperationParameters& WholeLevelOperation::parameters() const { return parameters_; }
+TileRequirement WholeLevelOperation::tileRequirement() const { return TileRequirement::WholeLevel; }
+int64_t WholeLevelOperation::workingSetBytesPerLevelPixel() const { return 100; }
+
+void WholeLevelOperation::apply(OperationContext& context) {
+    for (int32_t plane = 0; plane < context.input().planeCount(); ++plane) {
+        requireType(name(), context.input().planeType(plane), supportedTypes());
+    }
+    copyTileAsFloat(context, context.input().planeCount());
+}
+
+// --- JointUniformOperation --------------------------------------------------------
+
+JointUniformOperation::JointUniformOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+
+const char* JointUniformOperation::name() const { return "test.jointUniform"; }
+ChannelArity JointUniformOperation::arity() const { return ChannelArity::Joint; }
+bool JointUniformOperation::requiresUniformTypes() const { return true; }
+DataTypeSet JointUniformOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
+Halo JointUniformOperation::halo() const { return Halo::none(); }
+DataType JointUniformOperation::outputType(DataType inputType) const { return inputType; }
+const OperationParameters& JointUniformOperation::parameters() const { return parameters_; }
+int32_t JointUniformOperation::outputPlaneCount(int32_t) const { return 1; }
+
+void JointUniformOperation::apply(OperationContext& context) {
+    const BlockView& in = context.input();
+    BlockView& out = context.output();
+    requireType(name(), in.planeType(0), supportedTypes());
+    if (out.planeType(0) != in.planeType(0)) {
+        throw InvalidArgumentError("test.jointUniform: the output must have the input's type");
+    }
+    const Point64 offset = tileOffset(context);
+    const int64_t sampleBytes = dataTypeSizeBytes(in.planeType(0));
+    for (int64_t y = 0; y < out.height(); ++y) {
+        std::memcpy(mutableRowOf(out, 0, y), rowOf(in, 0, y + offset.y) + offset.x * sampleBytes,
+                    static_cast<size_t>(out.width() * sampleBytes));
+    }
+}
+
+// --- FloatOnlyOperation -----------------------------------------------------------
+
+FloatOnlyOperation::FloatOnlyOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+
+const char* FloatOnlyOperation::name() const { return "test.floatOnly"; }
+ChannelArity FloatOnlyOperation::arity() const { return ChannelArity::PerChannel; }
+bool FloatOnlyOperation::requiresUniformTypes() const { return false; }
+DataTypeSet FloatOnlyOperation::supportedTypes() const { return DataTypeSet().add(DataType::Float32); }
+Halo FloatOnlyOperation::halo() const { return Halo::none(); }
+DataType FloatOnlyOperation::outputType(DataType) const { return DataType::Float32; }
+const OperationParameters& FloatOnlyOperation::parameters() const { return parameters_; }
+
+void FloatOnlyOperation::apply(OperationContext& context) {
+    for (int32_t plane = 0; plane < context.input().planeCount(); ++plane) {
+        requireType(name(), context.input().planeType(plane), supportedTypes());
+    }
+    copyTileAsFloat(context, context.input().planeCount());
+}
+
 // --- Factories --------------------------------------------------------------------
 
 PrototypeFactory::PrototypeFactory(Maker maker, const char* correctnessReference, const char* complexityNote)
@@ -415,10 +534,29 @@ OperationFactoryPtr makeComponentsFactory() {
         "Definition: 4-connected components of the non-zero mask samples", "O(n) in the number of samples");
 }
 
+OperationFactoryPtr makeWholeLevelFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<WholeLevelOperation>(p); },
+        "Analytic: out = in, as Float32, over the whole level", "O(n) in the number of samples");
+}
+
+OperationFactoryPtr makeJointUniformFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<JointUniformOperation>(p); },
+        "Analytic: out = plane 0 of in", "O(n) in the number of samples");
+}
+
+OperationFactoryPtr makeFloatOnlyFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<FloatOnlyOperation>(p); },
+        "Analytic: out = in", "O(n) in the number of samples");
+}
+
 void registerTestOperations() {
     OperationCatalog& catalog = OperationCatalog::instance();
     for (const OperationFactoryPtr& factory :
-         {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory()}) {
+         {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory(), makeWholeLevelFactory(),
+          makeJointUniformFactory(), makeFloatOnlyFactory()}) {
         if (!catalog.isRegistered(factory->name())) {
             catalog.registerFactory(factory);
         }

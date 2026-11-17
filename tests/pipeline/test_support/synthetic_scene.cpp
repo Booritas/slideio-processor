@@ -141,6 +141,13 @@ void SyntheticSource::fill(int level, const slideio::Rect& rect, const slideio::
     if (bufferSize < bw * bh * channels * elem) {
         throw std::invalid_argument("SyntheticSource: buffer too small");
     }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!failure_.empty()) {
+            throw std::runtime_error(failure_);
+        }
+        readLevels_.push_back(level);
+    }
     reads_.fetch_add(1, std::memory_order_relaxed);
 
     const SyntheticLevel& info = levels_[static_cast<size_t>(level)];
@@ -178,6 +185,16 @@ slideio::SceneMetadata SyntheticSource::metadata() const {
 
 int64_t SyntheticSource::readCount() const {
     return reads_.load(std::memory_order_relaxed);
+}
+
+std::vector<int> SyntheticSource::readLevels() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return readLevels_;
+}
+
+void SyntheticSource::failReadsWith(const std::string& what) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    failure_ = what;
 }
 
 std::shared_ptr<slideio::Scene> makeSyntheticScene(const std::shared_ptr<SyntheticSource>& source) {

@@ -5,7 +5,7 @@
 
 namespace slideio::processor::detail {
 
-/// Combines two partials of one channel (ruling P6a): counts and sums added,
+/// Combines two partials of one channel: counts and sums added,
 /// the smaller minimum and the larger maximum taken. A partial with count 0
 /// is the identity. Throws InvalidArgumentError when the channels differ.
 /// Float sums are order-dependent, so a caller combining many partials does it

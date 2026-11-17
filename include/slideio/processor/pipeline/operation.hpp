@@ -187,10 +187,17 @@ public:
     /// Where asserted containment goes (UR-RES-5). Null when the run has no
     /// store behind it — a directly-constructed Pipeline — so an operation
     /// that attaches must check before using it.
+    ///
+    /// The framework does not filter what reaches this sink: unlike
+    /// objectSink(), an assertion is passed on as made, whatever its objects'
+    /// anchors. An operation must therefore assert edges only for objects it
+    /// emits through objectSink() that are anchored in tileRect() and admitted
+    /// by mask(), so that every assertion names an object the run stores.
     /// @return The sink, or null.
     /// @throws Nothing.
     /// @par Thread-safety
-    /// ThreadConfined.
+    /// The sink is ThreadSafe: other tiles call it concurrently. The accessor
+    /// is ThreadConfined.
     /// @par Requirements
     /// UR-RES-5
     EdgeSink* edgeSink() const noexcept;
@@ -199,10 +206,18 @@ public:
     /// earlier stage wrote (`03-storage.md` 3.7). Null on the same terms as
     /// `edgeSink`, and additionally null when the stage declared no
     /// `annotatesLayer`, so an operation that classifies must check.
+    ///
+    /// The framework does not filter what reaches this sink either. An
+    /// operation must attach labels and measurements only to objects anchored
+    /// in tileRect() and admitted by mask() (for an object it emits, exactly
+    /// those objectSink() keeps), so that an object seen in several tiles'
+    /// halos is annotated once, by the tile owning its anchor, and none outside
+    /// the restriction is.
     /// @return The sink, or null.
     /// @throws Nothing.
     /// @par Thread-safety
-    /// ThreadConfined.
+    /// The sink is ThreadSafe: other tiles call it concurrently. The accessor
+    /// is ThreadConfined.
     /// @par Requirements
     /// UR-EXT-4
     AnnotationSink* annotationSink() const noexcept;
@@ -341,10 +356,12 @@ public:
     /// The run's restriction, rasterised over this tile's halo rect, or null
     /// when the run is unrestricted (5.5). Level coordinates, like `input()`.
     ///
-    /// Consulting it is OPTIONAL. The framework filters what this operation
-    /// emits whether or not it is read, so an operation that ignores it is
-    /// correct and merely wasteful; an operation that reads it skips work it
-    /// would otherwise do and discard.
+    /// Consulting it is OPTIONAL for objects. The framework filters what this
+    /// operation emits through objectSink() whether or not it is read, so an
+    /// operation that ignores it is correct and merely wasteful; an operation
+    /// that reads it skips work it would otherwise do and discard. Edge and
+    /// annotation assertions are not filtered: an operation making them reads
+    /// it (see edgeSink() and annotationSink()). A null mask admits everything.
     /// @return The mask, or null.
     /// @throws Nothing.
     /// @par Thread-safety
@@ -519,18 +536,23 @@ public:
      */
     virtual bool needsGlobalContext() const;
     /**
-     * @brief Accumulates one tile into this operation's per-worker state.
+     * @brief Accumulates one tile into this operation's state.
      * Does nothing by default.
+     *
+     * Each tile accumulates into a fresh instance of its own, and that one
+     * instance sees every plane of the tile: a PerChannel operation is called
+     * once per plane, each call a single-plane input told apart by its
+     * planeSourceChannel(); a Joint operation once, with all planes.
      * @param context The tile's context.
      * @throws ProcessorError Any subclass, to fail the run.
      * @par Thread-safety
-     * Called on one worker's copy at a time.
+     * Called on one instance from one thread at a time.
      * @par Requirements
      * UR-EXT-4
      */
     virtual void accumulate(const OperationContext& context);
     /**
-     * @brief Merges another worker's accumulated state into this one. Does
+     * @brief Merges another instance's accumulated state into this one. Does
      * nothing by default.
      * @param other An operation of the same kind.
      * @throws ProcessorError Any subclass, to fail the run.

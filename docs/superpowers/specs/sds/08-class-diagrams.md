@@ -1434,6 +1434,7 @@ classDiagram
         <<ThreadConfined to configure>>
         +Pipeline(shared_ptr~Scene~, Configuration, PipelineSpec)
         +memoryBudget(MemoryBudgetPtr) Pipeline
+        +stageName(cstr) Pipeline
         +edgeSink(EdgeSink*) Pipeline
         +annotationSink(AnnotationSink*) Pipeline
         +auxiliaryRaster(cstr, TileRasterSource*) Pipeline
@@ -1587,6 +1588,15 @@ float ones return `false` and the framework combines them in canonical tile
 order. Placing that rule in the framework rather than in each algorithm is
 what makes it enforceable — a float reduction combined in completion order
 makes UR-QA-3 fail intermittently and irreproducibly.
+
+`Pipeline::stageName` is the one addition to the pipeline's configuration
+surface beyond the bindings: the name the executor reports to
+`ProgressObserver::onProgress` and puts in every `TileError`'s context, set by
+`StageRunner` to the stage's own name (`04-workspace.md` 4.4). The executor
+classes are as drawn, and `Pipeline ..> TileExecutor` carries the whole eager
+run: a global-context chain makes one accumulation pass per such operation
+before the final pass, and `TileExecutor::tilesTotal` counts every pass
+(`05-pipeline.md` 5.8, 5.9).
 
 `Pipeline::asScene()` returns a `std::shared_ptr<slideio::Scene>` — drawn as
 `shared_ptr~Scene~`, never `ScenePtr`, because SlideIO defines `ScenePtr` as a

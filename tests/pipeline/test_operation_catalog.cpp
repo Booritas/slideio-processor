@@ -205,7 +205,7 @@ TEST(OperationCatalog, RegisterQueryCreate) {
 }
 
 TEST(OperationCatalog, DefaultFactoryDeclarations) {
-    // A factory that overrides none of the P5 virtuals answers as Operation does.
+    // A factory that overrides none of the whole-level, object and plane-count virtuals answers as Operation does.
     class Plain : public OperationFactory {
     public:
         OperationPtr create(const OperationParameters&) const override { return nullptr; }

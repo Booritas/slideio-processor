@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace slideio::processor::testing_support {
@@ -58,6 +60,12 @@ public:
     /// Reads served so far, by either path.
     int64_t readCount() const;
 
+    /// The level of every read served so far, in arrival order.
+    std::vector<int> readLevels() const;
+
+    /// Makes every later read throw std::runtime_error(what), before it is counted.
+    void failReadsWith(const std::string& what);
+
 private:
     void fill(int level, const slideio::Rect& levelRect, const slideio::Size& blockSize,
               const std::vector<int>& channelIndices, void* buffer, size_t bufferSize);
@@ -66,6 +74,9 @@ private:
     std::vector<slideio::DataType> channelTypes_;
     PixelFunction pixel_;
     std::atomic<int64_t> reads_{0};
+    mutable std::mutex mutex_;
+    std::vector<int> readLevels_;
+    std::string failure_;
 };
 
 /// Wraps a source in a genuine slideio::Scene through slideio::makeScene.

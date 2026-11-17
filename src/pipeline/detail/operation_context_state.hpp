@@ -12,7 +12,7 @@
 
 namespace slideio::processor::detail {
 
-/// Everything an OperationContext reports, as plain members (ruling P6). Every
+/// Everything an OperationContext reports, as plain members. Every
 /// pointer is borrowed from the run and must outlive the context built from it.
 /// A null pointer reads as the documented fallback: a null view, a null sink,
 /// ChannelSelection::all(), a never-cancelled token, no mask.
@@ -31,7 +31,7 @@ struct OperationContextState {
     const ChannelSelection* channels = nullptr;
     const CancellationToken* cancellation = nullptr;
     const RasterMask* mask = nullptr;
-    /// The seam merger's entry point; empty when the run has none (plan C supplies it).
+    /// The seam merger's entry point; empty when the run has none.
     std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> seamFragment;
 };
 

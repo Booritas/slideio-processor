@@ -9,7 +9,7 @@
 
 namespace slideio::processor::detail {
 
-/// Writes the bag as one JSON object, keys in stored order (ruling P7).
+/// Writes the bag as one JSON object, keys in stored order.
 void parametersToJson(const OperationParameters& parameters,
                       rapidjson::Writer<rapidjson::StringBuffer>& writer);
 

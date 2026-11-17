@@ -40,9 +40,9 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
     endforeach()
 endforeach()
 
-# The engine library (design 5.1, ruling P1): pipeline, later also algorithm and
+# The engine library (design 5.1): pipeline, later also algorithm and
 # workspace. Its public headers name slideio::Scene and the data library's types,
-# so both are PUBLIC; OpenCV is static and PRIVATE (ruling P2). SlideIO's DLLs carry
+# so both are PUBLIC; OpenCV is static and PRIVATE. SlideIO's DLLs carry
 # their own static OpenCV, and the two copies never meet: SlideIO's API is
 # buffer-based, so no cv:: object crosses it.
 add_library(slideio-processor-engine SHARED)

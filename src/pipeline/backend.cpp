@@ -16,7 +16,7 @@ struct DepthMapping {
     int32_t depth;
 };
 
-// Ruling P4. The unsigned 32-bit and the 64-bit integer depths exist from OpenCV 5 on.
+// The unsigned 32-bit and the 64-bit integer depths exist from OpenCV 5 on.
 constexpr std::array kDepths = {
     DepthMapping{DataType::Byte, CV_8U},
     DepthMapping{DataType::Int8, CV_8S},
