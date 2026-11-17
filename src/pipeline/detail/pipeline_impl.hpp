@@ -17,11 +17,16 @@
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace slideio::processor {
+
+namespace detail {
+class PipelineSceneSource;
+} // namespace detail
 
 /// The state behind a Pipeline: the bindings, and what validate() resolved.
 class Pipeline::Impl {
@@ -61,6 +66,20 @@ public:
     /// accumulated global-context instances in their positions. Set when a run
     /// starts; empty before the first. Never read by a run.
     std::vector<OperationPtr> lastRunOperations;
+
+    /// What levelCount(), rect(), readBlock() and asScene() evaluate through: built
+    /// once, under `lazyOnce`, from a snapshot of the bindings, so concurrent
+    /// readBlock() calls share one build. Every binding call drops it and renews the
+    /// flag; validate() leaves it, since the same bindings resolve to the same plan.
+    std::unique_ptr<std::once_flag> lazyOnce = std::make_unique<std::once_flag>();
+    std::shared_ptr<detail::PipelineSceneSource> lazy;
+
+    /// Drops what the bindings resolved: the plan and the lazy source.
+    void bindingsChanged() {
+        plan.reset();
+        lazy.reset();
+        lazyOnce = std::make_unique<std::once_flag>();
+    }
 };
 
 namespace detail {
@@ -68,7 +87,9 @@ namespace detail {
 /// What a lazy scene evaluates from: the plan and the bindings that matter to
 /// pixels, taken at one moment. Later validate() or binding calls on the Pipeline
 /// leave a snapshot unchanged. The mask source and the auxiliaries stay borrowed
-/// from the caller; sinks are not part of it.
+/// from the caller; sinks are not part of it. The layers, the budget and the stage
+/// name come along so the plan can be resolved again at other levels, tiles can
+/// reserve their bytes, and a failure can name the stage.
 struct PipelineSnapshot {
     std::shared_ptr<const RunPlan> plan;           ///< Never null.
     std::shared_ptr<slideio::Scene> scene;
@@ -79,6 +100,9 @@ struct PipelineSnapshot {
     std::vector<LevelDims> levels;
     std::vector<std::pair<std::string, TileRasterSource*>> auxiliaries;
     TileMaskSource* maskSource = nullptr;
+    std::vector<std::pair<std::string, LayerId>> layers;
+    MemoryBudgetPtr budget;                        ///< Never null.
+    std::string stageName;
 };
 
 /// The engine's way into a Pipeline's state (the executor and tests use it), so
@@ -101,9 +125,9 @@ struct PipelineAccess {
             pipeline.validate();
         }
         const Pipeline::Impl& impl = *pipeline.impl_;
-        return PipelineSnapshot{impl.plan,   impl.scene,  impl.config,      impl.spec,
-                                impl.reader, impl.selector, impl.levels, impl.auxiliaries,
-                                impl.maskSource};
+        return PipelineSnapshot{impl.plan,       impl.scene,  impl.config,      impl.spec,
+                                impl.reader,     impl.selector, impl.levels,  impl.auxiliaries,
+                                impl.maskSource, impl.layers, impl.budget,    impl.stageName};
     }
 };
 

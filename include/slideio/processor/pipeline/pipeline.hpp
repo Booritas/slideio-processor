@@ -45,7 +45,8 @@ struct PipelineAccess;
  * defines `ScenePtr` as a preprocessor macro.
  * @par Thread-safety
  * ThreadConfined for configuration; the scene returned by asScene() is
- * ThreadSafe for reads.
+ * ThreadSafe for reads, and so are levelCount(), rect() and readBlock() among
+ * themselves.
  * @par Requirements
  * UR-EXE-1, UR-ALG-1, UR-ALG-5, UR-PIX-6, UR-IMG-5, UR-STG-3
  */
@@ -234,12 +235,44 @@ public:
     /**
      * @brief Lazy: evaluated per requested block. Construction computes no pixels,
      * and the result is a valid input to another Pipeline.
+     *
+     * Validates first when no validation result is held (metadata only), then
+     * returns a SlideIO scene whose pixels are computed on demand through
+     * readBlock(). The scene keeps the plan and the bindings that matter to pixels
+     * (the spec, the source scene, the configuration, the memory budget, the mask
+     * source and the auxiliary rasters) as they are now: later binding calls or
+     * validate() on this Pipeline do not change it, and it may outlive the
+     * Pipeline. The mask source and the auxiliary rasters stay borrowed and must
+     * outlive the scene; the sinks are never called.
+     *
+     * The scene describes the output pyramid of levelCount() levels. Its level k
+     * is output level k, the size of source level analysisLevel() + k (pixels
+     * outside rect(k) read as zero), with that level's magnification and
+     * defaultTileSize(); its scales are the source levels' scales relative to the
+     * analysis level's. Its rect has the source scene's origin and the analysis
+     * level's size, so with analysis level 0 it is the source scene's rect, and
+     * its resolution and magnification are the source's, converted to the analysis
+     * level. Its name is the source scene's name followed by "/pipeline"; it has
+     * one channel per final plane of the chain, named "c0", "c1" and so on, of the
+     * plane's type. A read of the scene names an output level, or a scene
+     * rectangle and a block size: the latter reads the coarsest output level whose
+     * resolution is at least the one requested on both axes and resamples
+     * nearest-neighbour, so no value is invented. Channels of different types are
+     * read one type per call, as SlideIO requires. Reads may overlap: the scene
+     * declares concurrent reads, and each read evaluates its own tiles.
      * @return The scene.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @throws InvalidArgumentError As validate(); when the chain has a
+     * global-context operation ("global-context operations need runInto"), since a
+     * block is evaluated without the accumulation pass runInto() makes.
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate(); when SlideIO fails to describe the source scene.
+     * @throws InternalError As validate(); when SlideIO refuses the description.
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * ThreadConfined; the returned scene is ThreadSafe for reads.
      * @par Requirements
-     * UR-EXE-1, UR-PIX-6
+     * UR-EXE-1, UR-PIX-6, UR-IMG-4
      */
     std::shared_ptr<slideio::Scene> asScene() const;
 
@@ -310,36 +343,80 @@ public:
     void run(ProgressObserver* progress, const CancellationToken& token);
 
     /**
-     * @brief The number of pyramid levels of the output scene.
-     * @return The count.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @brief The number of pyramid levels of the output.
+     *
+     * The output mirrors the source scene's levels from the analysis level down:
+     * output level k is the chain evaluated on source level analysisLevel() + k,
+     * with halos in that level's pixels, never rescaled. So the count is the
+     * source's level count minus analysisLevel(). Like rect() and readBlock(), it
+     * validates on first use when no validation result is held, and resolves the
+     * chain at every output level once, reading no pixel; a binding call discards
+     * that resolution.
+     * @return The count, at least 1.
+     * @throws InvalidArgumentError As validate(); when the chain has a
+     * global-context operation ("global-context operations need runInto").
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
-     * ThreadConfined.
+     * ThreadSafe against itself, rect() and readBlock(); ThreadConfined against
+     * validate() and the binding calls.
      * @par Requirements
      * UR-PIX-6
      */
     int32_t levelCount() const;
     /**
-     * @brief The extent of one output level.
-     * @param level The level.
+     * @brief The region one output level covers: the run's region (the scene, the
+     * ROI and the polygon's bounding box intersected) laid out at source level
+     * analysisLevel() + @p level, as the tile grid would cover it there.
+     * @param level The output level, from 0 to levelCount() - 1.
      * @return The rectangle, in that level's pixels.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @throws InvalidArgumentError When @p level is out of range; as levelCount().
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
-     * ThreadConfined.
+     * As levelCount().
      * @par Requirements
      * UR-PIX-6
      */
     Rect64 rect(int32_t level) const;
     /**
      * @brief Computes one block of the output.
-     * @param level The level.
-     * @param region The block, in that level's pixels.
-     * @param out Receives the block.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     *
+     * Evaluates every tile of the level's grid that meets @p region, one at a
+     * time on the calling thread, each reserving the plan's tile bytes from the
+     * memory budget while it is evaluated (waiting until they fit; the caller's
+     * view itself is not reserved), and copies the part over @p region into
+     * @p out. The region may extend beyond rect(@p level): what lies outside it,
+     * or outside the restriction (ROI, polygon, mask source), reads as zero. No
+     * sink is called: emitted objects and seam fragments are dropped. A pipeline
+     * that reads this one through asScene() must not share its memory budget, or
+     * its tiles could hold the bytes these tiles wait for.
+     * @param level The output level, from 0 to levelCount() - 1.
+     * @param region The block, in that level's pixels; not empty.
+     * @param out Receives the block: the chain's final plane count and types,
+     * and @p region's size.
+     * @throws InvalidArgumentError When @p level is out of range, @p region is
+     * empty, or @p out is null or has the wrong size, plane count or plane
+     * types; as levelCount().
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws TileError When a tile fails, as runInto() reports it: the stage,
+     * the operation when one threw, the tile's column and row, and the original
+     * text as the cause. @p out is then partly written.
+     * @throws CancelledError When an operation throws it.
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
-     * ThreadConfined.
+     * As levelCount(): concurrent calls are safe and validate once between them.
      * @par Requirements
-     * UR-PIX-6
+     * UR-PIX-6, UR-ALG-5, UR-EXE-1
      */
     void readBlock(int32_t level, const Rect64& region, BlockView& out) const;
 

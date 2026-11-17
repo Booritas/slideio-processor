@@ -39,6 +39,7 @@ add_executable(slideio_processor_pipeline_tests
     test_executor.cpp
     test_fragment_merge.cpp
     test_global_context.cpp
+    test_lazy_scene.cpp
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
