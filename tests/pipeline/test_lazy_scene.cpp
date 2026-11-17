@@ -6,6 +6,7 @@
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
+#include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/test_support/disc_mask_source.hpp>
 #include <pipeline/test_support/global_ops.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -18,6 +19,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <future>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -494,4 +499,60 @@ TEST(LazyScene, SceneKeepsItsBindings) {
     }
     EXPECT_EQ(mismatches, 0);
     EXPECT_GT(disc.fillCount(), 0);
+}
+
+// A pipeline whose input is another pipeline's scene, both on one budget whose
+// ceiling is one outer tile plus one inner tile, with several workers: the workers
+// holding outer tiles read inner tiles without waiting for bytes only they could
+// free, so the run completes. A regression would deadlock; the wait is bounded so
+// the test fails instead of hanging.
+TEST(LazyScene, NestedPipelinesShareOneBudget) {
+    constexpr int64_t width = 512;
+    constexpr int64_t height = 512;
+    auto source = textureSource({{width, height, 0, 0}});
+    const Configuration innerConfig = config(128);
+    const Configuration outerConfig = ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(4).build();
+    PipelineSpec outerSpec;
+    outerSpec.operation("test.threshold", thresholdAt(128.0));
+
+    auto inner = std::make_shared<Pipeline>(ts::makeSyntheticScene(source), innerConfig, boxMean(2));
+    inner->validate();
+    const int64_t innerBytes = detail::PipelineAccess::plan(*inner).tileBytes;
+    Pipeline probe(inner->asScene(), outerConfig, outerSpec);
+    probe.validate();
+    const int64_t outerBytes = detail::PipelineAccess::plan(probe).tileBytes;
+    // Several outer tiles fit at once, and then no inner tile does.
+    ASSERT_GE(innerBytes + outerBytes, 2 * outerBytes);
+    ASSERT_LT((innerBytes + outerBytes) % outerBytes, innerBytes);
+    ASSERT_LE((innerBytes + outerBytes) / outerBytes, outerConfig.workerCount());
+
+    const MemoryBudgetPtr shared = makeMemoryBudget(innerBytes + outerBytes);
+    inner->memoryBudget(shared);
+    auto outer = std::make_shared<Pipeline>(inner->asScene(), outerConfig, outerSpec);
+    outer->memoryBudget(shared);
+    auto sink = std::make_shared<CaptureSink>(width, height, std::vector<int64_t>{1});
+    outer->rasterSink(sink.get());
+
+    PipelineSpec chain = boxMean(2);
+    chain.operation("test.threshold", thresholdAt(128.0));
+    const auto expected = eager(ts::makeSyntheticScene(source), chain, 64, width, height, 1);
+
+    auto done = std::make_shared<std::promise<void>>();
+    std::future<void> finished = done->get_future();
+    std::thread([outer, sink, inner, done]() {
+        try {
+            outer->run(nullptr, CancellationToken());
+            done->set_value();
+        } catch (...) {
+            done->set_exception(std::current_exception());
+        }
+    }).detach();
+    if (finished.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+        std::fprintf(stderr, "LazyScene.NestedPipelinesShareOneBudget: the run deadlocked\n");
+        std::fflush(stderr);
+        std::_Exit(1);  // The run's threads cannot be stopped; failing beats hanging.
+    }
+    EXPECT_NO_THROW(finished.get());
+    EXPECT_TRUE(sink->plane(0) == expected);
+    EXPECT_EQ(shared->reservedBytes(), 0);
 }

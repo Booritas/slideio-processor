@@ -3,6 +3,7 @@
 
 #include <pipeline/detail/plane_buffers.hpp>
 #include <pipeline/detail/tile_evaluator.hpp>
+#include <pipeline/detail/tile_reservation.hpp>
 
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -282,9 +283,19 @@ void PipelineSceneSource::readBlock(int32_t level, const Rect64& region, BlockVi
         for (int64_t column : columns) {
             const int64_t tile = grid.tileIndex(column, row);
             copy.setTile(tile, grid.tileRectAtLevel(tile));
-            // As in a run: the plan's tile bytes bound the tile's peak buffers.
-            budget.reserveOrWait(plan.tileBytes, never);
-            const Reservation held(budget, plan.tileBytes);
+            // As in a run: the plan's tile bytes bound the tile's peak buffers. A thread
+            // already holding a tile reservation (a pipeline tile reading this scene) never
+            // waits: its bytes, and its fellow workers', are freed only by tiles, so waiting
+            // could deadlock. It reserves if the bytes fit and evaluates unreserved if not.
+            int64_t reserved = 0;
+            if (!TileReservationMark::held()) {
+                budget.reserveOrWait(plan.tileBytes, never);
+                reserved = plan.tileBytes;
+            } else if (budget.tryReserve(plan.tileBytes)) {
+                reserved = plan.tileBytes;
+            }
+            const Reservation held(budget, reserved);
+            const TileReservationMark mark;
             const char* operation = nullptr;
             try {
                 evaluator.evaluate(tile, never, &operation);

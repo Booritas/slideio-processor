@@ -53,14 +53,15 @@ private:
 };
 
 // The lazy source behind levelCount(), rect(), readBlock() and asScene(): built once
-// from a snapshot of the bindings, validating first when no plan is held. Concurrent
-// first calls build it once; a build that throws leaves none, so the next call tries
-// again. A binding call renews the flag and drops the source.
+// from a snapshot of the bindings, validating first when no plan is held. The build
+// runs under the mutex, so concurrent first calls build it once; a build that throws
+// leaves none, so the next call tries again. A binding call drops the source.
 std::shared_ptr<detail::PipelineSceneSource> lazySource(const Pipeline& pipeline) {
     auto& impl = detail::PipelineAccess::impl(pipeline);
-    std::call_once(*impl.lazyOnce, [&]() {
+    std::lock_guard<std::mutex> lock(impl.lazyMutex);
+    if (!impl.lazy) {
         impl.lazy = std::make_shared<detail::PipelineSceneSource>(detail::PipelineAccess::snapshot(pipeline));
-    });
+    }
     return impl.lazy;
 }
 

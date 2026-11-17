@@ -68,17 +68,18 @@ public:
     std::vector<OperationPtr> lastRunOperations;
 
     /// What levelCount(), rect(), readBlock() and asScene() evaluate through: built
-    /// once, under `lazyOnce`, from a snapshot of the bindings, so concurrent
-    /// readBlock() calls share one build. Every binding call drops it and renews the
-    /// flag; validate() leaves it, since the same bindings resolve to the same plan.
-    std::unique_ptr<std::once_flag> lazyOnce = std::make_unique<std::once_flag>();
-    std::shared_ptr<detail::PipelineSceneSource> lazy;
+    /// under `lazyMutex` from a snapshot of the bindings and set only when the build
+    /// succeeds, so concurrent readBlock() calls share one build and a failed build
+    /// leaves nothing. Every binding call drops it; validate() leaves it, since the
+    /// same bindings resolve to the same plan.
+    std::mutex lazyMutex;
+    std::shared_ptr<detail::PipelineSceneSource> lazy;  ///< Guarded by lazyMutex.
 
     /// Drops what the bindings resolved: the plan and the lazy source.
     void bindingsChanged() {
         plan.reset();
+        std::lock_guard<std::mutex> lock(lazyMutex);
         lazy.reset();
-        lazyOnce = std::make_unique<std::once_flag>();
     }
 };
 

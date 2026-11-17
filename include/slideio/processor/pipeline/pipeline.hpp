@@ -76,6 +76,16 @@ public:
     /**
      * @brief Sets the memory budget the run reserves its buffers from, and
      * whose ceiling validate() checks the run against.
+     *
+     * A run reserves each tile's bytes while the tile is evaluated, waiting until
+     * they fit. Reading this pipeline lazily (readBlock(), or the scene asScene()
+     * returns) reserves each evaluated tile's bytes the same way, except on a
+     * thread that already holds a tile reservation, such as a worker of another
+     * pipeline whose input is this pipeline's scene: there it reserves only if the
+     * bytes fit at once and otherwise evaluates the tile unreserved, since waiting
+     * for bytes that only that thread's own tiles can free could deadlock. One
+     * budget may therefore be shared by a pipeline and the pipelines reading it,
+     * at the cost of the ceiling being exceeded by such unreserved tiles.
      * @param budget The budget; null restores the default, a budget whose
      * ceiling is the configuration's memoryCeilingBytes().
      * @return This pipeline, for chaining.
@@ -260,6 +270,9 @@ public:
      * nearest-neighbour, so no value is invented. Channels of different types are
      * read one type per call, as SlideIO requires. Reads may overlap: the scene
      * declares concurrent reads, and each read evaluates its own tiles.
+     * Each tile a read evaluates reserves memory from this pipeline's budget as
+     * memoryBudget() describes, so another pipeline reading the scene may share
+     * that budget without deadlocking.
      * @return The scene.
      * @throws InvalidArgumentError As validate(); when the chain has a
      * global-context operation ("global-context operations need runInto"), since a
@@ -390,13 +403,11 @@ public:
      *
      * Evaluates every tile of the level's grid that meets @p region, one at a
      * time on the calling thread, each reserving the plan's tile bytes from the
-     * memory budget while it is evaluated (waiting until they fit; the caller's
-     * view itself is not reserved), and copies the part over @p region into
-     * @p out. The region may extend beyond rect(@p level): what lies outside it,
-     * or outside the restriction (ROI, polygon, mask source), reads as zero. No
-     * sink is called: emitted objects and seam fragments are dropped. A pipeline
-     * that reads this one through asScene() must not share its memory budget, or
-     * its tiles could hold the bytes these tiles wait for.
+     * memory budget while it is evaluated (the caller's view itself is not
+     * reserved), as memoryBudget() describes, and copies the part over @p region
+     * into @p out. The region may extend beyond rect(@p level): what lies outside
+     * it, or outside the restriction (ROI, polygon, mask source), reads as zero.
+     * No sink is called: emitted objects and seam fragments are dropped.
      * @param level The output level, from 0 to levelCount() - 1.
      * @param region The block, in that level's pixels; not empty.
      * @param out Receives the block: the chain's final plane count and types,

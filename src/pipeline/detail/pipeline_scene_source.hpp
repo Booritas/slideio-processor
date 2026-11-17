@@ -44,7 +44,10 @@ public:
     /// Evaluates `region` of output level `level` into `out`, which must have the
     /// chain's final plane count and types and the region's size. Pixels outside
     /// rect(level) or outside the restriction are zero. Each tile reserves the
-    /// level plan's tile bytes from the budget while it is evaluated. Throws
+    /// level plan's tile bytes from the budget while it is evaluated, waiting until
+    /// they fit, except on a thread already holding a tile reservation (see
+    /// TileReservationMark), which never waits: it evaluates unreserved when they do
+    /// not fit. Throws
     /// InvalidArgumentError for a bad level, region or view; TileError, as a run
     /// reports it, when a tile fails; CancelledError when an operation throws it.
     void readBlock(int32_t level, const Rect64& region, BlockView& out) const;

@@ -6,6 +6,7 @@
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/restriction.hpp>
 #include <pipeline/detail/seam_merger_access.hpp>
+#include <pipeline/detail/tile_reservation.hpp>
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
@@ -485,6 +486,8 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                     {
                         budget.reserveOrWait(tileBytes, token);
                         const Reservation held(budget, tileBytes);
+                        // A lazy scene read inside this tile must not wait for these bytes.
+                        const detail::TileReservationMark mark;
                         if (own.stop) {
                             break;
                         }
