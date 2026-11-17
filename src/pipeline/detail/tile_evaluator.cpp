@@ -136,7 +136,7 @@ TileEvaluator::TileEvaluator(const RunPlan& plan, std::vector<OperationPtr> oper
       reader_(reader),
       bindings_(std::move(bindings)),
       restriction_(plan, required(bindings_.spec, "spec"), required(bindings_.selector, "level selector"),
-                   bindings_.maskSource) {
+                   bindings_.maskSource, bindings_.memoryBudget) {
     required(bindings_.counters, "run counters");
     if (operations_.size() != plan_.operations.size() ||
         std::any_of(operations_.begin(), operations_.end(), [](const OperationPtr& op) { return !op; })) {

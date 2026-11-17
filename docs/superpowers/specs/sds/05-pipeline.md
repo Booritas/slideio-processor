@@ -1767,9 +1767,16 @@ end (5.7). After the pass it calls `resolve`, on success only: after a
 cancellation or a tile failure the merger is destroyed with whatever it still
 holds. When the run is restricted, the tile masks the restriction filter caches
 to test merged anchors are released as tiles settle — a tile's mask once it and
-its up to eight neighbours have completed — so the cache stays bounded by the
-tiles in progress rather than growing to one byte per level pixel; a released
-mask is rebuilt if asked for again, so releasing never changes an answer. Completion order therefore changes *when* a merged
+its up to eight neighbours have completed — so the cache does not grow to one
+byte per level pixel; a released mask is rebuilt if asked for again, so
+releasing never changes an answer. The cache is not bounded by the tiles in
+progress: a tile settles only when the tile below and to its right completes,
+about one grid row later, so it holds about one row of tile masks (columns ×
+tile width × tile height bytes at the analysis level). Each cached mask reserves
+its bytes from the run's budget with `tryReserve`, never waiting, and gives them
+back when it is dropped; a mask that does not fit is not cached, and the anchor
+is tested on a one-pixel mask built through the same sources instead, with the
+same answer. Completion order therefore changes *when* a merged
 object is emitted but never *what* it is: a component closes only once every
 tile bordering it is done, and its intensity partials are combined in canonical
 fragment order regardless of the order they arrived.

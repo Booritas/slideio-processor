@@ -3,6 +3,7 @@
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/memory_budget.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
@@ -689,4 +690,64 @@ TEST(Restriction, AdmitsIsThreadSafe) {
         EXPECT_EQ(answers[t], expected) << "thread " << t;
     }
     EXPECT_EQ(disc.fillCount() - before, static_cast<int64_t>(tiles.size())) << "one fillMask per tile";
+}
+
+// Every mask admits() caches is charged to the budget while it is held and given
+// back when it is dropped; a mask that does not fit is not cached, and admits()
+// answers without it, the same.
+TEST(Restriction, CachedTileMasksAreChargedToTheBudget) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, texture);
+    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    Pipeline p(scene, config(), spec1("test.boxMean", radius(3)));
+    p.maskSource(&disc);
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const int64_t first = plan.grid.tileIndex(1, 3);
+    const int64_t second = plan.grid.tileIndex(2, 3);
+    const int64_t firstBytes = plan.grid.tileRectAtLevel(first).area();
+    const int64_t secondBytes = plan.grid.tileRectAtLevel(second).area();
+
+    // Roomy: held masks are visible in reservedBytes(), dropped ones are not.
+    {
+        const MemoryBudgetPtr budget = makeMemoryBudget(int64_t{1} << 30);
+        ASSERT_TRUE(budget->tryReserve(1000));  // Someone else's bytes, untouched throughout.
+        {
+            const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource, budget.get());
+            filter.admits(Point64{100, 230});  // tile (1, 3)
+            EXPECT_EQ(budget->reservedBytes(), 1000 + firstBytes);
+            filter.admits(Point64{101, 231});  // the same tile: no second charge
+            filter.admits(Point64{140, 230});  // tile (2, 3)
+            EXPECT_EQ(budget->reservedBytes(), 1000 + firstBytes + secondBytes);
+            filter.releaseTileMask(first);
+            EXPECT_EQ(budget->reservedBytes(), 1000 + secondBytes);
+            filter.releaseTileMask(first);  // nothing cached: nothing given back
+            EXPECT_EQ(budget->reservedBytes(), 1000 + secondBytes);
+        }
+        EXPECT_EQ(budget->reservedBytes(), 1000) << "destroying the filter gives back what its cache held";
+    }
+
+    // Tight: no mask fits, so none is cached, and every answer is still right.
+    {
+        const MemoryBudgetPtr budget = makeMemoryBudget(firstBytes + 100);
+        ASSERT_TRUE(budget->tryReserve(200));  // Leaves less than one tile mask.
+        const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource, budget.get());
+        int64_t admitted = 0;
+        int64_t refused = 0;
+        for (const int64_t tile : {first, second}) {
+            const Rect64 r = plan.grid.tileRect(tile);
+            for (int64_t y = r.y; y < r.y + r.height; y += 3) {
+                for (int64_t x = r.x; x < r.x + r.width; x += 2) {
+                    const bool expected = disc.contains(static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+                    ASSERT_EQ(filter.admits(Point64{x, y}), expected) << x << "," << y;
+                    (expected ? admitted : refused)++;
+                }
+            }
+        }
+        EXPECT_GT(admitted, 10);
+        EXPECT_GT(refused, 10);
+        EXPECT_EQ(filter.cachedTileMaskCount(), 0);
+        EXPECT_EQ(budget->reservedBytes(), 200);
+    }
 }

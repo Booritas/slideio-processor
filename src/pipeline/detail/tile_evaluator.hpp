@@ -50,6 +50,9 @@ struct Bindings {
     const PipelineSpec* spec = nullptr;            ///< For the channels and the restriction; required.
     const LevelSelector* selector = nullptr;       ///< For the restriction's mapping; required.
     RunCounters* counters = nullptr;               ///< Required.
+    /// Charged for the restriction's cached anchor masks (RestrictionFilter);
+    /// null: they are not charged. Borrowed; must outlive the evaluator.
+    MemoryBudget* memoryBudget = nullptr;
 };
 
 /// What evaluating one tile did.

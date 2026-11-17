@@ -10,13 +10,14 @@
 namespace slideio::processor::detail {
 
 RestrictionFilter::RestrictionFilter(const RunPlan& plan, const PipelineSpec& spec, const LevelSelector& selector,
-                                     TileMaskSource* maskSource)
+                                     TileMaskSource* maskSource, MemoryBudget* budget)
     : plan_(plan),
       restricted_(plan.restricted),
       hasRoi_(spec.hasRoi()),
       roiAtLevel_{0, 0, 0, 0},
       polygon_(spec.hasPolygon() ? &spec.polygon() : nullptr),
-      maskSource_(maskSource) {
+      maskSource_(maskSource),
+      budget_(budget) {
     if (hasRoi_) {
         roiAtLevel_ = selector.mapToLevel(spec.roi(), plan.level);
     }
@@ -120,23 +121,41 @@ bool RestrictionFilter::admits(Point64 anchorLevel0) const {
     }
     const Point64 pixel = levelPixelOf(anchorLevel0);
     const int64_t tile = tileHolding(pixel);
+    // In no tile of the grid (rare), or the tile's mask does not fit the budget:
+    // a one-pixel mask, uncached.
+    const auto uncached = [&]() { return buildMask(Rect64{pixel.x, pixel.y, 1, 1}).testLevel0(anchorLevel0); };
     if (tile < 0) {
-        // In no tile of the grid: rare, so a one-pixel mask, uncached.
-        return buildMask(Rect64{pixel.x, pixel.y, 1, 1}).testLevel0(anchorLevel0);
+        return uncached();
     }
 
-    // The tile's entry is found or made under the cache lock; its mask is built
-    // under the entry's own lock, once: concurrent callers in the same tile wait
-    // for that build, and a build that throws leaves the entry unbuilt, so the
-    // next caller builds it again.
+    // The tile's entry is found or made under the cache lock, its bytes reserved
+    // as it is made; its mask is built under the entry's own lock, once:
+    // concurrent callers in the same tile wait for that build, and a build that
+    // throws leaves the entry unbuilt, so the next caller builds it again.
     std::shared_ptr<CachedMask> entry;
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
-        std::shared_ptr<CachedMask>& slot = cache_[tile];
-        if (!slot) {
-            slot = std::make_shared<CachedMask>();
+        const auto found = cache_.find(tile);
+        if (found != cache_.end()) {
+            entry = found->second;
+        } else {
+            const int64_t bytes = budget_ != nullptr ? plan_.grid.tileRectAtLevel(tile).area() : 0;
+            if (budget_ == nullptr || budget_->tryReserve(bytes)) {
+                try {
+                    entry = std::make_shared<CachedMask>(budget_, bytes);
+                } catch (...) {
+                    if (budget_ != nullptr) {
+                        budget_->release(bytes);
+                    }
+                    throw;
+                }
+                // Should this throw, the entry gives its bytes back as it goes.
+                cache_.emplace(tile, entry);
+            }
         }
-        entry = slot;
+    }
+    if (!entry) {
+        return uncached();
     }
     {
         std::lock_guard<std::mutex> lock(entry->mutex);
@@ -147,6 +166,16 @@ bool RestrictionFilter::admits(Point64 anchorLevel0) const {
     }
     // Never written once built, and the lock above ordered the build before this read.
     return entry->mask.testLevel0(anchorLevel0);
+}
+
+RestrictionFilter::CachedMask::~CachedMask() {
+    if (budget != nullptr && bytes > 0) {
+        try {
+            budget->release(bytes);
+        } catch (...) {
+            // A failing budget lock cannot be reported from a destructor.
+        }
+    }
 }
 
 void RestrictionFilter::releaseTileMask(int64_t tileIndex) const {

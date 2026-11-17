@@ -432,6 +432,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
+    bindings.memoryBudget = &budget;
     if (merger) {
         // Fragments are partial by definition, so they bypass the tile-ownership
         // and restriction filters; the merged object's anchor is tested instead.
@@ -444,9 +445,11 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));
 
     // A merged object is stored only when the restriction admits its anchor. The
-    // tile masks admits() caches are released as tiles settle, which keeps the
-    // cache to the tiles in progress. The merger calls the filter only from
-    // notifyTileComplete() and resolve(), never after run() leaves them.
+    // tile masks admits() caches are released as tiles settle, about one grid row
+    // after they complete, so the cache holds about one row of tile masks, each
+    // charged to the pool's budget when it fits and not cached otherwise. The
+    // merger calls the filter only from notifyTileComplete() and resolve(),
+    // never after run() leaves them.
     std::unique_ptr<detail::TileMaskRelease> maskRelease;
     if (merger && evaluator.restriction().restricted()) {
         maskRelease = std::make_unique<detail::TileMaskRelease>(evaluator.restriction(), plan.grid);

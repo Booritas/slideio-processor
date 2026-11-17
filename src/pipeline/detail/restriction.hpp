@@ -5,6 +5,7 @@
 
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/memory_budget.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
@@ -38,10 +39,16 @@ namespace slideio::processor::detail {
 /// however many threads ask for it together. A cached mask stays until
 /// releaseTileMask(), which the caller invokes when no anchor in that tile can
 /// arrive any more; a later admits() in a released tile builds its mask again.
+///
+/// With a budget, each cached mask reserves its bytes (one per pixel of the tile
+/// rect) with MemoryBudget::tryReserve, never waiting, from when it is cached
+/// until it is dropped (released, or with the filter); when they do not fit, the
+/// mask is not cached and that anchor is tested on a one-pixel mask instead, so
+/// the answer is the same. Without a budget the cache is not charged.
 class RestrictionFilter {
 public:
     RestrictionFilter(const RunPlan& plan, const PipelineSpec& spec, const LevelSelector& selector,
-                      TileMaskSource* maskSource);
+                      TileMaskSource* maskSource, MemoryBudget* budget = nullptr);
 
     RestrictionFilter(const RestrictionFilter&) = delete;
     RestrictionFilter& operator=(const RestrictionFilter&) = delete;
@@ -75,8 +82,17 @@ public:
 
 private:
     // One tile's cached mask, built once under `mutex`; a build that throws
-    // leaves `built` false, so the next caller tries again.
+    // leaves `built` false, so the next caller tries again. Holds `bytes` of
+    // `budget` (when not null) from its creation and gives them back when
+    // destroyed, by whichever of the cache and the callers using it lets go last.
     struct CachedMask {
+        CachedMask(MemoryBudget* budgetIn, int64_t bytesIn) : budget(budgetIn), bytes(bytesIn) {}
+        ~CachedMask();
+        CachedMask(const CachedMask&) = delete;
+        CachedMask& operator=(const CachedMask&) = delete;
+
+        MemoryBudget* budget;
+        int64_t bytes;
         std::mutex mutex;
         bool built = false;
         RasterMask mask;
@@ -100,14 +116,18 @@ private:
     Rect64 roiAtLevel_;
     const Polygon* polygon_;        // Null without a polygon restriction; borrowed from the spec.
     TileMaskSource* maskSource_;    // Null without a bound source; borrowed.
+    MemoryBudget* budget_;          // Charged for the cached masks; null: not charged. Borrowed.
 
     mutable std::mutex cacheMutex_; // Guards cache_ (the map, not the masks it points to).
     mutable std::unordered_map<int64_t, std::shared_ptr<CachedMask>> cache_;
 };
 
 /// Releases a RestrictionFilter's cached tile masks as the run's tiles complete,
-/// so the cache stays bounded by the tiles still in progress instead of growing
-/// to one byte per level pixel.
+/// so the cache does not grow to one byte per level pixel. It is not bounded by
+/// the tiles in progress: a tile settles only once the tile below and to its
+/// right has completed, about one grid row after it, so with tiles dispatched in
+/// row order the cache holds about one row of tile masks (columns x tile width x
+/// tile height bytes), each charged to the filter's budget when it fits there.
 ///
 /// A tile is settled once it and every tile around it (the up to eight
 /// neighbours) have completed. A settled tile's mask is released by the
