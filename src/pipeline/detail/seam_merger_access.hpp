@@ -187,20 +187,14 @@ private:
     // Writes every resident member of the component rooted at `root`.
     void spillComponent(int64_t root);
     // Reserves `bytes` for the new fragment `id`, spilling the oldest-opened
-    // components while the budget is short. False when nothing more can be
-    // spilled and the caller must wait for the budget outside the lock.
-    bool reserveFor(int64_t id, int64_t bytes);
-    // Ends the waits for the budget in progress, so the waiters look again:
-    // called when a resident fragment reserves memory, and when one holding
-    // no memory (perhaps a waiter's own) is written out.
-    void wakeWaiters();
+    // other components while the budget is short, then the fragment itself when
+    // nothing else is left to spill. Never waits for memory.
+    void reserveFor(int64_t id, int64_t bytes);
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
     std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
     std::set<int64_t> residentByOpening_;                          // `first` of components with resident members.
     std::unique_ptr<detail::FragmentSpill> spill_;                 // Created at the first spill; never reset.
-    std::shared_ptr<CancellationSource> wake_;                     // Cancelled to wake the budget waiters.
-    int64_t waiters_ = 0;                                          // Threads waiting for the budget.
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.

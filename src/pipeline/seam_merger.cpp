@@ -114,7 +114,7 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
 void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
                            const std::vector<detail::SeamContact>& contacts,
                            const std::vector<int64_t>& neighbours, int64_t bytes) {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     const int64_t id = static_cast<int64_t>(fragments_.size());
     const int64_t tile = fragment->tile;
 
@@ -163,71 +163,22 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
         largestComponentFragmentCount.store(1);
     }
 
-    for (;;) {
-        if (reserveFor(id, bytes)) {
-            return;
-        }
-        // Everything that could be written out is: wait for the rest of the run
-        // to give memory back, without the lock, so objects keep closing
-        // meanwhile. The wait is not cancellable by the caller (addFragment()
-        // takes no token); the merger itself ends it when another fragment
-        // reserves memory, which may then be written out in turn, so a waiter is
-        // never left behind fragments that wait for its own tile.
-        if (!wake_) {
-            wake_ = std::make_shared<CancellationSource>();
-        }
-        const std::shared_ptr<CancellationSource> wake = wake_;
-        ++waiters_;
-        lock.unlock();
-        bool granted = false;
-        try {
-            budget->reserveOrWait(bytes, wake->token());
-            granted = true;
-        } catch (const CancelledError&) {
-            // Woken to spill again.
-        } catch (...) {
-            lock.lock();
-            --waiters_;
-            throw;
-        }
-        lock.lock();
-        --waiters_;
-        if (!granted) {
-            continue;
-        }
-        detail::FragmentSlot& held = fragments_[static_cast<size_t>(id)];
-        if (held.resident && held.reservedBytes == 0) {
-            held.reservedBytes = bytes;
-            wakeWaiters();
-        } else {
-            // Written out or closed while waiting: the bytes are not needed.
-            budget->release(bytes);
-        }
-        return;
-    }
+    reserveFor(id, bytes);
 }
 
-void SeamMerger::Impl::wakeWaiters() {
-    if (waiters_ > 0 && wake_) {
-        wake_->cancel();
-        wake_.reset();
-    }
-}
-
-bool SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {
+void SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {
     if (bytes > budget->ceilingBytes()) {
         // The budget can never hold it, so it goes straight to the scratch file.
         spillFragment(id);
-        return true;
+        return;
     }
     for (;;) {
         if (!fragments_[static_cast<size_t>(id)].resident) {
-            return true; // Written out with its object: nothing to reserve.
+            return; // Written out with its object: nothing to reserve.
         }
         if (budget->tryReserve(bytes)) {
             fragments_[static_cast<size_t>(id)].reservedBytes = bytes;
-            wakeWaiters();
-            return true;
+            return;
         }
         // The oldest-opened component with members in memory, other than a
         // component whose only resident member is this fragment, which holds no
@@ -243,7 +194,11 @@ bool SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {
             break;
         }
         if (oldest < 0) {
-            return false;
+            // Nothing else is left to write out, and the memory still taken
+            // belongs to the rest of the run, perhaps to this caller's own tile:
+            // the fragment is written out itself rather than wait for it.
+            spillFragment(id);
+            return;
         }
         spillComponent(oldest);
     }
@@ -271,10 +226,6 @@ void SeamMerger::Impl::spillFragment(int64_t fragment) {
     }
     if (held > 0) {
         budget->release(held);
-    } else {
-        // A fragment holding no bytes may be one whose thread is waiting for
-        // the budget; written out, it needs none, so the waiter must look again.
-        wakeWaiters();
     }
 }
 

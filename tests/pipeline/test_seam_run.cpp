@@ -4,6 +4,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/measurement.hpp>
+#include <slideio/processor/core/memory_budget.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
@@ -19,12 +20,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -388,4 +392,79 @@ TEST(SeamRun, SettledTileMasksAreReleased) {
         release.tileCompleted(t);
     }
     EXPECT_EQ(filter.cachedTileMaskCount(), 0);
+}
+
+namespace {
+
+// What a run on another thread reports back; shared with that thread, which may
+// outlive the test if the run hangs.
+struct BackgroundRun {
+    std::mutex mutex;
+    std::condition_variable done;
+    bool finished = false;
+    std::string error;
+    int64_t stored = 0;
+};
+
+// Runs a seam-emitting components chain with a memory ceiling of `tilesHeld`
+// tiles' bytes and `workers` workers, on a thread of its own; false when it did
+// not finish within the bound.
+bool runsWithinBound(int32_t workers, int64_t tilesHeld, int64_t& stored, std::string& error) {
+    auto scene = blobScene();
+    auto pipeline = std::make_shared<Pipeline>(scene, config(64, workers), components(true));
+    pipeline->bindLayer("objects", LayerId(3));
+    pipeline->validate();
+    const int64_t tileBytes = detail::PipelineAccess::plan(*pipeline).tileBytes;
+    pipeline->memoryBudget(makeMemoryBudget(tilesHeld * tileBytes));
+    pipeline->validate();
+    EXPECT_EQ(detail::PipelineAccess::plan(*pipeline).tileBytes, tileBytes);
+
+    auto cancel = std::make_shared<CancellationSource>();
+    auto run = std::make_shared<BackgroundRun>();
+    std::thread([pipeline, cancel, run] {
+        std::string failure;
+        auto sink = std::make_shared<ts::CollectingObjectSink>();
+        try {
+            pipeline->runInto(*sink, nullptr, cancel->token());
+        } catch (const std::exception& e) {
+            failure = e.what();
+        }
+        std::lock_guard<std::mutex> lock(run->mutex);
+        run->error = failure;
+        run->stored = sink->emittedCount();
+        run->finished = true;
+        run->done.notify_all();
+    }).detach();
+
+    std::unique_lock<std::mutex> lock(run->mutex);
+    const bool finished = run->done.wait_for(lock, std::chrono::seconds(30), [&] { return run->finished; });
+    if (!finished) {
+        cancel->cancel();  // Leaves the hung thread to the process's exit.
+        return false;
+    }
+    stored = run->stored;
+    error = run->error;
+    return true;
+}
+
+} // namespace
+
+// A memory ceiling of exactly the tiles the workers hold leaves no room for seam
+// fragments: they go to the scratch file instead of waiting for memory that only
+// the waiting workers themselves could give back.
+TEST(SeamRun, TightBudgetDoesNotWaitForMemory) {
+    ts::CollectingObjectSink roomy;
+    {
+        Pipeline p(blobScene(), config(64, 4), components(true));
+        p.bindLayer("objects", LayerId(3));
+        p.runInto(roomy, nullptr, CancellationToken());
+    }
+    for (const int32_t workers : {1, 4}) {
+        int64_t stored = 0;
+        std::string error;
+        ASSERT_TRUE(runsWithinBound(workers, workers, stored, error))
+            << workers << " workers: the run did not finish within 30 s";
+        EXPECT_EQ(error, "") << workers << " workers";
+        EXPECT_EQ(stored, roomy.emittedCount()) << workers << " workers";
+    }
 }

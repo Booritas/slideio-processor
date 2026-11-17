@@ -65,9 +65,11 @@ struct SeamMergerAccess;
  * when its object closes or the merger is destroyed. When the budget is short,
  * the fragments of the objects that opened first are written to one scratch
  * file, `seam-<32 random lowercase hex digits>.bin` in the scratch directory,
- * until the new fragment fits; if it still does not, addFragment() waits for
- * the run to give memory back. A fragment larger than the whole budget goes to
- * the file directly. Fragments written out are read back when their object
+ * until the new fragment fits; if it still does not, the new fragment is
+ * written out itself. addFragment() never waits for memory: the memory still
+ * taken may be held by the very tile emitting the fragment, so waiting could
+ * never end. A fragment larger than the whole budget goes to the file
+ * directly. Fragments written out are read back when their object
  * closes; joining, closing and the results are the same as when everything
  * stays in memory. spilledFragmentCount() and spilledBytes() report the
  * writing; the file is removed when the merger is destroyed, on failure too.
@@ -131,8 +133,8 @@ public:
     /// @throws InternalError When the memory budget's lock fails.
     /// @throws std::bad_alloc When memory is exhausted.
     /// @par Thread-safety
-    /// Safe to call concurrently. May block while the memory budget is short
-    /// and nothing more can be written out.
+    /// Safe to call concurrently. Never waits for memory: when the budget is
+    /// short, fragments are written to the scratch file instead.
     /// @par Requirements
     /// UR-SEG-3, UR-EXE-2
     void addFragment(int64_t tileIndex, const Polygon&, LayerId,

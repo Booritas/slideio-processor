@@ -253,9 +253,15 @@ TEST(SeamSpill, ConcurrentWorkersWithSmallBudgetMergeIdentically) {
     SeamMerger unbounded(grid, makeMemoryBudget(int64_t{1} << 30), referenceScratch.utf8().c_str());
     const std::vector<Emitted> reference = runSequential(unbounded, grid, fragments);
 
+    // Odd trials start with the budget held whole by the rest of the run, given
+    // back only after every worker has finished: nothing may wait for it.
     for (int trial = 0; trial < 30; ++trial) {
         ScratchDirectory scratch;
         const MemoryBudgetPtr budget = makeMemoryBudget(300);
+        const bool heldWhole = trial % 2 == 1;
+        if (heldWhole) {
+            ASSERT_TRUE(budget->tryReserve(300));
+        }
         ts::CollectingObjectSink sink;
         {
             SeamMerger merger(grid, budget, scratch.utf8().c_str());
@@ -277,6 +283,12 @@ TEST(SeamSpill, ConcurrentWorkersWithSmallBudgetMergeIdentically) {
             EXPECT_EQ(merger.residentFragmentCount(), 0);
             // Tile 4 alone holds more than the budget, so something is always written out.
             EXPECT_GT(merger.spilledFragmentCount(), 0) << "trial " << trial;
+            if (heldWhole) {
+                EXPECT_EQ(merger.spilledFragmentCount(), merger.fragmentCount()) << "trial " << trial;
+            }
+        }
+        if (heldWhole) {
+            budget->release(300);
         }
         EXPECT_EQ(budget->reservedBytes(), 0) << "trial " << trial;
         EXPECT_TRUE(scratch.entries().empty()) << "trial " << trial;
@@ -443,38 +455,37 @@ TEST(SeamSpill, DestructionReleasesWhatIsStillHeld) {
     EXPECT_EQ(budget->reservedBytes(), 0);
 }
 
-TEST(SeamSpill, WaiterWhoseFragmentIsSpilledReturns) {
-    // The budget is held by someone else (a worker's tile buffer, say) that gives
-    // it back only once A's addFragment() has returned. A waits for memory; B's
-    // fragment then writes A's pending fragment out, which frees nothing but means
-    // A no longer needs memory: A must return rather than wait for ever.
+TEST(SeamSpill, FullyHeldBudgetSpillsInsteadOfWaiting) {
+    // The budget is held whole by someone else (the workers' tile buffers, say)
+    // that gives it back only once addFragment() has returned. Each fragment is
+    // written out at once instead of waiting for memory that would never come.
     const TileGrid grid = gridOf(3, 3, 10, 10);
     ScratchDirectory scratch;
     const MemoryBudgetPtr budget = makeMemoryBudget(1000);
     ASSERT_TRUE(budget->tryReserve(1000));
     SeamMerger merger(grid, budget, scratch.utf8().c_str());
 
-    std::atomic<bool> aReturned{false};
+    std::atomic<int> returned{0};
     std::thread a([&] {
         add(merger, Fragment{0, rectangle(5, 2, 5, 4), {}});
-        aReturned = true;
+        ++returned;
     });
-    // B starts once A's fragment is recorded (A then waits for the budget).
-    while (merger.fragmentCount() < 1) {
-        std::this_thread::yield();
-    }
-    std::thread b([&] { add(merger, Fragment{3, rectangle(5, 22, 5, 4), {}}); });
+    std::thread b([&] {
+        add(merger, Fragment{3, rectangle(5, 22, 5, 4), {}});
+        ++returned;
+    });
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!aReturned && std::chrono::steady_clock::now() < deadline) {
+    while (returned < 2 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    const bool returnedInTime = aReturned;
-    budget->release(1000); // Unblocks every wait either way, so the test cannot hang.
+    const bool returnedInTime = returned == 2;
+    budget->release(1000); // Unblocks a regressed wait, so the test cannot hang.
     a.join();
     b.join();
-    ASSERT_TRUE(returnedInTime) << "a waiter whose fragment was written out stayed blocked";
-    EXPECT_GE(merger.spilledFragmentCount(), 1);
+    ASSERT_TRUE(returnedInTime) << "addFragment() waited for memory";
+    EXPECT_EQ(merger.spilledFragmentCount(), 2);
+    EXPECT_EQ(merger.residentFragmentCount(), 0);
 
     ts::CollectingObjectSink sink;
     for (int64_t tile = 0; tile < grid.tileCount(); ++tile) {
