@@ -47,6 +47,7 @@ add_executable(slideio_processor_pipeline_tests
     test_reduction.cpp
     test_scene_reader.cpp
     test_seam_merger.cpp
+    test_seam_spill.cpp
     test_tile_evaluator.cpp
     test_tile_grid.cpp
     $<TARGET_OBJECTS:pipeline_public_only>

@@ -60,6 +60,17 @@ struct SeamMergerAccess;
  *
  * Peak memory is the fragments of open objects plus the largest single merged
  * polygon; largestComponentFragmentCount() reports the largest object met.
+ * Each fragment held in memory reserves its bytes in the run's memory budget (16
+ * per ring point, one IntensityPartial per partial, and 64 more), given back
+ * when its object closes or the merger is destroyed. When the budget is short,
+ * the fragments of the objects that opened first are written to one scratch
+ * file, `seam-<32 random lowercase hex digits>.bin` in the scratch directory,
+ * until the new fragment fits; if it still does not, addFragment() waits for
+ * the run to give memory back. A fragment larger than the whole budget goes to
+ * the file directly. Fragments written out are read back when their object
+ * closes; joining, closing and the results are the same as when everything
+ * stays in memory. spilledFragmentCount() and spilledBytes() report the
+ * writing; the file is removed when the merger is destroyed, on failure too.
  * @par Thread-safety
  * ThreadSafe.
  * @par Requirements
@@ -83,7 +94,8 @@ public:
     /// UR-SEG-3
     SeamMerger(const TileGrid&, MemoryBudgetPtr,
                const char* scratchDirectory);
-    /// Destroys the merger and every fragment still held, closed or not.
+    /// Destroys the merger and every fragment still held, closed or not,
+    /// releases the memory reserved for them and removes the scratch file.
     /// @throws Nothing.
     /// @par Thread-safety
     /// Not concurrently with any other member.
@@ -113,11 +125,16 @@ public:
     /// the fragment is empty, the layer is invalid, @p partialCount is
     /// negative, or @p partials is null while @p partialCount is positive;
     /// nothing is recorded.
+    /// @throws IoError When the scratch file cannot be created or written,
+    /// naming the file; the fragment is recorded but its memory is not
+    /// reserved, and the run cannot continue.
+    /// @throws InternalError When the memory budget's lock fails.
     /// @throws std::bad_alloc When memory is exhausted.
     /// @par Thread-safety
-    /// Safe to call concurrently.
+    /// Safe to call concurrently. May block while the memory budget is short
+    /// and nothing more can be written out.
     /// @par Requirements
-    /// UR-SEG-3
+    /// UR-SEG-3, UR-EXE-2
     void addFragment(int64_t tileIndex, const Polygon&, LayerId,
                      const IntensityPartial* partials, int32_t partialCount);
 
@@ -135,6 +152,8 @@ public:
     /// @throws InternalError When a closed object's fragments do not merge
     /// into one polygon; the message names the layer and the fragment and
     /// ring counts, never coordinates.
+    /// @throws IoError When a closed object's fragments cannot be read back
+    /// from the scratch file, naming the file.
     /// @throws ProcessorError Whatever @p sink throws.
     /// @throws std::bad_alloc When memory is exhausted.
     /// @par Thread-safety
@@ -154,6 +173,8 @@ public:
     /// @throws InternalError When an object remains whose tiles have not all
     /// completed, naming its layer, or when a remaining object's fragments do
     /// not merge (as notifyTileComplete()).
+    /// @throws IoError When a remaining object's fragments cannot be read back
+    /// from the scratch file, naming the file.
     /// @throws CancelledError When the token is cancelled.
     /// @throws ProcessorError Whatever the sink throws.
     /// @throws std::bad_alloc When memory is exhausted.
@@ -191,7 +212,7 @@ public:
     /// @par Requirements
     /// UR-SEG-3
     int64_t residentFragmentCount() const noexcept;
-    /// The fragments written to the scratch directory so far.
+    /// The fragments written to the scratch file so far, each counted once.
     /// @return The count.
     /// @throws Nothing.
     /// @par Thread-safety
@@ -199,7 +220,7 @@ public:
     /// @par Requirements
     /// UR-SEG-3
     int64_t spilledFragmentCount() const noexcept;
-    /// The bytes written to the scratch directory so far.
+    /// The bytes written to the scratch file so far: the size of its records.
     /// @return The count.
     /// @throws Nothing.
     /// @par Thread-safety

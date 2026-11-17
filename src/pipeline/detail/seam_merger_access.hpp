@@ -2,7 +2,9 @@
 #pragma once
 
 #include <pipeline/detail/fragment_merge.hpp>
+#include <pipeline/detail/fragment_spill.hpp>
 
+#include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/ids.hpp>
@@ -16,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,12 +35,23 @@ struct SeamFragment {
     Point64 anchor{0, 0};                   ///< polygon.anchor(), the canonical-order key.
 };
 
+/// Where one fragment is while its object is open. Its id is its index.
+struct FragmentSlot {
+    std::unique_ptr<SeamFragment> resident; ///< Null once written to the scratch file or taken.
+    int64_t tile = 0;                       ///< The tile that emitted it.
+    int64_t spillOffset = -1;               ///< Its record in the scratch file, once written.
+    int64_t reservedBytes = 0;              ///< Held in the memory budget for it while resident.
+    bool taken = false;                     ///< Its object has closed.
+};
+
 /// A set of joined fragments: one object once it closes. Kept for the root of
 /// its union-find tree only.
 struct SeamComponent {
     LayerId layer;                         ///< The layer every member belongs to.
     std::vector<int64_t> members;          ///< Fragment ids.
     std::unordered_set<int64_t> openTiles; ///< Tiles held or expected that have not completed.
+    int64_t first = 0;                     ///< The smallest member id: when it opened.
+    int64_t residentCount = 0;             ///< Members still in memory.
 };
 
 /// A seam contact waiting on the edge between two tiles for the fragment on the
@@ -48,10 +62,63 @@ struct SeamEdgeContact {
     SeamContact contact;
 };
 
-/// A component taken out of the merger to be merged and emitted.
+/// Bytes held in a memory budget, given back when the holder is destroyed.
+class BudgetHold {
+public:
+    BudgetHold() = default;
+    BudgetHold(BudgetHold&& other) noexcept : budget_(std::move(other.budget_)), bytes_(other.bytes_) {
+        other.bytes_ = 0;
+    }
+    BudgetHold& operator=(BudgetHold&& other) noexcept {
+        if (this != &other) {
+            reset();
+            budget_ = std::move(other.budget_);
+            bytes_ = other.bytes_;
+            other.bytes_ = 0;
+        }
+        return *this;
+    }
+    BudgetHold(const BudgetHold&) = delete;
+    BudgetHold& operator=(const BudgetHold&) = delete;
+    ~BudgetHold() { reset(); }
+
+    /// Takes over bytes already reserved in `budget`.
+    void add(const MemoryBudgetPtr& budget, int64_t bytes) noexcept {
+        if (!budget_) {
+            budget_ = budget;
+        }
+        bytes_ += bytes;
+    }
+    /// Releases what is held.
+    void reset() noexcept {
+        if (budget_ && bytes_ > 0) {
+            try {
+                budget_->release(bytes_);
+            } catch (...) {
+                // A failing budget lock cannot be reported from here.
+            }
+        }
+        bytes_ = 0;
+    }
+
+private:
+    MemoryBudgetPtr budget_;
+    int64_t bytes_ = 0;
+};
+
+/// A fragment of a closed component that is still in the scratch file.
+struct SpilledFragment {
+    int64_t tile;   ///< The tile that emitted it.
+    int64_t offset; ///< Its record in the scratch file.
+};
+
+/// A component taken out of the merger to be merged and emitted. The budget
+/// bytes of its resident fragments are released when it is destroyed.
 struct ClosedComponent {
     LayerId layer;
     std::vector<std::unique_ptr<SeamFragment>> fragments;
+    std::vector<SpilledFragment> spilled;
+    BudgetHold reserved;
 };
 
 /// The engine's way into a SeamMerger (the executor and tests use it), so no
@@ -74,11 +141,16 @@ namespace slideio::processor {
 class SeamMerger::Impl {
 public:
     Impl(const TileGrid& grid, MemoryBudgetPtr budget, std::string scratchDirectory);
+    // Releases the budget bytes of every fragment still resident; the scratch
+    // file, if any, is removed with it.
+    ~Impl();
 
     // Records a validated fragment whose seam contacts and expected neighbours
-    // are already computed.
+    // are already computed, and reserves `bytes` for it, writing older objects
+    // to the scratch file while the budget is short.
     void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
-             const std::vector<detail::SeamContact>& contacts, const std::vector<int64_t>& neighbours);
+             const std::vector<detail::SeamContact>& contacts, const std::vector<int64_t>& neighbours,
+             int64_t bytes);
     // Marks a tile complete and takes out the components that close with it.
     std::vector<detail::ClosedComponent> complete(int64_t tileIndex);
     // Takes out every remaining component; InternalError when one is still open.
@@ -92,7 +164,7 @@ public:
     int64_t neighbourAcross(int64_t tileIndex, const detail::SeamContact& contact) const;
 
     const TileGrid grid;
-    const MemoryBudgetPtr budget;      // Reservations arrive with spilling.
+    const MemoryBudgetPtr budget;
     const std::string scratchDirectory;
 
     mutable std::mutex mutex;
@@ -102,15 +174,32 @@ public:
     std::atomic<int64_t> mergedObjectCount{0};
     std::atomic<int64_t> residentFragmentCount{0};
     std::atomic<int64_t> largestComponentFragmentCount{0};
+    std::atomic<int64_t> spilledFragmentCount{0};
+    std::atomic<int64_t> spilledBytes{0};
 
 private:
     int64_t find(int64_t fragment);
     void unite(int64_t a, int64_t b);
     detail::ClosedComponent takeComponent(int64_t root);
     int64_t edgeKey(int64_t a, int64_t b) const;
+    // Writes one resident fragment to the scratch file and releases its bytes.
+    void spillFragment(int64_t fragment);
+    // Writes every resident member of the component rooted at `root`.
+    void spillComponent(int64_t root);
+    // Reserves `bytes` for the new fragment `id`, spilling the oldest-opened
+    // components while the budget is short. False when nothing more can be
+    // spilled and the caller must wait for the budget outside the lock.
+    bool reserveFor(int64_t id, int64_t bytes);
+    // Ends the waits for the budget in progress, so the waiters spill again:
+    // called whenever a resident fragment has reserved memory.
+    void wakeWaiters();
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
-    std::vector<std::unique_ptr<detail::SeamFragment>> fragments_; // Null once taken out.
+    std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
+    std::set<int64_t> residentByOpening_;                          // `first` of components with resident members.
+    std::unique_ptr<detail::FragmentSpill> spill_;                 // Created at the first spill; never reset.
+    std::shared_ptr<CancellationSource> wake_;                     // Cancelled to wake the budget waiters.
+    int64_t waiters_ = 0;                                          // Threads waiting for the budget.
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.

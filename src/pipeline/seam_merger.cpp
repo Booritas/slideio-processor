@@ -37,6 +37,20 @@ SeamMerger::Impl::Impl(const TileGrid& grid_, MemoryBudgetPtr budget_, std::stri
     : grid(grid_), budget(std::move(budget_)), scratchDirectory(std::move(scratchDirectory_)),
       completed_(static_cast<size_t>(grid_.tileCount()), 0) {}
 
+SeamMerger::Impl::~Impl() {
+    int64_t held = 0;
+    for (const detail::FragmentSlot& slot : fragments_) {
+        held += slot.reservedBytes;
+    }
+    if (held > 0) {
+        try {
+            budget->release(held);
+        } catch (...) {
+            // A failing budget lock cannot be reported from a destructor.
+        }
+    }
+}
+
 int64_t SeamMerger::Impl::neighbourAcross(int64_t tileIndex, const detail::SeamContact& contact) const {
     const int64_t column = tileIndex % grid.columns();
     const int64_t row = tileIndex / grid.columns();
@@ -78,6 +92,17 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
     }
     big->members.insert(big->members.end(), small->members.begin(), small->members.end());
     big->openTiles.insert(small->openTiles.begin(), small->openTiles.end());
+    if (big->residentCount > 0) {
+        residentByOpening_.erase(big->first);
+    }
+    if (small->residentCount > 0) {
+        residentByOpening_.erase(small->first);
+    }
+    big->first = std::min(big->first, small->first);
+    big->residentCount += small->residentCount;
+    if (big->residentCount > 0) {
+        residentByOpening_.insert(big->first);
+    }
     parent_[static_cast<size_t>(rootB)] = rootA;
     const int64_t size = static_cast<int64_t>(big->members.size());
     components_.erase(rootB);
@@ -88,36 +113,42 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
 
 void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
                            const std::vector<detail::SeamContact>& contacts,
-                           const std::vector<int64_t>& neighbours) {
-    std::lock_guard<std::mutex> lock(mutex);
+                           const std::vector<int64_t>& neighbours, int64_t bytes) {
+    std::unique_lock<std::mutex> lock(mutex);
     const int64_t id = static_cast<int64_t>(fragments_.size());
     const int64_t tile = fragment->tile;
 
+    // A completed tile is re-examined no more, so only the tiles still to
+    // complete hold the fragment open and list it.
     detail::SeamComponent component;
     component.layer = layer;
     component.members.push_back(id);
+    component.first = id;
+    component.residentCount = 1;
     if (completed_[static_cast<size_t>(tile)] == 0) {
         component.openTiles.insert(tile);
+        touching_[tile].push_back(id);
     }
     for (int64_t neighbour : neighbours) {
         if (completed_[static_cast<size_t>(neighbour)] == 0) {
             component.openTiles.insert(neighbour);
+            touching_[neighbour].push_back(id);
         }
     }
     components_.emplace(id, std::move(component));
-    fragments_.push_back(std::move(fragment));
+    residentByOpening_.insert(id);
+    detail::FragmentSlot slot;
+    slot.tile = tile;
+    slot.resident = std::move(fragment);
+    fragments_.push_back(std::move(slot));
     parent_.push_back(id);
-    touching_[tile].push_back(id);
-    for (int64_t neighbour : neighbours) {
-        touching_[neighbour].push_back(id);
-    }
 
     // Join with the fragments across each contact's seam, then wait there for
     // the ones still to come.
     for (size_t i = 0; i < contacts.size(); ++i) {
         std::vector<detail::SeamEdgeContact>& waiting = edges_[edgeKey(tile, neighbourAcross(tile, contacts[i]))];
         for (const detail::SeamEdgeContact& other : waiting) {
-            if (other.tile != tile && fragments_[static_cast<size_t>(other.fragment)] != nullptr &&
+            if (other.tile != tile && !fragments_[static_cast<size_t>(other.fragment)].taken &&
                 components_.at(find(other.fragment)).layer == layer &&
                 detail::contactsJoin(other.contact, contacts[i])) {
                 unite(id, other.fragment);
@@ -131,16 +162,146 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     if (largestComponentFragmentCount.load() < 1) {
         largestComponentFragmentCount.store(1);
     }
+
+    for (;;) {
+        if (reserveFor(id, bytes)) {
+            return;
+        }
+        // Everything that could be written out is: wait for the rest of the run
+        // to give memory back, without the lock, so objects keep closing
+        // meanwhile. The wait is not cancellable by the caller (addFragment()
+        // takes no token); the merger itself ends it when another fragment
+        // reserves memory, which may then be written out in turn, so a waiter is
+        // never left behind fragments that wait for its own tile.
+        if (!wake_) {
+            wake_ = std::make_shared<CancellationSource>();
+        }
+        const std::shared_ptr<CancellationSource> wake = wake_;
+        ++waiters_;
+        lock.unlock();
+        bool granted = false;
+        try {
+            budget->reserveOrWait(bytes, wake->token());
+            granted = true;
+        } catch (const CancelledError&) {
+            // Woken to spill again.
+        } catch (...) {
+            lock.lock();
+            --waiters_;
+            throw;
+        }
+        lock.lock();
+        --waiters_;
+        if (!granted) {
+            continue;
+        }
+        detail::FragmentSlot& held = fragments_[static_cast<size_t>(id)];
+        if (held.resident && held.reservedBytes == 0) {
+            held.reservedBytes = bytes;
+            wakeWaiters();
+        } else {
+            // Written out or closed while waiting: the bytes are not needed.
+            budget->release(bytes);
+        }
+        return;
+    }
+}
+
+void SeamMerger::Impl::wakeWaiters() {
+    if (waiters_ > 0 && wake_) {
+        wake_->cancel();
+        wake_.reset();
+    }
+}
+
+bool SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {
+    if (bytes > budget->ceilingBytes()) {
+        // The budget can never hold it, so it goes straight to the scratch file.
+        spillFragment(id);
+        return true;
+    }
+    for (;;) {
+        if (!fragments_[static_cast<size_t>(id)].resident) {
+            return true; // Written out with its object: nothing to reserve.
+        }
+        if (budget->tryReserve(bytes)) {
+            fragments_[static_cast<size_t>(id)].reservedBytes = bytes;
+            wakeWaiters();
+            return true;
+        }
+        // The oldest-opened component with members in memory, other than a
+        // component whose only resident member is this fragment, which holds no
+        // bytes yet.
+        const int64_t own = find(id);
+        int64_t oldest = -1;
+        for (int64_t first : residentByOpening_) {
+            const int64_t root = find(first);
+            if (root == own && components_.at(root).residentCount == 1) {
+                continue;
+            }
+            oldest = root;
+            break;
+        }
+        if (oldest < 0) {
+            return false;
+        }
+        spillComponent(oldest);
+    }
+}
+
+void SeamMerger::Impl::spillFragment(int64_t fragment) {
+    detail::FragmentSlot& slot = fragments_[static_cast<size_t>(fragment)];
+    if (!slot.resident) {
+        return;
+    }
+    if (!spill_) {
+        spill_ = std::make_unique<detail::FragmentSpill>(scratchDirectory);
+    }
+    int64_t written = 0;
+    slot.spillOffset = spill_->write(slot.resident->polygon, slot.resident->partials, written);
+    slot.resident.reset();
+    const int64_t held = slot.reservedBytes;
+    slot.reservedBytes = 0;
+    --residentFragmentCount;
+    ++spilledFragmentCount;
+    spilledBytes += written;
+    detail::SeamComponent& component = components_.at(find(fragment));
+    if (--component.residentCount == 0) {
+        residentByOpening_.erase(component.first);
+    }
+    if (held > 0) {
+        budget->release(held);
+    }
+}
+
+void SeamMerger::Impl::spillComponent(int64_t root) {
+    const std::vector<int64_t> members = components_.at(root).members;
+    for (int64_t member : members) {
+        spillFragment(member);
+    }
 }
 
 detail::ClosedComponent SeamMerger::Impl::takeComponent(int64_t root) {
     auto it = components_.find(root);
     detail::ClosedComponent closed;
     closed.layer = it->second.layer;
+    int64_t resident = 0;
     for (int64_t member : it->second.members) {
-        closed.fragments.push_back(std::move(fragments_[static_cast<size_t>(member)]));
+        detail::FragmentSlot& slot = fragments_[static_cast<size_t>(member)];
+        slot.taken = true;
+        if (slot.resident) {
+            closed.fragments.push_back(std::move(slot.resident));
+            closed.reserved.add(budget, slot.reservedBytes);
+            slot.reservedBytes = 0;
+            ++resident;
+        } else {
+            closed.spilled.push_back(detail::SpilledFragment{slot.tile, slot.spillOffset});
+        }
     }
-    residentFragmentCount -= static_cast<int64_t>(closed.fragments.size());
+    residentFragmentCount -= resident;
+    if (it->second.residentCount > 0) {
+        residentByOpening_.erase(it->second.first);
+    }
     components_.erase(it);
     return closed;
 }
@@ -175,7 +336,7 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileInde
     touching_.erase(touching);
     std::vector<int64_t> roots;
     for (int64_t fragment : fragments) {
-        if (fragments_[static_cast<size_t>(fragment)] != nullptr) {
+        if (!fragments_[static_cast<size_t>(fragment)].taken) {
             roots.push_back(find(fragment));
         }
     }
@@ -221,6 +382,18 @@ std::function<bool(Point64)> SeamMerger::Impl::currentFilter() const {
 }
 
 void SeamMerger::Impl::emit(detail::ClosedComponent& component, ObjectSink& sink) {
+    // Fragments written out come back from the scratch file here, outside the
+    // merger's lock; the file has its own. The file exists: the component was
+    // taken under the lock after the write that created it.
+    for (const detail::SpilledFragment& spilled : component.spilled) {
+        auto fragment = std::make_unique<detail::SeamFragment>();
+        fragment->tile = spilled.tile;
+        spill_->read(spilled.offset, fragment->polygon, fragment->partials);
+        fragment->anchor = fragment->polygon.anchor();
+        component.fragments.push_back(std::move(fragment));
+    }
+    component.spilled.clear();
+
     // Canonical fragment order: ascending anchor (y, then x), ties by tile. The
     // float sums below are combined in this order, never in arrival order.
     std::vector<const detail::SeamFragment*> ordered;
@@ -264,6 +437,7 @@ void SeamMerger::Impl::emit(detail::ClosedComponent& component, ObjectSink& sink
     applyStandardMeasurements(merged, partials.data(), static_cast<int32_t>(partials.size()),
                               record.measurements());
     component.fragments.clear();
+    component.reserved.reset();
     ++mergedObjectCount;
 
     const std::function<bool(Point64)> admits = currentFilter();
@@ -328,7 +502,16 @@ void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId
     std::sort(neighbours.begin(), neighbours.end());
     neighbours.erase(std::unique(neighbours.begin(), neighbours.end()), neighbours.end());
 
-    impl_->add(std::move(held), layer, contacts, neighbours);
+    // What the fragment costs in memory while it is held: its points, its
+    // partials and a fixed allowance for the rest.
+    int64_t points = 0;
+    for (int32_t ring = 0; ring < fragment.ringCount(); ++ring) {
+        points += fragment.ringPointCount(ring);
+    }
+    const int64_t bytes =
+        points * 16 + static_cast<int64_t>(partialCount) * static_cast<int64_t>(sizeof(IntensityPartial)) + 64;
+
+    impl_->add(std::move(held), layer, contacts, neighbours, bytes);
 }
 
 void SeamMerger::notifyTileComplete(int64_t tileIndex, ObjectSink& sink) {
@@ -359,9 +542,9 @@ int64_t SeamMerger::mergedObjectCount() const noexcept { return impl_->mergedObj
 
 int64_t SeamMerger::residentFragmentCount() const noexcept { return impl_->residentFragmentCount.load(); }
 
-int64_t SeamMerger::spilledFragmentCount() const noexcept { return 0; }
+int64_t SeamMerger::spilledFragmentCount() const noexcept { return impl_->spilledFragmentCount.load(); }
 
-int64_t SeamMerger::spilledBytes() const noexcept { return 0; }
+int64_t SeamMerger::spilledBytes() const noexcept { return impl_->spilledBytes.load(); }
 
 int64_t SeamMerger::largestComponentFragmentCount() const noexcept {
     return impl_->largestComponentFragmentCount.load();
