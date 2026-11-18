@@ -7,6 +7,7 @@
 #include "detail/builtin_factory.hpp"
 #include "detail/builtin_operations.hpp"
 #include "detail/separable.hpp"
+#include "detail/working_set.hpp"
 
 #include <cmath>
 #include <memory>
@@ -82,6 +83,13 @@ public:
     Halo halo() const override { return Halo::uniform(size_ / 2); }
     DataType outputType(DataType input) const override { return detail::floatFilterOutputType(input); }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The tile's values (one double per tile pixel, at most 8 bytes per pixel
+    // of the halo'd rect) and the separable filter's samples and ring.
+    int64_t workingSetBytesPerLevelPixel() const override { return 8 + filter_.workingSetBytesPerPixel(); }
+    // The allocator's overhead on those three buffers.
+    int64_t workingSetBytesPerTile() const override {
+        return (1 + detail::SeparableFilter::kWorkingSetBlocks) * detail::kAllocatorBlockOverhead;
+    }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

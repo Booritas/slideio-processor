@@ -27,6 +27,7 @@ void expectSameDeclarations(const Operation& a, const Operation& b) {
     EXPECT_EQ(a.tileRequirement(), b.tileRequirement());
     EXPECT_EQ(a.workingSetBytesPerLevelPixel(), b.workingSetBytesPerLevelPixel());
     EXPECT_EQ(a.producesObjects(), b.producesObjects());
+    EXPECT_EQ(a.workingSetBytesPerTile(), b.workingSetBytesPerTile());
     for (int32_t n = 1; n <= 4; ++n) {
         EXPECT_EQ(a.outputPlaneCount(n), b.outputPlaneCount(n)) << "outputPlaneCount(" << n << ")";
     }

@@ -173,6 +173,75 @@ comparable order, and report errors, progress and cancellation through the same
 mechanisms (UR-ALG-7) — which is an API review against a documented convention
 applied to the whole catalog, not per algorithm.
 
+**Working sets.** Every built-in also declares its working set (5.1): the
+memory one `apply()` or `accumulate()` call allocates beyond the input and
+output blocks the framework supplies, as bytes per pixel of the rect the call
+is given (`workingSetBytesPerLevelPixel()`) and bytes per call
+(`workingSetBytesPerTile()`). The pipeline reserves the larger of its
+operations' working sets with each tile (5.5), so these figures are what keep
+a run inside its memory ceiling. Both are computed from the instance's
+parameters, so the factory's figures are those of the default parameters and
+the instance is authoritative; the parameter tables above need no change. The
+declarations are upper bounds derived from the code, each with a comment
+beside it saying which buffers it counts:
+
+| Operations | Per pixel | Per call |
+|---|---|---|
+| `pixel.colour_convert`, `pixel.stain_deconvolution`, `pixel.convert_type`, `pixel.threshold_fixed` | 0: they write straight into the output | 0: row pointers, tables and bounds live on the stack |
+| `pixel.threshold_adaptive` | the window sums and the separable box filter's row and ring of row sums | the allocator's overhead on those buffers |
+| `pixel.threshold_otsu` | `accumulate()` packs the tile's admitted samples into one row, at most 8 bytes per pixel; `apply()` allocates nothing | one channel's histogram and its local copy (16 bytes per bin; without a range, the largest per-value histogram of 65,536 bins) and its bookkeeping, whatever the number of channels |
+| `pixel.gaussian_blur`, `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | the tile's values as doubles (and one more pass's for a derivative that sums two) and the separable filter's row of samples and ring of row sums, one pass at a time | the allocator's overhead on those buffers |
+| `pixel.median_blur` | one sort key per pixel on the module's own path; the backend's destination and bordered copy on the `Byte` path | the larger of the window's copy (grows with the kernel's area) and the backend's per-column histograms on the `Byte` path |
+| `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
+| `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
+| `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | the larger of the float path's two copies of the plane and the integer path's ring buffer, rows and the backend's destination | the larger of the float path's element offsets and the integer path's filter engine (grows with the element's size) |
+
+**The backend's share is bounded from its source.** OpenCV allocates part of
+its memory through its own allocator, which no test in this module can count.
+An operation that calls OpenCV — the median's `Byte` path, Canny, the integer
+morphology path — declares OpenCV's internal buffers analytically, from the
+OpenCV 4.14 source, and cites the file and function beside the declaration.
+OpenCV runs on the calling thread (6.4), so the figures are those of its
+sequential paths: one stripe of rows in `cv::Canny`, and no per-thread tiles
+in the filter engine behind Sobel and morphology. No figure depends on the
+host's core count. The figures are read once, before a run.
+
+**The module's own allocations are measured.** A separate test executable,
+which compiles the pipeline and algorithm code in rather than linking the
+engine library, replaces the global `operator new` and `operator delete` with a
+counting pair that keeps per-thread live and peak bytes while a meter is
+active, counting the meter's own thread only. For every built-in, at
+representative and upper-limit parameters and on the types it supports, a test
+applies one call under the meter and asserts that the measured peak is at most
+the halo'd rect's area × the per-pixel figure + the per-call figure. For the
+OpenCV paths the analytic OpenCV share is subtracted from the declaration
+before the comparison, so the test proves the module's own memory, and the
+OpenCV share stays documented rather than measured. OpenCV allocates on the
+calling thread alone, so the meter sees everything it takes through
+`operator new`. A further test bounds Canny's declaration from above as well:
+at a 1024-pixel tile with the default parameters, on an input dense with
+edges, it is at most three times the measured peak plus the OpenCV share.
+Further
+tests refuse a run whose working set does not fit the ceiling (a bilateral
+filter on a large tile, Otsu with a very large bin count) and bound Otsu over
+many channels.
+
+The working sets are per call. What a global-context operation's instance holds
+between calls is its accumulated state, declared separately with
+`accumulatedStateBytes(planeCount)` (5.1). Otsu's is, per plane, one histogram
+of 8 bytes per bin (the largest per-value histogram of 65,536 bins when there is
+no range), the allocator's overhead on its bin array and a fixed bookkeeping
+share for the channel's map node, its `Histogram64` and that histogram's state;
+plus the instance's own object, its parameter bag and its control block. A tile
+of `planeCount` planes has at most that many channels, and combining adds a
+channel only when it is new, so the figure bounds a per-tile instance after
+`accumulate()` and the run's instance after `combine()` alike. The pipeline
+reserves it for the run's instance and for the per-tile instances the fold may
+hold, and refuses a run whose tile, states and one more instance do not fit the
+ceiling (5.5, 5.8, 5.9). A test measures the instances' live bytes under the
+meter against the declaration, for a `Byte`, a `UInt16` and a ranged `Float32`
+input.
+
 ## 6.3 Colour and stains — `algorithm/pixel/colour.hpp`
 
 ```cpp
@@ -366,8 +435,21 @@ statistic, so it agrees with OpenCV wherever both apply. OpenCV is called on a
 `cv::Mat` header over the plane's own memory and row stride, made by the
 private `detail::planeAsMat`, with no copy; it filters the whole halo'd plane,
 and only the tile, whose windows lie wholly inside that plane, is copied out,
-so OpenCV's own border rule never reaches an output pixel. OpenCV's thread
-count is left as the caller configured it, and no result depends on it.
+so OpenCV's own border rule never reaches an output pixel.
+
+**OpenCV runs single-threaded.** The engine links its own OpenCV privately
+and makes it sequential (`cv::setNumThreads(0)`, once per process, through the
+private `detail::useSequentialOpenCv`) at the start of each `apply()` of an
+operation that calls it: Canny, the four morphology operations and the median.
+Never when an operation is built: the built-in factories build a default
+operation while the library loads (6.1), when OpenCV's own statics may not
+exist yet. The pipeline's tile
+workers (5.5) are then the only parallelism: OpenCV's threads would
+oversubscribe the cores those workers already occupy, make Canny's and
+morphology's working sets depend on the host's core count, and allocate where
+the memory accounting cannot see. A lazy read of a single tile is therefore not
+parallelised inside OpenCV either. No result depends on the thread count: a
+lazy read after an eager run on the same engine gives the same bits.
 
 **Float morphology is the module's own.** Erode, dilate, open and close of
 `Float32` and `Float64` do not go to OpenCV, although OpenCV accepts those

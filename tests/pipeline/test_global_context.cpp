@@ -1,4 +1,4 @@
-// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-STG-3
+// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-EXE-2, UR-STG-3
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -18,10 +18,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -130,9 +135,11 @@ TEST(GlobalContext, FloatAccumulationIsWorkerCountInvariant) {
     // Deterministic part. Every tile sums to 1 and tile 0 carries 2^53: in ascending
     // order each later 1 is rounded away (2^53 + 1 ties to 2^53), whereas any order
     // combining two or more other tiles before tile 0 ends at 2^53 + 2 or above.
-    // With more than one worker, tile 0's accumulate is held until every other
-    // tile's has finished, so its partial certainly arrives late: a fold that
-    // combined in arrival order would fail on every run.
+    // With more than one worker, tile 0's accumulate is held until the tiles that
+    // can accumulate beside it, 2 x workers - 1 since the pass holds at most
+    // 2 x workers tile instances, have finished, so its partial certainly arrives
+    // after three or more others: a fold that combined in arrival order would
+    // fail on every run.
     {
         auto s = scene(onePerTile);
         PipelineSpec referenceSpec;
@@ -152,7 +159,7 @@ TEST(GlobalContext, FloatAccumulationIsWorkerCountInvariant) {
 
         for (int32_t workers : {1, 2, 4, 8}) {
             OperationParameters parameters = offset(1);
-            parameters.setInt("holdFirstTile", workers > 1 ? tiles - 1 : 0);
+            parameters.setInt("holdFirstTile", workers > 1 ? std::min<int64_t>(tiles - 1, 2 * workers - 1) : 0);
             PipelineSpec spec;
             spec.operation("test.floatSum", parameters);
             Pipeline p(s, config(workers), spec);
@@ -532,4 +539,298 @@ TEST(GlobalContext, SnapshotIgnoresLaterCalls) {
     EXPECT_TRUE(snapshot.plan->restricted);
     EXPECT_EQ(snapshot.plan->operations.at(0).get(), otsu);
     EXPECT_NE(detail::PipelineAccess::impl(p).plan, snapshot.plan);
+}
+
+namespace {
+
+// What each test.floatSum instance declares it keeps between calls.
+constexpr int64_t kState = int64_t(1) << 20;
+constexpr int64_t kLargeCeiling = int64_t(1) << 40;
+
+OperationParameters stateful(int64_t stateBytes, int64_t offsetValue) {
+    OperationParameters p = offset(offsetValue);
+    p.setInt("stateBytes", stateBytes);
+    return p;
+}
+
+// One row of 64 tiles, each summing to 1.
+std::shared_ptr<slideio::Scene> rowScene() {
+    ts::registerTestOperations();
+    ts::registerGlobalOperations();
+    return ts::makeSyntheticScene({{64 * kTile, kTile, 0, 0}}, {slideio::DataType::DT_Byte}, onePerTile);
+}
+
+// Clears test.floatSum's hooks on entry and on every way out of a test.
+struct HookGuard {
+    HookGuard() { clear(); }
+    ~HookGuard() { clear(); }
+    HookGuard(const HookGuard&) = delete;
+    HookGuard& operator=(const HookGuard&) = delete;
+    static void clear() {
+        ts::FloatSumOperation::setAccumulateHook({});
+        ts::FloatSumOperation::setApplyHook({});
+    }
+};
+
+bool isFirstTile(const OperationContext& context) {
+    const Rect64 r = context.tileRectAtLevel();
+    return r.x == 0 && r.y == 0;
+}
+
+// Waits until `read` has not changed for 100 ms, at most 2 s.
+void waitUntilSettled(const std::function<int64_t()>& read) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
+    int64_t last = read();
+    Clock::time_point changed = Clock::now();
+    while (Clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const int64_t now = read();
+        if (now != last) {
+            last = now;
+            changed = Clock::now();
+        } else if (Clock::now() - changed >= std::chrono::milliseconds(100)) {
+            return;
+        }
+    }
+}
+
+// Waits until `read` reaches `target`, at most 2 s.
+void waitUntilAtLeast(int64_t (*read)(), int64_t target) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
+    while (read() < target && Clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
+// Runs the validated pipeline `p` on a pool of `workers` drawing on `budget`.
+void runOnPool(Pipeline& p, int32_t workers, const MemoryBudgetPtr& budget, const CancellationToken& token) {
+    WorkerPool pool(workers, budget);
+    TileExecutor executor(detail::PipelineAccess::plan(p).grid, pool, config(workers));
+    ts::CollectingObjectSink sink;
+    executor.run(p, sink, nullptr, token);
+    pool.shutdown();
+}
+
+} // namespace
+
+// UR-EXE-2: an accumulation pass holds at most 2 x workers tile instances. Tile 0
+// is held until the others stop piling up behind it; the fold still combines in
+// ascending tile index.
+TEST(GlobalContext, FoldBacklogBounded) {
+    const HookGuard hooks;
+    auto s = rowScene();
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(kState, 1));
+    double expectedSum = 0.0;
+    int64_t expectedCount = 0;
+    {
+        Pipeline serial(s, config(1), spec);
+        serial.validate();
+        const TileGrid& grid = detail::PipelineAccess::plan(serial).grid;
+        ASSERT_EQ(grid.columns(), 64);
+        ASSERT_EQ(grid.rows(), 1);
+        runOnPool(serial, 1, makeMemoryBudget(kLargeCeiling), CancellationToken());
+        const auto op = runInstance<ts::FloatSumOperation>(serial, 0);
+        expectedSum = op->sum();
+        expectedCount = op->count();
+    }
+    ASSERT_EQ(ts::FloatSumOperation::holdingInstances(), 0);
+
+    ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation&, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            waitUntilSettled([] { return ts::FloatSumOperation::tileInstanceHighWater(); });
+        }
+    });
+    constexpr int32_t workers = 4;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    ts::FloatSumOperation::resetInstanceCounts();
+    runOnPool(p, workers, makeMemoryBudget(kLargeCeiling), CancellationToken());
+
+    EXPECT_LE(ts::FloatSumOperation::holdingHighWater(), 2 * workers + 1) << "the run's instance included";
+    const auto op = runInstance<ts::FloatSumOperation>(p, 0);
+    EXPECT_EQ(op->count(), expectedCount);
+    EXPECT_EQ(bitsOf(op->sum()), bitsOf(expectedSum));
+}
+
+// UR-EXE-2: the bound follows the ceiling. The run's instance takes the first state,
+// and what is left beside one tile holds three more; three more tiles' bytes let the
+// other workers run beside the held tile without raising that bound.
+TEST(GlobalContext, FoldBacklogFollowsTheCeiling) {
+    const HookGuard hooks;
+    auto s = rowScene();
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(kState, 1));
+    constexpr int32_t workers = 4;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    const int64_t tileBytes = detail::PipelineAccess::plan(p).tileBytes;
+    ASSERT_LT(3 * tileBytes, kState) << "the tiles' headroom must not make room for a fourth instance";
+    const int64_t ceiling = tileBytes + kState + 3 * kState + 3 * tileBytes;
+
+    ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation&, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            waitUntilSettled([] { return ts::FloatSumOperation::tileInstanceHighWater(); });
+        }
+    });
+    ts::FloatSumOperation::resetInstanceCounts();
+    runOnPool(p, workers, makeMemoryBudget(ceiling), CancellationToken());
+
+    EXPECT_LE(ts::FloatSumOperation::tileInstanceHighWater(), 3);
+    EXPECT_EQ(runInstance<ts::FloatSumOperation>(p, 0)->count(), 64 * kTile * kTile);
+}
+
+// UR-EXE-2: with two global-context operations of different states, each pass bounds
+// its own tile instances by its own state: what is left beside one tile, the run's
+// instances and three more tiles holds six of the smaller state or three of the larger.
+TEST(GlobalContext, EachPassBoundsItsOwnInstances) {
+    const HookGuard hooks;
+    auto s = rowScene();
+    constexpr int64_t smaller = kState;
+    constexpr int64_t larger = 2 * kState;
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(smaller, 0)).operation("test.floatSum", stateful(larger, 0));
+    constexpr int32_t workers = 4;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    const int64_t tileBytes = detail::PipelineAccess::plan(p).tileBytes;
+    ASSERT_LT(3 * tileBytes, kState) << "the tiles' headroom must not make room for another instance";
+    const int64_t ceiling = tileBytes + (smaller + larger) + 6 * kState + 3 * tileBytes;
+
+    // Each pass's first tile is held until that pass's instances stop piling up behind it.
+    ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation& self, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            const int64_t state = self.stateBytes();
+            waitUntilSettled([state] { return ts::FloatSumOperation::tileInstanceHighWater(state); });
+        }
+    });
+    ts::FloatSumOperation::resetInstanceCounts();
+    runOnPool(p, workers, makeMemoryBudget(ceiling), CancellationToken());
+
+    EXPECT_LE(ts::FloatSumOperation::tileInstanceHighWater(smaller), 6);
+    EXPECT_LE(ts::FloatSumOperation::tileInstanceHighWater(larger), 3);
+    EXPECT_EQ(runInstance<ts::FloatSumOperation>(p, 1)->count(), 64 * kTile * kTile);
+}
+
+// UR-EXE-2: a run reserves, for as long as it lasts, every global-context operation's
+// state and the most tile instances any of its accumulation passes may hold.
+TEST(GlobalContext, StateReservedDuringTheRun) {
+    auto s = scene();
+    constexpr int64_t first = kState;
+    constexpr int64_t second = 3 * kState;
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(first, 0)).operation("test.floatSum", stateful(second, 0));
+    constexpr int32_t workers = 2;
+    constexpr int64_t cap = 2 * workers;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    const int64_t tileBytes = detail::PipelineAccess::plan(p).tileBytes;
+    const MemoryBudgetPtr budget = makeMemoryBudget(kLargeCeiling);
+
+    std::mutex mutex;
+    std::map<int64_t, int64_t> accumulateLowest;  // By the instance's declared state.
+    int64_t applyLowest = kLargeCeiling;
+    const HookGuard hooks;
+    ts::FloatSumOperation::setAccumulateHook([&](const ts::FloatSumOperation& self, const OperationContext&) {
+        const int64_t reserved = budget->reservedBytes();
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto found = accumulateLowest.find(self.stateBytes());
+        if (found == accumulateLowest.end()) {
+            accumulateLowest.emplace(self.stateBytes(), reserved);
+        } else {
+            found->second = std::min(found->second, reserved);
+        }
+    });
+    ts::FloatSumOperation::setApplyHook([&](const ts::FloatSumOperation&, const OperationContext&) {
+        const int64_t reserved = budget->reservedBytes();
+        std::lock_guard<std::mutex> lock(mutex);
+        applyLowest = std::min(applyLowest, reserved);
+    });
+    runOnPool(p, workers, budget, CancellationToken());
+
+    ASSERT_EQ(accumulateLowest.size(), 2u);
+    // The second pass may hold the most: cap instances of the larger state.
+    const int64_t runReservation = first + second + cap * second;
+    EXPECT_GE(accumulateLowest[first], tileBytes + runReservation);
+    EXPECT_GE(accumulateLowest[second], tileBytes + runReservation);
+    EXPECT_GE(applyLowest, tileBytes + runReservation) << "the final pass too";
+    EXPECT_EQ(budget->reservedBytes(), 0) << "everything is released when run() returns";
+}
+
+// A tile failing while the other workers wait for a slot fails the run with that
+// tile's TileError, promptly.
+TEST(GlobalContext, FailureWhileWaitingForASlot) {
+    const HookGuard hooks;
+    auto s = scene();
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(kState, 0));
+    constexpr int32_t workers = 4;
+    constexpr int64_t cap = 2 * workers;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    // Tile 0 holds one slot; once the others are taken, the workers left wait for one.
+    ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation&, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            waitUntilAtLeast(&ts::FloatSumOperation::tileInstanceHighWater, cap - 1);
+            throw std::runtime_error("deliberate failure");
+        }
+    });
+    ts::FloatSumOperation::resetInstanceCounts();
+    const auto start = std::chrono::steady_clock::now();
+    try {
+        runOnPool(p, workers, makeMemoryBudget(kLargeCeiling), CancellationToken());
+        FAIL() << "the run should fail";
+    } catch (const TileError& e) {
+        ASSERT_TRUE(e.hasTile());
+        EXPECT_EQ(e.tileX(), 0);
+        EXPECT_EQ(e.tileY(), 0);
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+}
+
+// Cancelling while the other workers wait for a slot ends the run with
+// CancelledError, promptly.
+TEST(GlobalContext, CancellationWhileWaitingForASlot) {
+    const HookGuard hooks;
+    auto s = scene();
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(kState, 0));
+    constexpr int32_t workers = 4;
+    constexpr int64_t cap = 2 * workers;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    CancellationSource source;
+    ts::FloatSumOperation::setAccumulateHook([&source](const ts::FloatSumOperation&, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            waitUntilAtLeast(&ts::FloatSumOperation::tileInstanceHighWater, cap - 1);
+            source.cancel();
+        }
+    });
+    ts::FloatSumOperation::resetInstanceCounts();
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_THROW(runOnPool(p, workers, makeMemoryBudget(kLargeCeiling), source.token()), CancelledError);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+}
+
+// A restriction that admits no tile: every tile of the accumulation pass is skipped,
+// each returning its slot, and the pass completes with one worker and with many.
+TEST(GlobalContext, AllTilesSkippedReleaseSlots) {
+    auto s = scene();
+    ts::DiscMaskSource nowhere(-1000.0, -1000.0, 1.0);
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(kState, 0));
+    for (int32_t workers : {1, 4}) {
+        Pipeline p(s, config(workers), spec);
+        p.maskSource(&nowhere);
+        p.validate();
+        const MemoryBudgetPtr budget = makeMemoryBudget(kLargeCeiling);
+        runOnPool(p, workers, budget, CancellationToken());
+        const auto op = runInstance<ts::FloatSumOperation>(p, 0);
+        EXPECT_TRUE(op->finalised()) << workers << " workers";
+        EXPECT_EQ(op->count(), 0) << workers << " workers";
+        EXPECT_EQ(op->sum(), 0.0) << workers << " workers";
+        EXPECT_EQ(budget->reservedBytes(), 0) << workers << " workers";
+    }
 }

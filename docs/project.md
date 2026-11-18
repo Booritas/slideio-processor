@@ -128,7 +128,17 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   plan B of three: the eleven filter and morphology operations — Gaussian,
   median, Sobel, Scharr, Laplacian, Canny with its declared hysteresis bound,
   bilateral, and erode, dilate, open and close with structuring elements.
-  **Implemented** on branch `feat/algorithm-b`, awaiting review and merge.
+  **Delivered** as PR #13 (merged 2026-11-18).
+- [Operation working set](superpowers/plans/2026-11-18-operation-working-set.md) —
+  every operation declares the working memory one tile needs beyond the
+  framework's buffers, and the per-tile memory reservation counts it, so the
+  memory ceiling bounds operations' own scratch too. Precedes algorithm plan C.
+  Its follow-up, [accumulation state and sequential OpenCV](superpowers/plans/2026-11-18-accumulation-state-and-sequential-opencv.md),
+  makes global-context operations declare the state they accumulate, which the
+  run reserves and each accumulation pass bounds, and runs the engine's OpenCV
+  single-threaded, so Canny's and morphology's working sets no longer depend on
+  the host's core count.
+  **Implemented** on branch `feat/working-set`, awaiting review and merge.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

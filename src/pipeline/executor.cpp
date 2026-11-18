@@ -2,6 +2,7 @@
 #include <slideio/processor/pipeline/executor.hpp>
 
 #include <pipeline/detail/fragment_spill.hpp>
+#include <pipeline/detail/instance_slots.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/restriction.hpp>
@@ -69,6 +70,38 @@ public:
 private:
     MemoryBudget& budget_;
     int64_t bytes_;
+};
+
+// Holds at most one slot of an accumulation pass's InstanceSlots and returns it on
+// scope exit, unless the fold has taken it over. Without slots, holds nothing.
+class SlotHold {
+public:
+    explicit SlotHold(detail::InstanceSlots* slots) noexcept : slots_(slots) {}
+    ~SlotHold() { release(); }
+    SlotHold(const SlotHold&) = delete;
+    SlotHold& operator=(const SlotHold&) = delete;
+
+    // Takes a slot; true without slots. False when `stop` is set first.
+    bool acquire(const CancellationToken& token, const std::atomic<bool>& stop) {
+        if (slots_ == nullptr) {
+            return true;
+        }
+        held_ = slots_->acquire(token, stop);
+        return held_;
+    }
+    // Returns the slot now.
+    void release() noexcept {
+        if (held_) {
+            held_ = false;
+            slots_->release();
+        }
+    }
+    // The fold returns the slot when it combines the tile's instance.
+    void handOver() noexcept { held_ = false; }
+
+private:
+    detail::InstanceSlots* slots_;
+    bool held_ = false;
 };
 
 // A directory of one run's own, `<base>/pipeline-<32 random lowercase hex>`
@@ -490,9 +523,13 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
 
     // Runs `evaluateTile` on every tile, one job per worker, each pulling tile indices
     // until none is left or a tile fails; returns once every job is done, and throws
-    // the pass's first failure as reportFailure() does.
-    using TileFunction = std::function<void(int64_t tile, const char** operation)>;
-    const auto runPass = [&](const TileFunction& evaluateTile) {
+    // the pass's first failure as reportFailure() does. With `slots`, a worker takes a
+    // slot before each tile index, and `evaluateTile` gets the slot to return or hand
+    // over; a worker waiting for one leaves when the pass stops. Tiles take their
+    // indices in the order their slots were taken, so the tiles holding slots are the
+    // lowest not yet folded: the fold's next tile always has one.
+    using TileFunction = std::function<void(int64_t tile, const char** operation, SlotHold& slot)>;
+    const auto runPass = [&](const TileFunction& evaluateTile, detail::InstanceSlots* slots) {
         const auto shared = std::make_shared<RunState>();
         RunState& run = *shared;
         auto work = [&, shared]() {
@@ -500,6 +537,16 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
             const JobDoneGuard doneOnExit(own);
             for (;;) {
                 if (own.stop) {
+                    break;
+                }
+                // Returned at the end of the iteration, on every path, unless the tile hands it to the fold.
+                SlotHold slot(slots);
+                try {
+                    if (!slot.acquire(token, own.stop)) {
+                        break;
+                    }
+                } catch (...) {
+                    own.recordFailure(std::current_exception(), -1, nullptr);
                     break;
                 }
                 const int64_t tile = own.next.fetch_add(1);
@@ -517,7 +564,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                         if (own.stop) {
                             break;
                         }
-                        evaluateTile(tile, &operation);
+                        evaluateTile(tile, &operation, slot);
                     }
                     std::lock_guard<std::mutex> lock(own.progressMutex);
                     const int64_t done = ++completed;
@@ -570,31 +617,80 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         }
     };
 
-    for (size_t g : globalPositions) {
+    // The run's instances keep their accumulated state until run() returns, the final
+    // pass applying them, and each accumulation pass holds at most `cap` tile
+    // instances more. One reservation covers the run's instances and the pass that
+    // may hold the most, taken in one wait while the run holds nothing else from
+    // the budget, so two runs never each hold part of what the other waits for.
+    // The plan bounds the sum, so it cannot overflow.
+    const std::vector<int64_t>& stateBytes = plan.accumulatedStateBytes;
+    int64_t stateSum = 0;
+    int64_t largestState = 0;
+    for (int64_t bytes : stateBytes) {
+        stateSum += bytes;
+        largestState = std::max(largestState, bytes);
+    }
+    if (tileBytes + stateSum + largestState > budget.ceilingBytes()) {
+        throw InvalidArgumentError(
+            ("TileExecutor::run: one tile with the global-context operations' accumulated state needs " +
+             std::to_string(tileBytes + stateSum + largestState) + " bytes, above the pool's memory ceiling of " +
+             std::to_string(budget.ceilingBytes()) + " bytes")
+                .c_str());
+    }
+    // A pass's cap: 2 x workers, or fewer when what is left beside one tile and the
+    // run's instances holds fewer. The check above leaves room for one.
+    const int64_t available = budget.ceilingBytes() - tileBytes - stateSum;
+    const int64_t instanceLimit = 2 * static_cast<int64_t>(pool.workerCount);
+    std::vector<int64_t> caps;
+    int64_t largestPass = 0;
+    for (int64_t bytes : stateBytes) {
+        caps.push_back(bytes == 0 ? instanceLimit : std::min(instanceLimit, available / bytes));
+        largestPass = std::max(largestPass, caps.back() * bytes);
+    }
+    const int64_t runStateBytes = stateSum + largestPass;
+    budget.reserveOrWait(runStateBytes, token);
+    const Reservation stateHeld(budget, runStateBytes);
+
+    for (size_t i = 0; i < globalPositions.size(); ++i) {
         // Pass for operation g: each tile accumulates into a fresh instance, and the
         // instances fold into the run's instance in ascending tile index.
+        const size_t g = globalPositions[i];
         Operation& runInstance = *operations[g];
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);
         const OperationParameters& parameters = state.spec.operationParameters(k);
-        detail::OrderedFold<OperationPtr> fold(
-            tileCount, [&runInstance](OperationPtr& tileInstance) { runInstance.combine(*tileInstance); });
-        runPass([&](int64_t tile, const char** operation) {
-            *operation = name;
-            OperationPtr instance = catalog.create(name, parameters);
-            detail::Accumulation accumulation{g, instance.get()};
-            const detail::TileOutcome outcome = evaluator.evaluate(tile, token, operation, &accumulation);
-            *operation = name;
-            // combine() runs on whichever arrival unblocks the fold, so when it
-            // throws, the TileError names this arriving tile, not necessarily
-            // the tile whose instance failed to combine.
-            if (outcome.skipped) {
-                fold.skip(tile);
-            } else {
-                fold.submit(tile, std::move(instance));
-            }
-            *operation = nullptr;
+        // One slot per tile instance alive, from before its tile is taken until the
+        // fold has combined and destroyed it.
+        detail::InstanceSlots slots(caps[i]);
+        detail::OrderedFold<OperationPtr> fold(tileCount, [&runInstance, &slots](OperationPtr& tileInstance) {
+            runInstance.combine(*tileInstance);
+            // The instance goes before its slot, so a slot taken never overlaps it.
+            tileInstance.reset();
+            slots.release();
         });
+        runPass(
+            [&](int64_t tile, const char** operation, SlotHold& slot) {
+                *operation = name;
+                OperationPtr instance = catalog.create(name, parameters);
+                detail::Accumulation accumulation{g, instance.get()};
+                const detail::TileOutcome outcome = evaluator.evaluate(tile, token, operation, &accumulation);
+                *operation = name;
+                // combine() runs on whichever arrival unblocks the fold, so when it
+                // throws, the TileError names this arriving tile, not necessarily
+                // the tile whose instance failed to combine. Its slot then stays
+                // taken, as do those of the instances the fold still holds: the
+                // pass has stopped, and workers waiting for a slot leave.
+                if (outcome.skipped) {
+                    instance.reset();
+                    slot.release();
+                    fold.skip(tile);
+                } else {
+                    slot.handOver();
+                    fold.submit(tile, std::move(instance));
+                }
+                *operation = nullptr;
+            },
+            &slots);
         if (!fold.complete()) {
             throw InternalError("TileExecutor::run: an accumulation pass ended with tiles not folded");
         }
@@ -608,15 +704,17 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     // merger as it completes, so objects close during the pass; a failure there is
     // the tile's. After a failure or a cancellation nothing is resolved: the
     // merger is destroyed with whatever it still holds.
-    runPass([&](int64_t tile, const char** operation) {
-        evaluator.evaluate(tile, token, operation);
-        if (merger) {
-            merger->notifyTileComplete(tile, sink);
-            if (maskRelease) {
-                maskRelease->tileCompleted(tile);
+    runPass(
+        [&](int64_t tile, const char** operation, SlotHold&) {
+            evaluator.evaluate(tile, token, operation);
+            if (merger) {
+                merger->notifyTileComplete(tile, sink);
+                if (maskRelease) {
+                    maskRelease->tileCompleted(tile);
+                }
             }
-        }
-    });
+        },
+        nullptr);
     if (merger) {
         try {
             merger->resolve(sink, progress, token);

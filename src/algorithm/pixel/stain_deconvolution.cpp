@@ -103,6 +103,10 @@ public:
     DataType outputType(DataType) const override { return DataType::Float32; }
     const OperationParameters& parameters() const override { return parameters_; }
     int32_t outputPlaneCount(int32_t) const override { return count_; }
+    // None: each pixel's amounts are formed in registers and written straight to the output.
+    int64_t workingSetBytesPerLevelPixel() const override { return 0; }
+    // None: the 256-entry optical-density table lives on the stack.
+    int64_t workingSetBytesPerTile() const override { return 0; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

@@ -34,6 +34,45 @@ constexpr int32_t kHysteresisReach = 32;
 // magnitude and fit an int, so a larger threshold behaves exactly as this one.
 constexpr double kThresholdCeiling = 1e7;
 
+// cv::Canny keeps its edge pixels in std::deque<uchar*> (8-byte entries) and
+// holds three of them: the stripe's stack, its border peaks and the shared
+// stack, of which only the first fills with one stripe. Their bytes through
+// operator new depend on the standard library's deque layout: per entry at the
+// largest size N, and fixed, whatever N.
+#if defined(_MSVC_STL_VERSION)
+// MSVC STL (<deque>, _Block_size, _Growmap, _Emplace_back_internal): blocks of
+// 2 entries (16 bytes, 8 per entry), never freed before the deque is; a map of
+// block pointers, a power of 2 of at least 8, doubled once the blocks fill it,
+// so at most 8 (N + 2) bytes, and old and new maps live together while it
+// doubles, 12 (N + 2) at most. An empty deque allocates nothing.
+constexpr int64_t kEdgeStackBytesPerEntry = 20;
+constexpr int64_t kEdgeStackFixedBytes = 256;
+#elif defined(_LIBCPP_VERSION)
+// libc++ (<deque>, __deque_block_size, __add_back_capacity, pop_back): blocks
+// of 512 entries (4096 bytes, 8 per entry); a __split_buffer map of block
+// pointers, doubled when full, old and new together at most 3 pointers per
+// block (0.05 per entry). Fixed: a partly filled block at either end and the
+// two spare blocks pop_back keeps, 4 x 4096, and the smallest maps. An empty
+// deque allocates nothing.
+constexpr int64_t kEdgeStackBytesPerEntry = 9;
+constexpr int64_t kEdgeStackFixedBytes = 17408;
+#elif defined(__GLIBCXX__)
+// libstdc++ (bits/stl_deque.h, __deque_buf_size, _M_initialize_map,
+// _M_reallocate_map): nodes of 64 entries (512 bytes, 8 per entry); a map of
+// node pointers, grown to map size + max(map size, added) + 2 with the nodes
+// re-centred in it; a deque that grows at one end fills the map up to about
+// 1.5 pointers per node, and the old and new maps live together while it
+// grows, about 4.5 pointers per node (0.56 per entry). Fixed: a
+// partly filled node at either end, and each of the three deques' first map of
+// 8 pointers and first node even while empty, 2 x 512 + 3 x 576.
+constexpr int64_t kEdgeStackBytesPerEntry = 9;
+constexpr int64_t kEdgeStackFixedBytes = 4096;
+#else
+// Another standard library: the largest of the three above.
+constexpr int64_t kEdgeStackBytesPerEntry = 20;
+constexpr int64_t kEdgeStackFixedBytes = 17408;
+#endif
+
 [[noreturn]] void throwInternal(const std::string& problem) {
     throw InternalError((std::string(kName) + ": " + problem).c_str());
 }
@@ -93,8 +132,27 @@ public:
     Halo halo() const override { return Halo::uniform(halo_); }
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // cv::Canny, OpenCV 4.14 (imgproc/src/canny.cpp), on a halo'd rect at least
+    // 69 pixels on a side, with OpenCV on the calling thread: one stripe of
+    // every row (parallel_for_ runs the body once on the whole range), so
+    // parallelCanny::operator() reads no row beyond the plane and keeps no
+    // border peaks, and the shared stack cv::Canny then drains stays empty. The
+    // edge map (1 byte per pixel); the suppression map, (rows + 2) x (width +
+    // 128) at most (3); the 16-bit dx and dy of every row (4); through operator
+    // new, the stack of edge pixels, each pushed once, at most one entry per
+    // pixel (kEdgeStackBytesPerEntry); and the magnitude rows, 12 bytes per
+    // column, with Sobel's FilterEngine, at most 41 bytes per column, fewer
+    // than one byte per pixel over 69 rows (1).
+    int64_t workingSetBytesPerLevelPixel() const override { return 9 + kEdgeStackBytesPerEntry; }
+    // The magnitude rows' and Sobel's kernel-sized parts, kernels, objects and
+    // bookkeeping (8 KiB), the maps' bookkeeping (1 KiB), and the edge stacks'
+    // fixed bytes. Sobel takes FilterEngine__apply's direct path: its tiled
+    // path (filter.simd.hpp, TiledFilterInvoker) needs more than one OpenCV
+    // thread.
+    int64_t workingSetBytesPerTile() const override { return 8192 + 1024 + kEdgeStackFixedBytes; }
 
     void apply(OperationContext& context) override {
+        detail::useSequentialOpenCv(kName);
         const BlockView& in = context.input();
         BlockView& out = context.output();
         const Rect64 tile = context.tileRectAtLevel();

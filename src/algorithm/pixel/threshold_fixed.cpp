@@ -166,6 +166,10 @@ public:
     Halo halo() const override { return Halo::none(); }
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // None: each sample is compared in place and written straight to the output.
+    int64_t workingSetBytesPerLevelPixel() const override { return 0; }
+    // None: the bound is computed once per plane, on the stack.
+    int64_t workingSetBytesPerTile() const override { return 0; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

@@ -8,9 +8,11 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/cv_plane.hpp"
 #include "detail/structuring_element_access.hpp"
+#include "detail/working_set.hpp"
 
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -57,6 +59,12 @@ bool validSize(int64_t size) {
     return size >= 1 && size <= kMaximumSize && size % 2 == 1;
 }
 
+// The number of set pixels of an element.
+int64_t setCountOf(const StructuringElement& element) {
+    const std::vector<uint8_t>& mask = detail::StructuringElementAccess::mask(element);
+    return static_cast<int64_t>(std::count_if(mask.begin(), mask.end(), [](uint8_t v) { return v != 0; }));
+}
+
 // The set pixels of an element as offsets from its centre, row by row from
 // the top and left to right within a row: the fixed order the float passes
 // visit a window in.
@@ -70,6 +78,7 @@ std::vector<Offset> offsetsOf(const StructuringElement& element) {
     const int64_t width = element.width();
     const int64_t height = element.height();
     std::vector<Offset> offsets;
+    offsets.reserve(static_cast<size_t>(setCountOf(element)));
     for (int64_t j = 0; j < height; ++j) {
         for (int64_t i = 0; i < width; ++i) {
             if (mask[static_cast<size_t>(j * width + i)] != 0) {
@@ -150,6 +159,7 @@ public:
         const int32_t reach = spec_.haloFactor * iterations_;
         halo_ = Halo{reach * (element_.width() / 2), reach * (element_.height() / 2),
                      reach * (element_.width() / 2), reach * (element_.height() / 2)};
+        setCount_ = setCountOf(element_);
     }
 
     const char* name() const override { return spec_.name; }
@@ -159,8 +169,28 @@ public:
     Halo halo() const override { return halo_; }
     DataType outputType(DataType input) const override { return input; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The larger of the two paths. Float path: two copies of the halo'd plane,
+    // 16 bytes per pixel for Float64. Integer path, OpenCV 4.14
+    // (imgproc/src/morph.dispatch.cpp, morphOp, morphologyEx; filter.simd.hpp,
+    // FilterEngine__start, FilterEngine__apply), at most 2-byte samples, with
+    // OpenCV on the calling thread: the ring buffer of (kernel height + 3) rows
+    // of the halo'd width (at most 4 rows' worth per row of the halo'd rect,
+    // since the kernel fits the halo), the source and constant-border rows, 12
+    // bytes per pixel; and through cv::fastMalloc the destination and the
+    // enlarged rectangle of an iterated rectangle (no larger than the halo'd
+    // rect), 3 more. An in-place pass is filtered row by row through the ring
+    // buffer: the copy of the source FilterEngine__apply takes for one belongs
+    // to its tiled path, which needs more than one OpenCV thread.
+    int64_t workingSetBytesPerLevelPixel() const override { return 16; }
+    // The larger of the float path's offsets and the integer path's per-kernel
+    // buffers (see integerBytesPerTile()).
+    int64_t workingSetBytesPerTile() const override {
+        const int64_t offsets = 16 * setCount_ + 3 * detail::kAllocatorBlockOverhead;
+        return std::max(offsets, integerBytesPerTile());
+    }
 
     void apply(OperationContext& context) override {
+        detail::useSequentialOpenCv(spec_.name);
         const BlockView& in = context.input();
         BlockView& out = context.output();
         const Rect64 tile = context.tileRectAtLevel();
@@ -211,6 +241,37 @@ public:
 private:
     [[noreturn]] void throwInternal(const std::string& problem) const {
         throw InternalError((std::string(spec_.name) + ": " + problem).c_str());
+    }
+
+    // The integer path's buffers that do not scale with the tile, for samples of
+    // at most 2 bytes, in OpenCV 4.14. One FilterEngine lives at a time (each
+    // pass of morphologyEx builds its own in turn); beyond the halo'd width it
+    // holds kernel-sized parts of its ring buffer, source row, constant-border
+    // row, border table and border value, and kernel height + 3 row pointers
+    // (filter.dispatch.cpp, FilterEngine::init; filter.simd.hpp,
+    // FilterEngine__start). morphOp turns an iterated rectangle into one pass of
+    // a rectangle 1 + iterations * (side - 1) on a side (morph.dispatch.cpp). An
+    // element that is not a rectangle has a MorphFilter: coordinates,
+    // coefficients and per-call row pointers, 17 bytes per set pixel
+    // (morph.simd.hpp, MorphFilter). Then the engine's objects, the images'
+    // bookkeeping and the allocator's overhead on the engine's vectors.
+    // FilterEngine__apply's tiled path (filter.simd.hpp, TiledFilterInvoker),
+    // with its per-thread tiles, needs more than one OpenCV thread, so it is
+    // never taken.
+    int64_t integerBytesPerTile() const {
+        constexpr int64_t kSample = 2;
+        constexpr int64_t kEngineObjects = 2048;
+        const int64_t width = element_.width();
+        const int64_t height = element_.height();
+        const bool rectangle = setCount_ == width * height;
+        const bool enlarged = rectangle && iterations_ > 1;
+        const int64_t kw = enlarged ? 1 + int64_t(iterations_) * (width - 1) : width;
+        const int64_t kh = enlarged ? 1 + int64_t(iterations_) * (height - 1) : height;
+        const int64_t ring = kSample * (rectangle ? 63 : kw + 62) * (kh + 3) + 64;
+        const int64_t rows = kSample * (kw - 1) + kSample * (kw + 63) + 4 * kSample * kw + kSample * kw + 8 * (kh + 3);
+        const int64_t filter = rectangle ? 0 : 17 * setCount_;
+        return ring + rows + filter + kEngineObjects + 8 * detail::kAllocatorBlockOverhead +
+               2 * detail::kCvMatBookkeeping;
     }
 
     // The module's own morphology of a float plane, pass by pass over the
@@ -314,6 +375,7 @@ private:
     StructuringElement element_;
     int32_t iterations_;
     Halo halo_{};
+    int64_t setCount_ = 0;
     OperationParameters parameters_;
 };
 

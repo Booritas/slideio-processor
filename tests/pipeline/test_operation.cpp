@@ -140,6 +140,7 @@ TEST(Operation, DefaultsForGlobalContextAndLayout) {
     EXPECT_FALSE(op.needsGlobalContext());
     EXPECT_EQ(op.tileRequirement(), TileRequirement::Halo);
     EXPECT_EQ(op.workingSetBytesPerLevelPixel(), 0);
+    EXPECT_EQ(op.workingSetBytesPerTile(), 0);
     EXPECT_FALSE(op.producesObjects());
     EXPECT_EQ(op.outputPlaneCount(3), 3);
 

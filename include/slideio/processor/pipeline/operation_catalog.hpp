@@ -25,7 +25,8 @@ namespace slideio::processor {
  * producesObjects() do not depend on parameters and must equal those of every
  * operation create() returns; the catalog checks them on each create(). The
  * other declarations (halo(), tileRequirement(),
- * workingSetBytesPerLevelPixel(), outputPlaneCount()) describe the operation
+ * workingSetBytesPerLevelPixel(), outputPlaneCount(),
+ * workingSetBytesPerTile()) describe the operation
  * created from default parameters; the created operation's own declarations
  * are authoritative.
  * @par Thread-safety
@@ -156,6 +157,27 @@ public:
      * UR-ALG-3
      */
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;
+    /**
+     * @brief Returns, for default parameters (the instance is authoritative), Operation::workingSetBytesPerTile() of the
+     * operations created.
+     * @return 0 by default.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    virtual int64_t workingSetBytesPerTile() const;
+    /**
+     * @brief Returns, for default parameters (the instance is authoritative), Operation::accumulatedStateBytes() of the
+     * operations created.
+     * @param planeCount Number of planes the operation's input step has.
+     * @return 0 by default.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    virtual int64_t accumulatedStateBytes(int32_t planeCount) const;
 };
 /** @brief Shared ownership of a factory, as the catalog holds it. */
 using OperationFactoryPtr = std::shared_ptr<OperationFactory>;
@@ -366,6 +388,31 @@ public:
      * UR-ALG-3
      */
     int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
+    /**
+     * @brief Returns, for default parameters, OperationFactory::workingSetBytesPerTile() of a
+     * registered operation.
+     * @param name The operation name.
+     * @return Bytes per apply() or accumulate() call.
+     * @throws InvalidArgumentError When the name is null or unknown.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    int64_t workingSetBytesPerTile(const char* name) const;
+    /**
+     * @brief Returns, for default parameters, OperationFactory::accumulatedStateBytes() of a
+     * registered operation.
+     * @param name The operation name.
+     * @param planeCount Number of planes the operation's input step has.
+     * @return Bytes per instance.
+     * @throws InvalidArgumentError When the name is null or unknown.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    int64_t accumulatedStateBytes(const char* name, int32_t planeCount) const;
 
     /**
      * @brief Emits the operation-by-type support matrix as CSV, generated from

@@ -51,4 +51,12 @@ int32_t Operation::outputPlaneCount(int32_t inputPlaneCount) const {
     return inputPlaneCount;
 }
 
+int64_t Operation::workingSetBytesPerTile() const {
+    return 0;
+}
+
+int64_t Operation::accumulatedStateBytes(int32_t) const {
+    return 0;
+}
+
 } // namespace slideio::processor

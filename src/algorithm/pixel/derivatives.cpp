@@ -8,6 +8,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/cv_plane.hpp"
 #include "detail/separable.hpp"
+#include "detail/working_set.hpp"
 
 #include <opencv2/imgproc.hpp>
 
@@ -80,6 +81,21 @@ public:
     Halo halo() const override { return Halo::uniform(halo_); }
     DataType outputType(DataType input) const override { return detail::floatFilterOutputType(input); }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The tile's values and, for a sum of passes, one pass's values (each one
+    // double per tile pixel, at most 8 bytes per pixel of the halo'd rect), and
+    // the samples and ring of one pass at a time; every kernel fits the halo.
+    int64_t workingSetBytesPerLevelPixel() const override {
+        int64_t pass = 0;
+        for (const detail::SeparableFilter& term : terms_) {
+            pass = std::max(pass, term.workingSetBytesPerPixel());
+        }
+        return (terms_.size() > 1 ? 16 : 8) + pass;
+    }
+    // The allocator's overhead on those buffers.
+    int64_t workingSetBytesPerTile() const override {
+        return ((terms_.size() > 1 ? 2 : 1) + detail::SeparableFilter::kWorkingSetBlocks) *
+               detail::kAllocatorBlockOverhead;
+    }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

@@ -6,12 +6,16 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace slideio::processor::testing_support {
 
@@ -63,6 +67,46 @@ std::mutex gHoldMutex;
 std::condition_variable gHoldChanged;
 int64_t gOthersDone = 0;
 
+std::atomic<int32_t> gLastStatePlaneCount{0};
+
+// Instance tracking and the hooks. Allocated once and never destroyed: an instance
+// the engine library's catalog holds is destroyed after this file's statics at
+// exit, and its destructor still takes the lock.
+struct Tracking {
+    std::mutex mutex;
+    int64_t holding = 0;
+    int64_t holdingHigh = 0;
+    int64_t tileInstances = 0;
+    int64_t tileInstancesHigh = 0;
+    // Live tile instances and their high-water mark, by declared state.
+    std::map<int64_t, std::pair<int64_t, int64_t>> tileInstancesByState;
+    FloatSumOperation::Hook accumulateHook;
+    FloatSumOperation::Hook applyHook;
+};
+
+Tracking& tracking() {
+    static Tracking* const instance = new Tracking();
+    return *instance;
+}
+
+// Runs a copy of `hook`, outside the lock, so the hook may block or throw.
+void runHook(const FloatSumOperation::Hook& hook, const FloatSumOperation& self, const OperationContext& context) {
+    FloatSumOperation::Hook copy;
+    {
+        std::lock_guard<std::mutex> lock(tracking().mutex);
+        copy = hook;
+    }
+    if (copy) {
+        copy(self, context);
+    }
+}
+
+// Caller holds tracking().mutex.
+void countUp(int64_t& live, int64_t& high) {
+    ++live;
+    high = std::max(high, live);
+}
+
 } // namespace
 
 // --- FloatSumOperation --------------------------------------------------------------
@@ -81,7 +125,69 @@ FloatSumOperation::FloatSumOperation(const OperationParameters& parameters) : pa
     int64_t failFinalize = 0;
     parameters_.getInt("failFinalize", failFinalize);
     failFinalize_ = failFinalize != 0;
+    parameters_.getInt("stateBytes", stateBytes_);
 }
+
+FloatSumOperation::~FloatSumOperation() {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    if (holding_) {
+        --tracking().holding;
+    }
+    if (tileInstance_) {
+        --tracking().tileInstances;
+        --tracking().tileInstancesByState[stateBytes_].first;
+    }
+}
+
+int64_t FloatSumOperation::stateBytes() const { return stateBytes_; }
+
+int64_t FloatSumOperation::holdingInstances() {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    return tracking().holding;
+}
+
+int64_t FloatSumOperation::holdingHighWater() {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    return tracking().holdingHigh;
+}
+
+int64_t FloatSumOperation::tileInstanceHighWater() {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    return tracking().tileInstancesHigh;
+}
+
+int64_t FloatSumOperation::tileInstanceHighWater(int64_t stateBytes) {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    const auto found = tracking().tileInstancesByState.find(stateBytes);
+    return found == tracking().tileInstancesByState.end() ? 0 : found->second.second;
+}
+
+void FloatSumOperation::resetInstanceCounts() {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    tracking().holdingHigh = tracking().holding;
+    tracking().tileInstancesHigh = tracking().tileInstances;
+    for (auto& entry : tracking().tileInstancesByState) {
+        entry.second.second = entry.second.first;
+    }
+}
+
+void FloatSumOperation::setAccumulateHook(Hook hook) {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    tracking().accumulateHook = std::move(hook);
+}
+
+void FloatSumOperation::setApplyHook(Hook hook) {
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    tracking().applyHook = std::move(hook);
+}
+
+int64_t FloatSumOperation::accumulatedStateBytes(int32_t planeCount) const {
+    gLastStatePlaneCount.store(planeCount);
+    return stateBytes_;
+}
+
+int32_t FloatSumOperation::lastStatePlaneCount() { return gLastStatePlaneCount.load(); }
+void FloatSumOperation::resetStatePlaneCount() { gLastStatePlaneCount.store(0); }
 
 const char* FloatSumOperation::name() const { return "test.floatSum"; }
 ChannelArity FloatSumOperation::arity() const { return ChannelArity::PerChannel; }
@@ -108,6 +214,7 @@ void FloatSumOperation::resetHold() {
 }
 
 void FloatSumOperation::accumulate(const OperationContext& context) {
+    runHook(tracking().accumulateHook, *this, context);
     const Rect64 tile = context.tileRectAtLevel();
     const bool first = tile.x == 0 && tile.y == 0;
     if (first && holdFirstTile_ > 0) {
@@ -127,6 +234,19 @@ void FloatSumOperation::accumulate(const OperationContext& context) {
     }
     sum_ += tilePartial(context.tileRectAtLevel(), sampleSum, offset_);
     count_ += view.width() * view.height() * view.planeCount();
+    {
+        std::lock_guard<std::mutex> lock(tracking().mutex);
+        if (!tileInstance_) {
+            tileInstance_ = true;
+            countUp(tracking().tileInstances, tracking().tileInstancesHigh);
+            std::pair<int64_t, int64_t>& byState = tracking().tileInstancesByState[stateBytes_];
+            countUp(byState.first, byState.second);
+        }
+        if (!holding_) {
+            holding_ = true;
+            countUp(tracking().holding, tracking().holdingHigh);
+        }
+    }
     if (!first) {
         {
             std::lock_guard<std::mutex> lock(gHoldMutex);
@@ -140,6 +260,11 @@ void FloatSumOperation::combine(const Operation& other) {
     const FloatSumOperation& o = sameKind<FloatSumOperation>(*this, other);
     sum_ += o.sum_;
     count_ += o.count_;
+    std::lock_guard<std::mutex> lock(tracking().mutex);
+    if (!holding_) {
+        holding_ = true;
+        countUp(tracking().holding, tracking().holdingHigh);
+    }
 }
 
 void FloatSumOperation::finalizeAccumulation() {
@@ -151,6 +276,7 @@ void FloatSumOperation::finalizeAccumulation() {
 }
 
 void FloatSumOperation::apply(OperationContext& context) {
+    runHook(tracking().applyHook, *this, context);
     if (!finalised_) {
         throw InternalError("test.floatSum: apply() before finalizeAccumulation()");
     }

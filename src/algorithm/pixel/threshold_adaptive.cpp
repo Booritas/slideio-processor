@@ -8,6 +8,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 #include "detail/separable.hpp"
+#include "detail/working_set.hpp"
 
 #include <cmath>
 #include <memory>
@@ -76,6 +77,15 @@ public:
     Halo halo() const override { return Halo::uniform(blockSize_ / 2); }
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The tile's window sums (one double per tile pixel), the separable
+    // filter's ring of blockSize row sums (blockSize x tile width doubles) and
+    // its row of samples (one double per halo'd column). With w and h the
+    // tile's sides and b the block size, these are 8 * (w*h + b*w + w + b - 1)
+    // bytes, at most 16 bytes per pixel of the (w + b - 1) x (h + b - 1)
+    // halo'd rect, since b >= 3.
+    int64_t workingSetBytesPerLevelPixel() const override { return 16; }
+    // The allocator's overhead on those three buffers.
+    int64_t workingSetBytesPerTile() const override { return 3 * detail::kAllocatorBlockOverhead; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

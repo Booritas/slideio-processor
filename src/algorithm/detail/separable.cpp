@@ -56,6 +56,11 @@ int32_t SeparableFilter::verticalRadius() const noexcept {
     return static_cast<int32_t>(vertical_.size() / 2);
 }
 
+int64_t SeparableFilter::workingSetBytesPerPixel() const noexcept {
+    const int64_t bv = static_cast<int64_t>(vertical_.size());
+    return (8 * (bv + 1) + bv - 1) / bv;
+}
+
 // Each input row's weighted sums, H(j, x) = sum over dx of h[dx] * v(j, x + dx),
 // left to right, are kept for the rows the current output row needs, in a
 // ring. Output (x, y) is the sum over dy of w[dy] * H(y + dy, x), top to bottom:

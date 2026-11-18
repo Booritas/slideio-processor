@@ -83,6 +83,10 @@ public:
     DataType outputType(DataType) const override { return DataType::Float32; }
     const OperationParameters& parameters() const override { return parameters_; }
     int32_t outputPlaneCount(int32_t) const override { return to_ == ColourSpace::Grey ? 1 : 3; }
+    // None: each pixel is converted in registers and written straight to the output.
+    int64_t workingSetBytesPerLevelPixel() const override { return 0; }
+    // None: the row pointers live on the stack.
+    int64_t workingSetBytesPerTile() const override { return 0; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

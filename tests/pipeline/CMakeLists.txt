@@ -55,6 +55,7 @@ add_executable(slideio_processor_pipeline_tests
     test_tile_evaluator.cpp
     test_tile_grid.cpp
     test_umbrella.cpp
+    test_working_set.cpp
     $<TARGET_OBJECTS:pipeline_public_only>
     # Not exported from the library, so compiled into the test directly
     # (fragment_merge.cpp and parameters_json.cpp come with the test-support library).

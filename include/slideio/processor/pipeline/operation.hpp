@@ -43,7 +43,8 @@ enum class ChannelArity : int32_t {
  * Halo is the ordinary case: a tile plus the declared border. WholeLevel means
  * the operation reads the whole analysis level as one tile, so the framework
  * must check before the run that the level fits the memory budget, using
- * Operation::workingSetBytesPerLevelPixel().
+ * Operation::workingSetBytesPerLevelPixel() and
+ * Operation::workingSetBytesPerTile().
  * @par Requirements
  * UR-EXT-3, UR-EXT-4
  */
@@ -426,14 +427,14 @@ private:
  * The public extension interface: built-in operations implement it with no
  * privileged access to internals (UR-EXT-2). The declaration methods name(),
  * arity(), requiresUniformTypes(), supportedTypes(), halo(), outputType(),
- * tileRequirement(), workingSetBytesPerLevelPixel(), producesObjects() and
- * outputPlaneCount() are the contract the framework checks before a run
+ * tileRequirement(), workingSetBytesPerLevelPixel(), producesObjects(),
+ * outputPlaneCount() and workingSetBytesPerTile() are the contract the framework checks before a run
  * starts; they must be constant for the life of the operation.
  * @par Thread-safety
  * Implementations must be reentrant: apply() is called concurrently on
  * different tiles.
  * @par Requirements
- * UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11
+ * UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-EXE-2
  */
 class SLIDEIO_PROCESSOR_ENGINE_EXPORTS Operation {
 public:
@@ -595,10 +596,20 @@ public:
      */
     virtual TileRequirement tileRequirement() const;
     /**
-     * @brief Returns the working memory a WholeLevel operation needs per pixel
-     * of the analysis level, so the run can be refused before it starts when
-     * the level does not fit the budget.
-     * @return Bytes per level pixel; 0 by default.
+     * @brief Returns the operation's own working memory per pixel of the rect
+     * one apply() call is given, so the run reserves it with each tile and is
+     * refused before it starts when it does not fit the budget.
+     *
+     * The rect is the tile grown by the halo for a Halo operation, and the
+     * analysis level for a WholeLevel operation; a PerChannel operation counts
+     * one plane, since it is applied one plane at a time. The figure excludes
+     * the input and output blocks the framework already counts, and also
+     * covers accumulate() in a global-context pass. Memory that does not scale
+     * with the pixels belongs in workingSetBytesPerTile(). A negative figure
+     * counts as 0. The figure is an upper bound the reservation trusts: memory
+     * an operation allocates beyond what it declares is not covered by the
+     * memory ceiling.
+     * @return Bytes per pixel; 0 by default.
      * @throws Nothing.
      * @par Thread-safety
      * Must be safe to call concurrently.
@@ -630,6 +641,51 @@ public:
      * UR-ALG-3
      */
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;
+    /**
+     * @brief Returns the operation's own working memory per apply() or
+     * accumulate() call that does not scale with the tile's pixels: a
+     * window's copy, a histogram's bins, a kernel's coefficients.
+     *
+     * The run reserves it with each tile, together with
+     * workingSetBytesPerLevelPixel() over the rect the call is given, and is
+     * refused before it starts when it does not fit the budget. Like
+     * workingSetBytesPerLevelPixel(), it excludes the input and output blocks
+     * the framework counts, and may depend on the parameters. A negative
+     * figure counts as 0. The figure is an upper bound the reservation
+     * trusts: memory an operation allocates beyond what it declares is not
+     * covered by the memory ceiling.
+     * @return Bytes per call; 0 by default.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    virtual int64_t workingSetBytesPerTile() const;
+    /**
+     * @brief Returns, for a global-context operation, the bytes one instance
+     * holds between calls: after accumulate() on any number of tiles of
+     * @p planeCount planes, and after combine() with any number of instances
+     * of the same parameters.
+     *
+     * It excludes what workingSetBytesPerLevelPixel() and
+     * workingSetBytesPerTile() already cover during a call. The run reserves
+     * it for the instances it keeps, and is refused before it starts when it
+     * does not fit the memory ceiling. A negative figure counts as 0. The
+     * figure is an upper bound the reservation trusts: an instance's state
+     * beyond its declaration is not covered by the memory ceiling, so a
+     * global-context operation whose state grows with the tiles it has seen
+     * cannot declare an honest bound and must keep its state bounded.
+     * @param planeCount Number of planes the operation's input step has;
+     * at least 1.
+     * @return Bytes per instance; 0 by default.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    virtual int64_t accumulatedStateBytes(int32_t planeCount) const;
 };
 /** @brief Shared ownership of an operation, as the catalog and pipeline hold it. */
 using OperationPtr = std::shared_ptr<Operation>;

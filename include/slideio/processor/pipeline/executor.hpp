@@ -164,6 +164,15 @@ public:
      * ascending tile index (a skipped tile combining nothing), and finalises;
      * it writes no sink. Results therefore do not depend on the worker count.
      *
+     * A global-context operation's instances keep the state its
+     * Operation::accumulatedStateBytes() declares. Before the first pass, the run
+     * reserves from the pool's budget, in one wait, the state of every such
+     * operation's run instance plus the most the tile instances of any one
+     * accumulation pass may hold, and releases it when run() returns, on every
+     * path. A pass holds at most 2 x workers tile instances, fewer when what the
+     * ceiling leaves beside one tile and the run instances' state holds fewer;
+     * a worker that finds a pass at that bound waits until one is combined.
+     *
      * When an operation of the chain produces objects, the run joins the
      * fragments of objects cut by tile seams with a SeamMerger, which works in
      * a directory of the run's own, `pipeline-<32 random lowercase hex digits>`
@@ -189,7 +198,9 @@ public:
      * @param token Cancels the run.
      * @throws InvalidArgumentError As Pipeline::validate(); when the pipeline's
      * grid differs from this executor's; when one tile's bytes exceed the
-     * pool's budget ceiling; when the pool has been shut down.
+     * pool's budget ceiling; when one tile's bytes with the global-context
+     * operations' accumulated state and one more instance of the largest exceed
+     * the pool's budget ceiling; when the pool has been shut down.
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
      * @throws IoError As Pipeline::validate(); when the run's scratch
@@ -208,7 +219,10 @@ public:
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * Safe to call concurrently; runs on one executor are serialised. The
-     * pipeline must not be used by any other thread during the call.
+     * pipeline must not be used by any other thread during the call. Concurrent
+     * runs with global-context operations whose executors share one budget,
+     * through one pool, whose ceiling is below the sum of their run reservations
+     * plus one tile may wait on each other until cancelled.
      * @par Requirements
      * UR-EXE-1, UR-EXE-2, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
      */
