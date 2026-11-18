@@ -126,7 +126,7 @@ the operation and the parameter.
 | `pixel.convert_type` | `target` | string | `"Float32"` | a `dataTypeName()` spelling other than `Unknown` |
 | | `rounding` | string | `"Nearest"` | a `RoundingMode` spelling |
 | | `overflow` | string | `"Saturate"` | `"Saturate"`, `"Error"` |
-| `pixel.gaussian_blur` | `sigma` | double | 1.0 | finite, greater than 0; with `kernelSize` 0, small enough that the derived size 2·⌈3·`sigma`⌉ + 1 is at most 1025 |
+| `pixel.gaussian_blur` | `sigma` | double | 1.0 | finite, at least 10⁻⁶; with `kernelSize` 0, small enough that the derived size 2·⌈3·`sigma`⌉ + 1 is at most 1025 |
 | | `kernelSize` | int | 0 | odd, 1 to 1025, or 0 to derive it from `sigma` |
 | `pixel.median_blur` | `kernelSize` | int | 3 | odd, 3 to 255 |
 | `pixel.sobel` | `dx` | int | 1 | 0, 1 or 2; `dx` + `dy` at least 1 |
@@ -138,8 +138,8 @@ the operation and the parameter.
 | | `highThreshold` | double | 150.0 | finite, at least 0 |
 | | `apertureSize` | int | 3 | 3, 5 or 7 |
 | `pixel.bilateral_filter` | `diameter` | int | 5 | odd, 3 to 255 |
-| | `sigmaColour` | double | 25.0 | finite, greater than 0 |
-| | `sigmaSpace` | double | 5.0 | finite, greater than 0 |
+| | `sigmaColour` | double | 25.0 | finite, at least 10⁻⁶ |
+| | `sigmaSpace` | double | 5.0 | finite, at least 10⁻⁶ |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | `shape` | string | `"Rectangle"` | a `StructuringShape` spelling, or `"Custom"` for an element built by `StructuringElement::custom` |
 | | `elementWidth`, `elementHeight` | int | 3, 3 | odd, 1 to 255 |
 | | `elementMask` | double array | absent | present exactly when `shape` is `"Custom"`: `elementWidth` · `elementHeight` values, row by row from the top, each 0 or 1, at least one 1 |
@@ -159,8 +159,9 @@ would exceed 1025 is refused naming `sigma`, not `kernelSize`: the limit
 belongs to the derived size, and `sigma` is what produced it. A Canny
 `lowThreshold` above `highThreshold` is refused naming `lowThreshold`, and a
 Sobel or Scharr pair of orders that selects no derivative names `dx`.
-`StructuringElement`'s constructor and `custom` refuse a bad size or mask with
-`InvalidArgumentError` naming the parameter (`width`, `height`, `mask`) and
+`StructuringElement`'s constructor and `custom` refuse a bad shape, size or
+mask with `InvalidArgumentError` naming the parameter (`shape`, `width`,
+`height`, `mask`) and
 `StructuringElement`, since no operation exists yet; a morphology factory
 given a moved-from element refuses it naming the parameter `element`, rather
 than reading an element that holds nothing.
@@ -410,6 +411,12 @@ are compiled with `-ffp-contract=off` on GCC and Clang, and MSVC's default
 `/fp:precise` does not contract, so a multiply and an add are never fused into
 one rounding in one place and kept apart in another.
 
+**Non-finite samples in the sums.** In the Gaussian, Sobel, Scharr and
+Laplacian a NaN in a pixel's window makes it NaN; an infinity makes it +∞ or
+−∞, or NaN where it meets a zero coefficient or an infinity of the opposite
+sign. They are plain weighted sums, and nothing is skipped. The bilateral
+filter, whose rule differs, is described below.
+
 **Kernels, sizes and halos.** Every halo is the same on all four sides except
 morphology's, which follows the element's two axes.
 
@@ -417,7 +424,9 @@ morphology's, which follows the element's two axes.
   `kernelSize`/2, normalised to sum 1, the same kernel along both axes.
   `kernelSize` 0 derives 2·⌈3·`sigma`⌉ + 1, at most 1025, and size 1 leaves
   every sample unchanged apart from the conversion to the output type. Halo
-  `kernelSize`/2 of the size used.
+  `kernelSize`/2 of the size used. `sigma` is at least 10⁻⁶: below that
+  2σ² can underflow to 0 and every weight become 0/0, while at it every
+  off-centre weight is already 0, so nothing smaller is needed.
 - **Sobel.** The separable, unnormalised coefficients OpenCV's `Sobel` uses,
   taken from `cv::getDerivKernels(dx, dy, kernelSize, false, CV_64F)` when the
   operation is built. Size 1 differentiates with a 3-tap kernel along the
@@ -439,7 +448,8 @@ morphology's, which follows the element's two axes.
   and a neighbour that is not finite is skipped, contributing to neither sum:
   otherwise one NaN or infinity would turn every finite pixel within the
   radius into NaN, which no caller asking for edge-preserving smoothing wants.
-  Halo `diameter`/2.
+  `sigmaColour` and `sigmaSpace` are at least 10⁻⁶, for the Gaussian's
+  reason. Halo `diameter`/2.
 - **Morphology.** r = `elementWidth`/2 horizontally and `elementHeight`/2
   vertically. Erode and dilate take the minimum or maximum over the element's
   set pixels `iterations` times, halo `iterations`·r per axis. Open erodes
@@ -451,7 +461,11 @@ morphology's, which follows the element's two axes.
   (`L2gradient = false`), non-maximum suppression and hysteresis, as
   `cv::Canny` computes them. Halo `apertureSize`/2 + 1 + 32 (34, 35 or 36): the
   gradient and the suppression need `apertureSize`/2 + 1, and the 32 is the
-  reach declared for hysteresis, below.
+  reach declared for hysteresis, below. OpenCV converts each threshold to
+  `int`, which is undefined beyond `int`'s range, so a threshold above 10⁷ is
+  passed to it as 10⁷: that, and 10⁷/16 at aperture 7, already exceeds every
+  L1 magnitude of two 16-bit gradients, so the result is unchanged. The
+  parameters keep the value given.
 
 **The structuring element.** `StructuringElement` is pimpl'd with the full copy
 and move set of C-2. Width and height are odd, from 1 to 255, and the anchor is
@@ -486,10 +500,15 @@ inside the halo'd plane; the further 32 pixels are the reach hysteresis is
 allowed. The operation reports that bound through its complexity note
 (UR-ALG-8), which reads exactly: *"O(n) in the number of pixels; equals
 single-tile Canny wherever every weak edge chain reaches a strong edge within
-32 pixels, and may drop weak edges beyond that reach"*. Gradients, suppression
-and the strong edges are the same at every tile size, and a tile sees fewer
-strong seeds than the whole level, never more, so tiling can only drop weak
-edge pixels, never add one. UR-PIX-3's acceptance criterion — "whole-slide output
+32 pixels, and may drop or keep weak edges beyond that reach"*. Tiling can
+change a weak chain beyond that reach either way. A tile may lack the chain's
+strong seed and drop it. And OpenCV computes its Sobel gradients with
+`BORDER_REPLICATE` inside the halo'd plane, so in the outer
+`apertureSize`/2 + 1 rows and columns of the halo a pixel can get a gradient
+the whole level would not give it, become a strong seed the level does not
+have, and keep a weak chain one tile covering the level drops. The tile
+pixels themselves, whose gradients lie wholly inside the plane, are never
+seeds of that kind. UR-PIX-3's acceptance criterion — "whole-slide output
 matches a single-tile reference" — is stated without tolerance and cannot be
 met unconditionally by this one operation; that conflict stays recorded as
 open question 15 in `requirements.md` and needs a requirements amendment
@@ -955,7 +974,7 @@ The operations that exist state their reference through
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
-| `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, tiling only drops pixels, each further than 32 pixels from every strong one; the complexity note states the bound verbatim |
+| `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
 
 Exact agreement is asserted wherever the computation is defined in a fixed
 order, and a tolerance only where the reference is a published constant, the
