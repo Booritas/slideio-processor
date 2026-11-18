@@ -70,6 +70,17 @@ bool turnsSharperRight(Point64 back, Point64 d1, Point64 d2) {
     return cross(d1, d2) < 0;
 }
 
+// True when d1 is the preferred turn over d2 after arriving along `-back`: the
+// sharper right turn, or with `left` the sharper left one. A left turn is a
+// right turn of the mirror image (y negated).
+bool preferredTurn(Point64 back, Point64 d1, Point64 d2, bool left) {
+    if (!left) {
+        return turnsSharperRight(back, d1, d2);
+    }
+    const auto mirror = [](Point64 p) { return Point64{p.x, -p.y}; };
+    return turnsSharperRight(mirror(back), mirror(d1), mirror(d2));
+}
+
 // Errors carry counts only: an object's coordinates could carry clinical data.
 [[noreturn]] void fail(const std::string& what, const std::vector<const Polygon*>& fragments) {
     int64_t rings = 0;
@@ -164,7 +175,35 @@ bool contactsJoin(const SeamContact& a, const SeamContact& b) {
     return a.vertical == b.vertical && a.line == b.line && std::min(a.end, b.end) > std::max(a.begin, b.begin);
 }
 
-Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
+std::vector<Point64> seamPoints(const Polygon& polygon, const TileGrid& grid, int64_t tileIndex) {
+    const Rect64 tile = grid.tileRect(tileIndex);
+    const int64_t column = tileIndex % grid.columns();
+    const int64_t row = tileIndex / grid.columns();
+    const auto onSeam = [&](Point64 p) {
+        const bool alongX = p.x >= tile.x && p.x <= tile.right();
+        const bool alongY = p.y >= tile.y && p.y <= tile.bottom();
+        return (alongY && ((p.x == tile.x && column > 0) || (p.x == tile.right() && column + 1 < grid.columns()))) ||
+               (alongX && ((p.y == tile.y && row > 0) || (p.y == tile.bottom() && row + 1 < grid.rows())));
+    };
+    std::vector<VertexKey> keys;
+    for (int32_t ring = 0; ring < polygon.ringCount(); ++ring) {
+        for (const Point64& p : pointsOf(polygon, ring)) {
+            if (onSeam(p)) {
+                keys.push_back(keyOf(p));
+            }
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    std::vector<Point64> points;
+    points.reserve(keys.size());
+    for (const VertexKey& key : keys) {
+        points.push_back(pointOf(key));
+    }
+    return points;
+}
+
+Polygon mergeFragments(const std::vector<const Polygon*>& fragments, bool eightConnected) {
     // Every ring, oriented so the object lies on the right of each edge.
     std::vector<std::vector<Point64>> rings;
     for (const Polygon* fragment : fragments) {
@@ -240,8 +279,8 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
     }
 
     // Link the surviving edges into rings, starting each at the topmost-then-
-    // leftmost remaining vertex. A ring closes when, back at its start, the
-    // sharpest right turn is its first edge again.
+    // leftmost remaining vertex and taking the preferred turn at each vertex.
+    // A ring closes when, back at its start, its first edge is the preferred turn.
     std::vector<std::vector<Point64>> outer;
     std::vector<std::vector<Point64>> holes;
     while (!outgoing.empty()) {
@@ -268,14 +307,14 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
             if (here != outgoing.end()) {
                 for (size_t i = 0; i < here->second.size(); ++i) {
                     const Point64 d{here->second[i].x - v.x, here->second[i].y - v.y};
-                    if (!chosen || turnsSharperRight(back, d, bestDirection)) {
+                    if (!chosen || preferredTurn(back, d, bestDirection, eightConnected)) {
                         chosen = true;
                         best = i;
                         bestDirection = d;
                     }
                 }
             }
-            if (canClose && (!chosen || turnsSharperRight(back, firstDirection, bestDirection))) {
+            if (canClose && (!chosen || preferredTurn(back, firstDirection, bestDirection, eightConnected))) {
                 break;
             }
             if (!chosen) {

@@ -738,8 +738,14 @@ public:
     virtual bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const;
     /**
      * @brief Tells whether the operation's objects are 8-connected, so that
-     * two of its fragments meeting only at a tile corner belong to one object.
-     * Constant for the life of the operation.
+     * two of its fragments whose pixels meet only diagonally across a seam, at
+     * a tile corner or along a seam, belong to one object.
+     *
+     * The seam merger then links the merged outline taking the sharpest left
+     * turn where it touches itself at a point, so an object whose pixels touch
+     * diagonally has one outer ring passing twice through that point; the
+     * operation's own tracing should do the same, so that objects found in one
+     * tile and merged ones agree. Constant for the life of the operation.
      * @return False by default.
      * @throws Nothing.
      * @par Thread-safety

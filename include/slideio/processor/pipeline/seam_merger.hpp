@@ -37,9 +37,15 @@ struct SeamMergerAccess;
  * line; two fragments in the tiles on either side of a seam, of the same
  * layer, belong to one object when their contacts on that seam overlap with
  * positive length. Touching at a single point (a corner) does not join:
- * objects are 4-connected. Joining is exact, in integers, with no tolerance.
+ * objects are 4-connected. On a layer whose producer declares its objects
+ * 8-connected (Operation::objectsAreEightConnected(), which the executor
+ * passes on), two fragments of different tiles that share a boundary vertex
+ * on a seam line, at a tile corner or along a seam, also join: their pixels
+ * meet diagonally there. Joining is exact, in integers, with no tolerance.
  *
- * A fragment expects the tile on the other side of each of its contacts. An
+ * A fragment expects the tile on the other side of each of its contacts, and
+ * on an 8-connected layer every other tile touching one of its seam vertices
+ * (at a tile corner, the diagonal tile too). An
  * object (a connected set of fragments) closes when every tile holding one of
  * its fragments and every tile one of them expects has been reported complete
  * through notifyTileComplete(); it does not wait for the rest of the grid. A

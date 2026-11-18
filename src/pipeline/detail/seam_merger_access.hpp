@@ -62,6 +62,20 @@ struct SeamEdgeContact {
     SeamContact contact;
 };
 
+/// A seam point of a fragment of an 8-connected layer, waiting between its
+/// tile and another tile touching the point for a fragment sharing it.
+struct SeamPointContact {
+    int64_t fragment; ///< The fragment id.
+    int64_t tile;     ///< The tile that emitted it.
+    Point64 at;       ///< The point, in level-0 coordinates.
+};
+
+/// A seam point of a new fragment and one other tile touching it.
+struct SeamPointNeighbour {
+    Point64 at;   ///< The point, in level-0 coordinates.
+    int64_t tile; ///< A tile other than the fragment's whose rect touches the point.
+};
+
 /// Bytes held in a memory budget, given back when the holder is destroyed.
 class BudgetHold {
 public:
@@ -129,6 +143,11 @@ struct SeamMergerAccess {
     /// arrives; the filter is called from the threads that close objects, so
     /// it must be thread-safe.
     static void setFilter(SeamMerger& merger, std::function<bool(Point64)> filter);
+    /// Declares the objects of @p layer 8-connected: its fragments also join
+    /// at a point they share on a seam (seamPoints), and its objects are merged
+    /// with mergeFragments(..., true). Called before the first fragment of the
+    /// layer arrives; layers not declared stay 4-connected.
+    static void setEightConnected(SeamMerger& merger, LayerId layer);
 };
 
 } // namespace slideio::processor::detail
@@ -148,8 +167,11 @@ public:
     // Records a validated fragment whose seam contacts and expected neighbours
     // are already computed, and reserves `bytes` for it, writing older objects
     // to the scratch file while the budget is short.
+    // `points` are the fragment's seam points, each with a tile touching it, on
+    // an 8-connected layer, and empty otherwise.
     void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
-             const std::vector<detail::SeamContact>& contacts, const std::vector<int64_t>& neighbours,
+             const std::vector<detail::SeamContact>& contacts,
+             const std::vector<detail::SeamPointNeighbour>& points, const std::vector<int64_t>& neighbours,
              int64_t bytes);
     // Marks a tile complete and takes out the components that close with it.
     std::vector<detail::ClosedComponent> complete(int64_t tileIndex);
@@ -159,9 +181,14 @@ public:
     void emit(detail::ClosedComponent& component, ObjectSink& sink);
     // The filter in force, copied under the lock.
     std::function<bool(Point64)> currentFilter() const;
+    // Whether `layer` was declared 8-connected, read under the lock.
+    bool isEightConnected(LayerId layer) const;
 
     // The tile across `contact` from `tileIndex`.
     int64_t neighbourAcross(int64_t tileIndex, const detail::SeamContact& contact) const;
+    // The tiles other than `tileIndex` whose rects touch `point`, a point on
+    // the boundary of tileIndex's rect: one across a seam, three at a corner.
+    std::vector<int64_t> neighboursAt(int64_t tileIndex, Point64 point) const;
 
     const TileGrid grid;
     const MemoryBudgetPtr budget;
@@ -169,6 +196,7 @@ public:
 
     mutable std::mutex mutex;
     std::function<bool(Point64)> filter;
+    std::set<LayerId> eightConnected;
 
     std::atomic<int64_t> fragmentCount{0};
     std::atomic<int64_t> mergedObjectCount{0};
@@ -198,6 +226,7 @@ private:
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.
+    std::unordered_map<int64_t, std::vector<detail::SeamPointContact>> points_; // Tile pair -> seam points.
     std::vector<char> completed_;                                  // Per tile.
 };
 
@@ -208,6 +237,11 @@ namespace slideio::processor::detail {
 inline void SeamMergerAccess::setFilter(SeamMerger& merger, std::function<bool(Point64)> filter) {
     std::lock_guard<std::mutex> lock(merger.impl_->mutex);
     merger.impl_->filter = std::move(filter);
+}
+
+inline void SeamMergerAccess::setEightConnected(SeamMerger& merger, LayerId layer) {
+    std::lock_guard<std::mutex> lock(merger.impl_->mutex);
+    merger.impl_->eightConnected.insert(layer);
 }
 
 } // namespace slideio::processor::detail

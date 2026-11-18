@@ -66,17 +66,21 @@ Configuration config(const RunSetup& run, const std::string& scratch) {
         .build();
 }
 
-PipelineSpec components(int32_t level) {
+PipelineSpec components(int32_t level, bool eightConnected = false) {
     PipelineSpec spec;
     OperationParameters seams;
     seams.setBool("seams", true);
+    if (eightConnected) {
+        seams.setBool("eightConnected", true);
+    }
     spec.operation("test.components", seams);
     spec.analysisLevel(level);
     return spec;
 }
 
-std::vector<ObjectRecord> objectsOf(const std::shared_ptr<slideio::Scene>& scene, const RunSetup& run) {
-    Pipeline p(scene, config(run, std::string()), components(run.level));
+std::vector<ObjectRecord> objectsOf(const std::shared_ptr<slideio::Scene>& scene, const RunSetup& run,
+                                    bool eightConnected = false) {
+    Pipeline p(scene, config(run, std::string()), components(run.level, eightConnected));
     p.bindLayer("objects", kLayer);
     ts::CollectingObjectSink sink;
     p.runInto(sink, nullptr, CancellationToken());
@@ -441,5 +445,27 @@ TEST(Seg3, CornerTouchingObjectsStaySeparate) {
         if (tile != kWidth) {
             EXPECT_TRUE(identicalObjects(reference, objects, IntensityMatch::Exact)) << tile << "-pixel tiles";
         }
+    }
+}
+
+// 8-connected, each corner-touching pair is one object whose outline touches
+// itself at the corner, joined across the seams at every tile size, and every
+// other object is the single-tile one.
+TEST(Seg3, EightConnectedBlobsInvariantAcrossTileSizes) {
+    const auto scene = dyadicScene(ts::BlobChannels::Mask);
+    const std::vector<ObjectRecord> reference = objectsOf(scene, {kWidth, kHeight, 4}, true);
+    const int64_t s = ts::kCornerSquareSide;
+    for (const ts::CornerTouchingPair& pair : ts::cornerTouchingPairs()) {
+        const Rect64 both{pair.x - s, pair.y - s, 2 * s, 2 * s};
+        const auto joined = std::count_if(reference.begin(), reference.end(), [&](const ObjectRecord& r) {
+            return r.boundingBox() == both && r.geometry().ringCount() == 1 &&
+                   r.geometry().area() == static_cast<double>(2 * s * s);
+        });
+        EXPECT_EQ(joined, 1) << "pair at the " << pair.tileSide << "-pixel corner";
+    }
+    for (const int32_t tile : {64, 100, 257}) {
+        ASSERT_GE(cutBySeams(reference, tile), 5) << tile << "-pixel seams should cut many objects";
+        EXPECT_TRUE(identicalObjects(reference, objectsOf(scene, {tile, tile, 4}, true), IntensityMatch::Exact))
+            << tile << "-pixel tiles";
     }
 }

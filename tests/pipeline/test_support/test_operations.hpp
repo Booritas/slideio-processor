@@ -116,6 +116,10 @@ private:
 /// When bool parameter "finishContext" is true (default false), it also records the
 /// ObjectFinishContext it was given: "finishPixelSize" (Micrometres) and
 /// "finishLevel" (Dimensionless).
+/// When bool parameter "eightConnected" is true (default false), components are
+/// 8-connected instead: labelled with diagonal neighbours, traced turning left
+/// where a component touches itself diagonally (one outer ring through that
+/// point, the seam merger's rule), and objectsAreEightConnected() is true.
 class ComponentsOperation : public Operation {
 public:
     explicit ComponentsOperation(const OperationParameters& parameters);
@@ -131,6 +135,7 @@ public:
     /// 1 for either form: the mask copy.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
     bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const override;
+    bool objectsAreEightConnected() const override;
 
 private:
     OperationParameters parameters_;
@@ -141,6 +146,7 @@ private:
     double finishMinArea_;
     bool finishTag_;
     bool finishContext_;
+    bool eightConnected_;
 };
 
 /// "test.pixelSizeProbe": PerChannel, Byte and Float32, halo 0, output Float32: a copy of

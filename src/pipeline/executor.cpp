@@ -478,6 +478,12 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     if (producesObjects) {
         scratch = std::make_unique<RunScratchDirectory>(impl_->config.scratchDirectory());
         merger = std::make_unique<SeamMerger>(impl_->grid, pool.budget, scratch->path());
+        // Fragments of an 8-connected producer also join diagonally across seams.
+        for (size_t k = 0; k < operations.size(); ++k) {
+            if (operations[k]->producesObjects() && operations[k]->objectsAreEightConnected()) {
+                detail::SeamMergerAccess::setEightConnected(*merger, plan.targetLayers[k]);
+            }
+        }
     }
 
     // Every object, from a tile or merged, reaches the sink through its
