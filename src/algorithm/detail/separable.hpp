@@ -29,6 +29,18 @@ public:
     /// Half the vertical kernel's length.
     int32_t verticalRadius() const noexcept;
 
+    /// The bytes apply() allocates per pixel of the tile grown by the kernel
+    /// radii, for a tile of any size: its row of samples and its ring of row
+    /// sums, 8 * (bv * w + w + bh - 1) bytes for a tile w wide, with bh and bv
+    /// the horizontal and vertical kernel lengths. That is at most
+    /// 8 * (bv + 1) * (w + bh - 1), so at most ceil(8 * (bv + 1) / bv) bytes per
+    /// pixel of the (w + bh - 1) x (h + bv - 1) rect, since h >= 1.
+    int64_t workingSetBytesPerPixel() const noexcept;
+
+    /// The number of blocks apply() allocates, each of which may carry the
+    /// allocator's overhead.
+    static constexpr int64_t kWorkingSetBlocks = 2;
+
     /// Filters @p plane of @p input, which covers @p haloRectAtLevel, at every
     /// pixel of @p tileRectAtLevel, writing tile.height rows of tile.width
     /// doubles to @p out, rows @p outStride doubles apart. The input must hold

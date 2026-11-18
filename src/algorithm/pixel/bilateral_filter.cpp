@@ -8,6 +8,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 #include "detail/separable.hpp"
+#include "detail/working_set.hpp"
 
 #include <cmath>
 #include <memory>
@@ -95,6 +96,11 @@ public:
     Halo halo() const override { return Halo::uniform(radius_); }
     DataType outputType(DataType input) const override { return detail::floatFilterOutputType(input); }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The halo'd plane as doubles (8 bytes per pixel of the halo'd rect) and
+    // the tile's values (one double per tile pixel, at most 8 more).
+    int64_t workingSetBytesPerLevelPixel() const override { return 16; }
+    // The allocator's overhead on those two buffers.
+    int64_t workingSetBytesPerTile() const override { return 2 * detail::kAllocatorBlockOverhead; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

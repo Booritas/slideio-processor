@@ -76,7 +76,9 @@ gtest_discover_tests(slideio_processor_algorithm_tests TEST_PREFIX "algorithm."
 add_executable(slideio_processor_working_set_tests
     test_allocation_meter.cpp
     test_working_set_pixel.cpp
+    test_working_set_filter.cpp
     support/allocation_meter.cpp
+    support/working_set_check.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/tests/pipeline/test_support/synthetic_scene.cpp
     $<TARGET_OBJECTS:slideio-processor-pipeline>

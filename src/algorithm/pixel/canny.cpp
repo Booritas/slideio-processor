@@ -7,6 +7,7 @@
 #include "detail/builtin_factory.hpp"
 #include "detail/builtin_operations.hpp"
 #include "detail/cv_plane.hpp"
+#include "detail/working_set.hpp"
 
 #include <opencv2/imgproc.hpp>
 
@@ -93,6 +94,28 @@ public:
     Halo halo() const override { return Halo::uniform(halo_); }
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // cv::Canny, OpenCV 4.14 (imgproc/src/canny.cpp), on a halo'd rect at least
+    // 69 pixels on a side, run in S <= rows / 4 stripes of rows, each reading
+    // its rows and one more either side (at most 1.5 x the rows in all): the
+    // edge map (1 byte per pixel); the suppression map, (rows + 2) x (width +
+    // 128) at most (3); per stripe the 16-bit dx and dy (6) and, through
+    // operator new, the stripe's stack of edge pixels, each pushed once, in a
+    // std::deque at most 20 bytes per entry under MSVC (30), its border peaks
+    // and their copy in the shared stack (21), the magnitude rows, 12 bytes per
+    // column (3), and Sobel's FilterEngine, at most 41 bytes per column (11).
+    // After the stripes, the shared stack of up to one entry per pixel (20)
+    // outlives none of the stripes' buffers, so 75 bounds both phases.
+    int64_t workingSetBytesPerLevelPixel() const override { return 75; }
+    // Per stripe, at most one per OpenCV thread: the magnitude rows' and Sobel's
+    // kernel-sized parts, kernels, objects and bookkeeping (8 KiB), and, when
+    // OpenCV runs more than one thread, the padded 134 x 134 tile and its
+    // 134 rows of 32-bit row sums Sobel's tiled path holds (filter.simd.hpp,
+    // TiledFilterInvoker); then the shared stack's and the maps' bookkeeping.
+    int64_t workingSetBytesPerTile() const override {
+        const int64_t threads = std::max(1, cv::getNumThreads());
+        const int64_t perStripe = 8192 + (threads > 1 ? 134 * 134 + 134 * 512 + 2 * detail::kCvMatBookkeeping : 0);
+        return threads * perStripe + 1024;
+    }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();

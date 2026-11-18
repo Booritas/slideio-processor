@@ -13,4 +13,9 @@ namespace slideio::processor::detail {
 /// it once per std::vector or std::string buffer that is live at the peak.
 constexpr int64_t kAllocatorBlockOverhead = 64;
 
+/// The bytes OpenCV takes through operator new for each image it allocates:
+/// the cv::UMatData record that tracks the pixels (104 bytes under MSVC);
+/// 128 bounds that. The pixels themselves come from cv::fastMalloc.
+constexpr int64_t kCvMatBookkeeping = 128;
+
 } // namespace slideio::processor::detail

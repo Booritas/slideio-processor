@@ -8,6 +8,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/cv_plane.hpp"
 #include "detail/sample_codec.hpp"
+#include "detail/working_set.hpp"
 
 #include <opencv2/imgproc.hpp>
 
@@ -157,6 +158,22 @@ public:
     Halo halo() const override { return Halo::uniform(size_ / 2); }
     DataType outputType(DataType input) const override { return input; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // The module's own path: one 8-byte key per pixel of the halo'd rect. The
+    // Byte path (OpenCV 4.14, imgproc/src/median_blur.dispatch.cpp, cv::medianBlur;
+    // median_blur.simd.hpp, medianBlur): the halo'd-size destination, and for a
+    // kernel above 5 the plane with k / 2 border columns either side
+    // (copyMakeBorder), at most 3 bytes per pixel, since k - 1 < the halo'd width.
+    int64_t workingSetBytesPerLevelPixel() const override { return 8; }
+    // The larger of the own path's window, k * k (key, position) pairs, with the
+    // allocator's overhead on it and on the keys, and the Byte path's histograms
+    // (median_blur.simd.hpp, medianBlur_8u_O1: 2 * (272 * (min(width, 512) + k - 1)
+    // + 128) bytes through operator new) with the Mats' bookkeeping.
+    int64_t workingSetBytesPerTile() const override {
+        const int64_t k = size_;
+        const int64_t own = 16 * k * k + 2 * detail::kAllocatorBlockOverhead;
+        const int64_t byte = (k > 5 ? 2 * (272 * (512 + k - 1) + 128) : 0) + 2 * detail::kCvMatBookkeeping;
+        return std::max(own, byte);
+    }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();
