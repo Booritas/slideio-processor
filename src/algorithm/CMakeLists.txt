@@ -8,6 +8,7 @@ add_library(slideio-processor-algorithm OBJECT
     detail/separable.cpp
     pixel/colour_convert.cpp
     pixel/convert_type.cpp
+    pixel/derivatives.cpp
     pixel/gaussian_blur.cpp
     pixel/stain_deconvolution.cpp
     pixel/stain_vectors.cpp

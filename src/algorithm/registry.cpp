@@ -66,6 +66,9 @@ void registerPixelOperations() {
     registerOne("pixel.colour_convert", &detail::makeColourConvertFactory);
     registerOne("pixel.stain_deconvolution", &detail::makeStainDeconvolutionFactory);
     registerOne("pixel.gaussian_blur", &detail::makeGaussianBlurFactory);
+    registerOne("pixel.sobel", &detail::makeSobelFactory);
+    registerOne("pixel.scharr", &detail::makeScharrFactory);
+    registerOne("pixel.laplacian", &detail::makeLaplacianFactory);
 }
 
 void registerSegmentationOperations() {}

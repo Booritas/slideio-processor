@@ -29,4 +29,13 @@ OperationFactoryPtr makeStainDeconvolutionFactory();
 /// pixel.gaussian_blur
 OperationFactoryPtr makeGaussianBlurFactory();
 
+/// pixel.sobel
+OperationFactoryPtr makeSobelFactory();
+
+/// pixel.scharr
+OperationFactoryPtr makeScharrFactory();
+
+/// pixel.laplacian
+OperationFactoryPtr makeLaplacianFactory();
+
 } // namespace slideio::processor::detail

@@ -14,6 +14,7 @@ add_executable(slideio_processor_algorithm_tests
     test_threshold_otsu.cpp
     test_threshold_adaptive.cpp
     test_gaussian_blur.cpp
+    test_derivatives.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
@@ -21,6 +22,9 @@ add_executable(slideio_processor_algorithm_tests
 )
 target_link_libraries(slideio_processor_algorithm_tests PRIVATE
     slideio-processor-engine slideio_processor_pipeline_test_support rapidjson GTest::gtest_main)
+# The derivative tests compare their coefficients with OpenCV's own kernels and
+# filters, so OpenCV's image processing is linked here, for the tests only.
+target_link_libraries(slideio_processor_algorithm_tests PRIVATE opencv_core opencv_imgproc)
 target_include_directories(slideio_processor_algorithm_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/algorithm
