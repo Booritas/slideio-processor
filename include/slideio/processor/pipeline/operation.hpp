@@ -662,7 +662,9 @@ public:
      * operations, which yield one plane per input plane.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.
-     * @throws Nothing.
+     * @throws InvalidArgumentError When the operation cannot take
+     * @p inputPlaneCount planes, naming the operation; validating a run then
+     * fails with it. Nothing by default.
      * @par Thread-safety
      * Must be safe to call concurrently.
      * @par Requirements

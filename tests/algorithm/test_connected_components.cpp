@@ -657,3 +657,34 @@ TEST(ConnectedComponents, TargetLayerByName) {
         EXPECT_THROW(pipeline.validate(), ProcessorError);
     }
 }
+
+TEST(ConnectedComponents, MoreThanThreeMeasuredPlanesRefused) {
+    const Configuration config = ConfigurationBuilder().tileSize(16, 16).tileSizeFromSlide(false).workerCount(1).build();
+    const auto sceneWith = [](size_t channels) {
+        return sceneOf(16, 16, std::vector<slideio::DataType>(channels, slideio::DataType::DT_Byte),
+                       [](int, int64_t x, int64_t y) { return x == 4 && y == 4 ? 1.0 : 0.0; });
+    };
+    const PipelineSpec spec = specOf(ConnectedComponentsParameters());
+    {
+        // Plane 0 segmented, three measured.
+        Pipeline pipeline(sceneWith(4), config, spec);
+        pipeline.bindLayer("objects", ts::objectsLayer());
+        EXPECT_NO_THROW(pipeline.validate());
+    }
+    {
+        Pipeline pipeline(sceneWith(5), config, spec);
+        pipeline.bindLayer("objects", ts::objectsLayer());
+        try {
+            pipeline.validate();
+            ADD_FAILURE() << "five channels validated";
+        } catch (const InvalidArgumentError& e) {
+            EXPECT_STREQ(e.what(), "segment.connected_components: measures at most three channels besides the one "
+                                   "it segments");
+        }
+    }
+    const OperationPtr op = makeConnectedComponents(ConnectedComponentsParameters());
+    EXPECT_EQ(op->outputPlaneCount(4), 1);
+    EXPECT_THROW(op->outputPlaneCount(5), InvalidArgumentError);
+    EXPECT_EQ(OperationCatalog::instance().outputPlaneCount(kName, 4), 1);
+    EXPECT_THROW(OperationCatalog::instance().outputPlaneCount(kName, 5), InvalidArgumentError);
+}

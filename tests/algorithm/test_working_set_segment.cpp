@@ -47,13 +47,18 @@ const std::vector<Mask>& adversarialMasks() {
     return masks;
 }
 
-// Plane 0 as the mask, then @p intensityPlanes Float64 planes.
-std::vector<std::vector<uint8_t>> planesOf(const Mask& mask, int64_t width, int64_t height, int32_t intensityPlanes) {
+// Plane 0 as the mask, then @p intensityPlanes Float64 planes. With
+// @p interior, the mask is cleared within 3 pixels of the edge, so no object
+// touches the tile's edge: each is a finished object, record and all, rather
+// than a seam fragment.
+std::vector<std::vector<uint8_t>> planesOf(const Mask& mask, int64_t width, int64_t height, int32_t intensityPlanes,
+                                           bool interior) {
     std::vector<std::vector<uint8_t>> planes;
     std::vector<uint8_t> plane0(static_cast<size_t>(width * height));
     for (int64_t y = 0; y < height; ++y) {
         for (int64_t x = 0; x < width; ++x) {
-            plane0[static_cast<size_t>(y * width + x)] = mask.foreground(x, y) ? 1 : 0;
+            const bool inside = !interior || (x >= 3 && y >= 3 && x < width - 3 && y < height - 3);
+            plane0[static_cast<size_t>(y * width + x)] = inside && mask.foreground(x, y) ? 1 : 0;
         }
     }
     planes.push_back(std::move(plane0));
@@ -88,27 +93,33 @@ TEST(WorkingSetSegment, ConnectedComponentsBoundedOnThePattern) {
     }
 }
 
-// The declaration covers the worst masks with up to three measured planes.
+// The declaration covers the worst masks with up to three measured planes,
+// each object emitted as a seam fragment (the masks reach the tile's edge) or
+// as a finished object (the masks kept inside).
 TEST(WorkingSetSegment, ConnectedComponentsBoundedOnAdversarialMasks) {
     for (const int64_t tile : ts::kWorkingSetTileSizes) {
         const int64_t haloSide = tile + 2;
         for (const Mask& mask : adversarialMasks()) {
-            for (const int32_t intensityPlanes : {0, 1, 3}) {
-                std::vector<DataType> types{DataType::Byte};
-                types.insert(types.end(), static_cast<size_t>(intensityPlanes), DataType::Float64);
-                const std::vector<std::vector<uint8_t>> planes =
-                    planesOf(mask, haloSide, haloSide, intensityPlanes);
-                for (const Connectivity connectivity : {Connectivity::FourConnected, Connectivity::EightConnected}) {
-                    for (const bool extractHoles : {true, false}) {
-                        const OperationPtr op = connectedComponents(connectivity, extractHoles);
-                        const int64_t peak =
-                            ts::measureWorkingSetPeakOn(*op, types, planes, tile, tile, ts::WorkingSetCall::Apply);
-                        const int64_t declared = ts::declaredWorkingSet(*op, tile, tile);
-                        EXPECT_LE(peak, declared)
-                            << mask.name << ", tile " << tile << ", " << intensityPlanes << " measured planes, "
-                            << (connectivity == Connectivity::EightConnected ? "8" : "4") << "-connected, "
-                            << (extractHoles ? "holes kept" : "holes removed") << ": measured " << peak
-                            << ", declared " << declared;
+            for (const bool interior : {false, true}) {
+                for (const int32_t intensityPlanes : {0, 1, 3}) {
+                    std::vector<DataType> types{DataType::Byte};
+                    types.insert(types.end(), static_cast<size_t>(intensityPlanes), DataType::Float64);
+                    const std::vector<std::vector<uint8_t>> planes =
+                        planesOf(mask, haloSide, haloSide, intensityPlanes, interior);
+                    for (const Connectivity connectivity :
+                         {Connectivity::FourConnected, Connectivity::EightConnected}) {
+                        for (const bool extractHoles : {true, false}) {
+                            const OperationPtr op = connectedComponents(connectivity, extractHoles);
+                            const int64_t peak = ts::measureWorkingSetPeakOn(*op, types, planes, tile, tile,
+                                                                             ts::WorkingSetCall::Apply);
+                            const int64_t declared = ts::declaredWorkingSet(*op, tile, tile);
+                            EXPECT_LE(peak, declared)
+                                << mask.name << (interior ? ", kept inside" : "") << ", tile " << tile << ", "
+                                << intensityPlanes << " measured planes, "
+                                << (connectivity == Connectivity::EightConnected ? "8" : "4") << "-connected, "
+                                << (extractHoles ? "holes kept" : "holes removed") << ": measured " << peak
+                                << ", declared " << declared;
+                        }
                     }
                 }
             }

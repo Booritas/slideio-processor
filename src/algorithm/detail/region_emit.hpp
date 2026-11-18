@@ -7,15 +7,14 @@
 #include <slideio/processor/pipeline/operation.hpp>
 
 #include <cstdint>
-#include <vector>
 
 namespace slideio::processor::detail {
 
-/// Emits the traced regions of one tile. @p labels is the buffer @p regions
-/// were traced from: one int32 label per pixel of context.tileRectAtLevel(),
-/// row y at labels + y * stride. Each region's rings are moved to the tile
-/// rect and mapped to level 0 through context.toLevel0(); outer rings come
-/// first in the polygon.
+/// Emits the traced regions of one tile. @p labels is the buffer @p traced was
+/// traced from: one int32 label per pixel of context.tileRectAtLevel(), row y
+/// at labels + y * stride. Each region's rings are moved to the tile rect and
+/// mapped to level 0 through context.toLevel0(); outer rings come first in the
+/// polygon.
 ///
 /// Each region is measured over its own pixels in every plane of @p input
 /// from @p firstIntensityPlane on (none when that is the plane count or more):
@@ -30,8 +29,11 @@ namespace slideio::processor::detail {
 /// over its polygon and partials, emitted to context.objectSink(); when the
 /// run supplied no object sink it is not emitted. Throws what
 /// OperationContext::toLevel0() and emitSeamFragment() throw.
-void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride,
-                 const std::vector<TracedRegion>& regions, const BlockView& input,
-                 int32_t firstIntensityPlane);
+///
+/// Memory: one IntensityPartial (48 bytes) per region and measured plane, and
+/// one buffer of the longest ring's vertices, both allocated once; then, one
+/// region at a time, its polygon and its record.
+void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
+                 const BlockView& input, int32_t firstIntensityPlane);
 
 } // namespace slideio::processor::detail

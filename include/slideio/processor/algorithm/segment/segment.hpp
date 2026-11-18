@@ -218,15 +218,19 @@ private:
 };
 
 /**
- * @brief Creates `segment.connected_components`: Joint, halo 1, every input
- * type, one `Int32` output plane, producing objects.
+ * @brief Creates `segment.connected_components`: Joint over one to four
+ * planes, halo 1, every input type, one `Int32` output plane, producing
+ * objects.
  *
  * Plane 0 is segmented: a pixel is foreground when its sample is neither 0 nor
  * NaN. Each maximal set of foreground pixels connected under the chosen
  * Connectivity is one object, its outline and holes traced along pixel edges
  * in level-0 coordinates (UR-SEG-4); an object cut by tile seams is merged,
- * diagonal contacts across a seam included when 8-connected. Planes 1 and on
- * are measured: an object's `intensity.<c>.mean`, `.stddev`, `.min` and `.max`
+ * diagonal contacts across a seam included when 8-connected. Planes 1 to 3
+ * are measured, so the run selects at most four channels, the first of them
+ * segmented: validating a run that gives the operation more fails with
+ * InvalidArgumentError, and so does its outputPlaneCount() asked for more
+ * than four. An object's `intensity.<c>.mean`, `.stddev`, `.min` and `.max`
  * for each such plane's source channel c are over the object's own pixels,
  * NaN samples skipped and infinite ones counted. The geometric measurements
  * are `area`, `perimeter`, `centroid.x`, `centroid.y` and `boundingBox.x`,

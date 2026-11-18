@@ -9,6 +9,16 @@
 
 namespace slideio::processor::detail {
 
+/// The most planes a segmenter measures besides plane 0, the one it segments.
+/// Its working set is declared for this many: the intensity partials grow with
+/// the measured planes.
+constexpr int32_t kMaxMeasuredPlanes = 3;
+
+/// Throws InvalidArgumentError "<operation>: measures at most three channels
+/// besides the one it segments" when @p inputPlaneCount exceeds
+/// 1 + kMaxMeasuredPlanes.
+void checkMeasuredPlaneCount(const char* operation, int32_t inputPlaneCount);
+
 /// Reads the `measurements` parameter: MeasurementKind spellings ("Area",
 /// "IntensityStdDev", ...) separated by commas, without spaces; a kind may
 /// repeat, and an empty text selects nothing. Returns false, leaving

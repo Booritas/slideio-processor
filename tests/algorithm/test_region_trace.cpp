@@ -1,5 +1,6 @@
 // Requirements: UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-IMG-2, UR-QA-2
 #include <slideio/processor/algorithm/measure/measure.hpp>
+#include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/measurement.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
@@ -48,8 +49,34 @@ Labels labelsOf(const std::vector<std::string>& rows) {
     return labels;
 }
 
-std::vector<detail::TracedRegion> trace(const Labels& labels, bool eightConnected) {
-    return detail::traceRegions(labels.values.data(), labels.width, labels.height, labels.width, eightConnected);
+// A traced region with its rings copied out, for the assertions.
+struct RegionView {
+    int32_t label = 0;
+    std::vector<std::vector<Point64>> rings;
+    std::vector<bool> isHole;
+    bool touchesEdge = false;
+};
+
+std::vector<RegionView> viewsOf(const detail::TracedRegions& traced) {
+    std::vector<RegionView> views;
+    for (size_t r = 0; r < traced.regions.size(); ++r) {
+        const detail::TracedRegion& region = traced.regions[r];
+        RegionView view;
+        view.label = region.label;
+        view.touchesEdge = region.touchesEdge;
+        for (int32_t k = 0; k < region.ringCount; ++k) {
+            const detail::TracedRing& ring = traced.ring(static_cast<int32_t>(r), k);
+            const Point64* points = traced.ringPoints(ring);
+            view.rings.emplace_back(points, points + ring.count);
+            view.isHole.push_back(ring.isHole);
+        }
+        views.push_back(std::move(view));
+    }
+    return views;
+}
+
+std::vector<RegionView> trace(const Labels& labels, bool eightConnected) {
+    return viewsOf(detail::traceRegions(labels.values.data(), labels.width, labels.height, labels.width, eightConnected));
 }
 
 int64_t twiceSignedArea(const std::vector<Point64>& ring) {
@@ -87,9 +114,9 @@ bool has(const ObjectRecord& record, const char* name) {
 TEST(RegionTrace, SquareIsOneRing) {
     const Labels labels = labelsOf({".....", ".111.", ".111.", ".111.", "....."});
     for (bool eight : {false, true}) {
-        const std::vector<detail::TracedRegion> regions = trace(labels, eight);
+        const std::vector<RegionView> regions = trace(labels, eight);
         ASSERT_EQ(regions.size(), 1u);
-        const detail::TracedRegion& region = regions[0];
+        const RegionView& region = regions[0];
         EXPECT_EQ(region.label, 1);
         ASSERT_EQ(region.rings.size(), 1u);
         ASSERT_EQ(region.isHole.size(), 1u);
@@ -107,9 +134,9 @@ TEST(RegionTrace, SquareIsOneRing) {
 
 TEST(RegionTrace, HoleIsASecondNegativeRing) {
     const Labels labels = labelsOf({".......", ".11111.", ".11111.", ".11.11.", ".11111.", ".11111.", "......."});
-    const std::vector<detail::TracedRegion> regions = trace(labels, true);
+    const std::vector<RegionView> regions = trace(labels, true);
     ASSERT_EQ(regions.size(), 1u);
-    const detail::TracedRegion& region = regions[0];
+    const RegionView& region = regions[0];
     ASSERT_EQ(region.rings.size(), 2u);
     ASSERT_EQ(region.isHole.size(), 2u);
     EXPECT_FALSE(region.isHole[0]);
@@ -121,9 +148,9 @@ TEST(RegionTrace, HoleIsASecondNegativeRing) {
 TEST(RegionTrace, DiagonalPairFourConnectedIsTwoObjects) {
     // Labelled 4-connected: the two pixels are two regions, each its own ring.
     const Labels labels = labelsOf({"....", ".1..", "..2.", "...."});
-    const std::vector<detail::TracedRegion> regions = trace(labels, false);
+    const std::vector<RegionView> regions = trace(labels, false);
     ASSERT_EQ(regions.size(), 2u);
-    for (const detail::TracedRegion& region : regions) {
+    for (const RegionView& region : regions) {
         ASSERT_EQ(region.rings.size(), 1u);
         EXPECT_EQ(twiceSignedArea(region.rings[0]), 2);
         EXPECT_EQ(region.rings[0].size(), 4u);
@@ -134,7 +161,7 @@ TEST(RegionTrace, DiagonalPairFourConnectedIsTwoObjects) {
 
 TEST(RegionTrace, DiagonalPairEightConnectedIsOneRingThroughThePinch) {
     const Labels labels = labelsOf({"....", ".1..", "..1.", "...."});
-    const std::vector<detail::TracedRegion> regions = trace(labels, true);
+    const std::vector<RegionView> regions = trace(labels, true);
     ASSERT_EQ(regions.size(), 1u);
     ASSERT_EQ(regions[0].rings.size(), 1u);
     const std::vector<Point64>& ring = regions[0].rings[0];
@@ -150,7 +177,7 @@ TEST(RegionTrace, FourConnectedTracingKeepsDiagonalRingsApart) {
     // One label touching itself only diagonally, traced 4-connected: the right
     // turn at the pinch keeps the pixels' rings apart, as the merger does.
     const Labels labels = labelsOf({"....", ".1..", "..1.", "...."});
-    const std::vector<detail::TracedRegion> regions = trace(labels, false);
+    const std::vector<RegionView> regions = trace(labels, false);
     ASSERT_EQ(regions.size(), 1u);
     ASSERT_EQ(regions[0].rings.size(), 2u);
     EXPECT_EQ(twiceSignedArea(regions[0].rings[0]), 2);
@@ -161,7 +188,7 @@ TEST(RegionTrace, EightConnectedHolesTouchingAtAPointStayApart) {
     // Two background pixels meeting diagonally inside a region: with 8-connected
     // pixels the background is 4-connected, so they are two holes.
     const Labels labels = labelsOf({"111111", "111111", "11.111", "111.11", "111111", "111111"});
-    const std::vector<detail::TracedRegion> regions = trace(labels, true);
+    const std::vector<RegionView> regions = trace(labels, true);
     ASSERT_EQ(regions.size(), 1u);
     ASSERT_EQ(regions[0].rings.size(), 3u);
     EXPECT_FALSE(regions[0].isHole[0]);
@@ -173,7 +200,7 @@ TEST(RegionTrace, EightConnectedHolesTouchingAtAPointStayApart) {
 
 TEST(RegionTrace, EdgeTouchingFlags) {
     const Labels labels = labelsOf({"1.....", "......", "..2...", "......", ".....3", "....4."});
-    const std::vector<detail::TracedRegion> regions = trace(labels, false);
+    const std::vector<RegionView> regions = trace(labels, false);
     ASSERT_EQ(regions.size(), 4u);
     EXPECT_TRUE(regions[0].touchesEdge);  // top-left corner
     EXPECT_FALSE(regions[1].touchesEdge); // interior
@@ -183,14 +210,14 @@ TEST(RegionTrace, EdgeTouchingFlags) {
 
 TEST(RegionTrace, TouchingLabelsShareTheirEdge) {
     const Labels labels = labelsOf({"......", ".1122.", ".1122.", "......"});
-    const std::vector<detail::TracedRegion> regions = trace(labels, false);
+    const std::vector<RegionView> regions = trace(labels, false);
     ASSERT_EQ(regions.size(), 2u);
     ASSERT_EQ(regions[0].rings.size(), 1u);
     ASSERT_EQ(regions[1].rings.size(), 1u);
     EXPECT_EQ(twiceSignedArea(regions[0].rings[0]), 8);
     EXPECT_EQ(twiceSignedArea(regions[1].rings[0]), 8);
     // The shared edge x = 3 is on both rings.
-    for (const detail::TracedRegion& region : regions) {
+    for (const RegionView& region : regions) {
         EXPECT_EQ(std::count_if(region.rings[0].begin(), region.rings[0].end(),
                                 [](const Point64& p) { return p.x == 3; }),
                   2);
@@ -199,7 +226,7 @@ TEST(RegionTrace, TouchingLabelsShareTheirEdge) {
 
 TEST(RegionTrace, LabelInsideAHoleIsItsOwnRegion) {
     const Labels labels = labelsOf({"11111", "1...1", "1.2.1", "1...1", "11111"});
-    const std::vector<detail::TracedRegion> regions = trace(labels, false);
+    const std::vector<RegionView> regions = trace(labels, false);
     ASSERT_EQ(regions.size(), 2u);
     EXPECT_EQ(regions[0].label, 1);
     ASSERT_EQ(regions[0].rings.size(), 2u);
@@ -213,11 +240,40 @@ TEST(RegionTrace, LabelInsideAHoleIsItsOwnRegion) {
 TEST(RegionTrace, StrideAndNegativeLabels) {
     // A 3 x 2 buffer inside rows of 5; the extra columns and negative labels are not traced.
     const std::vector<int32_t> values = {1, 1, -1, 9, 9, 1, 0, -4, 9, 9};
-    const std::vector<detail::TracedRegion> regions = detail::traceRegions(values.data(), 3, 2, 5, false);
+    const std::vector<RegionView> regions = viewsOf(detail::traceRegions(values.data(), 3, 2, 5, false));
     ASSERT_EQ(regions.size(), 1u);
     ASSERT_EQ(regions[0].rings.size(), 1u);
     EXPECT_EQ(twiceSignedArea(regions[0].rings[0]), 6);
     EXPECT_EQ(regions[0].rings[0].size(), 6u);
+}
+
+TEST(RegionTrace, VerticesAreCountedExactlyBeforeTracing) {
+    // Random one-pixel regions, touching side by side and diagonally, then the
+    // connected regions of a random mask: the vertices are reserved exactly,
+    // so the arrays never grow.
+    uint32_t state = 777u;
+    std::vector<int32_t> values(40 * 30);
+    for (size_t i = 0; i < values.size(); ++i) {
+        state = state * 1664525u + 1013904223u;
+        values[i] = (state >> 24) < 150u ? static_cast<int32_t>(i) + 1 : 0;
+    }
+    for (const bool eight : {false, true}) {
+        const detail::TracedRegions traced = detail::traceRegions(values.data(), 40, 30, 40, eight);
+        EXPECT_EQ(traced.points.size(), traced.points.capacity()) << eight;
+        EXPECT_LE(traced.rings.size(), traced.rings.capacity()) << eight;
+        EXPECT_GT(traced.regions.size(), 300u) << eight;
+    }
+    const Labels shapes = labelsOf({"111111", "1.2.11", "11.111", "3.1.1.", ".3..44", "3.3.44"});
+    for (const bool eight : {false, true}) {
+        const detail::TracedRegions traced =
+            detail::traceRegions(shapes.values.data(), shapes.width, shapes.height, shapes.width, eight);
+        EXPECT_EQ(traced.points.size(), traced.points.capacity()) << eight;
+    }
+}
+
+TEST(RegionTrace, LabelAboveThePixelCountIsRefused) {
+    const std::vector<int32_t> values = {1, 0, 0, 5};
+    EXPECT_THROW(detail::traceRegions(values.data(), 2, 2, 2, false), InternalError);
 }
 
 // --- Emission ------------------------------------------------------------------
@@ -283,7 +339,7 @@ public:
                 }
             }
         }
-        const std::vector<detail::TracedRegion> regions =
+        const detail::TracedRegions regions =
             detail::traceRegions(labels.data(), width, height, width, eightConnected_);
         detail::emitRegions(context, labels.data(), width, regions, in, 1);
     }

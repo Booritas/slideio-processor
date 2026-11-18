@@ -60,27 +60,34 @@ constexpr const char* const kConnectivitySpellings[] = {"FourConnected", "EightC
 // pixel of the halo'd tile. The labels are written straight into the Int32
 // output plane, so labelling takes only the union-find parents: one int32 per
 // provisional label, at most one per two pixels, about 2 bytes per pixel,
-// freed before tracing. The peak comes after, and is reached with the most
-// objects, one per two pixels (a 4-connected checkerboard), R = N / 2 for N
-// tile pixels. Per object, in bytes, under MSVC's and libstdc++'s containers:
-// - while tracing: its TracedRegion (at most 80) in a vector caught mid-growth,
-//   old and new blocks live, at most 3 x 80 = 240; the tracer's label index, a
-//   hash-table node and buckets through a rehash, at most 80; its ring (4
-//   vertices in a block of 64), the ring list (24) and the hole flag (8), 96;
-//   so 416 R + N (the visited flags) <= 209 per pixel;
-// - while emitting: the TracedRegion with growth slack, at most 160; its ring,
-//   96; the emitter's label index, 80; one IntensityPartial (48) per measured
-//   plane P; so (336 + 48 P) R = 168 + 24 P per pixel, 240 with three planes.
-// One region with many vertices costs less: each copy of its rings (traced,
-// level and level-0 polygons, record) holds 16 bytes per vertex, and its
-// vertices are at most its boundary edges, about two per pixel. 256 covers both
-// phases with up to three measured planes; each further plane may add up to 24
-// bytes per pixel on a checkerboard. The meter measures at most 200 (MSVC,
-// three planes) on the adversarial masks of test_working_set_segment.cpp.
-constexpr int64_t kBytesPerPixel = 256;
-// Allocations that do not scale with the tile: hash-table bucket arrays at
-// their initial size and the per-object record, polygon and measurement set
-// of the object being emitted when it is small.
+// freed before tracing. Tracing and emission allocate each array once, at a
+// size counted beforehand, so no array holds two blocks while growing. For N
+// tile pixels: at most K = N / 2 objects (no two foreground pixels side by
+// side belong to different ones), at most V = 2 N vertices (a pixel corner
+// has at most two foreground pixels, diagonal, of different objects, each
+// turning there once, or of one object, turning there twice) and at most V / 4
+// rings. In bytes per pixel:
+// - the traced regions: the label index (4 per label, 2), the regions (16 per
+//   object, 8), the vertices (16 each, 32), the rings (24 each, 12) and their
+//   order (4 each, 2): 56, plus while tracing either the visited flags (1) or
+//   a cursor per object (2);
+// - while emitting, with K objects: one IntensityPartial (48) per object and
+//   measured plane, 24 per plane, 72 for three planes (kMaxMeasuredPlanes); so
+//   56 + 72 = 128 on a 4-connected checkerboard, where every object is tiny;
+// - while emitting one large object instead: the buffer its longest ring is
+//   mapped in (16 per vertex), its polygon while built (16 per vertex and 9 per
+//   ring, with the vector's growth) and its record, then the run's tile filter
+//   normalising and finishing it. The meter measures 95 for the worst of these,
+//   an 8-connected checkerboard kept inside the tile: one object with a hole at
+//   every other pixel.
+// 160 covers 128 with room for the growth of the one large object's copies
+// under a doubling allocator (libstdc++). The meter measures at most 126 (MSVC,
+// 4-connected checkerboard, three planes) on the adversarial masks of
+// test_working_set_segment.cpp.
+constexpr int64_t kBytesPerPixel = 160;
+// Allocations that do not scale with the tile: the small vectors and the
+// record, polygon and measurement set of an object being emitted when it is
+// small.
 constexpr int64_t kBytesPerTile = 4096;
 
 [[noreturn]] void fail(const std::string& problem) {
@@ -236,7 +243,12 @@ public:
     DataTypeSet supportedTypes() const override { return DataTypeSet::all(); }
     Halo halo() const override { return Halo::uniform(1); }
     DataType outputType(DataType) const override { return DataType::Int32; }
-    int32_t outputPlaneCount(int32_t) const override { return 1; }
+    // Plane 0 is segmented and at most kMaxMeasuredPlanes more are measured,
+    // which is what the working set is declared for; validation calls this.
+    int32_t outputPlaneCount(int32_t inputPlaneCount) const override {
+        detail::checkMeasuredPlaneCount(kName, inputPlaneCount);
+        return 1;
+    }
     const OperationParameters& parameters() const override { return parameters_; }
     bool producesObjects() const override { return true; }
     bool objectsAreEightConnected() const override { return eightConnected_; }
@@ -254,6 +266,7 @@ public:
         if (in.planeCount() < 1) {
             throw InternalError((std::string(kName) + ": the input has no plane").c_str());
         }
+        detail::checkMeasuredPlaneCount(kName, in.planeCount());
         if (out.planeCount() != 1 || out.planeType(0) != DataType::Int32 || out.width() != tile.width ||
             out.height() != tile.height || out.planeRowStrideBytes(0) % 4 != 0) {
             throw InternalError((std::string(kName) + ": the output is not one Int32 plane of the tile").c_str());
@@ -262,9 +275,9 @@ public:
         auto* labels = static_cast<int32_t*>(out.planeData(0));
         const int64_t stride = out.planeRowStrideBytes(0) / 4;
         label(in, labels, stride, tile.width, tile.height, tile.x - halo.x, tile.y - halo.y);
-        const std::vector<detail::TracedRegion> regions =
+        const detail::TracedRegions traced =
             detail::traceRegions(labels, tile.width, tile.height, stride, eightConnected_);
-        detail::emitRegions(context, labels, stride, regions, in, 1);
+        detail::emitRegions(context, labels, stride, traced, in, 1);
     }
 
 private:

@@ -1,6 +1,7 @@
 // Requirements: UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7
 #include "detail/measurement_finish.hpp"
 
+#include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/measurement.hpp>
 
@@ -14,10 +15,10 @@ namespace slideio::processor::detail {
 
 namespace {
 
-std::vector<Point64> pointsOf(const Polygon& polygon, int32_t ring) {
-    std::vector<Point64> points(static_cast<size_t>(polygon.ringPointCount(ring)));
+// Fills @p points with a ring's vertices, reusing its storage from ring to ring.
+void readRing(const Polygon& polygon, int32_t ring, std::vector<Point64>& points) {
+    points.resize(static_cast<size_t>(polygon.ringPointCount(ring)));
     polygon.ringPoints(ring, points.data(), static_cast<int64_t>(points.size()));
-    return points;
 }
 
 // The area-weighted centroid, outer rings positive and holes negative whatever
@@ -27,8 +28,9 @@ void centroidOf(const Polygon& polygon, double& cx, double& cy) {
     double twiceArea = 0.0;
     double sumX = 0.0;
     double sumY = 0.0;
+    std::vector<Point64> points;
     for (int32_t ring = 0; ring < polygon.ringCount(); ++ring) {
-        const std::vector<Point64> points = pointsOf(polygon, ring);
+        readRing(polygon, ring, points);
         double a = 0.0;
         double x = 0.0;
         double y = 0.0;
@@ -61,7 +63,7 @@ void centroidOf(const Polygon& polygon, double& cx, double& cy) {
     if (polygon.ringCount() == 0) {
         return;
     }
-    const std::vector<Point64> points = pointsOf(polygon, 0);
+    readRing(polygon, 0, points);
     for (const Point64& p : points) {
         cx += static_cast<double>(p.x);
         cy += static_cast<double>(p.y);
@@ -100,6 +102,14 @@ constexpr const char* const kKindSpellings[] = {"Area",          "Perimeter",   
 constexpr int32_t kKindCount = static_cast<int32_t>(sizeof(kKindSpellings) / sizeof(kKindSpellings[0]));
 
 } // namespace
+
+void checkMeasuredPlaneCount(const char* operation, int32_t inputPlaneCount) {
+    static_assert(kMaxMeasuredPlanes == 3, "the message spells the limit");
+    if (inputPlaneCount > 1 + kMaxMeasuredPlanes) {
+        throw InvalidArgumentError(
+            (std::string(operation) + ": measures at most three channels besides the one it segments").c_str());
+    }
+}
 
 bool parseMeasurementSelection(const char* text, MeasurementSelection& selection) {
     MeasurementSelection parsed;
@@ -161,9 +171,10 @@ bool MeasurementPlan::finish(ObjectRecord& record, const ObjectFinishContext& co
         }
         if (hasHole) {
             Polygon outer;
+            std::vector<Point64> points;
             for (int32_t ring = 0; ring < geometry.ringCount(); ++ring) {
                 if (!geometry.ringIsHole(ring)) {
-                    const std::vector<Point64> points = pointsOf(geometry, ring);
+                    readRing(geometry, ring, points);
                     outer.addRing(points.data(), static_cast<int64_t>(points.size()), false);
                 }
             }

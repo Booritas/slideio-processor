@@ -151,6 +151,7 @@ public:
      * @brief Returns, for default parameters (the instance is authoritative), Operation::outputPlaneCount() of the operations created.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.
+     * @throws InvalidArgumentError What Operation::outputPlaneCount() throws.
      * @par Thread-safety
      * Must be safe to call concurrently.
      * @par Requirements
@@ -381,7 +382,8 @@ public:
      * @param name The operation name.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return The number of output planes of a Joint operation.
-     * @throws InvalidArgumentError When the name is null or unknown.
+     * @throws InvalidArgumentError When the name is null or unknown, or
+     * what OperationFactory::outputPlaneCount() throws.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements
