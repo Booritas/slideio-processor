@@ -434,7 +434,7 @@ private:
  * Implementations must be reentrant: apply() is called concurrently on
  * different tiles.
  * @par Requirements
- * UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11
+ * UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-EXE-2
  */
 class SLIDEIO_PROCESSOR_ENGINE_EXPORTS Operation {
 public:
@@ -606,7 +606,9 @@ public:
      * the input and output blocks the framework already counts, and also
      * covers accumulate() in a global-context pass. Memory that does not scale
      * with the pixels belongs in workingSetBytesPerTile(). A negative figure
-     * counts as 0.
+     * counts as 0. The figure is an upper bound the reservation trusts: memory
+     * an operation allocates beyond what it declares is not covered by the
+     * memory ceiling.
      * @return Bytes per pixel; 0 by default.
      * @throws Nothing.
      * @par Thread-safety
@@ -649,7 +651,9 @@ public:
      * refused before it starts when it does not fit the budget. Like
      * workingSetBytesPerLevelPixel(), it excludes the input and output blocks
      * the framework counts, and may depend on the parameters. A negative
-     * figure counts as 0.
+     * figure counts as 0. The figure is an upper bound the reservation
+     * trusts: memory an operation allocates beyond what it declares is not
+     * covered by the memory ceiling.
      * @return Bytes per call; 0 by default.
      * @throws Nothing.
      * @par Thread-safety
