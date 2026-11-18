@@ -2,7 +2,10 @@ add_library(slideio-processor-algorithm OBJECT
     registry.cpp
     detail/bag.cpp
     detail/builtin_factory.cpp
+    detail/colour_math.cpp
+    detail/rgb_input.cpp
     detail/sample_codec.cpp
+    pixel/colour_convert.cpp
     pixel/convert_type.cpp
     pixel/threshold_fixed.cpp
 )
