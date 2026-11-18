@@ -297,14 +297,18 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         wholeBytesPerPixel = addSat(wholeBytesPerPixel, set.perPixel);
     }
     // The largest working set over a rect of `area` pixels, and the operation that declares it.
-    auto largestWorkingSet = [&workingSets](int64_t area, const char** name) {
+    auto largestWorkingSet = [&workingSets](int64_t area, const char** name = nullptr) {
         int64_t largest = 0;
-        *name = nullptr;
+        if (name != nullptr) {
+            *name = nullptr;
+        }
         for (const WorkingSet& set : workingSets) {
             const int64_t bytes = addSat(mulSat(area, set.perPixel), set.perTile);
             if (bytes > largest) {
                 largest = bytes;
-                *name = set.name;
+                if (name != nullptr) {
+                    *name = set.name;
+                }
             }
         }
         return largest;
@@ -363,9 +367,8 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     };
     // One tile's need: its buffers plus the largest working set.
     auto tileNeed = [&](int64_t tileW, int64_t tileH) {
-        const char* name = nullptr;
         const int64_t area = haloArea(tileW, tileH);
-        return addSat(mulSat(area, tilePixelBytes), largestWorkingSet(area, &name));
+        return addSat(mulSat(area, tilePixelBytes), largestWorkingSet(area));
     };
 
     int32_t level = spec.analysisLevel();
