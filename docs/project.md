@@ -138,7 +138,13 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   run reserves and each accumulation pass bounds, and runs the engine's OpenCV
   single-threaded, so Canny's and morphology's working sets no longer depend on
   the host's core count.
-  **Implemented** on branch `feat/working-set`, awaiting review and merge.
+  **Delivered** as PR #14 (merged 2026-11-18).
+- [Algorithm implementation plan C](superpowers/plans/2026-11-18-algorithm-c.md) —
+  plan C of three: connected components, contours, marker-controlled watershed
+  and tissue detection, with per-object measurements in pixel and calibrated
+  units; objects pass through their producer's finishing step, operations see
+  the scene's pixel size, and the merger joins 8-connected objects at tile
+  corners. The catalog closes at twenty-one operations.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
