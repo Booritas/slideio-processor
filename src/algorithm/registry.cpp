@@ -62,6 +62,7 @@ void registerPixelOperations() {
     registerOne("pixel.threshold_fixed", &detail::makeFixedThresholdFactory);
     registerOne("pixel.convert_type", &detail::makeTypeConvertFactory);
     registerOne("pixel.colour_convert", &detail::makeColourConvertFactory);
+    registerOne("pixel.stain_deconvolution", &detail::makeStainDeconvolutionFactory);
 }
 
 void registerSegmentationOperations() {}

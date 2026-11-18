@@ -17,4 +17,7 @@ OperationFactoryPtr makeColourConvertFactory();
 /// pixel.convert_type
 OperationFactoryPtr makeTypeConvertFactory();
 
+/// pixel.stain_deconvolution
+OperationFactoryPtr makeStainDeconvolutionFactory();
+
 } // namespace slideio::processor::detail

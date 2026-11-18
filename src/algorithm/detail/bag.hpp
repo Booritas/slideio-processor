@@ -26,6 +26,11 @@ public:
     /// The stored text, valid while the bag is unchanged.
     const char* getString(const char* key, const char* fallback);
 
+    /// An array-of-double key: returns false, leaving @p out untouched, when the
+    /// key is absent; otherwise fills @p out with its elements (possibly none).
+    /// A key of another type throws InvalidArgumentError.
+    bool getDoubleArray(const char* key, std::vector<double>& out);
+
     /// A string key holding one of @p count enumerator spellings; the result is
     /// the enumerator whose index the matching spelling has. Any other text
     /// throws InvalidArgumentError.

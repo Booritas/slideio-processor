@@ -7,6 +7,8 @@ add_library(slideio-processor-algorithm OBJECT
     detail/sample_codec.cpp
     pixel/colour_convert.cpp
     pixel/convert_type.cpp
+    pixel/stain_deconvolution.cpp
+    pixel/stain_vectors.cpp
     pixel/threshold_fixed.cpp
 )
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)

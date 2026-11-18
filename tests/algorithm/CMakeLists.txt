@@ -7,6 +7,7 @@ include(GoogleTest)
 add_executable(slideio_processor_algorithm_tests
     test_registry.cpp
     test_colour_convert.cpp
+    test_stain_deconvolution.cpp
     test_convert_type.cpp
     test_threshold_fixed.cpp
     support/harness.cpp

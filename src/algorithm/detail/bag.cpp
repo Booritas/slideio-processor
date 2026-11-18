@@ -73,6 +73,29 @@ const char* BagReader::getString(const char* key, const char* fallback) {
     return value;
 }
 
+bool BagReader::getDoubleArray(const char* key, std::vector<double>& out) {
+    if (!markRead(key)) {
+        return false;
+    }
+    const int32_t count = parameters_.getDoubleArray(key, nullptr, 0);
+    if (count == 0) {
+        // An empty array and a key of another type both report 0 elements.
+        int64_t asInt = 0;
+        double asDouble = 0.0;
+        bool asBool = false;
+        if (parameters_.getInt(key, asInt) || parameters_.getDouble(key, asDouble) || parameters_.getBool(key, asBool) ||
+            parameters_.getString(key, nullptr) != nullptr) {
+            throwBadValue(key, "must be an array of doubles");
+        }
+        out.clear();
+        return true;
+    }
+    std::vector<double> values(static_cast<size_t>(count));
+    parameters_.getDoubleArray(key, values.data(), count);
+    out.swap(values);
+    return true;
+}
+
 void BagReader::finish() const {
     for (size_t i = 0; i < keys_.size(); ++i) {
         if (!read_[i]) {
