@@ -10,6 +10,7 @@ add_executable(slideio_processor_algorithm_tests
     test_stain_deconvolution.cpp
     test_convert_type.cpp
     test_threshold_fixed.cpp
+    test_threshold_otsu.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp

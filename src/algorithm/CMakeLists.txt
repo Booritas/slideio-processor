@@ -10,6 +10,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/stain_deconvolution.cpp
     pixel/stain_vectors.cpp
     pixel/threshold_fixed.cpp
+    pixel/threshold_otsu.cpp
 )
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled into the engine, so the export switch is defined here.

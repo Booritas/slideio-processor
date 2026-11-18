@@ -11,6 +11,9 @@ namespace slideio::processor::detail {
 /// pixel.threshold_fixed
 OperationFactoryPtr makeFixedThresholdFactory();
 
+/// pixel.threshold_otsu
+OperationFactoryPtr makeOtsuThresholdFactory();
+
 /// pixel.colour_convert
 OperationFactoryPtr makeColourConvertFactory();
 

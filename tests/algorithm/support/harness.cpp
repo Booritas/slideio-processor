@@ -228,9 +228,14 @@ Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, 
     const Configuration config =
         ConfigurationBuilder().tileSize(tileSize, tileSize).tileSizeFromSlide(false).workerCount(workers).build();
     const int sceneWidth = std::get<2>(scene->getRect());
+    const int sceneHeight = std::get<3>(scene->getRect());
     Pipeline pipeline(scene, config, spec);
     pipeline.validate();
-    const Rect64 level = pipeline.rect(0);
+    // At analysis level 0 the output is the scene's size. Pipeline::rect() goes
+    // through the lazy read path, which refuses a global-context operation, so it
+    // is asked only for a coarser analysis level.
+    const Rect64 level =
+        pipeline.analysisLevel() == 0 ? Rect64{0, 0, sceneWidth, sceneHeight} : pipeline.rect(0);
     AssemblingRasterSink sink(level.width, level.height,
                               static_cast<double>(sceneWidth) / static_cast<double>(level.width));
     pipeline.rasterSink(&sink);
