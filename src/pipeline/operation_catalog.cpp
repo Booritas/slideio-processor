@@ -54,6 +54,10 @@ int32_t OperationFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return inputPlaneCount;
 }
 
+int64_t OperationFactory::workingSetBytesPerTile() const {
+    return 0;
+}
+
 // std::map keeps the names in ascending bytewise order (char compares as
 // unsigned char) and never moves a node, so a name or a factory pointer handed
 // out stays valid: nothing is ever removed. The transparent comparator finds a
@@ -219,6 +223,10 @@ bool OperationCatalog::producesObjects(const char* name) const {
 
 int32_t OperationCatalog::outputPlaneCount(const char* name, int32_t inputPlaneCount) const {
     return impl_->find(name, "OperationCatalog::outputPlaneCount")->outputPlaneCount(inputPlaneCount);
+}
+
+int64_t OperationCatalog::workingSetBytesPerTile(const char* name) const {
+    return impl_->find(name, "OperationCatalog::workingSetBytesPerTile")->workingSetBytesPerTile();
 }
 
 int64_t OperationCatalog::writeSupportMatrix(const char* path) const {

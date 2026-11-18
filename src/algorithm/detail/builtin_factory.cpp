@@ -30,5 +30,6 @@ bool BuiltinFactory::producesObjects() const { return prototype_->producesObject
 int32_t BuiltinFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return prototype_->outputPlaneCount(inputPlaneCount);
 }
+int64_t BuiltinFactory::workingSetBytesPerTile() const { return prototype_->workingSetBytesPerTile(); }
 
 } // namespace slideio::processor::detail

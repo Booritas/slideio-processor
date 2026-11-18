@@ -8,6 +8,7 @@
 
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/memory_budget.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
@@ -186,6 +187,38 @@ private:
     OperationParameters parameters_;
 };
 
+/// "test.workingSet": PerChannel, Byte and Float32, halo 0, output Float32: a copy
+/// of the tile as Float32. It declares a working set from its int parameters
+/// "perPixel" (default 2) and "perTile" (default 512), unchecked, so a test can
+/// declare any figure, negative ones included. It allocates nothing beyond them.
+/// While a budget is observed (observe()), each apply() records the budget's
+/// reservedBytes(), so a test sees what the run reserved for the tile.
+class WorkingSetOperation : public Operation {
+public:
+    explicit WorkingSetOperation(const OperationParameters& parameters);
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    DataType outputType(DataType inputType) const override;
+    const OperationParameters& parameters() const override;
+    void apply(OperationContext& context) override;
+    int64_t workingSetBytesPerLevelPixel() const override;
+    int64_t workingSetBytesPerTile() const override;
+
+    /// Starts recording the largest reservedBytes() of @p budget seen by any
+    /// apply(), from 0; null stops recording. The budget must outlive the recording.
+    static void observe(const MemoryBudget* budget);
+    /// The largest reservedBytes() seen since observe().
+    static int64_t observedReservedBytes();
+
+private:
+    OperationParameters parameters_;
+    int64_t perPixel_;
+    int64_t perTile_;
+};
+
 /// A factory whose declarations are read from a prototype operation built from
 /// default parameters, so they describe the operation create() returns for
 /// default parameters. The catalog's create() compares only the
@@ -208,6 +241,7 @@ public:
     int64_t workingSetBytesPerLevelPixel() const override;
     bool producesObjects() const override;
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+    int64_t workingSetBytesPerTile() const override;
 
 private:
     Maker maker_;
@@ -224,7 +258,8 @@ OperationFactoryPtr makeComponentsFactory();
 OperationFactoryPtr makeWholeLevelFactory();
 OperationFactoryPtr makeJointUniformFactory();
 OperationFactoryPtr makeFloatOnlyFactory();
-/// Registers the six factories above, skipping any already registered.
+OperationFactoryPtr makeWorkingSetFactory();
+/// Registers the seven factories above, skipping any already registered.
 void registerTestOperations();
 
 } // namespace slideio::processor::testing_support

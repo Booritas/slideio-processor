@@ -219,6 +219,7 @@ TEST(OperationCatalog, DefaultFactoryDeclarations) {
     } plain;
     EXPECT_EQ(plain.tileRequirement(), TileRequirement::Halo);
     EXPECT_EQ(plain.workingSetBytesPerLevelPixel(), 0);
+    EXPECT_EQ(plain.workingSetBytesPerTile(), 0);
     EXPECT_FALSE(plain.producesObjects());
     EXPECT_EQ(plain.outputPlaneCount(5), 5);
 }

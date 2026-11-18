@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <string>
@@ -480,6 +481,53 @@ void FloatOnlyOperation::apply(OperationContext& context) {
     copyTileAsFloat(context, context.input().planeCount());
 }
 
+// --- WorkingSetOperation ----------------------------------------------------------
+
+namespace {
+
+std::atomic<const MemoryBudget*> observedBudget{nullptr};
+std::atomic<int64_t> observedReserved{0};
+
+} // namespace
+
+WorkingSetOperation::WorkingSetOperation(const OperationParameters& parameters)
+    : parameters_(parameters), perPixel_(2), perTile_(512) {
+    parameters_.getInt("perPixel", perPixel_);
+    parameters_.getInt("perTile", perTile_);
+}
+
+const char* WorkingSetOperation::name() const { return "test.workingSet"; }
+ChannelArity WorkingSetOperation::arity() const { return ChannelArity::PerChannel; }
+bool WorkingSetOperation::requiresUniformTypes() const { return false; }
+DataTypeSet WorkingSetOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
+Halo WorkingSetOperation::halo() const { return Halo::none(); }
+DataType WorkingSetOperation::outputType(DataType) const { return DataType::Float32; }
+const OperationParameters& WorkingSetOperation::parameters() const { return parameters_; }
+int64_t WorkingSetOperation::workingSetBytesPerLevelPixel() const { return perPixel_; }
+int64_t WorkingSetOperation::workingSetBytesPerTile() const { return perTile_; }
+
+void WorkingSetOperation::observe(const MemoryBudget* budget) {
+    observedReserved.store(0);
+    observedBudget.store(budget);
+}
+
+int64_t WorkingSetOperation::observedReservedBytes() { return observedReserved.load(); }
+
+void WorkingSetOperation::apply(OperationContext& context) {
+    if (const MemoryBudget* budget = observedBudget.load()) {
+        const int64_t reserved = budget->reservedBytes();
+        int64_t seen = observedReserved.load();
+        while (reserved > seen && !observedReserved.compare_exchange_weak(seen, reserved)) {
+        }
+    }
+    for (int32_t plane = 0; plane < context.input().planeCount(); ++plane) {
+        requireType(name(), context.input().planeType(plane), supportedTypes());
+    }
+    copyTileAsFloat(context, context.input().planeCount());
+}
+
 // --- Factories --------------------------------------------------------------------
 
 PrototypeFactory::PrototypeFactory(Maker maker, const char* correctnessReference, const char* complexityNote)
@@ -502,6 +550,7 @@ bool PrototypeFactory::producesObjects() const { return prototype_->producesObje
 int32_t PrototypeFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return prototype_->outputPlaneCount(inputPlaneCount);
 }
+int64_t PrototypeFactory::workingSetBytesPerTile() const { return prototype_->workingSetBytesPerTile(); }
 
 OperationFactoryPtr makeThresholdFactory() {
     return std::make_shared<PrototypeFactory>(
@@ -539,11 +588,17 @@ OperationFactoryPtr makeFloatOnlyFactory() {
         "Analytic: out = in", "O(n) in the number of samples");
 }
 
+OperationFactoryPtr makeWorkingSetFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<WorkingSetOperation>(p); },
+        "Analytic: out = in, as Float32", "O(n) in the number of samples");
+}
+
 void registerTestOperations() {
     OperationCatalog& catalog = OperationCatalog::instance();
     for (const OperationFactoryPtr& factory :
          {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory(), makeWholeLevelFactory(),
-          makeJointUniformFactory(), makeFloatOnlyFactory()}) {
+          makeJointUniformFactory(), makeFloatOnlyFactory(), makeWorkingSetFactory()}) {
         if (!catalog.isRegistered(factory->name())) {
             catalog.registerFactory(factory);
         }

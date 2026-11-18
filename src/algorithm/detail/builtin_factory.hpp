@@ -31,6 +31,7 @@ public:
     int64_t workingSetBytesPerLevelPixel() const override;
     bool producesObjects() const override;
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+    int64_t workingSetBytesPerTile() const override;
 
 private:
     Maker maker_;

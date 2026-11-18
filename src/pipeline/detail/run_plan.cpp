@@ -278,17 +278,58 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     for (const std::vector<DataType>& step : planeTypes) {
         bytesPerPixel = addSat(bytesPerPixel, planeBytes(step));
     }
+    // The operations' working sets: per pixel of the rect one call is given, and per
+    // call. A negative declaration counts as 0. The operations run one after another
+    // on a tile, so a tile holds one working set at a time: the largest.
+    struct WorkingSet {
+        int64_t perPixel;
+        int64_t perTile;
+        const char* name;
+    };
+    std::vector<WorkingSet> workingSets;
+    int64_t largestPerTile = 0;
     int64_t wholeBytesPerPixel = bytesPerPixel;
     for (const OperationPtr& op : operations) {
-        wholeBytesPerPixel = addSat(wholeBytesPerPixel, std::max<int64_t>(0, op->workingSetBytesPerLevelPixel()));
+        const WorkingSet set{std::max<int64_t>(0, op->workingSetBytesPerLevelPixel()),
+                             std::max<int64_t>(0, op->workingSetBytesPerTile()), op->name()};
+        workingSets.push_back(set);
+        largestPerTile = std::max(largestPerTile, set.perTile);
+        wholeBytesPerPixel = addSat(wholeBytesPerPixel, set.perPixel);
     }
-    auto wholeNeed = [&](const Rect64& region) {
-        return mulSat(mulSat(region.width, region.height), wholeBytesPerPixel);
+    // The largest working set over a rect of `area` pixels, and the operation that declares it.
+    auto largestWorkingSet = [&workingSets](int64_t area, const char** name) {
+        int64_t largest = 0;
+        *name = nullptr;
+        for (const WorkingSet& set : workingSets) {
+            const int64_t bytes = addSat(mulSat(area, set.perPixel), set.perTile);
+            if (bytes > largest) {
+                largest = bytes;
+                *name = set.name;
+            }
+        }
+        return largest;
     };
-    auto tooBig = [&](int32_t level, int64_t needed, const char* prefix) {
+    // When the buffers alone fit the ceiling, the working sets decide: the message names the largest.
+    auto decidedBy = [&](int64_t buffers, int64_t area) {
+        const char* name = nullptr;
+        largestWorkingSet(area, &name);
+        if (buffers > inputs.ceilingBytes || name == nullptr) {
+            return std::string();
+        }
+        return std::string("; the largest working set is ") + name + "'s";
+    };
+
+    // A whole-level chain holds every operation's per-pixel working set at once, a
+    // deliberately conservative bound, and the largest per-call one.
+    auto wholeBuffers = [&](const Rect64& region) { return mulSat(mulSat(region.width, region.height), bytesPerPixel); };
+    auto wholeNeed = [&](const Rect64& region) {
+        return addSat(mulSat(mulSat(region.width, region.height), wholeBytesPerPixel), largestPerTile);
+    };
+    auto tooBig = [&](int32_t level, const Rect64& region, const char* prefix) {
         invalid(std::string(prefix) + (*whole)->name() + " needs level " + std::to_string(level) +
-                " whole in memory: " + bytesText(needed) + " bytes, above the memory ceiling of " +
-                std::to_string(inputs.ceilingBytes) + " bytes");
+                " whole in memory: " + bytesText(wholeNeed(region)) + " bytes, above the memory ceiling of " +
+                std::to_string(inputs.ceilingBytes) + " bytes" +
+                decidedBy(wholeBuffers(region), mulSat(region.width, region.height)));
     };
 
     // What one tile's buffers need: every step's planes, the reader's interleave
@@ -315,10 +356,16 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     // applies a polygon or a mask source (one at a time): 2 bytes; the ROI alone needs 1.
     tilePixelBytes = addSat(tilePixelBytes, restricted ? (spec.hasPolygon() || inputs.hasMaskSource ? 2 : 1) : 0);
     auto haloSide = [](int64_t side, int32_t a, int32_t b) { return addSat(side, int64_t(a) + b); };
+    // The tile grown by the chain's halo bounds every operation's own input rect.
+    auto haloArea = [&](int64_t tileW, int64_t tileH) {
+        return mulSat(haloSide(tileW, chainHalo.left, chainHalo.right),
+                      haloSide(tileH, chainHalo.top, chainHalo.bottom));
+    };
+    // One tile's need: its buffers plus the largest working set.
     auto tileNeed = [&](int64_t tileW, int64_t tileH) {
-        return mulSat(mulSat(haloSide(tileW, chainHalo.left, chainHalo.right),
-                             haloSide(tileH, chainHalo.top, chainHalo.bottom)),
-                      tilePixelBytes);
+        const char* name = nullptr;
+        const int64_t area = haloArea(tileW, tileH);
+        return addSat(mulSat(area, tilePixelBytes), largestWorkingSet(area, &name));
     };
 
     int32_t level = spec.analysisLevel();
@@ -326,7 +373,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     if (level >= 0) {
         region = requireRegion(regionAtLevel(region0, level, selector, levels));
         if (wholeLevel && wholeNeed(region) > inputs.ceilingBytes) {
-            tooBig(level, wholeNeed(region), "");
+            tooBig(level, region, "");
         }
     } else if (!wholeLevel) {
         level = 0;
@@ -354,7 +401,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 invalid("the restriction does not intersect the scene");
             }
             if (wholeNeed(coarsestRegion) > inputs.ceilingBytes) {
-                tooBig(coarsest, wholeNeed(coarsestRegion), "no level fits the memory ceiling: ");
+                tooBig(coarsest, coarsestRegion, "no level fits the memory ceiling: ");
             }
             // The whole-level budget fits there but the tile bytes do not: the tile check below reports it.
             level = coarsest;
@@ -378,16 +425,17 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     }
     TileGrid grid(region, level, tileWidth, tileHeight, selector);
 
-    // One tile's buffers against the ceiling.
+    // One tile's buffers and working set against the ceiling.
     const int64_t tileW = std::min<int64_t>(tileWidth, region.width);
     const int64_t tileH = std::min<int64_t>(tileHeight, region.height);
     const int64_t tileBytes = tileNeed(tileW, tileH);
     if (tileBytes > inputs.ceilingBytes) {
+        const int64_t area = haloArea(tileW, tileH);
         invalid("a tile of " + std::to_string(tileW) + " x " + std::to_string(tileH) + " level pixels (" +
                 std::to_string(haloSide(tileW, chainHalo.left, chainHalo.right)) + " x " +
                 std::to_string(haloSide(tileH, chainHalo.top, chainHalo.bottom)) + " with the chain's halo) needs " +
                 bytesText(tileBytes) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
-                " bytes");
+                " bytes" + decidedBy(mulSat(area, tilePixelBytes), area));
     }
 
     std::vector<size_t> globalContextPositions;

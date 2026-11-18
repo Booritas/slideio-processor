@@ -302,13 +302,14 @@ TEST(PipelineValidate, AutoLevelAlsoFitsTheTile) {
     auto source = pyramid();
     WideAuxiliary auxiliary;
     // Level 0: the whole-level need is 105,000,000 bytes, but its one tile needs
-    // 1,000,000 x (1 + 4 + 1 + 800) = 806,000,000 (source, output, the reader's
-    // interleave buffer and the auxiliary); level 1's tile needs 201,500,000.
+    // 1,000,000 x (1 + 4 + 1 + 800 + 100) = 906,000,000 (source, output, the reader's
+    // interleave buffer, the auxiliary and test.wholeLevel's working set); level 1's
+    // tile needs 226,500,000.
     Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.wholeLevel"));
     p.memoryBudget(makeMemoryBudget(300000000)).auxiliaryRaster("coarse", &auxiliary);
     p.validate();
     EXPECT_EQ(p.analysisLevel(), 1);
-    EXPECT_EQ(planOf(p).tileBytes, int64_t(500) * 500 * 806);
+    EXPECT_EQ(planOf(p).tileBytes, int64_t(500) * 500 * 906);
     EXPECT_EQ(source->readCount(), 0);
 }
 
