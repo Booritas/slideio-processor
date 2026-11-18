@@ -61,6 +61,7 @@ void registerBuiltinOperations() {
 void registerPixelOperations() {
     registerOne("pixel.threshold_fixed", &detail::makeFixedThresholdFactory);
     registerOne("pixel.threshold_otsu", &detail::makeOtsuThresholdFactory);
+    registerOne("pixel.threshold_adaptive", &detail::makeAdaptiveThresholdFactory);
     registerOne("pixel.convert_type", &detail::makeTypeConvertFactory);
     registerOne("pixel.colour_convert", &detail::makeColourConvertFactory);
     registerOne("pixel.stain_deconvolution", &detail::makeStainDeconvolutionFactory);

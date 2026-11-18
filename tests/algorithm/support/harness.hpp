@@ -31,9 +31,11 @@ struct Image {
     double at(int32_t plane, int64_t x, int64_t y) const;
 };
 
-/// Applies @p op to one width x height tile at level 0, with no halo, as the
-/// framework would: a PerChannel operation is applied once per plane on
-/// single-plane views, a Joint one once on all planes. Plane p has type
+/// Applies @p op to one width x height tile at level 0, as the framework would:
+/// a PerChannel operation is applied once per plane on single-plane views, a
+/// Joint one once on all planes. When the operation declares a halo, the input
+/// covers the tile grown by it and the pixels beyond the tile read as zero, as
+/// pixels beyond the level do in a run. Plane p has type
 /// inputTypes[p] and source channel sourceChannels[p]; its samples are
 /// pixel(p, x, y), cast to the type with saturation (NaN is 0 in an integer
 /// type). Float16 is refused (std::invalid_argument): use applyDirectRaw.

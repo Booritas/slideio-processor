@@ -11,6 +11,7 @@ add_executable(slideio_processor_algorithm_tests
     test_convert_type.cpp
     test_threshold_fixed.cpp
     test_threshold_otsu.cpp
+    test_threshold_adaptive.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp

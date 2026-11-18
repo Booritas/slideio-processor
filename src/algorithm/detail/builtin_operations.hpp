@@ -14,6 +14,9 @@ OperationFactoryPtr makeFixedThresholdFactory();
 /// pixel.threshold_otsu
 OperationFactoryPtr makeOtsuThresholdFactory();
 
+/// pixel.threshold_adaptive
+OperationFactoryPtr makeAdaptiveThresholdFactory();
+
 /// pixel.colour_convert
 OperationFactoryPtr makeColourConvertFactory();
 

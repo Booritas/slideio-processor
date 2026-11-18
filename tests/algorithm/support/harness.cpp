@@ -72,13 +72,15 @@ BlockView viewOf(int64_t width, int64_t height, std::vector<std::vector<uint8_t>
                      static_cast<int32_t>(described.size()));
 }
 
-void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t width, int64_t height) {
+void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t width, int64_t height,
+               const Halo& halo) {
     detail::OperationContextState state;
     state.input = &input;
     state.output = &output;
     state.level = 0;
-    state.tileRectAtLevel = state.haloRectAtLevel = state.tileRect = state.haloRect =
-        Rect64{0, 0, width, height};
+    state.tileRectAtLevel = state.tileRect = Rect64{0, 0, width, height};
+    state.haloRectAtLevel = state.haloRect =
+        Rect64{-halo.left, -halo.top, width + halo.left + halo.right, height + halo.top + halo.bottom};
     state.levelScale = 1.0;
     state.tileIndex = 0;
     op.apply(*detail::OperationContextAccess::make(std::move(state)));
@@ -122,11 +124,24 @@ Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
     if (inputTypes.empty() || inputTypes.size() != sourceChannels.size() || inputTypes.size() != rawPlanes.size()) {
         throw std::invalid_argument("applyDirectRaw: one type, channel and plane per input plane");
     }
-    std::vector<std::vector<uint8_t>> in = rawPlanes;
-    for (size_t p = 0; p < in.size(); ++p) {
-        if (in[p].size() != static_cast<size_t>(width * height * dataTypeSizeBytes(inputTypes[p]))) {
+    for (size_t p = 0; p < rawPlanes.size(); ++p) {
+        if (rawPlanes[p].size() != static_cast<size_t>(width * height * dataTypeSizeBytes(inputTypes[p]))) {
             throw std::invalid_argument("applyDirectRaw: a plane has the wrong byte count");
         }
+    }
+    // The input covers the tile grown by the halo; the border reads as zero.
+    const Halo halo = op.halo();
+    const int64_t inWidth = width + halo.left + halo.right;
+    const int64_t inHeight = height + halo.top + halo.bottom;
+    std::vector<std::vector<uint8_t>> in;
+    for (size_t p = 0; p < rawPlanes.size(); ++p) {
+        const int64_t size = dataTypeSizeBytes(inputTypes[p]);
+        std::vector<uint8_t> padded(static_cast<size_t>(inWidth * inHeight * size), uint8_t{0});
+        for (int64_t y = 0; y < height; ++y) {
+            std::memcpy(&padded[static_cast<size_t>(((y + halo.top) * inWidth + halo.left) * size)],
+                        &rawPlanes[p][static_cast<size_t>(y * width * size)], static_cast<size_t>(width * size));
+        }
+        in.push_back(std::move(padded));
     }
 
     Image out;
@@ -150,14 +165,14 @@ Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
     }
 
     if (op.arity() == ChannelArity::Joint) {
-        const BlockView input = viewOf(width, height, in, inputTypes, sourceChannels, 0, in.size());
+        const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, 0, in.size());
         BlockView output = viewOf(width, height, out.planes, out.types, outChannels, 0, out.planes.size());
-        applyOnce(op, input, output, width, height);
+        applyOnce(op, input, output, width, height, halo);
     } else {
         for (size_t p = 0; p < in.size(); ++p) {
-            const BlockView input = viewOf(width, height, in, inputTypes, sourceChannels, p, 1);
+            const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, p, 1);
             BlockView output = viewOf(width, height, out.planes, out.types, outChannels, p, 1);
-            applyOnce(op, input, output, width, height);
+            applyOnce(op, input, output, width, height, halo);
         }
     }
     return out;

@@ -9,6 +9,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/convert_type.cpp
     pixel/stain_deconvolution.cpp
     pixel/stain_vectors.cpp
+    pixel/threshold_adaptive.cpp
     pixel/threshold_fixed.cpp
     pixel/threshold_otsu.cpp
 )
