@@ -25,6 +25,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/threshold_adaptive.cpp
     pixel/threshold_fixed.cpp
     pixel/threshold_otsu.cpp
+    segment/connected_components.cpp
 )
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled into the engine, so the export switch is defined here.

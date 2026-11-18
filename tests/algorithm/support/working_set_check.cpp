@@ -2,9 +2,12 @@
 #include <algorithm/support/working_set_check.hpp>
 
 #include <slideio/processor/core/block_view.hpp>
+#include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <algorithm/support/allocation_meter.hpp>
+#include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 
 #include <gtest/gtest.h>
@@ -57,6 +60,28 @@ std::vector<uint8_t> patternBytes(DataType type, int64_t width, int64_t height) 
     return bytes;
 }
 
+// What the run does, inside apply(), to an object found whole in a tile: its
+// rings normalised, then finished by its operation. The object is then dropped,
+// as storing it is the sink's memory, not the operation's.
+class FinishingDiscardSink : public ObjectSink {
+public:
+    explicit FinishingDiscardSink(const Operation& op) : op_(op) {}
+    void emit(const ObjectRecord& record) override {
+        ObjectRecord finished(record);
+        Polygon geometry = record.geometry();
+        detail::normaliseRings(geometry);
+        finished.setGeometry(geometry);
+        op_.finishObject(finished, ObjectFinishContext{0.5, 0});
+        ++emitted_;
+    }
+    void flush() override {}
+    int64_t emittedCount() const override { return emitted_; }
+
+private:
+    const Operation& op_;
+    int64_t emitted_ = 0;
+};
+
 std::string typeNames(const std::vector<DataType>& types) {
     std::string names;
     for (DataType type : types) {
@@ -70,12 +95,19 @@ std::string typeNames(const std::vector<DataType>& types) {
 int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types, int64_t width, int64_t height,
                               WorkingSetCall call) {
     const Halo halo = op.halo();
-    const int64_t inWidth = width + halo.left + halo.right;
-    const int64_t inHeight = height + halo.top + halo.bottom;
     std::vector<std::vector<uint8_t>> in;
     for (DataType type : types) {
-        in.push_back(patternBytes(type, inWidth, inHeight));
+        in.push_back(patternBytes(type, width + halo.left + halo.right, height + halo.top + halo.bottom));
     }
+    return measureWorkingSetPeakOn(op, types, in, width, height, call);
+}
+
+int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& types,
+                                const std::vector<std::vector<uint8_t>>& in, int64_t width, int64_t height,
+                                WorkingSetCall call) {
+    const Halo halo = op.halo();
+    const int64_t inWidth = width + halo.left + halo.right;
+    const int64_t inHeight = height + halo.top + halo.bottom;
     const bool joint = op.arity() == ChannelArity::Joint;
     std::vector<DataType> outTypes;
     if (joint) {
@@ -90,11 +122,15 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
     for (DataType type : outTypes) {
         out.emplace_back(static_cast<size_t>(width * height * dataTypeSizeBytes(type)), uint8_t{0});
     }
+    // An operation producing objects emits them, and its seam fragments, as it
+    // would in a run; neither is kept.
+    FinishingDiscardSink objects(op);
+    detail::SeamFragmentCallback fragments = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t) {};
     int64_t peak = 0;
     const auto once = [&](size_t firstIn, size_t inCount, size_t firstOut, size_t outCount) {
         std::vector<BlockPlane> inPlanes;
         for (size_t p = firstIn; p < firstIn + inCount; ++p) {
-            inPlanes.push_back(BlockPlane{in[p].data(), types[p], inWidth * dataTypeSizeBytes(types[p]),
+            inPlanes.push_back(BlockPlane{const_cast<uint8_t*>(in[p].data()), types[p], inWidth * dataTypeSizeBytes(types[p]),
                                           static_cast<int32_t>(p)});
         }
         std::vector<BlockPlane> outPlanes;
@@ -114,6 +150,11 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
         state.haloRectAtLevel = state.haloRect = Rect64{-halo.left, -halo.top, inWidth, inHeight};
         state.levelScale = 1.0;
         state.tileIndex = 0;
+        if (op.producesObjects()) {
+            state.objectSink = &objects;
+            state.targetLayer = LayerId(1);
+            state.seamFragment = fragments;
+        }
         const auto context = detail::OperationContextAccess::make(std::move(state));
         AllocationMeter meter;
         if (call == WorkingSetCall::Apply) {

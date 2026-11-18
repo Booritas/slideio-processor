@@ -5,7 +5,20 @@
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
 
+#include <string>
+
 namespace slideio::processor::detail {
+
+/// Reads the `measurements` parameter: MeasurementKind spellings ("Area",
+/// "IntensityStdDev", ...) separated by commas, without spaces; a kind may
+/// repeat, and an empty text selects nothing. Returns false, leaving
+/// @p selection unchanged, when an item is not a spelling (an empty item
+/// included).
+bool parseMeasurementSelection(const char* text, MeasurementSelection& selection);
+
+/// The `measurements` parameter of @p selection: its kinds' spellings in
+/// enumerator order, separated by commas; empty for an empty selection.
+std::string formatMeasurementSelection(const MeasurementSelection& selection);
 
 /// What a segmenter does to each of its objects in Operation::finishObject():
 /// hole rules, area filters and the selected measurements, applied the same

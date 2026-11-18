@@ -22,6 +22,7 @@ add_executable(slideio_processor_algorithm_tests
     test_cv_plane.cpp
     test_region_trace.cpp
     test_measurement_finish.cpp
+    test_connected_components.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
@@ -82,6 +83,7 @@ add_executable(slideio_processor_working_set_tests
     test_allocation_meter.cpp
     test_working_set_pixel.cpp
     test_working_set_filter.cpp
+    test_working_set_segment.cpp
     support/allocation_meter.cpp
     support/working_set_check.cpp
     support/harness.cpp

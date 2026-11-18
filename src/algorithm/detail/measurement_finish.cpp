@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace slideio::processor::detail {
@@ -92,7 +93,50 @@ bool endsWith(const std::string& text, const char* suffix) {
     return text.size() >= n && text.compare(text.size() - n, n, suffix) == 0;
 }
 
+// The spellings of the MeasurementKind enumerators, by value.
+constexpr const char* const kKindSpellings[] = {"Area",          "Perimeter",       "Centroid",
+                                                "BoundingBox",   "IntensityMean",   "IntensityStdDev",
+                                                "IntensityMin",  "IntensityMax"};
+constexpr int32_t kKindCount = static_cast<int32_t>(sizeof(kKindSpellings) / sizeof(kKindSpellings[0]));
+
 } // namespace
+
+bool parseMeasurementSelection(const char* text, MeasurementSelection& selection) {
+    MeasurementSelection parsed;
+    const std::string all = text == nullptr ? std::string() : std::string(text);
+    if (!all.empty()) {
+        size_t begin = 0;
+        for (;;) {
+            const size_t end = all.find(',', begin);
+            const std::string item = all.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+            int32_t kind = 0;
+            while (kind < kKindCount && item != kKindSpellings[kind]) {
+                ++kind;
+            }
+            if (kind == kKindCount) {
+                return false;
+            }
+            parsed.add(static_cast<MeasurementKind>(kind));
+            if (end == std::string::npos) {
+                break;
+            }
+            begin = end + 1;
+        }
+    }
+    selection = std::move(parsed);
+    return true;
+}
+
+std::string formatMeasurementSelection(const MeasurementSelection& selection) {
+    std::string text;
+    for (int32_t kind = 0; kind < kKindCount; ++kind) {
+        if (selection.contains(static_cast<MeasurementKind>(kind))) {
+            text += (text.empty() ? "" : ",");
+            text += kKindSpellings[kind];
+        }
+    }
+    return text;
+}
 
 MeasurementPlan::MeasurementPlan(const MeasurementSelection& selection, double minimumAreaPx,
                                  double maximumAreaPx, bool keepHoles)
