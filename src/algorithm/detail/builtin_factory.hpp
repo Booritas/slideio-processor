@@ -39,10 +39,4 @@ private:
     const char* complexityNote_;
 };
 
-// The factories of the built-in operations, one per operation, each defined in
-// its operation's source file.
-
-/// pixel.threshold_fixed
-OperationFactoryPtr makeFixedThresholdFactory();
-
 } // namespace slideio::processor::detail

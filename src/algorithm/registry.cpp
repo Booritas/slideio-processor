@@ -4,7 +4,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
-#include "detail/builtin_factory.hpp"
+#include "detail/builtin_operations.hpp"
 
 #include <mutex>
 
@@ -58,7 +58,10 @@ void registerBuiltinOperations() {
     registerMeasurementOperations();
 }
 
-void registerPixelOperations() { registerOne("pixel.threshold_fixed", &detail::makeFixedThresholdFactory); }
+void registerPixelOperations() {
+    registerOne("pixel.threshold_fixed", &detail::makeFixedThresholdFactory);
+    registerOne("pixel.convert_type", &detail::makeTypeConvertFactory);
+}
 
 void registerSegmentationOperations() {}
 

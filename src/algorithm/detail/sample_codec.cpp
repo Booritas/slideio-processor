@@ -1,4 +1,4 @@
-// Requirements: UR-IMG-10, UR-IMG-11
+// Requirements: UR-IMG-10, UR-IMG-11, UR-IMG-13
 #include "detail/sample_codec.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -18,10 +18,175 @@ T load(const void* row, int64_t x) {
     return value;
 }
 
+template <typename T>
+void store(void* row, int64_t x, T value) noexcept {
+    std::memcpy(static_cast<unsigned char*>(row) + x * static_cast<int64_t>(sizeof(T)), &value, sizeof(T));
+}
+
 Sample signedSample(int64_t v) { return Sample{Sample::Kind::Signed, v, 0, 0.0}; }
 Sample floatSample(double v) { return Sample{Sample::Kind::Float, 0, 0, v}; }
 
+// The integer nearest @p v, ties to even, independent of the floating-point
+// environment. v - floor(v) is exact for every double.
+double roundHalfEven(double v) noexcept {
+    const double r = std::floor(v);
+    const double fraction = v - r;
+    if (fraction > 0.5 || (fraction == 0.5 && std::fmod(r, 2.0) != 0.0)) {
+        return r + 1.0;
+    }
+    return r;
+}
+
+double roundBy(double v, RoundingMode rounding) noexcept {
+    switch (rounding) {
+    case RoundingMode::TowardZero: return std::trunc(v);
+    case RoundingMode::Floor: return std::floor(v);
+    case RoundingMode::Ceil: return std::ceil(v);
+    case RoundingMode::Nearest:
+    default: return roundHalfEven(v);
+    }
+}
+
+// The value of an integer or float sample as a double: exact for floats and for
+// integers up to 2^53 in magnitude, the nearest double (ties to even) beyond.
+double asDouble(const Sample& sample) noexcept {
+    switch (sample.kind) {
+    case Sample::Kind::Signed: return static_cast<double>(sample.s);
+    case Sample::Kind::Unsigned: return static_cast<double>(sample.u);
+    case Sample::Kind::Float:
+    default: return sample.f;
+    }
+}
+
+template <typename T>
+void writeInteger(void* row, int64_t x, const Sample& sample, RoundingMode rounding, bool& overflowed) noexcept {
+    constexpr T lowest = std::numeric_limits<T>::lowest();
+    constexpr T highest = std::numeric_limits<T>::max();
+    constexpr auto lo = static_cast<int64_t>(lowest);
+    constexpr auto hi = static_cast<uint64_t>(highest);
+    T out = 0;
+    switch (sample.kind) {
+    case Sample::Kind::Signed:
+        if (sample.s < lo) {
+            out = lowest;
+            overflowed = true;
+        } else if (sample.s >= 0 && static_cast<uint64_t>(sample.s) > hi) {
+            out = highest;
+            overflowed = true;
+        } else {
+            out = static_cast<T>(sample.s);
+        }
+        break;
+    case Sample::Kind::Unsigned:
+        if (sample.u > hi) {
+            out = highest;
+            overflowed = true;
+        } else {
+            out = static_cast<T>(sample.u);
+        }
+        break;
+    case Sample::Kind::Float: {
+        if (std::isnan(sample.f)) {
+            overflowed = true;
+            break;
+        }
+        // Both bounds are powers of two (or 0), so exact as doubles; ±infinity
+        // falls outside them.
+        const double r = roundBy(sample.f, rounding);
+        const double hiPlusOne = std::ldexp(1.0, std::numeric_limits<T>::digits);
+        if (r < static_cast<double>(lo)) {
+            out = lowest;
+            overflowed = true;
+        } else if (r >= hiPlusOne) {
+            out = highest;
+            overflowed = true;
+        } else {
+            out = static_cast<T>(r);
+        }
+        break;
+    }
+    }
+    store(row, x, out);
+}
+
+// The smallest magnitude a double rounds (ties to even) to infinity as a float:
+// the midpoint between FLT_MAX and 2^128.
+constexpr double kFloat32Overflow = 0x1.ffffffp+127;
+
+void writeFloat32(void* row, int64_t x, const Sample& sample, bool& overflowed) noexcept {
+    float out;
+    switch (sample.kind) {
+    case Sample::Kind::Signed: out = static_cast<float>(sample.s); break;
+    case Sample::Kind::Unsigned: out = static_cast<float>(sample.u); break;
+    case Sample::Kind::Float:
+    default:
+        if (std::isfinite(sample.f) && std::fabs(sample.f) >= kFloat32Overflow) {
+            out = std::signbit(sample.f) ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max();
+            overflowed = true;
+        } else {
+            out = static_cast<float>(sample.f);
+        }
+        break;
+    }
+    store(row, x, out);
+}
+
+void writeFloat16(void* row, int64_t x, const Sample& sample, bool& overflowed) noexcept {
+    // An integer beyond 2^53 is rounded once on the way to double, but every
+    // such value overflows binary16 whatever its rounding.
+    const double value = asDouble(sample);
+    uint16_t bits = encodeBinary16(value);
+    if (std::isfinite(value) && (bits & 0x7FFFu) == 0x7C00u) {
+        bits = static_cast<uint16_t>((bits & 0x8000u) | 0x7BFFu);
+        overflowed = true;
+    }
+    store(row, x, bits);
+}
+
 } // namespace
+
+uint16_t encodeBinary16(double value) noexcept {
+    const auto sign = static_cast<uint16_t>(std::signbit(value) ? 0x8000u : 0u);
+    if (std::isnan(value)) {
+        return static_cast<uint16_t>(sign | 0x7E00u);
+    }
+    const double magnitude = std::fabs(value);
+    if (magnitude >= 65520.0) {
+        return static_cast<uint16_t>(sign | 0x7C00u);
+    }
+    if (magnitude < 0x1p-14) {
+        // Subnormal: units of 2^-24. A result of 1024 is the smallest normal's pattern.
+        return static_cast<uint16_t>(sign | static_cast<uint16_t>(roundHalfEven(magnitude * 0x1p24)));
+    }
+    int exponent2 = 0;
+    std::frexp(magnitude, &exponent2);
+    int exponent = exponent2 - 1; // magnitude in [2^exponent, 2^(exponent+1))
+    double mantissa = roundHalfEven(std::ldexp(magnitude, 10 - exponent)); // in [1024, 2048]
+    if (mantissa == 2048.0) {
+        mantissa = 1024.0;
+        ++exponent;
+    }
+    return static_cast<uint16_t>(sign | static_cast<uint16_t>((exponent + 15) << 10) |
+                                 static_cast<uint16_t>(static_cast<int>(mantissa) - 1024));
+}
+
+void writeSample(void* row, int64_t x, DataType type, const Sample& sample, RoundingMode rounding,
+                 OverflowMode /*overflow*/, bool& overflowed) noexcept {
+    switch (type) {
+    case DataType::Byte: writeInteger<uint8_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::Int8: writeInteger<int8_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::UInt16: writeInteger<uint16_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::Int16: writeInteger<int16_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::UInt32: writeInteger<uint32_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::Int32: writeInteger<int32_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::UInt64: writeInteger<uint64_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::Int64: writeInteger<int64_t>(row, x, sample, rounding, overflowed); return;
+    case DataType::Float16: writeFloat16(row, x, sample, overflowed); return;
+    case DataType::Float32: writeFloat32(row, x, sample, overflowed); return;
+    case DataType::Float64: store(row, x, asDouble(sample)); return;
+    default: return;
+    }
+}
 
 double decodeBinary16(uint16_t bits) noexcept {
     const bool negative = (bits & 0x8000u) != 0;

@@ -5,6 +5,7 @@
 
 #include "detail/bag.hpp"
 #include "detail/builtin_factory.hpp"
+#include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 
 #include <cmath>

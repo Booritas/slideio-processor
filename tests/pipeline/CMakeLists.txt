@@ -114,6 +114,7 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 # paths but no OpenCV include path: a header that reaches OpenCV fails
 # the normal build. One source per public header, of pipeline and algorithm.
 add_library(pipeline_headers_are_opencv_free OBJECT
+    header_check/check_algorithm_pixel_convert.cpp
     header_check/check_algorithm_pixel_threshold.cpp
     header_check/check_algorithm_registry.cpp
     header_check/check_backend.cpp

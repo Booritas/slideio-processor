@@ -3,6 +3,7 @@ add_library(slideio-processor-algorithm OBJECT
     detail/bag.cpp
     detail/builtin_factory.cpp
     detail/sample_codec.cpp
+    pixel/convert_type.cpp
     pixel/threshold_fixed.cpp
 )
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)
