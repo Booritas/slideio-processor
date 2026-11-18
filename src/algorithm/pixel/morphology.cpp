@@ -160,7 +160,7 @@ public:
         halo_ = Halo{reach * (element_.width() / 2), reach * (element_.height() / 2),
                      reach * (element_.width() / 2), reach * (element_.height() / 2)};
         setCount_ = setCountOf(element_);
-        threads_ = std::max(1, cv::getNumThreads());
+        detail::useSequentialOpenCv();
     }
 
     const char* name() const override { return spec_.name; }
@@ -170,16 +170,19 @@ public:
     Halo halo() const override { return halo_; }
     DataType outputType(DataType input) const override { return input; }
     const OperationParameters& parameters() const override { return parameters_; }
-    // Float path: two copies of the halo'd plane, 16 bytes per pixel for Float64.
-    // Integer path, OpenCV 4.14 (imgproc/src/morph.dispatch.cpp, morphOp,
-    // morphologyEx; filter.simd.hpp, FilterEngine__start, FilterEngine__apply),
-    // at most 2-byte samples: the ring buffer of (kernel height + 3) rows of the
-    // halo'd width (at most 4 rows' worth per row of the halo'd rect, since the
-    // kernel fits the halo), the source and constant-border rows, 12 bytes per
-    // pixel; and through cv::fastMalloc the destination, the copy of the source
-    // the tiled path takes for an in-place pass, and the enlarged rectangle of
-    // an iterated rectangle (no larger than the halo'd rect), 5 more.
-    int64_t workingSetBytesPerLevelPixel() const override { return 17; }
+    // The larger of the two paths. Float path: two copies of the halo'd plane,
+    // 16 bytes per pixel for Float64. Integer path, OpenCV 4.14
+    // (imgproc/src/morph.dispatch.cpp, morphOp, morphologyEx; filter.simd.hpp,
+    // FilterEngine__start, FilterEngine__apply), at most 2-byte samples, with
+    // OpenCV on the calling thread: the ring buffer of (kernel height + 3) rows
+    // of the halo'd width (at most 4 rows' worth per row of the halo'd rect,
+    // since the kernel fits the halo), the source and constant-border rows, 12
+    // bytes per pixel; and through cv::fastMalloc the destination and the
+    // enlarged rectangle of an iterated rectangle (no larger than the halo'd
+    // rect), 3 more. An in-place pass is filtered row by row through the ring
+    // buffer: the copy of the source FilterEngine__apply takes for one belongs
+    // to its tiled path, which needs more than one OpenCV thread.
+    int64_t workingSetBytesPerLevelPixel() const override { return 16; }
     // The larger of the float path's offsets and the integer path's per-kernel
     // buffers (see integerBytesPerTile()).
     int64_t workingSetBytesPerTile() const override {
@@ -251,10 +254,10 @@ private:
     // element that is not a rectangle has a MorphFilter: coordinates,
     // coefficients and per-call row pointers, 17 bytes per set pixel
     // (morph.simd.hpp, MorphFilter). Then the engine's objects, the images'
-    // bookkeeping and the allocator's overhead on the engine's vectors. When
-    // OpenCV runs more than one thread, FilterEngine__apply's tiled path gives
-    // each thread a padded 128 x 128 tile, row sums for a rectangle and row
-    // pointers (filter.simd.hpp, TiledFilterInvoker), counted once per thread.
+    // bookkeeping and the allocator's overhead on the engine's vectors.
+    // FilterEngine__apply's tiled path (filter.simd.hpp, TiledFilterInvoker),
+    // with its per-thread tiles, needs more than one OpenCV thread, so it is
+    // never taken.
     int64_t integerBytesPerTile() const {
         constexpr int64_t kSample = 2;
         constexpr int64_t kEngineObjects = 2048;
@@ -267,12 +270,8 @@ private:
         const int64_t ring = kSample * (rectangle ? 63 : kw + 62) * (kh + 3) + 64;
         const int64_t rows = kSample * (kw - 1) + kSample * (kw + 63) + 4 * kSample * kw + kSample * kw + 8 * (kh + 3);
         const int64_t filter = rectangle ? 0 : 17 * setCount_;
-        const int64_t engine = ring + rows + filter + kEngineObjects + 8 * detail::kAllocatorBlockOverhead +
-                               2 * detail::kCvMatBookkeeping;
-        const int64_t threads = threads_;
-        const int64_t perThread = kSample * (127 + kw) * (127 + kh) + (rectangle ? 256 * (127 + kh) : 0) +
-                                  8 * (127 + kh) + 2 * detail::kCvMatBookkeeping;
-        return engine + (threads > 1 ? threads * perThread : 0);
+        return ring + rows + filter + kEngineObjects + 8 * detail::kAllocatorBlockOverhead +
+               2 * detail::kCvMatBookkeeping;
     }
 
     // The module's own morphology of a float plane, pass by pass over the
@@ -377,9 +376,6 @@ private:
     int32_t iterations_;
     Halo halo_{};
     int64_t setCount_ = 0;
-    // OpenCV's thread count when the operation was built, so that the declared
-    // working set stays constant for the operation's life.
-    int64_t threads_ = 1;
     OperationParameters parameters_;
 };
 

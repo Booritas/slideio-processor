@@ -3,9 +3,11 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/memory_budget.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 
+#include <algorithm/support/allocation_meter.hpp>
 #include <algorithm/support/working_set_check.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/run_plan.hpp>
@@ -29,19 +31,6 @@ namespace {
 using ts::createOperation;
 using ts::expectApplyBounded;
 using ts::UnmeteredShare;
-
-// The meter counts the calling thread only, so OpenCV runs on that thread
-// alone while a check measures; its earlier thread count is restored after.
-class OneOpenCvThread {
-public:
-    OneOpenCvThread() : saved_(cv::getNumThreads()) { cv::setNumThreads(1); }
-    ~OneOpenCvThread() { cv::setNumThreads(saved_); }
-    OneOpenCvThread(const OneOpenCvThread&) = delete;
-    OneOpenCvThread& operator=(const OneOpenCvThread&) = delete;
-
-private:
-    int saved_;
-};
 
 // The types a filter computing in double accepts.
 const DataType kFloatFilterTypes[] = {DataType::Byte,   DataType::Int8,    DataType::UInt16,
@@ -117,8 +106,6 @@ OperationParameters morphologyParameters(const char* shape, int64_t width, int64
 } // namespace
 
 TEST(WorkingSetFilter, GaussianBlurDeclarationBoundsTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
-
     // pixel.gaussian_blur: the default, the smallest kernels and the largest.
     for (DataType type : kFloatFilterTypes) {
         expectApplyBounded("gaussian_blur default",
@@ -130,8 +117,6 @@ TEST(WorkingSetFilter, GaussianBlurDeclarationBoundsTheMeasuredPeak) {
 }
 
 TEST(WorkingSetFilter, DerivativeDeclarationsBoundTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
-
     // pixel.sobel, pixel.scharr, pixel.laplacian: the defaults on every type,
     // every kernel size on the narrowest and widest.
     for (DataType type : kFloatFilterTypes) {
@@ -154,8 +139,6 @@ TEST(WorkingSetFilter, DerivativeDeclarationsBoundTheMeasuredPeak) {
 }
 
 TEST(WorkingSetFilter, MedianBlurDeclarationBoundsTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
-
     // pixel.median_blur: the default on every type; OpenCV's Byte paths (the
     // sorting network, the histogram paths); the largest kernel on the
     // module's own path.
@@ -174,8 +157,6 @@ TEST(WorkingSetFilter, MedianBlurDeclarationBoundsTheMeasuredPeak) {
 }
 
 TEST(WorkingSetFilter, BilateralFilterDeclarationBoundsTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
-
     // pixel.bilateral_filter: the default on every type, the largest diameter.
     for (DataType type : kFloatFilterTypes) {
         expectApplyBounded("bilateral_filter default",
@@ -188,8 +169,6 @@ TEST(WorkingSetFilter, BilateralFilterDeclarationBoundsTheMeasuredPeak) {
 }
 
 TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
-
     // pixel.canny: the default and every aperture, thresholds that keep many
     // edges and none.
     expectApplyBounded("canny default", [] { return createOperation("pixel.canny", OperationParameters()); },
@@ -203,9 +182,35 @@ TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
     }
 }
 
-TEST(WorkingSetFilter, MorphologyDeclarationsBoundTheMeasuredPeak) {
-    const OneOpenCvThread oneThread;
+// The engine's OpenCV is private to it and made sequential when an operation
+// that calls it is built, so the tile workers are its only parallelism.
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceAnOperationExists) {
+    const OperationPtr canny = OperationCatalog::instance().create("pixel.canny", OperationParameters());
+    EXPECT_EQ(cv::getNumThreads(), 1);
+    const OperationPtr erode = OperationCatalog::instance().create("pixel.morph_erode", OperationParameters());
+    EXPECT_EQ(cv::getNumThreads(), 1);
+    const OperationPtr median = OperationCatalog::instance().create("pixel.median_blur", OperationParameters());
+    EXPECT_EQ(cv::getNumThreads(), 1);
+}
 
+// Canny's declaration at a 1024-pixel tile with the default parameters stays
+// within 3 x what one call takes: the measured peak plus what cv::Canny takes
+// through cv::fastMalloc, which the meter does not see. The stack of edge
+// pixels, the part that depends on the image, is near its largest: one
+// column in three is a bright line, every one of whose pixels is a strong edge.
+TEST(WorkingSetFilter, CannyDeclarationIsTight) {
+    constexpr int64_t kTile = 1024;
+    const OperationPtr op = OperationCatalog::instance().create("pixel.canny", OperationParameters());
+    const int64_t measured = ts::measureApplyPeak(*op, {DataType::Byte}, {0}, kTile, kTile,
+                                                  [](int32_t, int64_t x, int64_t) { return x % 3 == 2 ? 255.0 : 0.0; });
+    const int64_t share = cannyShare(*op, DataType::Byte, kTile, kTile);
+    const int64_t declared = ts::declaredWorkingSet(*op, kTile, kTile);
+    EXPECT_GT(measured, 0);
+    EXPECT_LE(declared, 3 * (measured + share))
+        << "measured " << measured << ", unmetered share " << share << ", declared " << declared;
+}
+
+TEST(WorkingSetFilter, MorphologyDeclarationsBoundTheMeasuredPeak) {
     // The four morphology operations: the default; the largest rectangle and
     // cross; a rectangle iterated 64 times; a large rectangle on the float
     // path, whose cost grows with the element's area.

@@ -148,6 +148,7 @@ void byteMedian(const BlockView& in, BlockView& out, int32_t plane, const Geomet
 class MedianBlurOperation : public Operation {
 public:
     explicit MedianBlurOperation(int32_t kernelSize) : size_(kernelSize) {
+        detail::useSequentialOpenCv();
         parameters_.setInt("kernelSize", kernelSize);
     }
 

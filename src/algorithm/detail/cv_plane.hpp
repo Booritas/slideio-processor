@@ -35,4 +35,18 @@ cv::Mat planeAsMat(const BlockView& view, int32_t plane);
 /// a defect.
 [[noreturn]] void translateCv(const char* operationName);
 
+/// Makes OpenCV run every call on the calling thread (cv::setNumThreads(0)),
+/// once per process. The tile workers are the engine's parallelism: OpenCV's
+/// own threads would oversubscribe the cores, make an operation's working set
+/// depend on the host's core count, and allocate on threads the memory
+/// accounting does not see. OpenCV is linked privately into the engine, so
+/// nothing else changes its thread count. Call it from the constructor of
+/// every operation whose apply() calls OpenCV, never from a static
+/// initialiser: OpenCV's own statics may not exist yet. A cv::Exception is
+/// translated by translateCv into an InternalError (std::bad_alloc when
+/// OpenCV is out of memory), and a later call tries again.
+/// @par Thread-safety
+/// Safe to call from any thread, any number of times.
+void useSequentialOpenCv();
+
 } // namespace slideio::processor::detail

@@ -4,6 +4,7 @@
 #include <slideio/processor/core/error.hpp>
 
 #include <limits>
+#include <mutex>
 #include <new>
 #include <string>
 
@@ -90,6 +91,16 @@ void translateCv(const char* operationName) {
         context.operationName = operationName;
         context.cause = cause.c_str();
         throw InternalError((std::string(operationName) + ": OpenCV failed").c_str(), context);
+    }
+}
+
+void useSequentialOpenCv() {
+    static std::once_flag once;
+    try {
+        // An exception leaves the flag unset, so a later call tries again.
+        std::call_once(once, [] { cv::setNumThreads(0); });
+    } catch (const cv::Exception&) {
+        translateCv("useSequentialOpenCv");
     }
 }
 
