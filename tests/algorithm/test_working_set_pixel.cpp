@@ -285,6 +285,17 @@ TEST(WorkingSetPixel, DeclarationsBoundTheMeasuredPeak) {
     EXPECT_LE(harnessPeak, declared(*adaptive, 64, 64));
 }
 
+// Many channels in one tile, each with a tiny histogram: the per-call figure
+// stays a bound however many channels the tile has, since checking that they
+// are distinct allocates nothing.
+TEST(WorkingSetPixel, OtsuBoundedOverManyChannels) {
+    OperationParameters p;
+    p.setDouble("histogramMinimum", 0.0).setDouble("histogramMaximum", 1.0).setInt("binCount", 2);
+    const std::vector<DataType> planes(64, DataType::Float64);
+    expectGlobalBounded("threshold_otsu 64 channels, 2 bins", [p] { return create("pixel.threshold_otsu", p); },
+                        planes);
+}
+
 // A ceiling that holds a tile's buffers and the packed samples but not the
 // histograms refuses the run before it starts, naming the operation.
 TEST(WorkingSetPixel, OtsuRefusedWhenItsBinsDoNotFit) {
@@ -301,12 +312,12 @@ TEST(WorkingSetPixel, OtsuRefusedWhenItsBinsDoNotFit) {
     measured.validate();
     const int64_t tileBytes = detail::PipelineAccess::plan(measured).tileBytes;
     const OperationPtr otsu = create("pixel.threshold_otsu", otsuRange(1048576));
-    const int64_t bins = otsu->workingSetBytesPerTile();
-    ASSERT_GE(bins, int64_t(16) * 1048576);
-    const int64_t buffersAndSamples = tileBytes - bins;
+    const int64_t perTile = otsu->workingSetBytesPerTile();
+    ASSERT_GE(perTile, int64_t(16) * 1048576);
+    const int64_t buffersAndSamples = tileBytes - perTile;
 
     Pipeline refused(scene, config, spec);
-    refused.memoryBudget(makeMemoryBudget(buffersAndSamples + bins / 2));
+    refused.memoryBudget(makeMemoryBudget(buffersAndSamples + perTile / 2));
     std::string message;
     try {
         refused.validate();

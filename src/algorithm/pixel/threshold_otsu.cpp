@@ -30,8 +30,8 @@ constexpr int64_t kDefaultBinCount = 256;
 constexpr int64_t kMaxBinCount = 1048576;
 // The bins of a 16-bit type binned one bin per value.
 constexpr int64_t kMaxPerValueBinCount = 65536;
-// A channel's map node, Histogram64 and histogram state, with the tile's
-// channel list; see workingSetBytesPerTile().
+// A new channel's map node, Histogram64 and histogram state (160 bytes under
+// MSVC), whatever the number of channels; see workingSetBytesPerTile().
 constexpr int64_t kBookkeepingBytes = 256;
 
 [[noreturn]] void fail(const std::string& problem) {
@@ -65,6 +65,9 @@ struct ChannelState {
     std::unique_ptr<Histogram64> histogram;
     bool counted = false;
     int64_t thresholdBin = 0;
+    // The operation's tile number when this channel was last accumulated; 0
+    // before it ever is (tile numbers start at 1).
+    int64_t countedInTile = 0;
 };
 
 class OtsuThresholdOperation : public Operation {
@@ -115,8 +118,8 @@ public:
     // 8 bytes per bin; without a range the largest per-value histogram has
     // 65536 bins. Then the allocator's overhead on the packed row and the
     // local copy, and kBookkeepingBytes for the channel's map node, its
-    // Histogram64 and that histogram's state, and the list of the tile's
-    // channels (4 bytes a channel) up to 24 channels.
+    // Histogram64 and that histogram's state. The check that a tile's
+    // channels are distinct allocates nothing.
     int64_t workingSetBytesPerTile() const override {
         const int64_t bins = hasRange_ ? binCount_ : kMaxPerValueBinCount;
         return bins * 16 + 2 * detail::kAllocatorBlockOverhead + kBookkeepingBytes;
@@ -129,20 +132,23 @@ public:
         const RasterMask* mask = context.mask();
         requireDistinctChannels(in);
         // The framework hands a PerChannel operation one plane per call, so the
-        // channels of a tile are gathered across the calls for that tile rect.
+        // channels of a tile are gathered across the calls for that tile rect:
+        // each channel's state records the tile it was last counted for, so
+        // the check allocates nothing however many channels there are.
         if (!sameRect(tile, countedTile_)) {
             countedTile_ = tile;
-            channelsInTile_.clear();
+            ++tileSerial_;
         }
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             const int32_t channel = in.planeSourceChannel(plane);
-            if (std::find(channelsInTile_.begin(), channelsInTile_.end(), channel) != channelsInTile_.end()) {
+            const auto found = channels_.find(channel);
+            if (found != channels_.end() && found->second.countedInTile == tileSerial_) {
                 failRepeatedChannel(channel);
             }
-            channelsInTile_.push_back(channel);
         }
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             ChannelState& state = stateFor(in.planeSourceChannel(plane), in.planeType(plane));
+            state.countedInTile = tileSerial_;
             accumulatePlane(in, plane, tile, haloRect, mask, state);
         }
     }
@@ -413,9 +419,10 @@ private:
     int32_t binCount_ = 0;
     OperationParameters parameters_;
     std::map<int32_t, ChannelState> channels_;
-    // The tile rect being accumulated and the source channels counted for it.
+    // The tile rect being accumulated, and a number that changes whenever the
+    // rect does; a channel counted for this rect holds the same number.
     Rect64 countedTile_{0, 0, -1, -1};
-    std::vector<int32_t> channelsInTile_;
+    int64_t tileSerial_ = 0;
 };
 
 bool hasKey(const OperationParameters& parameters, const char* key) {
