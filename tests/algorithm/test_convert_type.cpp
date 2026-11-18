@@ -334,6 +334,36 @@ TEST(ConvertType, Int64ToFloat64RoundsToNearest) {
     EXPECT_EQ(samplesOf<double>(convertRow(DataType::UInt64, std::vector<uint64_t>{18446744073709551615ull},
                                            DataType::Float64)),
               (std::vector<double>{18446744073709551616.0}));
+    // Ties with the top bit set round to the even significand: 1 ulp + half goes up to 2 ulp, half an ulp
+    // goes down to 0; just above a tie rounds up.
+    const uint64_t two63 = uint64_t{1} << 63;
+    EXPECT_EQ(samplesOf<float>(convertRow(DataType::UInt64,
+                                          std::vector<uint64_t>{two63 + (uint64_t{1} << 39), two63 + 3 * (uint64_t{1} << 39),
+                                                                two63 + (uint64_t{1} << 39) + 1},
+                                          DataType::Float32)),
+              (std::vector<float>{std::ldexp(1.0f, 63), std::ldexp(1.0f, 63) + std::ldexp(1.0f, 41),
+                                  std::ldexp(1.0f, 63) + std::ldexp(1.0f, 40)}));
+    EXPECT_EQ(samplesOf<double>(convertRow(DataType::UInt64,
+                                           std::vector<uint64_t>{two63 + (uint64_t{1} << 10), two63 + 3 * (uint64_t{1} << 10),
+                                                                 two63 + (uint64_t{1} << 10) + 1},
+                                           DataType::Float64)),
+              (std::vector<double>{std::ldexp(1.0, 63), std::ldexp(1.0, 63) + std::ldexp(1.0, 12),
+                                   std::ldexp(1.0, 63) + std::ldexp(1.0, 11)}));
+    const int64_t two62 = int64_t{1} << 62;
+    EXPECT_EQ(samplesOf<float>(convertRow(DataType::Int64,
+                                          std::vector<int64_t>{-(two62 + (int64_t{1} << 38)),
+                                                               -(two62 + 3 * (int64_t{1} << 38)),
+                                                               std::numeric_limits<int64_t>::min()},
+                                          DataType::Float32)),
+              (std::vector<float>{-std::ldexp(1.0f, 62), -(std::ldexp(1.0f, 62) + std::ldexp(1.0f, 40)),
+                                  -std::ldexp(1.0f, 63)}));
+    EXPECT_EQ(samplesOf<double>(convertRow(DataType::Int64,
+                                           std::vector<int64_t>{-(two62 + (int64_t{1} << 9)),
+                                                                -(two62 + 3 * (int64_t{1} << 9)),
+                                                                std::numeric_limits<int64_t>::min()},
+                                           DataType::Float64)),
+              (std::vector<double>{-std::ldexp(1.0, 62), -(std::ldexp(1.0, 62) + std::ldexp(1.0, 11)),
+                                   -std::ldexp(1.0, 63)}));
     // 2^24 + 1 ties to 2^24 in Float32.
     EXPECT_EQ(samplesOf<float>(convertRow(DataType::Int32, std::vector<int32_t>{16777217, 16777219}, DataType::Float32)),
               (std::vector<float>{16777216.0f, 16777220.0f}));

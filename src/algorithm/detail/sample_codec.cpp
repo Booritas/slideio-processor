@@ -47,15 +47,47 @@ double roundBy(double v, RoundingMode rounding) noexcept {
     }
 }
 
-// The value of an integer or float sample as a double: exact for floats and for
-// integers up to 2^53 in magnitude, the nearest double (ties to even) beyond.
-double asDouble(const Sample& sample) noexcept {
-    switch (sample.kind) {
-    case Sample::Kind::Signed: return static_cast<double>(sample.s);
-    case Sample::Kind::Unsigned: return static_cast<double>(sample.u);
-    case Sample::Kind::Float:
-    default: return sample.f;
+// @p magnitude rounded to @p bits significant bits, ties to even, in integer
+// arithmetic, as a double. The result is exact in any float type whose
+// significand has at least @p bits bits (and whose range reaches 2^64), so
+// converting it on involves no further rounding. The standard leaves the choice
+// between the two neighbours of an integer-to-float conversion to the
+// implementation, so the rounding is done here rather than by a cast.
+double roundToSignificand(uint64_t magnitude, int bits) noexcept {
+    int length = 0;
+    for (uint64_t v = magnitude; v != 0; v >>= 1) {
+        ++length;
     }
+    if (length <= bits) {
+        return static_cast<double>(magnitude); // fits: exact
+    }
+    const int shift = length - bits;
+    uint64_t kept = magnitude >> shift;
+    const uint64_t rest = magnitude & ((uint64_t{1} << shift) - 1);
+    const uint64_t half = uint64_t{1} << (shift - 1);
+    if (rest > half || (rest == half && (kept & 1u) != 0)) {
+        ++kept; // at most 2^bits: still exact
+    }
+    return std::ldexp(static_cast<double>(kept), shift);
+}
+
+// An integer sample rounded to @p bits significant bits, ties to even, with its sign.
+double integerAsFloat(const Sample& sample, int bits) noexcept {
+    if (sample.kind == Sample::Kind::Unsigned) {
+        return roundToSignificand(sample.u, bits);
+    }
+    // 0 - u is the magnitude of a negative value, INT64_MIN included.
+    const bool negative = sample.s < 0;
+    const uint64_t magnitude = negative ? uint64_t{0} - static_cast<uint64_t>(sample.s) : static_cast<uint64_t>(sample.s);
+    const double rounded = roundToSignificand(magnitude, bits);
+    return negative ? -rounded : rounded;
+}
+
+// The value of a sample as a double: exact for floats and for integers up to
+// 2^53 in magnitude, the nearest double (ties to even) beyond.
+double asDouble(const Sample& sample) noexcept {
+    return sample.kind == Sample::Kind::Float ? sample.f
+                                              : integerAsFloat(sample, std::numeric_limits<double>::digits);
 }
 
 template <typename T>
@@ -116,8 +148,11 @@ constexpr double kFloat32Overflow = 0x1.ffffffp+127;
 void writeFloat32(void* row, int64_t x, const Sample& sample, bool& overflowed) noexcept {
     float out;
     switch (sample.kind) {
-    case Sample::Kind::Signed: out = static_cast<float>(sample.s); break;
-    case Sample::Kind::Unsigned: out = static_cast<float>(sample.u); break;
+    case Sample::Kind::Signed:
+    case Sample::Kind::Unsigned:
+        // Rounded once, to 24 bits, so the cast to float is exact.
+        out = static_cast<float>(integerAsFloat(sample, std::numeric_limits<float>::digits));
+        break;
     case Sample::Kind::Float:
     default:
         if (std::isfinite(sample.f) && std::fabs(sample.f) >= kFloat32Overflow) {
