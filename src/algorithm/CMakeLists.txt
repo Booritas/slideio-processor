@@ -12,8 +12,10 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/derivatives.cpp
     pixel/gaussian_blur.cpp
     pixel/median_blur.cpp
+    pixel/morphology.cpp
     pixel/stain_deconvolution.cpp
     pixel/stain_vectors.cpp
+    pixel/structuring_element.cpp
     pixel/threshold_adaptive.cpp
     pixel/threshold_fixed.cpp
     pixel/threshold_otsu.cpp

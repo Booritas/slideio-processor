@@ -16,6 +16,7 @@ add_executable(slideio_processor_algorithm_tests
     test_gaussian_blur.cpp
     test_derivatives.cpp
     test_median_blur.cpp
+    test_morphology.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp

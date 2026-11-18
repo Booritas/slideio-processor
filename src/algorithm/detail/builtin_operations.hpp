@@ -41,4 +41,16 @@ OperationFactoryPtr makeScharrFactory();
 /// pixel.laplacian
 OperationFactoryPtr makeLaplacianFactory();
 
+/// pixel.morph_erode
+OperationFactoryPtr makeErodeFactory();
+
+/// pixel.morph_dilate
+OperationFactoryPtr makeDilateFactory();
+
+/// pixel.morph_open
+OperationFactoryPtr makeOpenFactory();
+
+/// pixel.morph_close
+OperationFactoryPtr makeCloseFactory();
+
 } // namespace slideio::processor::detail

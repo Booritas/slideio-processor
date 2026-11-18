@@ -21,6 +21,10 @@
 
 namespace slideio::processor {
 
+namespace detail {
+struct StructuringElementAccess;
+} // namespace detail
+
 /**
  * @brief How a filter reads pixels beyond the image's border.
  *
@@ -303,6 +307,11 @@ enum class StructuringShape : int32_t {
  *
  * Width and height are odd, from 1 to 255. A shape is drawn as OpenCV's
  * `getStructuringElement` draws MORPH_RECT, MORPH_ELLIPSE and MORPH_CROSS.
+ * The set pixel in column i and row j of the mask covers the sample at offset
+ * (i - width / 2, j - height / 2) from the one being computed.
+ *
+ * A moved-from element may only be assigned to or destroyed; its width() and
+ * height() return 0, and a morphology factory refuses it.
  * @par Thread-safety
  * ThreadCompatible.
  * @par Requirements
@@ -338,7 +347,7 @@ public:
     StructuringElement(const StructuringElement& other);
     /**
      * @brief Moves the element. The moved-from object may only be assigned to
-     * or destroyed.
+     * or destroyed; its width() and height() return 0.
      * @param other The element to move from.
      * @throws Nothing.
      * @par Thread-safety
@@ -361,7 +370,7 @@ public:
     StructuringElement& operator=(const StructuringElement& other);
     /**
      * @brief Replaces this element by moving another. The moved-from object
-     * may only be assigned to or destroyed.
+     * may only be assigned to or destroyed; its width() and height() return 0.
      * @param other The element to move from.
      * @return This element.
      * @throws Nothing.
@@ -403,7 +412,7 @@ public:
     static StructuringElement custom(const uint8_t* mask, int32_t width, int32_t height);
     /**
      * @brief Returns the element's width.
-     * @return An odd number from 1 to 255.
+     * @return An odd number from 1 to 255, or 0 for a moved-from element.
      * @throws Nothing.
      * @par Thread-safety
      * ThreadCompatible.
@@ -413,7 +422,7 @@ public:
     int32_t width() const noexcept;
     /**
      * @brief Returns the element's height.
-     * @return An odd number from 1 to 255.
+     * @return An odd number from 1 to 255, or 0 for a moved-from element.
      * @throws Nothing.
      * @par Thread-safety
      * ThreadCompatible.
@@ -423,6 +432,7 @@ public:
     int32_t height() const noexcept;
 
 private:
+    friend struct detail::StructuringElementAccess;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -434,7 +444,10 @@ private:
  *
  * Each output sample is the minimum over the element's set pixels, applied
  * @p iterations times. Pixels beyond the level read as zero, so an erosion
- * reaching the level's edge pulls it to zero.
+ * reaching the level's edge pulls it to zero. In `Float32` and `Float64` a NaN
+ * anywhere in the window makes the sample NaN, so the result does not depend
+ * on the tiling; between -0 and +0 the first in the window, row by row from
+ * the top, is kept.
  *
  * Its parameters are `shape` (`"Rectangle"`, `"Ellipse"`, `"Cross"` or
  * `"Custom"`), `elementWidth` and `elementHeight` (integers), `elementMask` (a
@@ -448,7 +461,8 @@ private:
  * The first argument is the StructuringElement, copied.
  * @param iterations How many times the erosion is applied; 1 to 64.
  * @return The operation, never null.
- * @throws InvalidArgumentError When @p iterations is outside 1 to 64; the
+ * @throws InvalidArgumentError When @p iterations is outside 1 to 64 or the
+ * element is a moved-from one; the
  * message names the operation and the parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
@@ -466,7 +480,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeErode(const StructuringElement
  * input type.
  *
  * Each output sample is the maximum over the element's set pixels, applied
- * @p iterations times. Pixels beyond the level read as zero.
+ * @p iterations times. Pixels beyond the level read as zero. NaN, -0 and +0
+ * are treated as by makeErode().
  *
  * Its parameters are those of makeErode(), with the same defaults by name and
  * the same rules.
@@ -474,7 +489,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeErode(const StructuringElement
  * The first argument is the StructuringElement, copied.
  * @param iterations How many times the dilation is applied; 1 to 64.
  * @return The operation, never null.
- * @throws InvalidArgumentError When @p iterations is outside 1 to 64; the
+ * @throws InvalidArgumentError When @p iterations is outside 1 to 64 or the
+ * element is a moved-from one; the
  * message names the operation and the parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
@@ -492,7 +508,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDilate(const StructuringElemen
  * output the input type.
  *
  * Erodes @p iterations times, then dilates @p iterations times, with the same
- * element. Pixels beyond the level read as zero.
+ * element, each step treating NaN, -0 and +0 as makeErode() does. Pixels
+ * beyond the level read as zero.
  *
  * Its parameters are those of makeErode(), with the same defaults by name and
  * the same rules.
@@ -500,7 +517,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDilate(const StructuringElemen
  * The first argument is the StructuringElement, copied.
  * @param iterations How many times each step is applied; 1 to 64.
  * @return The operation, never null.
- * @throws InvalidArgumentError When @p iterations is outside 1 to 64; the
+ * @throws InvalidArgumentError When @p iterations is outside 1 to 64 or the
+ * element is a moved-from one; the
  * message names the operation and the parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
@@ -518,7 +536,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeOpen(const StructuringElement&
  * output the input type.
  *
  * Dilates @p iterations times, then erodes @p iterations times, with the same
- * element. Pixels beyond the level read as zero.
+ * element, each step treating NaN, -0 and +0 as makeErode() does. Pixels
+ * beyond the level read as zero.
  *
  * Its parameters are those of makeErode(), with the same defaults by name and
  * the same rules.
@@ -526,7 +545,8 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeOpen(const StructuringElement&
  * The first argument is the StructuringElement, copied.
  * @param iterations How many times each step is applied; 1 to 64.
  * @return The operation, never null.
- * @throws InvalidArgumentError When @p iterations is outside 1 to 64; the
+ * @throws InvalidArgumentError When @p iterations is outside 1 to 64 or the
+ * element is a moved-from one; the
  * message names the operation and the parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety

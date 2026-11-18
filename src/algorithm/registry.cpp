@@ -70,6 +70,10 @@ void registerPixelOperations() {
     registerOne("pixel.sobel", &detail::makeSobelFactory);
     registerOne("pixel.scharr", &detail::makeScharrFactory);
     registerOne("pixel.laplacian", &detail::makeLaplacianFactory);
+    registerOne("pixel.morph_erode", &detail::makeErodeFactory);
+    registerOne("pixel.morph_dilate", &detail::makeDilateFactory);
+    registerOne("pixel.morph_open", &detail::makeOpenFactory);
+    registerOne("pixel.morph_close", &detail::makeCloseFactory);
 }
 
 void registerSegmentationOperations() {}
