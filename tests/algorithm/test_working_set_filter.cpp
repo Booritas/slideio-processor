@@ -183,13 +183,22 @@ TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
 }
 
 // The engine's OpenCV is private to it and made sequential when an operation
-// that calls it is built, so the tile workers are its only parallelism.
-TEST(WorkingSetFilter, OpenCvIsSequentialOnceAnOperationExists) {
-    const OperationPtr canny = OperationCatalog::instance().create("pixel.canny", OperationParameters());
+// that calls it is built, so the tile workers are its only parallelism. It is
+// set once per process, so each test proves its own constructor only when it
+// runs in a process of its own, as ctest runs every discovered test; a later
+// test in the same process cannot tell which constructor set it.
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceCannyExists) {
+    const OperationPtr op = OperationCatalog::instance().create("pixel.canny", OperationParameters());
     EXPECT_EQ(cv::getNumThreads(), 1);
-    const OperationPtr erode = OperationCatalog::instance().create("pixel.morph_erode", OperationParameters());
+}
+
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceMorphologyExists) {
+    const OperationPtr op = OperationCatalog::instance().create("pixel.morph_erode", OperationParameters());
     EXPECT_EQ(cv::getNumThreads(), 1);
-    const OperationPtr median = OperationCatalog::instance().create("pixel.median_blur", OperationParameters());
+}
+
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceMedianExists) {
+    const OperationPtr op = OperationCatalog::instance().create("pixel.median_blur", OperationParameters());
     EXPECT_EQ(cv::getNumThreads(), 1);
 }
 
