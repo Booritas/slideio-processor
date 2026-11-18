@@ -59,7 +59,16 @@ struct MallocAllocator {
 class AllocationLedger {
 public:
     void record(const void* block, std::size_t size) {
-        blocks_.emplace(block, size);
+        // An address already in the table was a counted block freed by a path
+        // this meter did not see, and is now reused: its stale size leaves the
+        // live count before the new block's size enters it.
+        const auto it = blocks_.find(block);
+        if (it != blocks_.end()) {
+            live_ -= static_cast<int64_t>(it->second);
+            it->second = size;
+        } else {
+            blocks_.emplace(block, size);
+        }
         live_ += static_cast<int64_t>(size);
         peak_ = std::max(peak_, live_);
     }

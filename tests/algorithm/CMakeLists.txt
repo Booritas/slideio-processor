@@ -75,8 +75,10 @@ gtest_discover_tests(slideio_processor_algorithm_tests TEST_PREFIX "algorithm."
 # measures.
 add_executable(slideio_processor_working_set_tests
     test_allocation_meter.cpp
+    test_working_set_pixel.cpp
     support/allocation_meter.cpp
     support/harness.cpp
+    ${PROJECT_SOURCE_DIR}/tests/pipeline/test_support/synthetic_scene.cpp
     $<TARGET_OBJECTS:slideio-processor-pipeline>
     $<TARGET_OBJECTS:slideio-processor-algorithm>
 )
@@ -100,6 +102,6 @@ if(WIN32)
     set_property(TARGET slideio_processor_working_set_tests PROPERTY TEST_LAUNCHER
         ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
 endif()
-gtest_discover_tests(slideio_processor_working_set_tests TEST_PREFIX "algorithm_ws."
+gtest_discover_tests(slideio_processor_working_set_tests TEST_PREFIX "algorithm.ws."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${ALGORITHM_TEST_PROPERTIES})

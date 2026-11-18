@@ -10,6 +10,7 @@
 #include "detail/builtin_factory.hpp"
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
+#include "detail/working_set.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -27,6 +28,11 @@ constexpr const char* kName = "pixel.threshold_otsu";
 constexpr const char* const kDirectionSpellings[] = {"Above", "Below"};
 constexpr int64_t kDefaultBinCount = 256;
 constexpr int64_t kMaxBinCount = 1048576;
+// The bins of a 16-bit type binned one bin per value.
+constexpr int64_t kMaxPerValueBinCount = 65536;
+// A channel's map node, Histogram64 and histogram state, with the tile's
+// channel list; see workingSetBytesPerTile().
+constexpr int64_t kBookkeepingBytes = 256;
 
 [[noreturn]] void fail(const std::string& problem) {
     throw InvalidArgumentError((std::string(kName) + ": " + problem).c_str());
@@ -101,6 +107,20 @@ public:
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
     bool needsGlobalContext() const override { return true; }
+    // accumulate() packs the tile's admitted samples into one row: at most
+    // 8 bytes per pixel, the widest sample type. apply() allocates nothing.
+    int64_t workingSetBytesPerLevelPixel() const override { return 8; }
+    // One accumulate() call creates at most one channel's histogram, 8 bytes
+    // per bin, while Histogram64::accumulate counts into a local copy of
+    // 8 bytes per bin; without a range the largest per-value histogram has
+    // 65536 bins. Then the allocator's overhead on the packed row and the
+    // local copy, and kBookkeepingBytes for the channel's map node, its
+    // Histogram64 and that histogram's state, and the list of the tile's
+    // channels (4 bytes a channel) up to 24 channels.
+    int64_t workingSetBytesPerTile() const override {
+        const int64_t bins = hasRange_ ? binCount_ : kMaxPerValueBinCount;
+        return bins * 16 + 2 * detail::kAllocatorBlockOverhead + kBookkeepingBytes;
+    }
 
     void accumulate(const OperationContext& context) override {
         const BlockView& in = context.input();

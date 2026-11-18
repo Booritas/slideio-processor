@@ -8,11 +8,9 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 
-#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace slideio::processor {
 
@@ -53,6 +51,11 @@ public:
     Halo halo() const override { return Halo::none(); }
     DataType outputType(DataType) const override { return target_; }
     const OperationParameters& parameters() const override { return parameters_; }
+    // None: each sample is converted in place and written straight to the output.
+    int64_t workingSetBytesPerLevelPixel() const override { return 0; }
+    // None: the overflowing source types are kept in a bit set, and the one
+    // type name of a plane fits a string's inline buffer.
+    int64_t workingSetBytesPerTile() const override { return 0; }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();
@@ -68,7 +71,7 @@ public:
         int64_t overflowCount = 0;
         // The source types with an overflowing sample, in plane order, each once.
         std::string overflowSources;
-        std::vector<DataType> namedTypes;
+        DataTypeSet namedTypes;
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             const DataType source = in.planeType(plane);
             if (!isSampleType(source)) {
@@ -83,8 +86,8 @@ public:
                                         .c_str());
             }
             const int64_t planeOverflows = convertPlane(in, out, plane, offset);
-            if (planeOverflows > 0 && std::find(namedTypes.begin(), namedTypes.end(), source) == namedTypes.end()) {
-                namedTypes.push_back(source);
+            if (planeOverflows > 0 && !namedTypes.contains(source)) {
+                namedTypes.add(source);
                 overflowSources += (overflowSources.empty() ? "" : ", ") + std::string(dataTypeName(source));
             }
             overflowCount += planeOverflows;

@@ -6,8 +6,12 @@
 // replaces every form of the global operator new and operator delete with a
 // counting pair; it must compile the code it measures into itself, because a
 // shared library may allocate through its own operator new (under MSVC every
-// module has its own). Allocations through malloc, such as OpenCV's own
-// buffers, are not seen.
+// module has its own). OpenCV is linked statically into that executable, so
+// its operator-new allocations (a cv::AutoBuffer beyond its fixed size, its
+// internal std::vectors) are counted; only the buffers it takes through
+// cv::fastMalloc, which allocates through malloc, are not seen. Only the
+// calling thread is counted: work an operation hands to other threads escapes
+// the meter.
 
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
