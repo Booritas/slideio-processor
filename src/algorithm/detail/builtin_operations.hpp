@@ -29,6 +29,9 @@ OperationFactoryPtr makeStainDeconvolutionFactory();
 /// pixel.gaussian_blur
 OperationFactoryPtr makeGaussianBlurFactory();
 
+/// pixel.median_blur
+OperationFactoryPtr makeMedianBlurFactory();
+
 /// pixel.sobel
 OperationFactoryPtr makeSobelFactory();
 

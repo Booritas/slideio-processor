@@ -6,6 +6,7 @@
 #include "detail/bag.hpp"
 #include "detail/builtin_factory.hpp"
 #include "detail/builtin_operations.hpp"
+#include "detail/cv_plane.hpp"
 #include "detail/separable.hpp"
 
 #include <opencv2/imgproc.hpp>
@@ -57,12 +58,8 @@ detail::SeparableFilter derivativeFilter(const char* name, int32_t dx, int32_t d
         cv::getDerivKernels(kx, ky, dx, dy, ksize, false, CV_64F);
         horizontal = toVector(kx);
         vertical = toVector(ky);
-    } catch (const cv::Exception& e) {
-        ErrorContext context;
-        context.operationName = name;
-        context.cause = e.what();
-        throw InternalError((std::string(name) + ": OpenCV failed to build the derivative kernels").c_str(),
-                            context);
+    } catch (const cv::Exception&) {
+        detail::translateCv(name);
     }
     return detail::SeparableFilter(std::move(horizontal), std::move(vertical));
 }

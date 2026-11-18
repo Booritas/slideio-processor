@@ -3,6 +3,7 @@ add_library(slideio-processor-algorithm OBJECT
     detail/bag.cpp
     detail/builtin_factory.cpp
     detail/colour_math.cpp
+    detail/cv_plane.cpp
     detail/rgb_input.cpp
     detail/sample_codec.cpp
     detail/separable.cpp
@@ -10,6 +11,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/convert_type.cpp
     pixel/derivatives.cpp
     pixel/gaussian_blur.cpp
+    pixel/median_blur.cpp
     pixel/stain_deconvolution.cpp
     pixel/stain_vectors.cpp
     pixel/threshold_adaptive.cpp
