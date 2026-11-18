@@ -65,6 +65,17 @@ void registerPixelOperations() {
     registerOne("pixel.convert_type", &detail::makeTypeConvertFactory);
     registerOne("pixel.colour_convert", &detail::makeColourConvertFactory);
     registerOne("pixel.stain_deconvolution", &detail::makeStainDeconvolutionFactory);
+    registerOne("pixel.gaussian_blur", &detail::makeGaussianBlurFactory);
+    registerOne("pixel.median_blur", &detail::makeMedianBlurFactory);
+    registerOne("pixel.sobel", &detail::makeSobelFactory);
+    registerOne("pixel.scharr", &detail::makeScharrFactory);
+    registerOne("pixel.laplacian", &detail::makeLaplacianFactory);
+    registerOne("pixel.morph_erode", &detail::makeErodeFactory);
+    registerOne("pixel.morph_dilate", &detail::makeDilateFactory);
+    registerOne("pixel.morph_open", &detail::makeOpenFactory);
+    registerOne("pixel.morph_close", &detail::makeCloseFactory);
+    registerOne("pixel.bilateral_filter", &detail::makeBilateralFilterFactory);
+    registerOne("pixel.canny", &detail::makeCannyFactory);
 }
 
 void registerSegmentationOperations() {}

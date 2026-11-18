@@ -72,8 +72,11 @@ bool pipelineValidates(const char* name, DataType type) {
 } // namespace
 
 TEST(Registry, RegisteredAtLoad) {
-    for (const char* name : {"pixel.threshold_fixed", "pixel.convert_type", "pixel.colour_convert",
-                             "pixel.stain_deconvolution", "pixel.threshold_otsu", "pixel.threshold_adaptive"}) {
+    for (const char* name :
+         {"pixel.threshold_fixed", "pixel.convert_type", "pixel.colour_convert", "pixel.stain_deconvolution",
+          "pixel.threshold_otsu", "pixel.threshold_adaptive", "pixel.gaussian_blur", "pixel.median_blur",
+          "pixel.sobel", "pixel.scharr", "pixel.laplacian", "pixel.canny", "pixel.bilateral_filter",
+          "pixel.morph_erode", "pixel.morph_dilate", "pixel.morph_open", "pixel.morph_close"}) {
         EXPECT_TRUE(OperationCatalog::instance().isRegistered(name)) << name;
     }
 }

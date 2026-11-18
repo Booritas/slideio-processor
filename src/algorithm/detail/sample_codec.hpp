@@ -23,6 +23,12 @@ struct Sample {
 /// is not one of the eleven sample types.
 Sample readSample(const void* row, int64_t x, DataType type);
 
+/// The value of @p sample as a double: exact for every float sample (Float16
+/// included) and for integers up to 2^53 in magnitude, which covers every
+/// sample of every type but Int64 and UInt64; beyond that, the nearest double,
+/// ties to even. Never throws.
+double sampleAsDouble(const Sample& sample) noexcept;
+
 /// Writes @p sample as a @p type sample at column @p x of a row, by memcpy, so
 /// @p row need not be aligned, under the rules of pixel.convert_type: integer
 /// to integer exact; to a float type the nearest value, ties to even; float to

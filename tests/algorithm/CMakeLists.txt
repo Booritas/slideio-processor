@@ -1,10 +1,10 @@
 include(GoogleTest)
 
 # The algorithm tests reach the pipeline's detail headers (the operation context,
-# parameter comparison) and the algorithm's own sample codec and colour maths,
-# so src/ and tests/ are on their include path; the algorithm library itself
-# never has src/ on its path. Detail code the engine does not export is
-# compiled in directly.
+# parameter comparison) and the algorithm's own sample codec, colour maths and
+# OpenCV plane helpers, so src/ and tests/ are on their include path; the
+# algorithm library itself never has src/ on its path. Detail code the engine
+# does not export is compiled in directly.
 add_executable(slideio_processor_algorithm_tests
     test_registry.cpp
     test_colour_convert.cpp
@@ -13,13 +13,24 @@ add_executable(slideio_processor_algorithm_tests
     test_threshold_fixed.cpp
     test_threshold_otsu.cpp
     test_threshold_adaptive.cpp
+    test_gaussian_blur.cpp
+    test_derivatives.cpp
+    test_median_blur.cpp
+    test_morphology.cpp
+    test_bilateral_filter.cpp
+    test_canny.cpp
+    test_cv_plane.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/cv_plane.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
 )
 target_link_libraries(slideio_processor_algorithm_tests PRIVATE
     slideio-processor-engine slideio_processor_pipeline_test_support rapidjson GTest::gtest_main)
+# The derivative tests compare their coefficients with OpenCV's own kernels and
+# filters, so OpenCV's image processing is linked here, for the tests only.
+target_link_libraries(slideio_processor_algorithm_tests PRIVATE opencv_core opencv_imgproc)
 target_include_directories(slideio_processor_algorithm_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/algorithm

@@ -26,4 +26,37 @@ OperationFactoryPtr makeTypeConvertFactory();
 /// pixel.stain_deconvolution
 OperationFactoryPtr makeStainDeconvolutionFactory();
 
+/// pixel.gaussian_blur
+OperationFactoryPtr makeGaussianBlurFactory();
+
+/// pixel.median_blur
+OperationFactoryPtr makeMedianBlurFactory();
+
+/// pixel.sobel
+OperationFactoryPtr makeSobelFactory();
+
+/// pixel.scharr
+OperationFactoryPtr makeScharrFactory();
+
+/// pixel.laplacian
+OperationFactoryPtr makeLaplacianFactory();
+
+/// pixel.morph_erode
+OperationFactoryPtr makeErodeFactory();
+
+/// pixel.morph_dilate
+OperationFactoryPtr makeDilateFactory();
+
+/// pixel.morph_open
+OperationFactoryPtr makeOpenFactory();
+
+/// pixel.morph_close
+OperationFactoryPtr makeCloseFactory();
+
+/// pixel.bilateral_filter
+OperationFactoryPtr makeBilateralFilterFactory();
+
+/// pixel.canny
+OperationFactoryPtr makeCannyFactory();
+
 } // namespace slideio::processor::detail
