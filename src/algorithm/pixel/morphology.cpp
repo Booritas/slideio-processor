@@ -160,6 +160,7 @@ public:
         halo_ = Halo{reach * (element_.width() / 2), reach * (element_.height() / 2),
                      reach * (element_.width() / 2), reach * (element_.height() / 2)};
         setCount_ = setCountOf(element_);
+        threads_ = std::max(1, cv::getNumThreads());
     }
 
     const char* name() const override { return spec_.name; }
@@ -268,7 +269,7 @@ private:
         const int64_t filter = rectangle ? 0 : 17 * setCount_;
         const int64_t engine = ring + rows + filter + kEngineObjects + 8 * detail::kAllocatorBlockOverhead +
                                2 * detail::kCvMatBookkeeping;
-        const int64_t threads = cv::getNumThreads();
+        const int64_t threads = threads_;
         const int64_t perThread = kSample * (127 + kw) * (127 + kh) + (rectangle ? 256 * (127 + kh) : 0) +
                                   8 * (127 + kh) + 2 * detail::kCvMatBookkeeping;
         return engine + (threads > 1 ? threads * perThread : 0);
@@ -376,6 +377,9 @@ private:
     int32_t iterations_;
     Halo halo_{};
     int64_t setCount_ = 0;
+    // OpenCV's thread count when the operation was built, so that the declared
+    // working set stays constant for the operation's life.
+    int64_t threads_ = 1;
     OperationParameters parameters_;
 };
 

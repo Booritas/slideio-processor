@@ -81,7 +81,7 @@ class CannyOperation : public Operation {
 public:
     CannyOperation(double lowThreshold, double highThreshold, int32_t apertureSize)
         : low_(lowThreshold), high_(highThreshold), aperture_(apertureSize),
-          halo_(apertureSize / 2 + 1 + kHysteresisReach) {
+          halo_(apertureSize / 2 + 1 + kHysteresisReach), threads_(std::max(1, cv::getNumThreads())) {
         parameters_.setDouble("lowThreshold", lowThreshold)
             .setDouble("highThreshold", highThreshold)
             .setInt("apertureSize", apertureSize);
@@ -112,7 +112,7 @@ public:
     // 134 rows of 32-bit row sums Sobel's tiled path holds (filter.simd.hpp,
     // TiledFilterInvoker); then the shared stack's and the maps' bookkeeping.
     int64_t workingSetBytesPerTile() const override {
-        const int64_t threads = std::max(1, cv::getNumThreads());
+        const int64_t threads = threads_;
         const int64_t perStripe = 8192 + (threads > 1 ? 134 * 134 + 134 * 512 + 2 * detail::kCvMatBookkeeping : 0);
         return threads * perStripe + 1024;
     }
@@ -181,6 +181,9 @@ private:
     double high_;
     int32_t aperture_;
     int32_t halo_;
+    // OpenCV's thread count when the operation was built, so that the declared
+    // working set stays constant for the operation's life.
+    int64_t threads_;
     OperationParameters parameters_;
 };
 
