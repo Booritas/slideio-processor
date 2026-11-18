@@ -160,7 +160,6 @@ public:
         halo_ = Halo{reach * (element_.width() / 2), reach * (element_.height() / 2),
                      reach * (element_.width() / 2), reach * (element_.height() / 2)};
         setCount_ = setCountOf(element_);
-        detail::useSequentialOpenCv();
     }
 
     const char* name() const override { return spec_.name; }
@@ -191,6 +190,7 @@ public:
     }
 
     void apply(OperationContext& context) override {
+        detail::useSequentialOpenCv(spec_.name);
         const BlockView& in = context.input();
         BlockView& out = context.output();
         const Rect64 tile = context.tileRectAtLevel();

@@ -40,13 +40,16 @@ cv::Mat planeAsMat(const BlockView& view, int32_t plane);
 /// own threads would oversubscribe the cores, make an operation's working set
 /// depend on the host's core count, and allocate on threads the memory
 /// accounting does not see. OpenCV is linked privately into the engine, so
-/// nothing else changes its thread count. Call it from the constructor of
-/// every operation whose apply() calls OpenCV, never from a static
-/// initialiser: OpenCV's own statics may not exist yet. A cv::Exception is
-/// translated by translateCv into an InternalError (std::bad_alloc when
-/// OpenCV is out of memory), and a later call tries again.
+/// nothing else changes its thread count. Call it at the start of the
+/// apply() of every operation that calls OpenCV, before its first OpenCV
+/// call; never from a constructor or a static initialiser: the built-in
+/// factories build a default operation while the library loads, when
+/// OpenCV's own statics may not exist yet. After the first call it only
+/// checks a once-flag. A cv::Exception is translated by translateCv(operationName)
+/// into an InternalError (std::bad_alloc when OpenCV is out of memory), and a
+/// later call tries again.
 /// @par Thread-safety
 /// Safe to call from any thread, any number of times.
-void useSequentialOpenCv();
+void useSequentialOpenCv(const char* operationName);
 
 } // namespace slideio::processor::detail

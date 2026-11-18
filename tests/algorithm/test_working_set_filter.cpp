@@ -8,7 +8,9 @@
 #include <slideio/processor/pipeline/pipeline.hpp>
 
 #include <algorithm/support/allocation_meter.hpp>
+#include <algorithm/support/harness.hpp>
 #include <algorithm/support/working_set_check.hpp>
+#include <detail/cv_plane.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/run_plan.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -96,6 +98,11 @@ int64_t cannyShare(const Operation& op, DataType, int64_t width, int64_t height)
     return w * h + (h + 2) * (w + 128) + 2 * 2 * w * h;
 }
 
+// The first apply() of an operation that calls OpenCV makes OpenCV sequential.
+// A test that meters one makes the switch before any meter starts, so no
+// measured call includes it and every one measures the sequential path.
+void sequentialBeforeMetering(const char* operationName) { detail::useSequentialOpenCv(operationName); }
+
 OperationParameters morphologyParameters(const char* shape, int64_t width, int64_t height, int64_t iterations) {
     OperationParameters p;
     p.setString("shape", shape).setInt("elementWidth", width).setInt("elementHeight", height).setInt("iterations",
@@ -142,6 +149,7 @@ TEST(WorkingSetFilter, MedianBlurDeclarationBoundsTheMeasuredPeak) {
     // pixel.median_blur: the default on every type; OpenCV's Byte paths (the
     // sorting network, the histogram paths); the largest kernel on the
     // module's own path.
+    sequentialBeforeMetering("pixel.median_blur");
     for (DataType type : ts::kAllDataTypes) {
         expectApplyBounded("median_blur default",
                            [] { return createOperation("pixel.median_blur", OperationParameters()); }, {type},
@@ -171,6 +179,7 @@ TEST(WorkingSetFilter, BilateralFilterDeclarationBoundsTheMeasuredPeak) {
 TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
     // pixel.canny: the default and every aperture, thresholds that keep many
     // edges and none.
+    sequentialBeforeMetering("pixel.canny");
     expectApplyBounded("canny default", [] { return createOperation("pixel.canny", OperationParameters()); },
                        {DataType::Byte}, cannyShare);
     for (int32_t aperture : {3, 5, 7}) {
@@ -182,24 +191,29 @@ TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
     }
 }
 
-// The engine's OpenCV is private to it and made sequential when an operation
-// that calls it is built, so the tile workers are its only parallelism. It is
-// set once per process, so each test proves its own constructor only when it
-// runs in a process of its own, as ctest runs every discovered test; a later
-// test in the same process cannot tell which constructor set it.
-TEST(WorkingSetFilter, OpenCvIsSequentialOnceCannyExists) {
-    const OperationPtr op = OperationCatalog::instance().create("pixel.canny", OperationParameters());
-    EXPECT_EQ(cv::getNumThreads(), 1);
+// The engine's OpenCV is private to it and made sequential by the first apply()
+// of an operation that calls it, so the tile workers are its only parallelism.
+// It is set once per process, and no apply() of such an operation runs before
+// main() (registering the catalog only builds operations), so each test proves
+// its own operation's apply() only when it runs in a process of its own, as
+// ctest runs every discovered test; a later test in the same process cannot
+// tell which apply() set it.
+void expectSequentialAfterApply(const char* name, DataType type) {
+    const OperationPtr op = OperationCatalog::instance().create(name, OperationParameters());
+    ts::applyDirect(*op, {type}, {0}, 16, 16, [](int32_t, int64_t x, int64_t y) { return double((x * y) % 7); });
+    EXPECT_EQ(cv::getNumThreads(), 1) << name;
 }
 
-TEST(WorkingSetFilter, OpenCvIsSequentialOnceMorphologyExists) {
-    const OperationPtr op = OperationCatalog::instance().create("pixel.morph_erode", OperationParameters());
-    EXPECT_EQ(cv::getNumThreads(), 1);
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceCannyApplies) {
+    expectSequentialAfterApply("pixel.canny", DataType::Byte);
 }
 
-TEST(WorkingSetFilter, OpenCvIsSequentialOnceMedianExists) {
-    const OperationPtr op = OperationCatalog::instance().create("pixel.median_blur", OperationParameters());
-    EXPECT_EQ(cv::getNumThreads(), 1);
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceMorphologyApplies) {
+    expectSequentialAfterApply("pixel.morph_erode", DataType::Byte);
+}
+
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceMedianApplies) {
+    expectSequentialAfterApply("pixel.median_blur", DataType::Byte);
 }
 
 // Canny's declaration at a 1024-pixel tile with the default parameters stays
@@ -207,8 +221,12 @@ TEST(WorkingSetFilter, OpenCvIsSequentialOnceMedianExists) {
 // through cv::fastMalloc, which the meter does not see. The stack of edge
 // pixels, the part that depends on the image, is near its largest: one
 // column in three is a bright line, every one of whose pixels is a strong edge.
+// Only MSVC's figure can fail it: under libstdc++ and libc++ the declaration,
+// 18 bytes per pixel, is already below 3 x the unmetered share alone, about 6
+// per pixel, so those figures are held only by the bound test above.
 TEST(WorkingSetFilter, CannyDeclarationIsTight) {
     constexpr int64_t kTile = 1024;
+    sequentialBeforeMetering("pixel.canny");
     const OperationPtr op = OperationCatalog::instance().create("pixel.canny", OperationParameters());
     const int64_t measured = ts::measureApplyPeak(*op, {DataType::Byte}, {0}, kTile, kTile,
                                                   [](int32_t, int64_t x, int64_t) { return x % 3 == 2 ? 255.0 : 0.0; });
@@ -223,6 +241,7 @@ TEST(WorkingSetFilter, MorphologyDeclarationsBoundTheMeasuredPeak) {
     // The four morphology operations: the default; the largest rectangle and
     // cross; a rectangle iterated 64 times; a large rectangle on the float
     // path, whose cost grows with the element's area.
+    sequentialBeforeMetering("pixel.morph_erode");
     for (const char* name : {"pixel.morph_erode", "pixel.morph_dilate", "pixel.morph_open", "pixel.morph_close"}) {
         const std::string op(name);
         for (DataType type : kMorphologyTypes) {

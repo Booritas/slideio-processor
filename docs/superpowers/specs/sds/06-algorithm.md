@@ -439,9 +439,11 @@ so OpenCV's own border rule never reaches an output pixel.
 
 **OpenCV runs single-threaded.** The engine links its own OpenCV privately
 and makes it sequential (`cv::setNumThreads(0)`, once per process, through the
-private `detail::useSequentialOpenCv`) when an operation that calls it is
-built: Canny, the four morphology operations and the median; never from a
-static initialiser, before OpenCV's own statics may exist. The pipeline's tile
+private `detail::useSequentialOpenCv`) at the start of each `apply()` of an
+operation that calls it: Canny, the four morphology operations and the median.
+Never when an operation is built: the built-in factories build a default
+operation while the library loads (6.1), when OpenCV's own statics may not
+exist yet. The pipeline's tile
 workers (5.5) are then the only parallelism: OpenCV's threads would
 oversubscribe the cores those workers already occupy, make Canny's and
 morphology's working sets depend on the host's core count, and allocate where

@@ -59,8 +59,10 @@ constexpr int64_t kEdgeStackFixedBytes = 17408;
 #elif defined(__GLIBCXX__)
 // libstdc++ (bits/stl_deque.h, __deque_buf_size, _M_initialize_map,
 // _M_reallocate_map): nodes of 64 entries (512 bytes, 8 per entry); a map of
-// node pointers of size + max(size, added) + 2 when it grows, old and new
-// together at most 3 pointers per node plus a few (0.4 per entry). Fixed: a
+// node pointers, grown to map size + max(map size, added) + 2 with the nodes
+// re-centred in it; a deque that grows at one end fills the map up to about
+// 1.5 pointers per node, and the old and new maps live together while it
+// grows, about 4.5 pointers per node (0.56 per entry). Fixed: a
 // partly filled node at either end, and each of the three deques' first map of
 // 8 pointers and first node even while empty, 2 x 512 + 3 x 576.
 constexpr int64_t kEdgeStackBytesPerEntry = 9;
@@ -118,7 +120,6 @@ public:
     CannyOperation(double lowThreshold, double highThreshold, int32_t apertureSize)
         : low_(lowThreshold), high_(highThreshold), aperture_(apertureSize),
           halo_(apertureSize / 2 + 1 + kHysteresisReach) {
-        detail::useSequentialOpenCv();
         parameters_.setDouble("lowThreshold", lowThreshold)
             .setDouble("highThreshold", highThreshold)
             .setInt("apertureSize", apertureSize);
@@ -151,6 +152,7 @@ public:
     int64_t workingSetBytesPerTile() const override { return 8192 + 1024 + kEdgeStackFixedBytes; }
 
     void apply(OperationContext& context) override {
+        detail::useSequentialOpenCv(kName);
         const BlockView& in = context.input();
         BlockView& out = context.output();
         const Rect64 tile = context.tileRectAtLevel();

@@ -94,13 +94,13 @@ void translateCv(const char* operationName) {
     }
 }
 
-void useSequentialOpenCv() {
+void useSequentialOpenCv(const char* operationName) {
     static std::once_flag once;
     try {
         // An exception leaves the flag unset, so a later call tries again.
         std::call_once(once, [] { cv::setNumThreads(0); });
     } catch (const cv::Exception&) {
-        translateCv("useSequentialOpenCv");
+        translateCv(operationName);
     }
 }
 
