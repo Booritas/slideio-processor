@@ -123,7 +123,12 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   the point operations — fixed, Otsu and adaptive thresholds, explicit type
   conversion, colour space conversion and stain deconvolution. Filters and
   morphology follow in plan B, segmentation and measurements in plan C.
-  **Implemented** on branch `feat/algorithm-a`, awaiting review and merge.
+  **Delivered** as PR #12 (merged 2026-11-18).
+- [Algorithm implementation plan B](superpowers/plans/2026-11-18-algorithm-b.md) —
+  plan B of three: the eleven filter and morphology operations — Gaussian,
+  median, Sobel, Scharr, Laplacian, Canny with its declared hysteresis bound,
+  bilateral, and erode, dilate, open and close with structuring elements.
+  **Planned.**
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
