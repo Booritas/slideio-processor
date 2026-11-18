@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -249,12 +250,14 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
       halo_(0),
       rotateRings_(false),
       finishMinArea_(0.0),
-      finishTag_(false) {
+      finishTag_(false),
+      finishContext_(false) {
     parameters_.getBool("seams", seams_);
     parameters_.getBool("haloScan", haloScan_);
     parameters_.getBool("rotateRings", rotateRings_);
     parameters_.getDouble("finishMinArea", finishMinArea_);
     parameters_.getBool("finishTag", finishTag_);
+    parameters_.getBool("finishContext", finishContext_);
     int64_t halo = 0;
     parameters_.getInt("halo", halo);
     if (halo < 0 || halo > 1024) {
@@ -275,10 +278,14 @@ const OperationParameters& ComponentsOperation::parameters() const { return para
 bool ComponentsOperation::producesObjects() const { return true; }
 int32_t ComponentsOperation::outputPlaneCount(int32_t) const { return 1; }
 
-bool ComponentsOperation::finishObject(ObjectRecord& record, const ObjectFinishContext&) const {
+bool ComponentsOperation::finishObject(ObjectRecord& record, const ObjectFinishContext& context) const {
     Measurement area;
     if (record.measurements().find("area", area) && area.value() < finishMinArea_) {
         return false;
+    }
+    if (finishContext_) {
+        record.measurements().set("finishPixelSize", context.pixelSizeMicrons, MeasurementUnit::Micrometres);
+        record.measurements().set("finishLevel", static_cast<double>(context.level), MeasurementUnit::Dimensionless);
     }
     if (finishTag_) {
         record.measurements().set("finished", 1.0, MeasurementUnit::Dimensionless);
@@ -520,6 +527,53 @@ void FloatOnlyOperation::apply(OperationContext& context) {
     copyTileAsFloat(context, context.input().planeCount());
 }
 
+// --- PixelSizeProbeOperation ------------------------------------------------------
+
+namespace {
+
+std::mutex probeMutex;
+std::vector<double> probePixelSizes;
+std::vector<int32_t> probeLevels;
+
+} // namespace
+
+PixelSizeProbeOperation::PixelSizeProbeOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+
+const char* PixelSizeProbeOperation::name() const { return "test.pixelSizeProbe"; }
+ChannelArity PixelSizeProbeOperation::arity() const { return ChannelArity::PerChannel; }
+bool PixelSizeProbeOperation::requiresUniformTypes() const { return false; }
+DataTypeSet PixelSizeProbeOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
+Halo PixelSizeProbeOperation::halo() const { return Halo::none(); }
+DataType PixelSizeProbeOperation::outputType(DataType) const { return DataType::Float32; }
+const OperationParameters& PixelSizeProbeOperation::parameters() const { return parameters_; }
+
+void PixelSizeProbeOperation::reset() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    probePixelSizes.clear();
+    probeLevels.clear();
+}
+
+std::vector<double> PixelSizeProbeOperation::seenPixelSizes() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    return probePixelSizes;
+}
+
+std::vector<int32_t> PixelSizeProbeOperation::seenLevels() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    return probeLevels;
+}
+
+void PixelSizeProbeOperation::apply(OperationContext& context) {
+    {
+        std::lock_guard<std::mutex> lock(probeMutex);
+        probePixelSizes.push_back(context.pixelSizeMicrons());
+        probeLevels.push_back(context.level());
+    }
+    copyTileAsFloat(context, context.input().planeCount());
+}
+
 // --- WorkingSetOperation ----------------------------------------------------------
 
 namespace {
@@ -630,6 +684,12 @@ OperationFactoryPtr makeFloatOnlyFactory() {
         "Analytic: out = in", "O(n) in the number of samples");
 }
 
+OperationFactoryPtr makePixelSizeProbeFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<PixelSizeProbeOperation>(p); },
+        "Analytic: out = in, as Float32", "O(n) in the number of samples");
+}
+
 OperationFactoryPtr makeWorkingSetFactory() {
     return std::make_shared<PrototypeFactory>(
         [](const OperationParameters& p) -> OperationPtr { return std::make_shared<WorkingSetOperation>(p); },
@@ -640,7 +700,7 @@ void registerTestOperations() {
     OperationCatalog& catalog = OperationCatalog::instance();
     for (const OperationFactoryPtr& factory :
          {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory(), makeWholeLevelFactory(),
-          makeJointUniformFactory(), makeFloatOnlyFactory(), makeWorkingSetFactory()}) {
+          makeJointUniformFactory(), makeFloatOnlyFactory(), makeWorkingSetFactory(), makePixelSizeProbeFactory()}) {
         if (!catalog.isRegistered(factory->name())) {
             catalog.registerFactory(factory);
         }

@@ -41,6 +41,7 @@ add_executable(slideio_processor_pipeline_tests
     test_global_context.cpp
     test_lazy_scene.cpp
     test_object_finishing.cpp
+    test_pixel_size.cpp
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
@@ -65,6 +66,7 @@ add_executable(slideio_processor_pipeline_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/pixel_size.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/plane_buffers.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/restriction.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/scene_reader.cpp

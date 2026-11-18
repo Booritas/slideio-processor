@@ -98,6 +98,10 @@ double OperationContext::levelScale() const noexcept {
     return impl_->state.levelScale;
 }
 
+double OperationContext::pixelSizeMicrons() const noexcept {
+    return impl_->state.pixelSizeMicrons;
+}
+
 Point64 OperationContext::toLevel0(Point64 levelPoint) const noexcept {
     return Point64{detail::levelToLevel0(levelPoint.x, impl_->state.levelScale),
                    detail::levelToLevel0(levelPoint.y, impl_->state.levelScale)};

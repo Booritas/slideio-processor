@@ -322,6 +322,17 @@ public:
     /// @par Requirements
     /// UR-SEG-4
     double  levelScale() const noexcept;
+    /// The pixel size of the slide at level 0, in micrometres: the mean of the
+    /// scene's x and y resolution when both are positive and agree to within one
+    /// part in a million, else 0 (unknown or anisotropic). It is the same at every
+    /// analysis level; multiply by levelScale() for the size of a level pixel.
+    /// @return The level-0 pixel size in micrometres; 0 when unknown.
+    /// @throws Nothing.
+    /// @par Thread-safety
+    /// ThreadConfined.
+    /// @par Requirements
+    /// UR-SEG-5
+    double pixelSizeMicrons() const noexcept;
     /**
      * @brief Maps a point from the analysis level to level 0.
      * @param levelPoint The point in level coordinates.

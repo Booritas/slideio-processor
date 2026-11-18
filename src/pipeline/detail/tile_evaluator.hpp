@@ -52,6 +52,9 @@ struct Bindings {
     const PipelineSpec* spec = nullptr;            ///< For the channels and the restriction; required.
     const LevelSelector* selector = nullptr;       ///< For the restriction's mapping; required.
     RunCounters* counters = nullptr;               ///< Required.
+    /// The scene's level-0 pixel size in micrometres, what operations read as
+    /// OperationContext::pixelSizeMicrons(); 0 when unknown.
+    double pixelSizeMicrons = 0.0;
     /// Charged for the restriction's cached anchor masks (RestrictionFilter);
     /// null: they are not charged. Borrowed; must outlive the evaluator.
     MemoryBudget* memoryBudget = nullptr;

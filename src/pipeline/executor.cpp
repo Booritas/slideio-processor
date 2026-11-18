@@ -6,6 +6,7 @@
 #include <pipeline/detail/instance_slots.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/pixel_size.hpp>
 #include <pipeline/detail/restriction.hpp>
 #include <pipeline/detail/seam_merge_failure.hpp>
 #include <pipeline/detail/seam_merger_access.hpp>
@@ -481,14 +482,14 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
 
     // Every object, from a tile or merged, reaches the sink through its
     // producer's finishObject(). A layer has one producer (validate() checks).
-    // The pixel size is not known to the run yet: 0.
+    const double pixelSizeMicrons = detail::levelZeroPixelSizeMicrons(*state.scene);
     std::vector<std::pair<LayerId, const Operation*>> producers;
     for (size_t k = 0; k < operations.size(); ++k) {
         if (operations[k]->producesObjects()) {
             producers.emplace_back(plan.targetLayers[k], operations[k].get());
         }
     }
-    detail::FinishingSink finishing(sink, std::move(producers), 0.0, plan.level, &state.counters.droppedByFilter);
+    detail::FinishingSink finishing(sink, std::move(producers), pixelSizeMicrons, plan.level, &state.counters.droppedByFilter);
 
     detail::Bindings bindings;
     bindings.objectSink = &finishing;
@@ -500,6 +501,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
+    bindings.pixelSizeMicrons = pixelSizeMicrons;
     bindings.memoryBudget = &budget;
     if (merger) {
         // Fragments are partial by definition, so they bypass the tile-ownership

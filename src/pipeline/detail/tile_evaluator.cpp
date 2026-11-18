@@ -266,6 +266,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.tileRect = rectToLevel0(outputRect, plan_.levelScale);
         state.haloRect = rectToLevel0(currentRect, plan_.levelScale);
         state.levelScale = plan_.levelScale;
+        state.pixelSizeMicrons = bindings_.pixelSizeMicrons;
         state.channels = &bindings_.spec->channels();
         state.cancellation = &token;
         state.mask = tileMask;

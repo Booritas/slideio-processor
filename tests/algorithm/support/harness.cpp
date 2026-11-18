@@ -75,7 +75,7 @@ BlockView viewOf(int64_t width, int64_t height, std::vector<std::vector<uint8_t>
 using Around = std::function<void(const ApplyCall& apply)>;
 
 void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t width, int64_t height,
-               const Halo& halo, const Around& around) {
+               const Halo& halo, const Around& around, double pixelSizeMicrons) {
     detail::OperationContextState state;
     state.input = &input;
     state.output = &output;
@@ -84,6 +84,7 @@ void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t
     state.haloRectAtLevel = state.haloRect =
         Rect64{-halo.left, -halo.top, width + halo.left + halo.right, height + halo.top + halo.bottom};
     state.levelScale = 1.0;
+    state.pixelSizeMicrons = pixelSizeMicrons;
     state.tileIndex = 0;
     // The context is complete before the call is made, so a caller measuring
     // the call sees apply() alone.
@@ -112,7 +113,7 @@ std::vector<std::vector<uint8_t>> encodePlanes(const std::vector<DataType>& inpu
 
 Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
                int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
-               const Around& around);
+               const Around& around, double pixelSizeMicrons);
 
 } // namespace
 
@@ -130,31 +131,34 @@ double Image::at(int32_t plane, int64_t x, int64_t y) const {
 
 Image applyDirect(Operation& op, const std::vector<DataType>& inputTypes,
                   const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel) {
+                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                  double pixelSizeMicrons) {
     return applyDirectRaw(op, inputTypes, sourceChannels, width, height,
-                          encodePlanes(inputTypes, width, height, pixel));
+                          encodePlanes(inputTypes, width, height, pixel),
+                          pixelSizeMicrons);
 }
 
 Image applyDirectAround(Operation& op, const std::vector<DataType>& inputTypes,
                         const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                         const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
-                        const std::function<void(const ApplyCall& apply)>& around) {
+                        const std::function<void(const ApplyCall& apply)>& around,
+                        double pixelSizeMicrons) {
     return applyRaw(op, inputTypes, sourceChannels, width, height, encodePlanes(inputTypes, width, height, pixel),
-                    around);
+                    around, pixelSizeMicrons);
 }
 
 Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
                      const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                     const std::vector<std::vector<uint8_t>>& rawPlanes) {
+                     const std::vector<std::vector<uint8_t>>& rawPlanes, double pixelSizeMicrons) {
     return applyRaw(op, inputTypes, sourceChannels, width, height, rawPlanes,
-                    [](const ApplyCall& apply) { apply(); });
+                    [](const ApplyCall& apply) { apply(); }, pixelSizeMicrons);
 }
 
 namespace {
 
 Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
                int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
-               const Around& around) {
+               const Around& around, double pixelSizeMicrons) {
     if (inputTypes.empty() || inputTypes.size() != sourceChannels.size() || inputTypes.size() != rawPlanes.size()) {
         throw std::invalid_argument("applyDirectRaw: one type, channel and plane per input plane");
     }
@@ -201,12 +205,12 @@ Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std
     if (op.arity() == ChannelArity::Joint) {
         const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, 0, in.size());
         BlockView output = viewOf(width, height, out.planes, out.types, outChannels, 0, out.planes.size());
-        applyOnce(op, input, output, width, height, halo, around);
+        applyOnce(op, input, output, width, height, halo, around, pixelSizeMicrons);
     } else {
         for (size_t p = 0; p < in.size(); ++p) {
             const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, p, 1);
             BlockView output = viewOf(width, height, out.planes, out.types, outChannels, p, 1);
-            applyOnce(op, input, output, width, height, halo, around);
+            applyOnce(op, input, output, width, height, halo, around, pixelSizeMicrons);
         }
     }
     return out;

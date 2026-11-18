@@ -33,6 +33,8 @@ struct OperationContextState {
     Rect64 tileRectAtLevel{0, 0, 0, 0}, haloRectAtLevel{0, 0, 0, 0}, tileRect{0, 0, 0, 0},
         haloRect{0, 0, 0, 0};
     double levelScale = 1.0;
+    /// The scene's level-0 pixel size in micrometres; 0 when unknown.
+    double pixelSizeMicrons = 0.0;
     const ChannelSelection* channels = nullptr;
     const CancellationToken* cancellation = nullptr;
     const RasterMask* mask = nullptr;

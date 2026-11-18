@@ -22,6 +22,7 @@ add_library(slideio-processor-pipeline OBJECT
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
     detail/pipeline_scene_source.cpp
+    detail/pixel_size.cpp
     detail/plane_buffers.cpp
     detail/run_plan.cpp
     detail/restriction.cpp

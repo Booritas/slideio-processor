@@ -173,6 +173,7 @@ slideio::SceneMetadata SyntheticSource::metadata() const {
     const SyntheticLevel& base = levels_.front();
     m.rect = slideio::Rect(0, 0, static_cast<int32_t>(base.width), static_cast<int32_t>(base.height));
     m.channelDataTypes = channelTypes_;
+    m.resolution = slideio::Resolution(resolutionX_, resolutionY_);
     for (size_t i = 0; i < levels_.size(); ++i) {
         const SyntheticLevel& l = levels_[i];
         const double scale = static_cast<double>(l.width) / static_cast<double>(base.width);
@@ -195,6 +196,11 @@ std::vector<int> SyntheticSource::readLevels() const {
 void SyntheticSource::failReadsWith(const std::string& what) {
     std::lock_guard<std::mutex> lock(mutex_);
     failure_ = what;
+}
+
+void SyntheticSource::setResolution(double x, double y) {
+    resolutionX_ = x;
+    resolutionY_ = y;
 }
 
 std::shared_ptr<slideio::Scene> makeSyntheticScene(const std::shared_ptr<SyntheticSource>& source) {
