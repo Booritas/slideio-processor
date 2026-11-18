@@ -133,7 +133,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   every operation declares the working memory one tile needs beyond the
   framework's buffers, and the per-tile memory reservation counts it, so the
   memory ceiling bounds operations' own scratch too. Precedes algorithm plan C.
-  **Planned.**
+  **Implemented** on branch `feat/working-set`, awaiting review and merge.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

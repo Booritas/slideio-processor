@@ -151,6 +151,7 @@ public:
     virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
+    virtual int64_t workingSetBytesPerTile() const;                   // 0
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
@@ -158,7 +159,7 @@ using OperationPtr = std::shared_ptr<Operation>;
 **Thread-safety:** `Operation` implementations must be reentrant — `apply` is
 called concurrently on different tiles. `OperationContext` is ThreadConfined,
 one per tile. **Requirements:** UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4,
-UR-IMG-11.
+UR-IMG-11, UR-EXE-2.
 
 This is the public extension interface, and built-in operations use it with no
 privileged access to internals (UR-EXT-2). Its acceptance criterion is that at
@@ -180,7 +181,7 @@ run starts:
   halo of 0 for an operation that needs one produces a detectable seam, which
   is the test that confirms the mechanism is what provides correctness.
 
-Four further declarations have defaults, so an ordinary tiled operation that
+Five further declarations have defaults, so an ordinary tiled operation that
 only produces a raster overrides none of them:
 
 - `tileRequirement()` — `Halo` says the operation needs its tile plus
@@ -196,9 +197,14 @@ only produces a raster overrides none of them:
   Forcing one tile rather than throwing on a configured size that does not
   cover the level is deliberate: the default size comes from
   `tileSizeFromSlide`, which is not a choice about this operation.
-- `workingSetBytesPerLevelPixel()` — the operation's private state per level
-  pixel, excluding the input and output blocks the framework already counts.
-  It is what turns "fits at level 4" into a check with numbers in it.
+- `workingSetBytesPerLevelPixel()` — the operation's own working memory per
+  pixel of the rect one `apply()` call is given, excluding the input and output
+  blocks the framework already counts. One meaning serves both layouts: for a
+  `Halo` operation the rect is the tile grown by the halo, for a `WholeLevel`
+  operation it is the level. A `PerChannel` operation counts one plane, since
+  it is applied one plane at a time, and the same figure covers `accumulate()`
+  in a global-context pass. It is what turns "fits at level 4" into a check
+  with numbers in it, and what each tile's memory reservation counts (5.5).
 - `producesObjects()` — true when the operation emits objects, and therefore
   has a target layer: the string parameter `"targetLayer"`, which
   `validate()` resolves against `Pipeline::bindLayer` (5.5) and
@@ -206,8 +212,24 @@ only produces a raster overrides none of them:
 - `outputPlaneCount(n)` — how many planes a `Joint` operation writes for `n`
   input planes. Not consulted for `PerChannel` operations, which are applied
   one plane at a time and so yield one plane per input plane.
+- `workingSetBytesPerTile()` — the operation's own working memory per
+  `apply()` or `accumulate()` call that does not scale with the pixels: a
+  window's copy, a histogram's bins, a kernel's coefficients. Like the
+  per-pixel figure it excludes the framework's blocks and may depend on the
+  parameters. Together the two bound what one call holds beyond its input and
+  output: the rect's area × `workingSetBytesPerLevelPixel()` +
+  `workingSetBytesPerTile()`.
 
-Every declaration, these four included, must be constant for the life of the
+The two working-set figures are upper bounds, not estimates: an operation that
+allocates more than it declares lets a run exceed its memory ceiling. A
+negative figure counts as 0. An operation that calls into a library whose
+allocations it cannot see, such as the backend's internal buffers, declares
+that library's share from the library's source; when the backend gives each of
+its threads its own buffers, the figure includes one share per backend thread.
+The figures are per call: memory an operation keeps between calls is not part
+of them (5.5, "Memory").
+
+Every declaration, these five included, must be constant for the life of the
 operation; the framework reads them once, before the run.
 
 `Halo::uniform` throws `InvalidArgumentError` for a negative width and is
@@ -409,6 +431,7 @@ public:
     virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
+    virtual int64_t workingSetBytesPerTile() const;                   // 0
 };
 using OperationFactoryPtr = std::shared_ptr<OperationFactory>;
 
@@ -434,6 +457,7 @@ public:
     int64_t workingSetBytesPerLevelPixel(const char* name) const;
     bool producesObjects(const char* name) const;
     int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
+    int64_t workingSetBytesPerTile(const char* name) const;
 
     /// Emits the operation-by-type support matrix as CSV, generated from the
     /// same declarations the runtime enforces.
@@ -473,10 +497,11 @@ naming a null or unknown name.
 operation's `name()`, `arity()`, `requiresUniformTypes()`, `supportedTypes()` or
 `producesObjects()` differs from the factory's, naming the field. Those five do
 not depend on the parameters, so the factory can state them exactly. `halo()`,
-`tileRequirement()`, `workingSetBytesPerLevelPixel()` and `outputPlaneCount()`
-can — a box filter's halo is its `radius` parameter — and a factory sees no
+`tileRequirement()`, `workingSetBytesPerLevelPixel()`, `outputPlaneCount()` and
+`workingSetBytesPerTile()` can — a box filter's halo is its `radius` parameter,
+a median's window copy grows with its kernel — and a factory sees no
 parameters when asked. On a factory, and through the matching catalog queries,
-those four therefore describe the operation built from **default** parameters,
+those five therefore describe the operation built from **default** parameters,
 and are not compared; the operation instance is authoritative for its own
 parameters, and `Pipeline::validate()` asks the instance. An exception other
 than a `ProcessorError` thrown by a factory surfaces as `InternalError` with the
@@ -914,12 +939,23 @@ this operation, so the chain is laid out for what it needs rather than refused.
 ```
 needed = levelPixels × (Σ input plane bytes + Σ output plane bytes over the chain
                         + Σ workingSetBytesPerLevelPixel)
+         + max workingSetBytesPerTile
 ```
 
-where `levelPixels` is the area of the grid region at the analysis level. When
+where `levelPixels` is the area of the grid region at the analysis level. The
+sum of every operation's per-pixel working set is a deliberately conservative
+bound — the operations run one after another, so only one of them holds its
+working set at a time — and the per-call figures add only the largest. When
 `needed` exceeds `MemoryBudget::ceilingBytes()`, `InvalidArgumentError` names
-the first whole-level operation, the level, `needed` and the ceiling. A chain of
-`Halo` operations is subject to neither rule.
+the first whole-level operation, the level, `needed` and the ceiling. When the
+plane bytes alone fit the ceiling, so that the working sets decide, the message
+also names the operation with the largest single working set (its level area ×
+per-pixel figure + per-call figure), even when it is the sum of the working
+sets, not that one, that exceeds the ceiling. The run's single tile is then
+also subject to the per-tile check under "Memory" below, which charges the
+largest working set, the whole-level operation's included, over the level as
+any tile charges its operations'. A chain of `Halo` operations is subject to
+neither whole-level rule.
 
 **The analysis level.** An explicit `analysisLevel(n)` is used as given, and
 `analysisLevel(-1)`, the default, resolves automatically. The spec carries no
@@ -931,7 +967,10 @@ budget and the per-tile bytes (below) fit the ceiling, skipping levels whose
 mapped region is empty. When no level fits, the coarsest level decides the
 error: if its whole-level budget does not fit, the whole-level budget error is
 reported; if the budget fits but its single tile's bytes do not, the per-tile
-error is reported. A caller that wants a coarser level states it, with `analysisLevel(n)`
+error is reported. Because the single tile's bytes include the whole-level
+operation's working set, the automatic choice can land on a coarser level than
+the whole-level budget alone would allow. A caller that wants a coarser level
+states it, with `analysisLevel(n)`
 or `LevelSelector::levelForScale`.
 
 **Memory.** Before it reads a tile a worker reserves that tile's bytes with
@@ -941,9 +980,39 @@ when one call reads every channel, else as large as the widest source plane),
 every intermediate, the auxiliary rasters (once, over the tile
 grown by the chain's halo) and the restriction mask, which is 1 byte per pixel
 for a rectangle-only restriction and 2 when a polygon or a `TileMaskSource` is
-involved. A tile whose bytes exceed the ceiling on its own throws
-`InvalidArgumentError` from `validate()`, naming the tile size and the ceiling,
-instead of waiting forever. `memoryBudget(nullptr)` restores the default budget,
+involved. To those framework buffers it adds the working set of the operation
+that declares the largest one:
+
+```
+haloArea = (tile width + chain halo left + right) × (tile height + chain halo top + bottom)
+tileNeed = haloArea × framework bytes per pixel
+         + max over operations of (haloArea × workingSetBytesPerLevelPixel
+                                   + workingSetBytesPerTile)
+```
+
+The operations run one after another on a tile, so a tile holds one working
+set at a time, and the largest bounds them all. The tile grown by the chain's
+halo bounds every operation's own input rect, so it is the area each per-pixel
+figure is charged against. Negative declarations count as 0 and the arithmetic
+saturates. A whole-level chain's single tile is the level, so its reservation
+charges the largest working set, the whole-level operation's among them, over
+the level. The
+eager run and the lazy mode reserve the same `tileNeed`. A tile whose bytes
+exceed the ceiling on its own throws `InvalidArgumentError` from `validate()`,
+naming the tile size, the tile size grown by the chain's halo, the bytes and
+the ceiling, instead of waiting forever; when the framework buffers alone fit,
+so that a working set decides, the message also names the operation with the
+largest working set.
+
+What the working-set figures do not cover is memory an operation keeps
+between calls. A global-context operation's pass-level state — the per-tile
+instances the ordered fold holds while they wait for their predecessors, each
+with its accumulated state, such as a thresholding operation's per-channel
+histograms (5.8) — lives outside every tile's reservation. With very large
+accumulated state, many channels and a fold running far ahead, a run can
+exceed the ceiling by that state.
+
+`memoryBudget(nullptr)` restores the default budget,
 `makeMemoryBudget(config.memoryCeilingBytes())`, which is also what a run uses
 when none was bound.
 
