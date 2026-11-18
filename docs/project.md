@@ -116,8 +116,14 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   plan C of three: `SeamMerger` (seam joining, incremental close, spilling that
   never waits for memory), the UR-SEG-3 tiling-invariance suite,
   `Pipeline::asScene()` with nested pipelines sharing one budget, and the
-  `pipeline_all.hpp` umbrella header. Completes the module. **Implemented** on
-  branch `feat/pipeline-c`, awaiting review and merge.
+  `pipeline_all.hpp` umbrella header. Completes the module. **Delivered** as
+  PR #11 (merged 2026-11-18).
+- [Algorithm implementation plan A](superpowers/plans/2026-11-18-algorithm-a.md) —
+  plan A of three for the `algorithm` module: the module and its registry, and
+  the point operations — fixed, Otsu and adaptive thresholds, explicit type
+  conversion, colour space conversion and stain deconvolution. Filters and
+  morphology follow in plan B, segmentation and measurements in plan C.
+  **Planned.**
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
