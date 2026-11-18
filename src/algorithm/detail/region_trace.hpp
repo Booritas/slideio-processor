@@ -11,7 +11,8 @@ namespace slideio::processor::detail {
 /// One traced ring: the vertices points[first .. first + count) of its
 /// TracedRegions, in pixel-corner coordinates relative to the buffer (pixel
 /// (x, y) spans x..x+1, y..y+1), listing only the vertices where the ring turns
-/// (a vertex where a ring touches itself appears twice).
+/// (a vertex where a ring touches itself appears twice), starting at its first
+/// topmost-then-leftmost vertex: the form the run normalises rings to.
 struct TracedRing {
     int64_t first = 0;
     int32_t count = 0;
@@ -24,8 +25,9 @@ struct TracedRing {
 struct TracedRegion {
     /// The region's label in the traced buffer; positive.
     int32_t label = 0;
-    /// The region's rings are rings[ringOrder[firstRing .. firstRing + ringCount)],
-    /// outer rings first, each kind in the order its rings are met.
+    /// The region's rings are rings[ringOrder[firstRing .. firstRing + ringCount)]:
+    /// outer rings first, in the order they are met, then holes ordered by first
+    /// vertex (y, then x), as the run orders them.
     int32_t firstRing = 0;
     int32_t ringCount = 0;
     /// True when a pixel of the region lies on the buffer's first or last row
@@ -80,6 +82,13 @@ struct TracedRegions {
 /// byte per pixel and 4 bytes per region, freed on return. The vertices are
 /// counted exactly before tracing: at a pixel corner, a label on one or three
 /// of the four pixels around it turns once, a label on two diagonal ones twice.
+///
+/// The label precondition holds for connected-component labels, numbered 1..K
+/// within the tile; other callers (contours, watershed) must renumber theirs.
+/// The count is exact for any labels, but the bound of at most two vertices per
+/// pixel corner that segment.connected_components declares holds only for
+/// foreground and background; labels whose regions touch side by side reach
+/// four, and such callers declare their own bound.
 TracedRegions traceRegions(const int32_t* labels, int64_t width, int64_t height, int64_t stride,
                            bool eightConnected);
 

@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-7, UR-ALG-6, UR-ALG-8
+// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-ALG-6, UR-ALG-8
 #include <slideio/processor/algorithm/segment/segment.hpp>
 
 #include <slideio/processor/core/block_view.hpp>
@@ -57,38 +57,47 @@ constexpr const char* kName = "segment.connected_components";
 constexpr const char* const kConnectivitySpellings[] = {"FourConnected", "EightConnected"};
 
 // What one apply() call allocates beyond the input and output blocks, per
-// pixel of the halo'd tile. The labels are written straight into the Int32
-// output plane, so labelling takes only the union-find parents: one int32 per
-// provisional label, at most one per two pixels, about 2 bytes per pixel,
-// freed before tracing. Tracing and emission allocate each array once, at a
-// size counted beforehand, so no array holds two blocks while growing. For N
-// tile pixels: at most K = N / 2 objects (no two foreground pixels side by
-// side belong to different ones), at most V = 2 N vertices (a pixel corner
-// has at most two foreground pixels, diagonal, of different objects, each
-// turning there once, or of one object, turning there twice) and at most V / 4
-// rings. In bytes per pixel:
-// - the traced regions: the label index (4 per label, 2), the regions (16 per
+// pixel of the halo'd tile, objects emitted included: the run's tile filter
+// and finishing sink handle each object inside apply(), so their copies count.
+// The labels are written straight into the Int32 output plane, so labelling
+// takes only the union-find parents (one int32 per provisional label, at most
+// one per two pixels: 2 bytes per pixel), freed before tracing. Tracing and
+// emission allocate each array once, at a size counted beforehand. For N tile
+// pixels: at most K = N / 2 objects (no two foreground pixels side by side
+// belong to different ones), at most V = 2 N vertices (a pixel corner has at
+// most two foreground pixels, diagonal, turning there once each or one object
+// turning there twice) and at most V / 4 rings. In bytes per pixel:
+// - the traced arrays: the label index (4 per label, 2), the regions (16 per
 //   object, 8), the vertices (16 each, 32), the rings (24 each, 12) and their
-//   order (4 each, 2): 56, plus while tracing either the visited flags (1) or
-//   a cursor per object (2);
-// - while emitting, with K objects: one IntensityPartial (48) per object and
-//   measured plane, 24 per plane, 72 for three planes (kMaxMeasuredPlanes); so
-//   56 + 72 = 128 on a 4-connected checkerboard, where every object is tiny;
-// - while emitting one large object instead: the buffer its longest ring is
-//   mapped in (16 per vertex), its polygon while built (16 per vertex and 9 per
-//   ring, with the vector's growth) and its record, then the run's tile filter
-//   normalising and finishing it. The meter measures 95 for the worst of these,
-//   an 8-connected checkerboard kept inside the tile: one object with a hole at
-//   every other pixel.
-// 160 covers 128 with room for the growth of the one large object's copies
-// under a doubling allocator (libstdc++). The meter measures at most 126 (MSVC,
-// 4-connected checkerboard, three planes) on the adversarial masks of
-// test_working_set_segment.cpp.
-constexpr int64_t kBytesPerPixel = 160;
-// Allocations that do not scale with the tile: the small vectors and the
-// record, polygon and measurement set of an object being emitted when it is
-// small.
-constexpr int64_t kBytesPerTile = 4096;
+//   order (4 each, 2): 56 at most; while tracing, also the visited flags (1)
+//   or a cursor per object (2).
+// - Many small objects (a 4-connected checkerboard): one IntensityPartial (48)
+//   per object and measured plane, 24 per plane, 72 for kMaxMeasuredPlanes
+//   (three): 56 + 72 = 128. Each object's own polygon, record and finished copy
+//   are emitted and freed one at a time: kBytesPerTile.
+// - One large object: the traced arrays (at most 46, with few regions), the
+//   buffer its longest ring is mapped in (16 per vertex, at most 32) and its
+//   polygon (16 per vertex and 9 per ring, at most 36.5) while it is built ring
+//   by ring, its points vector growing: old and new blocks together are at
+//   most 2.5 times the final size under MSVC's 1.5x growth and 3 times under
+//   libstdc++'s and libc++'s doubling, 110. Afterwards the polygon's slack and
+//   the record's exact copy (36.5), then the record and the finishing sink's
+//   one copy of it (36.5 each), stay below that. The tile filter passes an
+//   object whose rings are already normalised, as the tracer leaves them, on
+//   without copying it. So at most 46 + 32 + 110 = 188.
+// 192 covers both. The meter, which sees the core library's allocations too,
+// measures at most 126 (MSVC) on the adversarial masks of
+// test_working_set_segment.cpp: 126 on a 4-connected checkerboard with three
+// planes and on an 8-connected checkerboard kept inside the tile, one object
+// with a hole at every other pixel.
+constexpr int64_t kBytesPerPixel = 192;
+// What does not scale with the tile: one object being emitted, its record and
+// the finishing sink's copy each holding up to 28 measurements (8 geometric and
+// 12 intensity names, and 8 in micrometres) at a 48-byte entry with vector
+// growth and a 32-byte name, about 10 KiB for the two; plus the small arrays
+// of a tile with few objects. The meter measures 4.6 KiB for one object with
+// three measured planes.
+constexpr int64_t kBytesPerTile = 16384;
 
 [[noreturn]] void fail(const std::string& problem) {
     throw InvalidArgumentError((std::string(kName) + ": " + problem).c_str());

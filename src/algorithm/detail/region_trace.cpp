@@ -25,6 +25,8 @@ constexpr std::array<int64_t, 4> kRightY = {0, 0, -1, -1};
 constexpr std::array<int64_t, 4> kStartX = {0, 1, 1, 0};
 constexpr std::array<int64_t, 4> kStartY = {0, 0, 1, 1};
 
+bool vertexBefore(const Point64& a, const Point64& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; }
+
 [[noreturn]] void notClosed() {
     throw InternalError("traceRegions: a region's edges do not close into a ring");
 }
@@ -207,6 +209,10 @@ private:
             }
             dir = next;
         }
+        // Start at the first topmost-then-leftmost vertex, the form the run
+        // normalises rings to, so an object goes on without being rebuilt.
+        const auto begin = points.begin() + static_cast<std::ptrdiff_t>(first);
+        std::rotate(begin, std::min_element(begin, points.end(), vertexBefore), points.end());
         int64_t twiceArea = 0;
         const size_t n = points.size() - first;
         for (size_t i = 0; i < n; ++i) {
@@ -226,8 +232,9 @@ private:
         ++out_.regions[static_cast<size_t>(ring.region)].ringCount;
     }
 
-    // Groups the rings by region, outer rings first, keeping the order within
-    // each kind.
+    // Groups the rings by region: outer rings first, in the order they are met,
+    // then holes ordered by first vertex (y, then x), ties in the order met; the
+    // order the run normalises rings to.
     void orderRings() {
         int32_t next = 0;
         for (TracedRegion& region : out_.regions) {
@@ -246,6 +253,19 @@ private:
                 out_.ringOrder[static_cast<size_t>(out_.regions[region].firstRing + placed[region]++)] =
                     static_cast<int32_t>(r);
             }
+        }
+        const auto holeBefore = [this](int32_t a, int32_t b) {
+            const Point64& pa = out_.points[static_cast<size_t>(out_.rings[static_cast<size_t>(a)].first)];
+            const Point64& pb = out_.points[static_cast<size_t>(out_.rings[static_cast<size_t>(b)].first)];
+            return vertexBefore(pa, pb) || (pa == pb && a < b);
+        };
+        for (const TracedRegion& region : out_.regions) {
+            const auto begin = out_.ringOrder.begin() + region.firstRing;
+            const auto end = begin + region.ringCount;
+            const auto holes = std::find_if(begin, end, [this](int32_t ring) {
+                return out_.rings[static_cast<size_t>(ring)].isHole;
+            });
+            std::sort(holes, end, holeBefore);
         }
     }
 

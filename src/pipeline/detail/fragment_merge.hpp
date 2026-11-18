@@ -75,11 +75,17 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments, bool eightC
 /// topmost-then-leftmost vertex; orientation is kept.
 std::vector<Point64> normaliseRing(const std::vector<Point64>& ring);
 
+/// Whether @p polygon is already as normaliseRings() leaves it, which it then
+/// leaves untouched. Allocates one buffer the size of the longest ring.
+bool ringsAreNormalised(const Polygon& polygon);
+
 /// Normalises every ring of @p polygon with normaliseRing and reorders the
 /// rings: outer rings first in their order, then the holes ordered by first
 /// vertex (y, then x). The form in which object operations emit polygons, so a
 /// merged object and one found whole compare point for point. Throws
 /// InvalidArgumentError, leaving the polygon unchanged, when a ring degenerates.
+/// A polygon already normalised is left as it is, without allocating it again;
+/// otherwise the rings are gathered in one buffer and the polygon built once.
 void normaliseRings(Polygon& polygon);
 
 } // namespace slideio::processor::detail

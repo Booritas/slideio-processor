@@ -32,9 +32,9 @@ enum class WorkingSetCall { Apply, Accumulate };
 /// every type's range, and returns the largest peak any one call allocates
 /// through operator new. Everything the call is given is built before the
 /// meter starts.
-/// An operation producing objects is given an object sink that normalises and
-/// finishes each object, as the run does within apply(), then drops it, and a
-/// seam-fragment callback that drops the fragment.
+/// An operation producing objects emits each object through the run's own tile
+/// filter and finishing sink, as within apply() in a run, into a sink that drops
+/// it, and each seam fragment to a callback that drops it.
 int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types, int64_t width, int64_t height,
                               WorkingSetCall call);
 

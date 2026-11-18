@@ -134,3 +134,17 @@ TEST(WorkingSetSegment, CatalogMirrorsConnectedComponents) {
               op->workingSetBytesPerLevelPixel());
     EXPECT_EQ(catalog.workingSetBytesPerTile("segment.connected_components"), op->workingSetBytesPerTile());
 }
+
+// One small object finished whole, with three measured planes and every
+// measurement in micrometres too: what does not scale with the tile, two
+// records and their measurement names, is within the per-call figure alone.
+TEST(WorkingSetSegment, ConnectedComponentsPerCallCoversOneSmallObject) {
+    const Mask square{"square", [](int64_t x, int64_t y) { return x >= 3 && x < 5 && y >= 3 && y < 5; }};
+    for (const Connectivity connectivity : {Connectivity::FourConnected, Connectivity::EightConnected}) {
+        const OperationPtr op = connectedComponents(connectivity, true);
+        const std::vector<DataType> types{DataType::Byte, DataType::Float64, DataType::Float64, DataType::Float64};
+        const std::vector<std::vector<uint8_t>> planes = planesOf(square, 8, 8, 3, false);
+        const int64_t peak = ts::measureWorkingSetPeakOn(*op, types, planes, 6, 6, ts::WorkingSetCall::Apply);
+        EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
+    }
+}

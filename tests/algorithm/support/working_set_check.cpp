@@ -7,8 +7,9 @@
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <algorithm/support/allocation_meter.hpp>
-#include <pipeline/detail/fragment_merge.hpp>
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
+#include <pipeline/detail/tile_evaluator.hpp>
 
 #include <gtest/gtest.h>
 
@@ -60,25 +61,16 @@ std::vector<uint8_t> patternBytes(DataType type, int64_t width, int64_t height) 
     return bytes;
 }
 
-// What the run does, inside apply(), to an object found whole in a tile: its
-// rings normalised, then finished by its operation. The object is then dropped,
-// as storing it is the sink's memory, not the operation's.
-class FinishingDiscardSink : public ObjectSink {
+// The run's object store, as far as an operation's apply() is concerned: the
+// records are dropped, as storing them is the store's memory, not the
+// operation's.
+class DiscardSink : public ObjectSink {
 public:
-    explicit FinishingDiscardSink(const Operation& op) : op_(op) {}
-    void emit(const ObjectRecord& record) override {
-        ObjectRecord finished(record);
-        Polygon geometry = record.geometry();
-        detail::normaliseRings(geometry);
-        finished.setGeometry(geometry);
-        op_.finishObject(finished, ObjectFinishContext{0.5, 0});
-        ++emitted_;
-    }
+    void emit(const ObjectRecord&) override { ++emitted_; }
     void flush() override {}
     int64_t emittedCount() const override { return emitted_; }
 
 private:
-    const Operation& op_;
     int64_t emitted_ = 0;
 };
 
@@ -123,8 +115,12 @@ int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& type
         out.emplace_back(static_cast<size_t>(width * height * dataTypeSizeBytes(type)), uint8_t{0});
     }
     // An operation producing objects emits them, and its seam fragments, as it
-    // would in a run; neither is kept.
-    FinishingDiscardSink objects(op);
+    // would in a run: each object through the run's own tile filter and
+    // finishing sink, inside apply(); neither objects nor fragments are kept.
+    DiscardSink store;
+    detail::RunCounters counters;
+    detail::FinishingSink finishing(store, {{LayerId(1), &op}}, 0.5, 0, &counters.droppedByFilter);
+    detail::TileObjectFilter objects(&finishing, Rect64{0, 0, width, height}, nullptr, counters);
     detail::SeamFragmentCallback fragments = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t) {};
     int64_t peak = 0;
     const auto once = [&](size_t firstIn, size_t inCount, size_t firstOut, size_t outCount) {

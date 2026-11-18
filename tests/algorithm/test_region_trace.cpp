@@ -10,6 +10,7 @@
 #include <detail/measurement_finish.hpp>
 #include <detail/region_emit.hpp>
 #include <detail/region_trace.hpp>
+#include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
 
@@ -260,7 +261,6 @@ TEST(RegionTrace, VerticesAreCountedExactlyBeforeTracing) {
     for (const bool eight : {false, true}) {
         const detail::TracedRegions traced = detail::traceRegions(values.data(), 40, 30, 40, eight);
         EXPECT_EQ(traced.points.size(), traced.points.capacity()) << eight;
-        EXPECT_LE(traced.rings.size(), traced.rings.capacity()) << eight;
         EXPECT_GT(traced.regions.size(), 300u) << eight;
     }
     const Labels shapes = labelsOf({"111111", "1.2.11", "11.111", "3.1.1.", ".3..44", "3.3.44"});
@@ -274,6 +274,41 @@ TEST(RegionTrace, VerticesAreCountedExactlyBeforeTracing) {
 TEST(RegionTrace, LabelAboveThePixelCountIsRefused) {
     const std::vector<int32_t> values = {1, 0, 0, 5};
     EXPECT_THROW(detail::traceRegions(values.data(), 2, 2, 2, false), InternalError);
+}
+
+TEST(RegionTrace, RingsComeOutNormalised) {
+    // A region with holes met in an order other than their first vertices', and
+    // rings whose walk does not start at their topmost-leftmost vertex: the rings
+    // are in the form detail::normaliseRings() gives, so it leaves them alone.
+    const Labels labels = labelsOf({"........",
+                                    ".111111.",
+                                    ".1.11.1.",
+                                    ".11.1.1.",
+                                    ".1111.1.",
+                                    ".111111.",
+                                    "........"});
+    for (const bool eight : {false, true}) {
+        const detail::TracedRegions traced =
+            detail::traceRegions(labels.values.data(), labels.width, labels.height, labels.width, eight);
+        for (size_t r = 0; r < traced.regions.size(); ++r) {
+            Polygon polygon;
+            for (int32_t k = 0; k < traced.regions[r].ringCount; ++k) {
+                const detail::TracedRing& ring = traced.ring(static_cast<int32_t>(r), k);
+                polygon.addRing(traced.ringPoints(ring), ring.count, ring.isHole);
+            }
+            EXPECT_GE(polygon.ringCount(), 3) << eight;
+            EXPECT_TRUE(detail::ringsAreNormalised(polygon)) << eight << " region " << r;
+            Polygon normalised = polygon;
+            detail::normaliseRings(normalised);
+            for (int32_t k = 0; k < polygon.ringCount(); ++k) {
+                std::vector<Point64> a(static_cast<size_t>(polygon.ringPointCount(k)));
+                std::vector<Point64> b(static_cast<size_t>(normalised.ringPointCount(k)));
+                polygon.ringPoints(k, a.data(), static_cast<int64_t>(a.size()));
+                normalised.ringPoints(k, b.data(), static_cast<int64_t>(b.size()));
+                EXPECT_TRUE(a == b) << eight << " ring " << k;
+            }
+        }
+    }
 }
 
 // --- Emission ------------------------------------------------------------------

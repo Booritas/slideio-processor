@@ -1,6 +1,7 @@
 // Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3, UR-SEG-3
 #include <pipeline/detail/tile_evaluator.hpp>
 
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
@@ -29,45 +30,42 @@ bool holds(const Rect64& r, Point64 p) {
     return p.x >= r.x && p.y >= r.y && p.x - r.x < r.width && p.y - r.y < r.height;
 }
 
-// The object sink an operation sees on one tile: an object is kept only when its
-// anchor lies in the tile's level-0 rect, then only when the tile's mask is
-// set there; a kept object's rings are normalised, the form a merged object
-// has, before it goes on to the target, which finishes it. The anchor is the
-// same before and after. Flushing is the run's business, so flush() does
-// nothing. One filter serves one tile, but an operation may emit from threads
-// of its own, so the count is atomic.
-class TileObjectFilter : public ObjectSink {
-public:
-    TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters)
-        : target_(target), tileRect_(tileRect), mask_(mask), counters_(counters) {}
+} // namespace
 
-    void emit(const ObjectRecord& record) override {
-        const Point64 anchor = record.geometry().anchor();
-        if (!holds(tileRect_, anchor)) {
-            ++counters_.droppedOutsideTile;
-            return;
-        }
-        if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
-            ++counters_.droppedByRestriction;
-            return;
-        }
-        ObjectRecord normalised(record);
-        Polygon geometry = record.geometry();
-        normaliseRings(geometry);
-        normalised.setGeometry(geometry);
-        target_->emit(normalised);
-        ++emitted_;
+TileObjectFilter::TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask,
+                                   RunCounters& counters)
+    : target_(target), finishing_(dynamic_cast<FinishingSink*>(target)), tileRect_(tileRect), mask_(mask),
+      counters_(counters) {}
+
+void TileObjectFilter::emit(const ObjectRecord& record) {
+    const Point64 anchor = record.geometry().anchor();
+    if (!holds(tileRect_, anchor)) {
+        ++counters_.droppedOutsideTile;
+        return;
     }
-    void flush() override {}
-    int64_t emittedCount() const override { return emitted_.load(); }
+    if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
+        ++counters_.droppedByRestriction;
+        return;
+    }
+    if (ringsAreNormalised(record.geometry())) {
+        target_->emit(record);
+    } else {
+        ObjectRecord normalised(record);
+        {
+            Polygon geometry = record.geometry();
+            normaliseRings(geometry);
+            normalised.setGeometry(geometry);
+        }
+        if (finishing_ != nullptr) {
+            finishing_->emitOwned(normalised);
+        } else {
+            target_->emit(normalised);
+        }
+    }
+    ++emitted_;
+}
 
-private:
-    ObjectSink* target_;
-    Rect64 tileRect_;
-    const RasterMask* mask_;
-    RunCounters& counters_;
-    std::atomic<int64_t> emitted_{0};
-};
+namespace {
 
 // Plane `plane` of `view` as a view of its own.
 BlockView singlePlane(const BlockView& view, int32_t plane) {

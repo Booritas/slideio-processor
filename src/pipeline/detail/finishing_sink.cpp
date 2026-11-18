@@ -15,24 +15,42 @@ FinishingSink::FinishingSink(ObjectSink& target, std::vector<std::pair<LayerId, 
       droppedByFilter_(droppedByFilter) {}
 
 void FinishingSink::emit(const ObjectRecord& record) {
-    const LayerId layer = record.layer();
-    const auto producer = std::find_if(producers_.begin(), producers_.end(),
-                                       [layer](const std::pair<LayerId, const Operation*>& p) {
-                                           return p.first == layer;
-                                       });
-    if (producer == producers_.end() || producer->second == nullptr) {
+    const Operation* producer = producerOf(record.layer());
+    if (producer == nullptr) {
         target_.emit(record);
         ++emitted_;
         return;
     }
     ObjectRecord finished(record);
-    if (!producer->second->finishObject(finished, context_)) {
+    finishAndPass(*producer, finished);
+}
+
+void FinishingSink::emitOwned(ObjectRecord& record) {
+    const Operation* producer = producerOf(record.layer());
+    if (producer == nullptr) {
+        target_.emit(record);
+        ++emitted_;
+        return;
+    }
+    finishAndPass(*producer, record);
+}
+
+const Operation* FinishingSink::producerOf(LayerId layer) const {
+    const auto producer = std::find_if(producers_.begin(), producers_.end(),
+                                       [layer](const std::pair<LayerId, const Operation*>& p) {
+                                           return p.first == layer;
+                                       });
+    return producer == producers_.end() ? nullptr : producer->second;
+}
+
+void FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& record) {
+    if (!producer.finishObject(record, context_)) {
         if (droppedByFilter_ != nullptr) {
             ++*droppedByFilter_;
         }
         return;
     }
-    target_.emit(finished);
+    target_.emit(record);
     ++emitted_;
 }
 

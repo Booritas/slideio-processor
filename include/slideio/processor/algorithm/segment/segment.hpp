@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-7
+// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7
 #pragma once
 
 /**
@@ -62,7 +62,7 @@ enum class Connectivity : int32_t {
  * @par Thread-safety
  * ThreadCompatible.
  * @par Requirements
- * UR-SEG-2, UR-SEG-7
+ * UR-SEG-2, UR-SEG-4, UR-SEG-5, UR-SEG-7
  */
 class SLIDEIO_PROCESSOR_ENGINE_EXPORTS ConnectedComponentsParameters {
 public:

@@ -62,6 +62,7 @@ add_executable(slideio_processor_pipeline_tests
     # Not exported from the library, so compiled into the test directly
     # (fragment_merge.cpp and parameters_json.cpp come with the test-support library).
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/finishing_sink.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/half.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp

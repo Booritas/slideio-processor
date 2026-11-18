@@ -73,12 +73,24 @@ gtest_discover_tests(slideio_processor_algorithm_tests TEST_PREFIX "algorithm."
 # Working-set tests measure what an operation allocates through operator new,
 # which this executable replaces with a counting pair (support/allocation_meter).
 # A shared library may allocate through its own operator new (under MSVC every
-# module has its own), so the engine's pipeline and algorithm code is compiled
-# into this executable instead of being taken from the engine library; the
-# sources are compiled with the engine's export switch, so the engine headers
-# declare those symbols as defined here rather than imported. The data library
-# and SlideIO are still linked as libraries: they allocate nothing an operation
-# measures.
+# module has its own), so everything an operation's apply() can allocate through
+# is compiled into this executable instead of being taken from the libraries:
+# the engine's pipeline and algorithm code, and the data library's core and
+# configuration, whose Polygon, ObjectRecord and MeasurementSet hold the
+# objects an operation emits. The pipeline and algorithm sources are compiled
+# again here, with both export switches, so every engine and data header
+# declares its symbols as defined here rather than imported; core and
+# configuration are compiled with the data switch already. The data library's
+# storage is not needed, and SlideIO is still linked as a library: it allocates
+# nothing an operation measures.
+set(WORKING_SET_ENGINE_SOURCES)
+foreach(library slideio-processor-pipeline slideio-processor-algorithm)
+    get_target_property(library_dir ${library} SOURCE_DIR)
+    get_target_property(library_sources ${library} SOURCES)
+    foreach(source IN LISTS library_sources)
+        list(APPEND WORKING_SET_ENGINE_SOURCES "${library_dir}/${source}")
+    endforeach()
+endforeach()
 add_executable(slideio_processor_working_set_tests
     test_allocation_meter.cpp
     test_working_set_pixel.cpp
@@ -88,12 +100,14 @@ add_executable(slideio_processor_working_set_tests
     support/working_set_check.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/tests/pipeline/test_support/synthetic_scene.cpp
-    $<TARGET_OBJECTS:slideio-processor-pipeline>
-    $<TARGET_OBJECTS:slideio-processor-algorithm>
+    ${WORKING_SET_ENGINE_SOURCES}
+    $<TARGET_OBJECTS:slideio-processor-core>
+    $<TARGET_OBJECTS:slideio-processor-config>
 )
-target_compile_definitions(slideio_processor_working_set_tests PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)
+target_compile_definitions(slideio_processor_working_set_tests PRIVATE
+    SLIDEIO_PROCESSOR_ENGINE_API SLIDEIO_PROCESSOR_DATA_API)
 target_link_libraries(slideio_processor_working_set_tests PRIVATE
-    slideio-processor-data slideio::slideio opencv_core opencv_imgproc rapidjson GTest::gtest_main)
+    slideio::slideio opencv_core opencv_imgproc rapidjson GTest::gtest_main)
 target_include_directories(slideio_processor_working_set_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
