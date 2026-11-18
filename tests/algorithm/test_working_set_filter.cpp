@@ -116,7 +116,7 @@ OperationParameters morphologyParameters(const char* shape, int64_t width, int64
 
 } // namespace
 
-TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
+TEST(WorkingSetFilter, GaussianBlurDeclarationBoundsTheMeasuredPeak) {
     const OneOpenCvThread oneThread;
 
     // pixel.gaussian_blur: the default, the smallest kernels and the largest.
@@ -127,6 +127,10 @@ TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
         expectApplyBounded("gaussian_blur 3", [] { return makeGaussianBlur(1.0, 3); }, {type});
         expectApplyBounded("gaussian_blur 1025", [] { return makeGaussianBlur(100.0, 1025); }, {type});
     }
+}
+
+TEST(WorkingSetFilter, DerivativeDeclarationsBoundTheMeasuredPeak) {
+    const OneOpenCvThread oneThread;
 
     // pixel.sobel, pixel.scharr, pixel.laplacian: the defaults on every type,
     // every kernel size on the narrowest and widest.
@@ -147,6 +151,10 @@ TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
         }
         expectApplyBounded("scharr 0,1", [] { return makeScharr(0, 1); }, {type});
     }
+}
+
+TEST(WorkingSetFilter, MedianBlurDeclarationBoundsTheMeasuredPeak) {
+    const OneOpenCvThread oneThread;
 
     // pixel.median_blur: the default on every type; OpenCV's Byte paths (the
     // sorting network, the histogram paths); the largest kernel on the
@@ -163,6 +171,10 @@ TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
     expectApplyBounded("median_blur 255", [] { return makeMedianBlur(255); }, {DataType::UInt16}, medianShare,
                        kSmallTile);
     expectApplyBounded("median_blur 31", [] { return makeMedianBlur(31); }, {DataType::Float64}, medianShare);
+}
+
+TEST(WorkingSetFilter, BilateralFilterDeclarationBoundsTheMeasuredPeak) {
+    const OneOpenCvThread oneThread;
 
     // pixel.bilateral_filter: the default on every type, the largest diameter.
     for (DataType type : kFloatFilterTypes) {
@@ -173,6 +185,10 @@ TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
         expectApplyBounded("bilateral_filter 255", [] { return makeBilateralFilter(255, 25.0, 50.0); }, {type},
                            UnmeteredShare(), kSmallTile);
     }
+}
+
+TEST(WorkingSetFilter, CannyDeclarationBoundsTheMeasuredPeak) {
+    const OneOpenCvThread oneThread;
 
     // pixel.canny: the default and every aperture, thresholds that keep many
     // edges and none.
@@ -185,6 +201,10 @@ TEST(WorkingSetFilter, DeclarationsBoundTheMeasuredPeak) {
         expectApplyBounded("canny high" + at, [aperture] { return makeCanny(1e9, 1e9, aperture); },
                            {DataType::Byte}, cannyShare);
     }
+}
+
+TEST(WorkingSetFilter, MorphologyDeclarationsBoundTheMeasuredPeak) {
+    const OneOpenCvThread oneThread;
 
     // The four morphology operations: the default; the largest rectangle and
     // cross; a rectangle iterated 64 times; a large rectangle on the float
