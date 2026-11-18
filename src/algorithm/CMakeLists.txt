@@ -16,6 +16,12 @@ add_library(slideio-processor-algorithm OBJECT
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled into the engine, so the export switch is defined here.
 target_compile_definitions(slideio-processor-algorithm PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)
+# Results are compared bit for bit across tile sizes and against direct
+# references, so a multiply and an add must never be fused into an FMA in one
+# place and not another. MSVC does not contract by default.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(slideio-processor-algorithm PRIVATE -ffp-contract=off)
+endif()
 # OpenCV is confined to the engine library and stays PRIVATE: no OpenCV type,
 # header or macro reaches a public header, which the header check in
 # tests/pipeline verifies for algorithm/ as well.
