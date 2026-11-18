@@ -232,6 +232,31 @@ TEST(GaussianBlur, KernelSizeOneIsIdentity) {
     }
 }
 
+TEST(GaussianBlur, RefusesSigmaBelowTheFloor) {
+    // A sigma so small that its square underflows would make every weight
+    // 0 / 0; it is refused, naming sigma, and the floor itself is accepted.
+    for (int32_t kernelSize : {0, 1, 3}) {
+        const std::string message = factoryRejection(1e-300, kernelSize);
+        EXPECT_NE(message.find("'sigma'"), std::string::npos) << kernelSize << ": " << message;
+        EXPECT_NE(message.find(kName), std::string::npos) << message;
+        EXPECT_EQ(message.find("300"), std::string::npos) << message;
+    }
+    EXPECT_NE(factoryRejection(9.9e-7, 3).find("'sigma'"), std::string::npos);
+    const std::string byName = rejection(OperationParameters().setDouble("sigma", 1e-300));
+    EXPECT_NE(byName.find("'sigma'"), std::string::npos) << byName;
+
+    // At the floor every off-centre weight is 0, so the result is the input.
+    const OperationPtr op = makeGaussianBlur(1e-6, 3);
+    const ts::Image out = ts::applyDirect(*op, {DataType::Int16}, {0}, 13, 9, [](int32_t, int64_t x, int64_t y) {
+        return static_cast<double>(x * 37 - y * 101);
+    });
+    for (int64_t y = 0; y < 9; ++y) {
+        for (int64_t x = 0; x < 13; ++x) {
+            EXPECT_EQ(out.at(0, x, y), static_cast<double>(x * 37 - y * 101)) << x << "," << y;
+        }
+    }
+}
+
 TEST(GaussianBlur, MatchesDirectComputation) {
     constexpr int64_t kWidth = 97;
     constexpr int64_t kHeight = 83;

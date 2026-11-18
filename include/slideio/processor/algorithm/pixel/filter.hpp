@@ -58,6 +58,9 @@ enum class BorderMode : int32_t {
  * bottom. The result does not depend on the tiling, and a `Float32` result is
  * the double rounded to nearest. The 64-bit integer types are refused because
  * their samples are not all exact in double.
+ * A NaN in a pixel's window makes it NaN; an infinity makes it +inf or -inf,
+ * or NaN where it meets a zero coefficient or an infinity of the opposite
+ * sign.
  *
  * Its parameters are `sigma` (a double; 1.0 when created by name without it)
  * and `kernelSize` (an integer; 0 by default), stored as given, and
@@ -66,13 +69,14 @@ enum class BorderMode : int32_t {
  * integer `sigma` is read as the equal double. By name, an unknown key, a
  * value of the wrong type or a value out of range throws InvalidArgumentError
  * naming the key, never the value.
- * @param sigma The standard deviation in pixels; finite and greater than 0.
- * With @p kernelSize 0 the derived size must not exceed 1025.
+ * @param sigma The standard deviation in pixels; finite and at least 1e-6,
+ * below which its square may underflow. With @p kernelSize 0 the derived size
+ * must not exceed 1025.
  * @param kernelSize The kernel's width and height: odd, from 1 to 1025, or 0
  * to derive it from @p sigma.
  * @return The operation, never null.
- * @throws InvalidArgumentError When @p sigma is not finite or not greater than
- * 0, or derives a size above 1025, or @p kernelSize is even and non-zero,
+ * @throws InvalidArgumentError When @p sigma is not finite or below 1e-6, or
+ * derives a size above 1025, or @p kernelSize is even and non-zero,
  * negative or above 1025; the message names the operation and the parameter,
  * never the value.
  * @throws std::bad_alloc When memory is exhausted.
@@ -124,6 +128,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeMedianBlur(int32_t kernelSize)
  * beyond the level read as zero. Computed in double in one fixed order, each
  * window row's weighted sum left to right, then those sums top to bottom, so
  * the result does not depend on the tiling.
+ * A NaN in a pixel's window makes it NaN; an infinity makes it +inf or -inf,
+ * or NaN where it meets a zero coefficient or an infinity of the opposite
+ * sign.
  *
  * Its parameters are `dx`, `dy` and `kernelSize` (integers; 1, 0 and 3 when
  * created by name without them), and Operation::parameters() always holds
@@ -156,6 +163,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeSobel(int32_t dx, int32_t dy, 
  * unnormalised 3 x 3 Scharr coefficients OpenCV uses. Pixels beyond the level
  * read as zero. Computed in double in one fixed order, so the result does not
  * depend on the tiling.
+ * A NaN in a pixel's window makes it NaN; an infinity makes it +inf or -inf,
+ * or NaN where it meets a zero coefficient or an infinity of the opposite
+ * sign.
  *
  * Its parameters are `dx` and `dy` (integers; 1 and 0 when created by name
  * without them), and Operation::parameters() always holds both. Creating it
@@ -189,6 +199,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeScharr(int32_t dx, int32_t dy)
  * and in y; a larger size uses the unnormalised Sobel second-derivative
  * coefficients of that size. Pixels beyond the level read as zero. The result
  * does not depend on the tiling.
+ * A NaN in a pixel's window makes it NaN; an infinity makes it +inf or -inf,
+ * or NaN where it meets a zero coefficient or an infinity of the opposite
+ * sign.
  *
  * Its parameter is `kernelSize` (an integer; 1 when created by name without
  * it), and Operation::parameters() always holds it. Creating it by name with
@@ -222,8 +235,11 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeLaplacian(int32_t kernelSize);
  * guarantee. The gradient and suppression need apertureSize / 2 + 1 pixels;
  * the remaining 32 are the reach allowed to hysteresis, whose chains are of
  * unbounded length. The result equals single-tile Canny wherever every weak
- * edge chain reaches a strong edge within 32 pixels, and may drop weak edges
- * beyond that reach. The operation's complexity note states this bound.
+ * edge chain reaches a strong edge within 32 pixels, and may drop or keep weak
+ * edges beyond that reach: a tile may lack a chain's strong edge, and the
+ * gradients OpenCV computes at the halo's outer edge, past which it replicates
+ * the border, may differ from the level's and make a strong edge the level
+ * does not have. The operation's complexity note states this bound.
  *
  * Its parameters are `lowThreshold` and `highThreshold` (doubles; 50.0 and
  * 150.0 when created by name without them) and `apertureSize` (an integer; 3
@@ -271,12 +287,13 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeCanny(double lowThreshold, dou
  * wrong type or a value out of range throws InvalidArgumentError naming the
  * key, never the value.
  * @param diameter The window's diameter; odd, from 3 to 255.
- * @param sigmaColour The value-difference scale; finite and greater than 0.
- * @param sigmaSpace The distance scale in pixels; finite and greater than 0.
+ * @param sigmaColour The value-difference scale; finite and at least 1e-6,
+ * below which its square may underflow.
+ * @param sigmaSpace The distance scale in pixels; finite and at least 1e-6.
  * @return The operation, never null.
  * @throws InvalidArgumentError When @p diameter is even or outside 3 to 255,
- * or a sigma is not finite or not greater than 0; the message names the
- * operation and the parameter, never the value.
+ * or a sigma is not finite or below 1e-6; the message names the operation
+ * and the parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
  * Safe to call concurrently. The operation's apply() may run concurrently on

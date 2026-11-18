@@ -19,6 +19,9 @@ namespace {
 
 constexpr const char* kName = "pixel.gaussian_blur";
 constexpr int32_t kMaximumKernel = 1025;
+// The smallest sigma accepted. Below it 2 * sigma^2 may underflow to 0 and
+// every weight become 0 / 0; at it every off-centre weight is already 0.
+constexpr double kMinimumSigma = 1e-6;
 
 [[noreturn]] void throwParameter(const char* key, const char* problem) {
     throw InvalidArgumentError((std::string(kName) + ": parameter '" + key + "' " + problem).c_str());
@@ -31,8 +34,8 @@ constexpr int32_t kMaximumKernel = 1025;
 // The kernel size the parameters give: kernelSize itself, or for 0 the size
 // 2 * ceil(3 * sigma) + 1 derived from sigma. Throws for a value out of range.
 int32_t checkedKernelSize(double sigma, int32_t kernelSize) {
-    if (!std::isfinite(sigma) || !(sigma > 0.0)) {
-        throwParameter("sigma", "must be finite and greater than 0");
+    if (!std::isfinite(sigma) || !(sigma >= kMinimumSigma)) {
+        throwParameter("sigma", "must be finite and at least 1e-6");
     }
     if (kernelSize == 0) {
         // Compared before the conversion, so a large sigma cannot overflow it.

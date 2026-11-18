@@ -10,6 +10,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -26,6 +27,12 @@ constexpr const char* kOrderRule = "must not exceed 'highThreshold'";
 // How far beyond the gradient's own neighbourhood hysteresis may follow a weak
 // chain to its strong edge and still agree with single-tile Canny.
 constexpr int32_t kHysteresisReach = 32;
+// The largest threshold passed to cv::Canny. OpenCV converts each threshold to
+// int (after dividing it by 16 at aperture 7), which is undefined beyond int's
+// range, and compares it with the L1 magnitude |dx| + |dy| of two 16-bit
+// signed gradients, at most 65536. 1e7, and 1e7 / 16, exceed every such
+// magnitude and fit an int, so a larger threshold behaves exactly as this one.
+constexpr double kThresholdCeiling = 1e7;
 
 [[noreturn]] void throwInternal(const std::string& problem) {
     throw InternalError((std::string(kName) + ": " + problem).c_str());
@@ -133,7 +140,8 @@ private:
         cv::Mat edges;
         try {
             const cv::Mat source = detail::planeAsMat(in, plane);
-            cv::Canny(source, edges, low_, high_, aperture_, false);
+            cv::Canny(source, edges, std::min(low_, kThresholdCeiling), std::min(high_, kThresholdCeiling),
+                      aperture_, false);
         } catch (const cv::Exception&) {
             detail::translateCv(kName);
         }
@@ -184,7 +192,7 @@ OperationFactoryPtr makeCannyFactory() {
         "Canny J. A computational approach to edge detection. IEEE TPAMI 1986;8:679-698; equals OpenCV Canny on "
         "one tile",
         "O(n) in the number of pixels; equals single-tile Canny wherever every weak edge chain reaches a strong edge "
-        "within 32 pixels, and may drop weak edges beyond that reach");
+        "within 32 pixels, and may drop or keep weak edges beyond that reach");
 }
 
 } // namespace detail

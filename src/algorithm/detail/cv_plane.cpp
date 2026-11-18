@@ -4,6 +4,7 @@
 #include <slideio/processor/core/error.hpp>
 
 #include <limits>
+#include <new>
 #include <string>
 
 namespace slideio::processor::detail {
@@ -77,9 +78,17 @@ void translateCv(const char* operationName) {
     try {
         throw;
     } catch (const cv::Exception& e) {
+        if (e.code == cv::Error::StsNoMem) {
+            throw std::bad_alloc();
+        }
+        // The code and the function only: OpenCV's message may print values.
+        std::string cause = "OpenCV error " + std::to_string(e.code);
+        if (!e.func.empty()) {
+            cause += " in " + e.func;
+        }
         ErrorContext context;
         context.operationName = operationName;
-        context.cause = e.what();
+        context.cause = cause.c_str();
         throw InternalError((std::string(operationName) + ": OpenCV failed").c_str(), context);
     }
 }

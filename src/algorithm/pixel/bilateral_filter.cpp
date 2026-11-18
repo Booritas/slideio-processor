@@ -21,6 +21,9 @@ namespace {
 constexpr const char* kName = "pixel.bilateral_filter";
 constexpr int32_t kMinimumDiameter = 3;
 constexpr int32_t kMaximumDiameter = 255;
+// The smallest sigma accepted. Below it 2 * sigma^2 may underflow to 0 and
+// the centre's weight become 0 / 0; at it every other weight is already 0.
+constexpr double kMinimumSigma = 1e-6;
 
 [[noreturn]] void throwParameter(const char* key, const char* problem) {
     throw InvalidArgumentError((std::string(kName) + ": parameter '" + key + "' " + problem).c_str());
@@ -42,8 +45,8 @@ int32_t checkedDiameter(int32_t diameter) {
 }
 
 double checkedSigma(const char* key, double sigma) {
-    if (!std::isfinite(sigma) || !(sigma > 0.0)) {
-        throwParameter(key, "must be finite and greater than 0");
+    if (!std::isfinite(sigma) || !(sigma >= kMinimumSigma)) {
+        throwParameter(key, "must be finite and at least 1e-6");
     }
     return sigma;
 }

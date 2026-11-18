@@ -179,6 +179,38 @@ TEST(BilateralFilter, RejectsBadParameters) {
     EXPECT_FALSE(rejection(OperationParameters().setString("sigmaSpace", "5")).empty());
 }
 
+TEST(BilateralFilter, RefusesSigmaBelowTheFloor) {
+    // A sigma so small that its square underflows would make the centre's
+    // weight 0 / 0; it is refused, naming the key, and the floor is accepted.
+    const std::string colour = factoryRejection(5, 1e-300, 5.0);
+    EXPECT_NE(colour.find("'sigmaColour'"), std::string::npos) << colour;
+    EXPECT_EQ(colour.find("300"), std::string::npos) << colour;
+    const std::string space = factoryRejection(5, 25.0, 1e-300);
+    EXPECT_NE(space.find("'sigmaSpace'"), std::string::npos) << space;
+    EXPECT_NE(factoryRejection(5, 9.9e-7, 5.0).find("'sigmaColour'"), std::string::npos);
+    EXPECT_NE(factoryRejection(5, 25.0, 9.9e-7).find("'sigmaSpace'"), std::string::npos);
+    EXPECT_NE(rejection(OperationParameters().setDouble("sigmaColour", 1e-300)).find("'sigmaColour'"),
+              std::string::npos);
+    EXPECT_NE(rejection(OperationParameters().setDouble("sigmaSpace", 1e-300)).find("'sigmaSpace'"),
+              std::string::npos);
+
+    // At the floor every neighbour weighs 0 against the centre's 1, so the
+    // result is the input.
+    for (const auto& [sigmaColour, sigmaSpace] : {std::pair<double, double>{1e-6, 5.0}, {25.0, 1e-6}}) {
+        const OperationPtr op = makeBilateralFilter(5, sigmaColour, sigmaSpace);
+        const ts::Image out =
+            ts::applyDirect(*op, {DataType::Float64}, {0}, 13, 9, [](int32_t, int64_t x, int64_t y) {
+                return static_cast<double>(x * 37 - y * 101);
+            });
+        for (int64_t y = 0; y < 9; ++y) {
+            for (int64_t x = 0; x < 13; ++x) {
+                EXPECT_EQ(out.at(0, x, y), static_cast<double>(x * 37 - y * 101))
+                    << sigmaColour << " " << sigmaSpace << " " << x << "," << y;
+            }
+        }
+    }
+}
+
 TEST(BilateralFilter, MatchesDefinition) {
     constexpr int64_t kWidth = 41;
     constexpr int64_t kHeight = 37;

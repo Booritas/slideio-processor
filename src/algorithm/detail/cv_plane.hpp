@@ -15,15 +15,24 @@ namespace slideio::processor::detail {
 /// Byte CV_8U, Int8 CV_8S, UInt16 CV_16U, Int16 CV_16S, Int32 CV_32S, Float16
 /// CV_16F, Float32 CV_32F, Float64 CV_64F, and from OpenCV 5 on UInt32
 /// CV_32U, UInt64 CV_64U, Int64 CV_64S. Writing through the header writes the
-/// plane. Throws UnsupportedDataTypeError for a type OpenCV cannot hold, and
+/// plane. The header is writable even when @p view is a const input view:
+/// a header built over an input must only be read, never written through.
+/// Throws UnsupportedDataTypeError for a type OpenCV cannot hold, and
 /// InternalError for a plane index out of range or dimensions beyond int.
+/// Building the header may also throw cv::Exception, so call it inside the
+/// caller's `catch (const cv::Exception&)` handler that calls translateCv, as
+/// the OpenCV call itself is.
 cv::Mat planeAsMat(const BlockView& view, int32_t plane);
 
 /// Translates the cv::Exception being handled into an InternalError naming
-/// @p operationName, with OpenCV's message as its cause(). Call it only from
-/// a `catch (const cv::Exception&)` handler; any other exception being
-/// handled propagates unchanged. Every argument passed to OpenCV has been
-/// checked beforehand, so a failure inside OpenCV is a defect.
+/// @p operationName, whose cause() names only OpenCV's error code and the
+/// function that raised it, as "OpenCV error -215 in cv::Canny": OpenCV's own
+/// message may print the values it checked, so it is not copied. OpenCV's
+/// out-of-memory error (cv::Error::StsNoMem) becomes std::bad_alloc instead.
+/// Call it only from a `catch (const cv::Exception&)` handler; any other
+/// exception being handled propagates unchanged. Every argument passed to
+/// OpenCV has been checked beforehand, so any other failure inside OpenCV is
+/// a defect.
 [[noreturn]] void translateCv(const char* operationName);
 
 } // namespace slideio::processor::detail

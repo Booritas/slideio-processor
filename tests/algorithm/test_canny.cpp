@@ -221,6 +221,36 @@ TEST(Canny, MatchesOpenCVOnOneTile) {
     }
 }
 
+TEST(Canny, ThresholdsBeyondEveryMagnitudeGiveNoEdges) {
+    // A threshold above every reachable gradient magnitude, however large,
+    // marks nothing: no pixel can exceed it, so none is strong, and with no
+    // strong pixel hysteresis keeps no weak one either.
+    cv::Mat image = cv::Mat::zeros(64, 72, CV_8U);
+    cv::rectangle(image, cv::Rect(10, 12, 30, 25), cv::Scalar(255), cv::FILLED);
+    cv::circle(image, cv::Point(52, 40), 12, cv::Scalar(120), cv::FILLED);
+    const auto scene = sceneOf(image);
+    struct Case {
+        double low;
+        double high;
+    };
+    for (int32_t aperture : {3, 5, 7}) {
+        for (const Case& c : {Case{1e12, 1e12}, Case{0.0, 1e12}, Case{50.0, 1e12}, Case{3e9, 3e9}}) {
+            SCOPED_TRACE("aperture " + std::to_string(aperture) + " low " + std::to_string(c.low));
+            PipelineSpec spec;
+            spec.then(makeCanny(c.low, c.high, aperture));
+            EXPECT_EQ(cv::countNonZero(matOf(ts::runEager(scene, spec, 4096, 1))), 0);
+        }
+        // The same image does have edges at ordinary thresholds.
+        PipelineSpec spec;
+        spec.then(makeCanny(50.0, 150.0, aperture));
+        EXPECT_GT(cv::countNonZero(matOf(ts::runEager(scene, spec, 4096, 1))), 0);
+    }
+    // The parameters keep the values given, not the ones OpenCV is called with.
+    double stored = 0.0;
+    ASSERT_TRUE(makeCanny(0.0, 1e12, 3)->parameters().getDouble("highThreshold", stored));
+    EXPECT_EQ(stored, 1e12);
+}
+
 TEST(Canny, ShortEdgesTileExactly) {
     // Filled discs of radius 4 to 10 at grey level 200 on 0, centres 40 apart.
     // Every non-zero 3x3 Sobel component of a 0/200 image is a multiple of 200,
@@ -302,7 +332,10 @@ TEST(Canny, LongWeakChainIsTheDeclaredApproximation) {
         EXPECT_TRUE(single.at<uint8_t>(39, x) == 255 || single.at<uint8_t>(40, x) == 255) << x;
     }
 
-    // Tile 64 drops the chain's far part, and nothing within the reach of the seed.
+    // Tile 64 drops the chain's far part, and nothing within the reach of the
+    // seed. In this geometry tiling only drops pixels; in general it may also
+    // keep a chain the single tile drops, from a strong pixel the replicated
+    // border makes at a tile's halo edge.
     ASSERT_GT(differingPixels(single, tiled), 0);
     int differing = 0;
     for (int y = 0; y < image.rows; ++y) {
@@ -311,7 +344,7 @@ TEST(Canny, LongWeakChainIsTheDeclaredApproximation) {
                 continue;
             }
             ++differing;
-            // Only dropped, never added.
+            // Here only dropped, never added.
             EXPECT_EQ(tiled.at<uint8_t>(y, x), 0) << x << "," << y;
             int nearest = std::numeric_limits<int>::max();
             for (const cv::Point& s : strong) {
@@ -326,5 +359,5 @@ TEST(Canny, LongWeakChainIsTheDeclaredApproximation) {
 TEST(Canny, ComplexityNoteStatesTheBound) {
     EXPECT_STREQ(OperationCatalog::instance().complexityNote(kName),
                  "O(n) in the number of pixels; equals single-tile Canny wherever every weak edge chain reaches a "
-                 "strong edge within 32 pixels, and may drop weak edges beyond that reach");
+                 "strong edge within 32 pixels, and may drop or keep weak edges beyond that reach");
 }
