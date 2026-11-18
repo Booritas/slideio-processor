@@ -520,46 +520,58 @@ TEST(Morphology, NaNInWindowGivesNaN) {
 TEST(Morphology, AgreesWithOpenCVWithoutNaN) {
     // On NaN-free input every type equals OpenCV's own operation applied to
     // the image surrounded by zeros, the border OpenCV assumes lying beyond.
+    // The L shape is symmetric about neither axis, so an element read
+    // reflected would fail it.
     constexpr int64_t kWidth = 71;
     constexpr int64_t kHeight = 53;
-    const StructuringElement element(StructuringShape::Ellipse, 5, 7);
+    const uint8_t lMask[15] = {1, 0, 0, //
+                               1, 0, 0, //
+                               1, 0, 0, //
+                               1, 0, 0, //
+                               1, 1, 1};
+    const std::vector<std::pair<StructuringElement, cv::Mat>> elements = {
+        {StructuringElement(StructuringShape::Ellipse, 5, 7),
+         cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 7))},
+        {StructuringElement::custom(lMask, 3, 5), cv::Mat(5, 3, CV_8U, const_cast<uint8_t*>(lMask)).clone()}};
     const std::vector<std::pair<DataType, int>> types = {{DataType::Byte, CV_8U},
                                                          {DataType::UInt16, CV_16U},
                                                          {DataType::Int16, CV_16S},
                                                          {DataType::Float32, CV_32F},
                                                          {DataType::Float64, CV_64F}};
     const auto pattern = [](int32_t, int64_t x, int64_t y) { return std::floor(hash01(x, y) * 250.0) + 1.0; };
-    for (const auto& [type, depth] : types) {
-        cv::Mat image(static_cast<int>(kHeight), static_cast<int>(kWidth), CV_64F);
-        for (int64_t y = 0; y < kHeight; ++y) {
-            for (int64_t x = 0; x < kWidth; ++x) {
-                image.at<double>(static_cast<int>(y), static_cast<int>(x)) = pattern(0, x, y);
-            }
-        }
-        image.convertTo(image, depth);
-        const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 7));
-        for (const Morph& m : morphs()) {
-            SCOPED_TRACE(std::string(m.name) + " " + dataTypeName(type));
-            const OperationPtr op = m.make(element, 2);
-            const Halo halo = op->halo();
-            cv::Mat padded;
-            cv::copyMakeBorder(image, padded, halo.top, halo.bottom, halo.left, halo.right, cv::BORDER_CONSTANT,
-                               cv::Scalar(0));
-            cv::Mat expected;
-            const int cvOp = std::string(m.name) == "pixel.morph_erode"    ? cv::MORPH_ERODE
-                             : std::string(m.name) == "pixel.morph_dilate" ? cv::MORPH_DILATE
-                             : std::string(m.name) == "pixel.morph_open"   ? cv::MORPH_OPEN
-                                                                           : cv::MORPH_CLOSE;
-            cv::morphologyEx(padded, expected, cvOp, kernel, cv::Point(-1, -1), 2);
-            cv::Mat cropped;
-            expected(cv::Rect(halo.left, halo.top, static_cast<int>(kWidth), static_cast<int>(kHeight)))
-                .convertTo(cropped, CV_64F);
-            const ts::Image out = ts::applyDirect(*op, {type}, {0}, kWidth, kHeight, pattern);
-            ASSERT_EQ(out.types, std::vector<DataType>{type});
+    for (const auto& [element, kernel] : elements) {
+        for (const auto& [type, depth] : types) {
+            cv::Mat image(static_cast<int>(kHeight), static_cast<int>(kWidth), CV_64F);
             for (int64_t y = 0; y < kHeight; ++y) {
                 for (int64_t x = 0; x < kWidth; ++x) {
-                    ASSERT_EQ(out.at(0, x, y), cropped.at<double>(static_cast<int>(y), static_cast<int>(x)))
-                        << x << "," << y;
+                    image.at<double>(static_cast<int>(y), static_cast<int>(x)) = pattern(0, x, y);
+                }
+            }
+            image.convertTo(image, depth);
+            for (const Morph& m : morphs()) {
+                SCOPED_TRACE(std::string(m.name) + " " + dataTypeName(type) + " " + std::to_string(kernel.cols) + "x" +
+                             std::to_string(kernel.rows));
+                const OperationPtr op = m.make(element, 2);
+                const Halo halo = op->halo();
+                cv::Mat padded;
+                cv::copyMakeBorder(image, padded, halo.top, halo.bottom, halo.left, halo.right, cv::BORDER_CONSTANT,
+                                   cv::Scalar(0));
+                cv::Mat expected;
+                const int cvOp = std::string(m.name) == "pixel.morph_erode"    ? cv::MORPH_ERODE
+                                 : std::string(m.name) == "pixel.morph_dilate" ? cv::MORPH_DILATE
+                                 : std::string(m.name) == "pixel.morph_open"   ? cv::MORPH_OPEN
+                                                                               : cv::MORPH_CLOSE;
+                cv::morphologyEx(padded, expected, cvOp, kernel, cv::Point(-1, -1), 2);
+                cv::Mat cropped;
+                expected(cv::Rect(halo.left, halo.top, static_cast<int>(kWidth), static_cast<int>(kHeight)))
+                    .convertTo(cropped, CV_64F);
+                const ts::Image out = ts::applyDirect(*op, {type}, {0}, kWidth, kHeight, pattern);
+                ASSERT_EQ(out.types, std::vector<DataType>{type});
+                for (int64_t y = 0; y < kHeight; ++y) {
+                    for (int64_t x = 0; x < kWidth; ++x) {
+                        ASSERT_EQ(out.at(0, x, y), cropped.at<double>(static_cast<int>(y), static_cast<int>(x)))
+                            << x << "," << y;
+                    }
                 }
             }
         }
