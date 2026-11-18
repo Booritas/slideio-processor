@@ -20,10 +20,15 @@ add_executable(slideio_processor_algorithm_tests
     test_bilateral_filter.cpp
     test_canny.cpp
     test_cv_plane.cpp
+    test_region_trace.cpp
+    test_measurement_finish.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/cv_plane.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/measurement_finish.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/region_emit.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/region_trace.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
 )
 target_link_libraries(slideio_processor_algorithm_tests PRIVATE

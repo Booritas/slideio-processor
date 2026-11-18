@@ -5,6 +5,9 @@
 // memory, or run it through the pipeline over a scene and assemble the level.
 
 #include <slideio/processor/core/data_type.hpp>
+#include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/ids.hpp>
+#include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
@@ -67,5 +70,33 @@ Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
 /// @p workers workers, and assembles the analysis level from the raster tiles.
 Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
                int32_t workers);
+
+/// The layer applyDirectObjects() emits into and runEagerObjects() binds as
+/// "objects".
+LayerId objectsLayer();
+
+/// What one direct application of an object-producing operation emitted.
+struct DirectObjects {
+    /// Finished objects, as the run would store them: rings normalised, then
+    /// passed through the operation's finishObject() (those it refuses are
+    /// left out), in emission order.
+    std::vector<ObjectRecord> objects;
+    /// Seam fragments, level-0 polygons as emitted, in emission order.
+    std::vector<Polygon> fragments;
+};
+
+/// As applyDirect, for an operation producing objects: the context has an
+/// object sink, objectsLayer() as its target layer and a collector of seam
+/// fragments. The finish context reports @p pixelSizeMicrons and level 0.
+DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inputTypes,
+                                 const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
+                                 const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                                 double pixelSizeMicrons = 0.0);
+
+/// Runs Pipeline::runInto over @p scene with tile size tileSize x tileSize and
+/// @p workers workers, with objectsLayer() bound as "objects", and returns the
+/// stored objects sorted by id.
+std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
+                                          int32_t tileSize, int32_t workers);
 
 } // namespace slideio::processor::testing_support

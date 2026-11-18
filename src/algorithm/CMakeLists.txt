@@ -4,9 +4,13 @@ add_library(slideio-processor-algorithm OBJECT
     detail/builtin_factory.cpp
     detail/colour_math.cpp
     detail/cv_plane.cpp
+    detail/measurement_finish.cpp
+    detail/region_emit.cpp
+    detail/region_trace.cpp
     detail/rgb_input.cpp
     detail/sample_codec.cpp
     detail/separable.cpp
+    measure/measure.cpp
     pixel/bilateral_filter.cpp
     pixel/canny.cpp
     pixel/colour_convert.cpp
