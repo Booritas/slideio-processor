@@ -1029,7 +1029,13 @@ filter.
 Per tile, before any pixel is read, the worker builds the tile's mask over its
 **halo** rect at the level, and only when the run is restricted: all pixels set,
 intersected with the ROI rectangle, then with the polygon, then with the bound
-`TileMaskSource` (which fills a second mask that is intersected in). When the
+`TileMaskSource` (which fills a second mask that is intersected in). At a
+non-integer level scale, a zero left or top halo is widened by one pixel: a
+tile owns the objects anchored in its level-0 rect (`llround` of the level
+rect), an anchor is tested at the level pixel `floor(anchor / scale)`, and the
+tile's first level-0 column or row can floor to the pixel before the tile.
+Without the extra pixel, such an object would be dropped by the tile that owns
+it, while a merged object at the same anchor is admitted. When the
 mask has no set pixel inside the **tile** rect, the tile is skipped: no pixel is
 read and it counts as complete. `OperationContext::mask()` returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps

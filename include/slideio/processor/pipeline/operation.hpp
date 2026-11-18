@@ -355,6 +355,8 @@ public:
 
     /// The run's restriction, rasterised over this tile's halo rect, or null
     /// when the run is unrestricted (5.5). Level coordinates, like `input()`.
+    /// At a non-integer level scale, a side whose halo is zero may extend one
+    /// pixel further left or up; read it through its own regionAtLevel().
     ///
     /// Consulting it is OPTIONAL for objects. The framework filters what this
     /// operation emits through objectSink() whether or not it is read, so an

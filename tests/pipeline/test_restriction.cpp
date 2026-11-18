@@ -751,3 +751,49 @@ TEST(Restriction, CachedTileMasksAreChargedToTheBudget) {
         EXPECT_EQ(budget->reservedBytes(), 200);
     }
 }
+
+namespace {
+
+// Full-width bars two level rows high, one every three rows: every tile holds a piece of
+// most bars, each anchored on the tile's first level-0 column.
+double bars(int, int64_t, int64_t y) { return y % 3 < 2 ? 255.0 : 0.0; }
+
+// The objects of a "test.components" run at level 1 of a 600 -> 250 pyramid (scale 2.4),
+// restricted to the whole slide or not.
+std::vector<ObjectId> barObjects(int32_t tile, bool restricted, bool seams) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, bars);
+    OperationParameters parameters;
+    parameters.setBool("seams", seams);
+    PipelineSpec spec = spec1("test.components", parameters);
+    spec.analysisLevel(1);
+    if (restricted) {
+        spec.restrictTo(Rect64{0, 0, 600, 600});
+    }
+    const Configuration configuration =
+        ConfigurationBuilder().tileSize(tile, tile).tileSizeFromSlide(false).workerCount(4).build();
+    ts::CollectingObjectSink sink;
+    Pipeline p(scene, configuration, spec);
+    p.bindLayer("objects", LayerId(3));
+    p.runInto(sink, nullptr, CancellationToken());
+    return sortedIds(sink);
+}
+
+} // namespace
+
+// At a non-integer level scale, a tile's first level-0 column or row can floor to the
+// level pixel before the tile. An object anchored there is still admitted when the
+// restriction covers it, so a restriction covering the slide keeps every object.
+TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
+    for (const int32_t tile : {64, 100}) {
+        const std::vector<ObjectId> unrestricted = barObjects(tile, false, false);
+        ASSERT_FALSE(unrestricted.empty());
+        EXPECT_EQ(barObjects(tile, true, false), unrestricted) << "tile " << tile;
+    }
+    // Merged across seams, the objects match a pass over the whole level in one tile.
+    const std::vector<ObjectId> whole = barObjects(256, true, true);
+    ASSERT_FALSE(whole.empty());
+    for (const int32_t tile : {64, 100}) {
+        EXPECT_EQ(barObjects(tile, true, true), whole) << "tile " << tile;
+    }
+}

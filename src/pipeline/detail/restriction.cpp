@@ -87,7 +87,22 @@ RasterMask RestrictionFilter::buildTileMask(int64_t tileIndex) const {
     if (!restricted_) {
         return RasterMask();
     }
-    return buildMask(plan_.grid.tileRectAtLevelWithHalo(tileIndex, plan_.chainHalo));
+    // A tile owns the objects anchored in its level-0 rect, llround(level rect x scale), and
+    // tests each at the level pixel floor(anchor / scale). At a non-integer scale the first
+    // level-0 column or row of a tile can floor to the level pixel before it; a zero halo
+    // there is widened by that one pixel, so the test stays inside the mask.
+    Rect64 region = plan_.grid.tileRectAtLevelWithHalo(tileIndex, plan_.chainHalo);
+    if (plan_.levelScale != std::floor(plan_.levelScale)) {
+        if (plan_.chainHalo.left == 0) {
+            --region.x;
+            ++region.width;
+        }
+        if (plan_.chainHalo.top == 0) {
+            --region.y;
+            ++region.height;
+        }
+    }
+    return buildMask(region);
 }
 
 bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {

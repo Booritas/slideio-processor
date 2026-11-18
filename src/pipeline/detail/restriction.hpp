@@ -58,6 +58,9 @@ public:
 
     /// The tile's mask over its halo rect at the level (the tile grown by the
     /// chain's halo); a null mask when the run is unrestricted. Not cached.
+    /// At a non-integer level scale, a zero left or top halo is widened by one
+    /// pixel: the tile's first level-0 column or row can floor to the level
+    /// pixel before the tile, and an anchor there is tested on this mask.
     RasterMask buildTileMask(int64_t tileIndex) const;
 
     /// True when the tile's mask has no set pixel inside the tile rect, so the
