@@ -1876,11 +1876,20 @@ data library and the engine can never report different type sets.
 
 ## 5.11 The engine library — `slideio-processor-engine`
 
-`pipeline` is the first module of the second shared library of design 5.1,
-`slideio-processor-engine`; `algorithm` and `workspace` join it later. It is
+`pipeline` and `algorithm` are the modules of the second shared library of
+design 5.1, `slideio-processor-engine`; `workspace` joins it later. It is
 assembled from object libraries, as `slideio-processor-data` is:
-`src/pipeline/` builds the OBJECT library `slideio-processor-pipeline`, and
-the shared library links it.
+`src/pipeline/` builds the OBJECT library `slideio-processor-pipeline`,
+`src/algorithm/` builds `slideio-processor-algorithm`, and the shared library
+links both. Linking the algorithm objects into the library, rather than
+archiving them, keeps the file-scope object that registers the built-in
+operations at load (`06-algorithm.md` 6.1).
+
+`algorithm` is built as a third-party operation would be: its include path is
+`include/`, SlideIO's headers and its own `src/algorithm/` as the root of its
+`detail/` headers, and not `src/`, so it cannot reach `pipeline`'s private
+headers (UR-EXT-2). It defines `SLIDEIO_PROCESSOR_ENGINE_API` privately, as
+`pipeline` does, because its objects are compiled into the engine.
 
 **Requirements:** UR-API-1, UR-BLD-3, UR-BLD-4, UR-EXT-2.
 
@@ -1894,7 +1903,10 @@ consumers; elsewhere it is `__attribute__((visibility("default")))`.
 **Links.** The engine links `slideio-processor-data` and `slideio::slideio`
 **publicly**, because its public headers name the data library's types and
 SlideIO's `Scene`, and links `opencv_core` and `opencv_imgproc` **privately**,
-from the static Conan build. SlideIO's own libraries carry a second, static
+from the static Conan build; so does the `algorithm` object library. OpenCV
+is confined to the engine library rather than to `pipeline`, because the
+catalog's neighbourhood kernels, labelling and watershed (`06-algorithm.md`
+6.4, 6.7) need it. SlideIO's own libraries carry a second, static
 copy of OpenCV. The two copies never meet, because SlideIO's public API is
 buffer-based — a `void*` and a size — so no `cv::` object ever crosses it. On
 Linux the engine links with `-Wl,--exclude-libs,ALL`, as the data library
@@ -1905,7 +1917,8 @@ build if `config`, `storage` or the data library ever lists OpenCV or a
 
 **No OpenCV in a public header, checked by the build.** The target
 `pipeline_headers_are_opencv_free` compiles every header under
-`include/slideio/processor/pipeline/` on its own, with the SlideIO and data
+`include/slideio/processor/pipeline/` and `include/slideio/processor/algorithm/`
+on its own, with the SlideIO and data
 include paths but **no OpenCV include path**. It is part of the default build,
 so a header that reaches OpenCV fails the build rather than a review. A second
 object library compiles a third-party operation against `include/` and

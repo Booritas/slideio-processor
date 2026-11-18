@@ -123,7 +123,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   the point operations — fixed, Otsu and adaptive thresholds, explicit type
   conversion, colour space conversion and stain deconvolution. Filters and
   morphology follow in plan B, segmentation and measurements in plan C.
-  **Planned.**
+  **Implemented** on branch `feat/algorithm-a`, awaiting review and merge.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
