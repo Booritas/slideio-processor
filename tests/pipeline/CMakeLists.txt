@@ -112,8 +112,10 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 
 # Every public header must compile on its own, with the SlideIO and data include
 # paths but no OpenCV include path: a header that reaches OpenCV fails
-# the normal build. One source per public header.
+# the normal build. One source per public header, of pipeline and algorithm.
 add_library(pipeline_headers_are_opencv_free OBJECT
+    header_check/check_algorithm_pixel_threshold.cpp
+    header_check/check_algorithm_registry.cpp
     header_check/check_backend.cpp
     header_check/check_executor.cpp
     header_check/check_export.cpp
