@@ -86,15 +86,18 @@ The project builds two shared libraries:
   configure step fails if either ever reaches its link line.
 - **`slideio-processor-engine`** — the `pipeline` module (operations, the
   pipeline and its tile executor, seam merging, and a pipeline's lazy SlideIO
-  scene), with `algorithm` and `workspace` to join it later. It links
-  `slideio-processor-data` and `slideio::slideio` **publicly**, because its
-  public headers name their types (`slideio::Scene` among them), and
-  `opencv_core` and `opencv_imgproc` **privately**. No OpenCV type, header or
-  macro appears in a public header; the build compiles every pipeline header
-  without an OpenCV include path to keep it so. SlideIO's libraries carry their
-  own static OpenCV; the two copies never meet, because SlideIO's API passes
-  buffers, not OpenCV objects. Under MSVC the engine's configuration must match
-  SlideIO's (Release with Release, Debug with Debug), which the build checks.
+  scene) and the `algorithm` module (the operation catalog and its registry:
+  so far the fixed, Otsu and adaptive thresholds, type conversion, colour
+  conversion and stain deconvolution, registered when the library loads), with
+  `workspace` to join it later. It links `slideio-processor-data` and
+  `slideio::slideio` **publicly**, because its public headers name their types
+  (`slideio::Scene` among them), and `opencv_core` and `opencv_imgproc`
+  **privately**. No OpenCV type, header or macro appears in a public header;
+  the build compiles every pipeline and algorithm header without an OpenCV
+  include path to keep it so. SlideIO's libraries carry their own static
+  OpenCV; the two copies never meet, because SlideIO's API passes buffers, not
+  OpenCV objects. Under MSVC the engine's configuration must match SlideIO's
+  (Release with Release, Debug with Debug), which the build checks.
 
 A consumer of the pipeline links `slideio-processor-engine` and gets the data
 library and SlideIO with it.

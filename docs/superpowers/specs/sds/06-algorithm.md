@@ -31,6 +31,42 @@ self-register by name; `workspace` resolves stages against the catalog and
 never links this module. That is what makes the catalog a leaf, and what let
 its contents be settled last (6.10) without touching anything above it.
 
+**Registration is per name and never replaces.** Each built-in is registered
+under one module-wide mutex, and a name that `OperationCatalog::isRegistered`
+already holds is left as it is, whoever registered it: a caller who registered
+its own factory under a built-in's name first keeps it, and calling any of the
+four functions again registers nothing new. The mutex serialises this module's
+registrations only, so another caller may register the same name between the
+check and the registration; `registerFactory` then throws
+`InvalidArgumentError`, which is swallowed when the name is now registered and
+rethrown otherwise. The functions throw only for a factory the catalog refuses
+for another reason, and `std::bad_alloc`.
+
+**Automatic at load.** A file-scope static object calls
+`registerBuiltinOperations()` when the engine library is loaded, inside a
+`try` that discards any exception, because an exception escaping a static
+initialiser terminates the process; calling `registerBuiltinOperations()`
+again surfaces the error. It is not guarded by a once-flag, because a callable
+that throws can leave `std::call_once` hung on some standard libraries, and
+idempotence per name makes a flag unnecessary.
+
+`registerSegmentationOperations()` and `registerMeasurementOperations()` exist
+so a build can ship a subset, but register nothing until the catalog has
+segmentation and measurement operations; their documentation says so.
+
+**Build.** The module is the OBJECT library `slideio-processor-algorithm`,
+linked into `slideio-processor-engine` (`05-pipeline.md` 5.11). Its include
+path is `include/`, SlideIO's headers and `src/algorithm/` as the root of its
+own `detail/` headers, and deliberately not `src/`, so it cannot reach
+`pipeline`'s private headers and is compiled against the public API only, as
+a third-party operation would be (UR-EXT-2). It links `opencv_core` and
+`opencv_imgproc` privately: OpenCV is confined to the engine library, not to
+`pipeline`, because the catalog's neighbourhood kernels, labelling and
+watershed (6.4, 6.7) need it. No OpenCV type, header or macro appears in an
+`algorithm/` header, which the build's OpenCV-free header check compiles as it
+does `pipeline/`'s. Using OpenCV does not mean trusting it: each operation keeps
+its own correctness test (6.9).
+
 ## 6.2 Naming and parameter conventions
 
 Every operation is named `category.operation` and constructed either by name
@@ -54,6 +90,48 @@ and record identically (5.4). A factory that computed a value it did not put in
 the bag would break that, and the round-trip conformance test of 5.1 is what
 catches it.
 
+**Parameter bags.** An operation's `parameters()` is always its **complete**
+bag: every key of the table below is present, with the default filled in for any
+key the caller omitted, so a typed factory and `OperationCatalog::create` with a
+partial bag give bags that compare equal. An **unknown key, or a value of the
+wrong type, throws `InvalidArgumentError`** naming the operation and the key,
+never the value, so a misspelt recorded configuration fails rather than
+replaying as defaults. An enumeration is stored as its enumerator spelling
+(`"Above"`, `"Gaussian"`, `"TowardZero"`), and a `DataType` as
+`dataTypeName()` (`"Float32"`); an unknown spelling is a value out of range and
+throws the same way. A `double` key also accepts an integer whose magnitude is
+at most 2⁵³, so exactly representable as a double: a configuration written by
+hand with `"value": 128` reads back from JSON as an integer and still creates
+the operation. The operation stores the value as a `double`, so its bag equals
+the one created with `128.0` and round-trips unchanged; a larger integer is a
+value of the wrong type. A typed factory refuses an argument out of range, or an
+enumeration value that is not an enumerator, with `InvalidArgumentError` naming
+the operation and the parameter.
+
+| Operation | Key | Type | Default by name | Range |
+|---|---|---|---|---|
+| `pixel.colour_convert` | `from` | string | `"Rgb"` | a `ColourSpace` spelling, differing from `to` |
+| | `to` | string | `"Grey"` | a `ColourSpace` spelling |
+| `pixel.stain_deconvolution` | `vectors` | double array | hematoxylin and eosin | 6 or 9 components, stain by stain, as given; each vector valid as `StainVectors::setVector` requires |
+| | `stainName0` … `stainName<count - 1>` | string | `"Hematoxylin"`, `"Eosin"` when `vectors` is absent too, else `""` | any |
+| `pixel.threshold_fixed` | `value` | double | 128.0 | finite |
+| | `direction` | string | `"Above"` | `"Above"`, `"Below"` |
+| `pixel.threshold_otsu` | `direction` | string | `"Above"` | `"Above"`, `"Below"` |
+| | `histogramMinimum`, `histogramMaximum` | double | absent | finite, minimum less than maximum, given together |
+| | `binCount` | int | 256 when a range is given | 2 to 1048576; only with a range |
+| `pixel.threshold_adaptive` | `method` | string | `"Mean"` | `"Mean"`, `"Gaussian"` |
+| | `blockSize` | int | 11 | odd, 3 to 1025 |
+| | `offset` | double | 2.0 | finite |
+| | `direction` | string | `"Above"` | `"Above"`, `"Below"` |
+| `pixel.convert_type` | `target` | string | `"Float32"` | a `dataTypeName()` spelling other than `Unknown` |
+| | `rounding` | string | `"Nearest"` | a `RoundingMode` spelling |
+| | `overflow` | string | `"Saturate"` | `"Saturate"`, `"Error"` |
+
+`pixel.threshold_otsu`'s range is the one exception to completeness: the three
+range keys are present only when the operation was created with a range, since
+"no range" has no value to fill in (6.5). Its bag still round-trips, which is
+what the conformance test checks.
+
 Every factory's operation declares its channel arity, supported types, halo,
 correctness reference and complexity note (UR-ALG-3, UR-ALG-4, UR-ALG-6,
 UR-ALG-8). Algorithms of the same kind take comparable parameters in a
@@ -72,6 +150,11 @@ OperationPtr makeColourConvert(ColourSpace from, ColourSpace to);
 class StainVectors {
 public:
     StainVectors();
+    StainVectors(const StainVectors&);
+    StainVectors(StainVectors&&) noexcept;
+    StainVectors& operator=(const StainVectors&);
+    StainVectors& operator=(StainVectors&&) noexcept;
+    ~StainVectors();
     static StainVectors hematoxylinEosin() noexcept;
     static StainVectors hematoxylinDab() noexcept;
 
@@ -86,17 +169,89 @@ public:
 OperationPtr makeStainDeconvolution(const StainVectors&);
 ```
 
-**Requirements:** UR-PIX-1, UR-PIX-2, UR-ALG-3.
+**Requirements:** UR-PIX-1, UR-PIX-2, UR-IMG-7, UR-ALG-3.
 
 Both are `Joint` — they consume the selected channels together — and both
 declare `requiresUniformTypes() == true`, so a selection mixing `Byte` and
 `Float32` fails with an error naming the operation and both channels rather
 than silently misinterpreting them (UR-ALG-3).
 
-`makeColourConvert` with `from == Rgb` throws `InvalidArgumentError` when the
-scene's metadata does not state that the selected channels are RGB. UR-IMG-7
-forbids inferring a channel's meaning from its index, and its acceptance
-criterion is exactly this error.
+**RGB is inferred from the channels, and checked when the operation runs.**
+Input that is to be read as RGB — `makeColourConvert` with `from == Rgb`, and
+every `pixel.stain_deconvolution` — must be exactly three planes, each `Byte`,
+whose `planeSourceChannel()` values are 0, 1 and 2 in that order. Fewer or more
+planes throw `ChannelArityError`; another type or another channel order throws
+`InvalidArgumentError`. The message names the operation, states the
+requirement ("needs channels 0, 1, 2 as RGB, Byte") and lists the channels
+found with their types, never a pixel value. Within a run the failure is
+reported as every tile failure is: a `TileError` naming the operation, with the
+message as its `cause()`.
+
+An earlier draft had the factory throw when the scene's metadata did not state
+that the selected channels were RGB. That cannot be built: an operation never
+sees the scene — the factory has no scene, and `apply()` sees only planes — and
+SlideIO's scene carries no "channels are RGB" flag to consult. Three `Byte`
+channels in the order 0, 1, 2 is how SlideIO presents an RGB brightfield
+scene, so the check is made on that shape, at the one point where the
+planes and their source channels are known. A selection that reorders,
+subsets or extends the channels is refused rather than interpreted, which is
+what UR-IMG-7 asks of an operation that gives channels a meaning.
+
+**A `UInt16` scene is refused before any tile runs.** `pixel.colour_convert`
+declares `Byte` and `Float32` and `pixel.stain_deconvolution` declares `Byte`,
+so the pipeline's validation rejects a `UInt16` selection with
+`UnsupportedDataTypeError` naming the operation, which is earlier than the RGB
+check and says the same thing (UR-IMG-11).
+
+**Colour conversion.** Every pair converts through RGB, in double precision,
+and writes `Float32`: one plane for `Grey`, else three. The units are fixed:
+
+| Space | Planes | Units |
+|---|---|---|
+| `Rgb` | 3 | 0 to 255. As input: `Byte`, channels 0, 1, 2 as above |
+| `Grey` | 1 | 0 to 255. From RGB, ITU-R BT.601 luma 0.299 R + 0.587 G + 0.114 B; to RGB, the value replicated. As input: `Byte` or `Float32` |
+| `Hsv` | 3 | Hexcone model: H in degrees [0, 360), 0 when S is 0; S and V in [0, 1]. As input: `Float32` |
+| `Lab` | 3 | CIE 1976 L\*a\*b\*, D65 white (0.95047, 1, 1.08883), L\* in [0, 100]. As input: `Float32` |
+
+Lab goes through linear sRGB per IEC 61966-2-1, with its linearisation, and the
+sRGB-to-XYZ matrix derived from that standard's primaries and the D65 white
+point to seven digits (0.4124564, 0.3575761, 0.1804375, …), whose rows sum to the
+white point. The four-digit matrix often quoted misses the published Lab
+values by about 8 × 10⁻³, which the seven-digit form does not. An input of the
+wrong plane count or type for its source space throws `ChannelArityError` or
+`UnsupportedDataTypeError` naming the operation. The output is never clamped:
+an out-of-gamut Lab or HSV input gives RGB outside 0 to 255. A pixel with a NaN
+in any input component is NaN in every output component, whatever the pair.
+
+Because RGB output is `Float32` and RGB input must be `Byte`, an `X → Rgb`
+conversion cannot feed an `Rgb → Y` conversion; a chain wanting `X → Y` uses
+that pair directly, which converts through RGB internally and loses nothing.
+Writing RGB back as `Byte` would round and clamp, which UR-IMG-11 forbids an
+operation to do silently; `pixel.convert_type` does it when asked.
+
+**Stain vectors.** `StainVectors` is pimpl'd, with the full copy and move set
+of C-2. It holds **at most three stains**. `setVector(index, …)` takes an index
+from 0 to `count()`, where `count()` appends a stain; any other index, a fourth
+stain, a negative, NaN or infinite component, or three zero components throws
+`InvalidArgumentError` and leaves the object unchanged. Vectors are stored as
+given, so `getVector` returns what `setVector` received, and are normalised to
+unit length where they are used. `getVector`, `stainName` and `setStainName`
+with an index out of range throw `InvalidArgumentError`, as does `setStainName`
+with a null name. A stain's name is `""` until set, and the pointer `stainName`
+returns is valid until the next non-const call. The built-in pairs are those of
+Ruifrok and Johnston (2001): hematoxylin (0.650, 0.704, 0.286) with eosin
+(0.072, 0.990, 0.105), and hematoxylin with DAB (0.268, 0.570, 0.776), named
+`"Hematoxylin"`, `"Eosin"` and `"DAB"`.
+
+**Stain deconvolution** is colour deconvolution after Ruifrok and Johnston.
+Per pixel, each channel's optical density is OD = −log₁₀(max(I, 1) / 255), so a
+sample of 0 reads as 1 and white is no stain. The unit stain vectors are the
+rows of a 3 × 3 matrix M; with two stains the third row is the unit cross
+product of the first two, whose amount is computed but not written. The stain
+amounts are OD · M⁻¹ in double precision, written as one `Float32` plane per
+stain in stain order. The factory throws `InvalidArgumentError` for fewer than
+two stains, or when M's determinant is below 10⁻⁶ in magnitude, that is when
+the vectors are linearly dependent.
 
 Deconvolution output is `Float32` per stain, and it reaches a consumer
 losslessly. Open question 3 asked whether that fits SlideIO's `Scene`
@@ -196,7 +351,7 @@ OperationPtr makeAdaptiveThreshold(AdaptiveMethod, int32_t blockSize,
                                    double offset, ThresholdDirection);
 ```
 
-**Requirements:** UR-PIX-5, UR-EXE-1, UR-QA-3.
+**Requirements:** UR-PIX-5, UR-EXE-1, UR-QA-2, UR-QA-3, UR-IMG-11.
 
 `makeOtsuThreshold` is the module's only global-context operation and the
 reason `pipeline::Reduction` exists. It returns `needsGlobalContext() == true`,
@@ -207,6 +362,71 @@ Its acceptance criterion is that the streamed whole-slide value equals the
 value computed from a full in-memory histogram of the same slide — which also
 makes it the natural regression test for UR-QA-3's worker-count invariance,
 since a float accumulator here would break it non-deterministically.
+
+**Every threshold writes `Byte`: 255 for foreground, 0 for background.**
+`Above` makes a sample foreground when it is **strictly greater** than the
+threshold, `Below` when it is **strictly less**; a sample equal to the
+threshold is background either way. A NaN sample is always background.
+
+**Integer samples are compared exactly.** No integer sample is converted to
+`double` for the comparison, so an `Int64` sample of 2⁵³ + 1 is above a
+threshold of 2⁵³, although both are the same `double`. A fractional threshold
+on an integer type falls between two integers (100 is below 100.5, 101 above
+it). A threshold outside the type's range is not clamped into it — clamping
+would make `0 > −5` false for `Byte` — but puts every sample on one side: for
+`Byte`, `Above` −5 makes every sample foreground and `Below` −5 every sample
+background, and 300 the reverse.
+
+**Fixed.** `pixel.threshold_fixed` accepts every type and compares each sample
+with `value`.
+
+**Otsu, its bins.** Without a histogram range, `Byte`, `Int8`, `UInt16` and
+`Int16` get one bin per value of the type, and `binCount` must not be given.
+Any other type needs `histogramMinimum` and `histogramMaximum` (with `binCount`,
+256 by default); without them the run fails, reported as a `TileError` whose
+cause is an `InvalidArgumentError` naming the operation, the type and the two
+missing keys. With a range the bins divide [minimum, maximum] evenly, as
+`Histogram64` does, a sample equal to the maximum falling in the last bin; a
+sample below the range counts as bin −1 and one above it as bin `binCount`.
+**A ranged Otsu is reachable only by name** — `OperationCatalog::create` or
+`PipelineSpec::operation` with the range keys — because the typed factory
+takes only a direction, as above, and its bag then holds `direction` alone.
+
+**Otsu, the two passes.** The first pass accumulates one 64-bit histogram per
+source channel from the samples of each tile rect that the run's restriction
+admits (`05-pipeline.md` 5.4, 5.5), and tiles combine by adding their
+integer bins, so the result depends on neither worker count nor tile order.
+Each channel's threshold bin k\* is then the smallest k in [0, binCount − 2]
+maximising
+w₀ · w₁ · (m₀ − m₁)² over splits whose two classes are both non-empty, the class
+means taken over bin indices; when no split has two non-empty classes, k\* is
+the highest non-empty bin. The second pass makes a bin above k\* foreground for
+`Above`, and a bin at or below it foreground for `Below`. A channel that counted
+nothing — every sample NaN or outside the restriction — is all background.
+
+**Otsu, distinct channels.** Each source channel has one histogram, so the
+planes of a tile must come from distinct source channels. A `Joint` operation
+that writes several planes from one source channel gives them all that channel
+— `pixel.colour_convert` from `Grey` to `Hsv` does — and Otsu after it
+would otherwise pool H, S and V into one histogram. The first pass refuses
+such a tile with `InvalidArgumentError` naming the operation and stating that
+the source channels must be distinct, and so does the second when one call
+holds such planes; a run reports it as a `TileError` naming the operation,
+with that message as its `cause()`.
+
+**Adaptive.** `pixel.threshold_adaptive` compares each sample with
+T = W − `offset`, W the average of the `blockSize` × `blockSize` window centred
+on it: for `Mean` the window sum over `blockSize`²; for `Gaussian` the
+separable weights exp(−d² / 2σ²), d from −`blockSize`/2 to `blockSize`/2,
+σ = 0.3 · ((`blockSize` − 1)/2 − 1) + 0.8, normalised to sum 1. Its halo is
+`blockSize`/2 on every side, and window pixels beyond the level read as zero.
+A NaN anywhere in the window makes the pixel background, since the window
+average is then NaN. **Each pixel is computed from its own window alone**, in
+double, in one fixed order — each window row's weighted sum left to right, then
+the row sums top to bottom — with no running sum carried from a neighbour, so
+the result is bitwise independent of the tiling (UR-QA-2). It accepts every
+type except `Int64` and `UInt64`, whose window sums are not exact in double;
+every other type's samples are exact in double, so its integer comparisons stay exact.
 
 ## 6.6 Type conversion — `algorithm/pixel/convert.hpp`
 
@@ -227,6 +447,32 @@ is the one place a caller opts into it deliberately.
 
 Tested at type boundaries — minimum, maximum, overflow — against the documented
 behaviour (UR-IMG-13).
+
+`pixel.convert_type` accepts every type and writes `target`. Each sample is
+converted by exactly one rule, and integer samples never pass through `double`:
+
+| Source → target | Rule |
+|---|---|
+| the same type | copied bit for bit |
+| integer → integer | exact when in range; out of range, it overflows |
+| integer → float | the nearest representable value, ties to even, rounded in integer arithmetic, so `Int64` 2⁵³ + 1 gives 2⁵³ and a `UInt64` with its top bit set rounds correctly to `Float32` and `Float64` on every compiler. A `Float16` result of magnitude 65520 or more, which would round to infinity, overflows; 65519 gives 65504 |
+| float → integer | rounded by the `RoundingMode` (`Nearest` is ties to even), then out of range it overflows; NaN and ±infinity overflow |
+| float → wider or equal float | exact |
+| float → narrower float | the nearest representable value, ties to even; a finite value whose rounded result would be infinite overflows; NaN and ±infinity are kept |
+
+**Overflow.** Under `OverflowMode::Saturate` an overflowing sample becomes the
+target's minimum or maximum — for a float target, the largest finite value with
+the sample's sign — and NaN converted to an integer type becomes 0. Under
+`OverflowMode::Error` the tile fails with `InvalidArgumentError`
+`"pixel.convert_type: <n> samples of <source type> do not fit <target type>"`,
+counting every overflowing sample of the tile and naming no value. When planes
+of several types overflow, the source types are listed in plane order, each
+once (`"… 4 samples of Int16, Int32 do not fit Int8"`). The
+`RoundingMode` affects only conversions to an integer type.
+
+`Float16` is decoded exactly by the module's own binary16 routine and encoded
+with rounding to nearest, ties to even, so the eleven types convert among
+themselves without passing through a lossy intermediate (UR-IMG-10).
 
 ## 6.7 Segmentation — `algorithm/segment/segment.hpp`
 
@@ -524,6 +770,22 @@ that the result is right.
 | Measurements | Analytic values for synthetic objects of known dimensions |
 | Tissue detect | Labelled test corpus, area within documented tolerance |
 | Watershed | Synthetic touching discs of known centres and radii; recovered count and boundary within tolerance |
+
+The operations that exist state their reference through
+`OperationCatalog::correctnessReference` and are tested to these tolerances:
+
+| Operation | Reference | Tolerance the tests assert |
+|---|---|---|
+| `pixel.colour_convert` | Analytic: IEC 61966-2-1 sRGB, CIE 1976 L\*a\*b\* with D65 white, hexcone HSV, ITU-R BT.601 luma | Known values within 10⁻³ (pure red is L\*a\*b\* 53.2408, 80.0925, 67.2032; white is 100, 0, 0; HSV of pure red is 0, 1, 1) and BT.601 grey within 10⁻⁴; RGB → HSV → RGB and RGB → Lab → RGB round trips over a 512 × 512 grid of `Byte` colours within 10⁻³ on the 0 to 255 scale; tiled output bitwise equal to one tile |
+| `pixel.stain_deconvolution` | Ruifrok and Johnston, *Anal Quant Cytol Histol* 23:291–299 (2001); synthetic images composed from known vectors | Amounts 0 to 1 recovered within 0.01 for H&E and H-DAB wherever every channel's intensity is at least 64 (darker pixels are limited by the input's 8-bit quantisation); white within 10⁻⁶ of zero; a three-stain pixel within 0.01 |
+| `pixel.threshold_fixed` | Analytic: foreground exactly when strictly above (or below) the value; NaN background | Exact, on every type, including `Int64` around 2⁵³; tiled output bitwise equal to one tile |
+| `pixel.threshold_otsu` | Otsu, *IEEE Trans SMC* 9:62–66 (1979); a full in-memory histogram of the same slide | Exact: the same threshold bin and output at 1, 4 and 8 workers and tile sizes 64, 100 and 257, and under a restriction the bins of only the admitted pixels |
+| `pixel.threshold_adaptive` | Analytic: window mean (or Gaussian-weighted mean) minus the offset, against a direct per-pixel computation | Exact: a `Mean` step edge analytically, `Gaussian` on random `Float32` against the direct computation; tiled output bitwise equal to one tile for both methods on `Float32` and `UInt16` |
+| `pixel.convert_type` | Analytic: the documented rounding and overflow rules at each type's minimum, maximum and overflow | Exact bit patterns, including ties to even and the `Float16` limit |
+
+Exact agreement is asserted wherever the computation is defined in a fixed
+order, and a tolerance only where the reference is a published constant or the
+input is quantised.
 
 ## 6.10 Scope of v1 — the catalog, closed
 

@@ -112,8 +112,12 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 
 # Every public header must compile on its own, with the SlideIO and data include
 # paths but no OpenCV include path: a header that reaches OpenCV fails
-# the normal build. One source per public header.
+# the normal build. One source per public header, of pipeline and algorithm.
 add_library(pipeline_headers_are_opencv_free OBJECT
+    header_check/check_algorithm_pixel_colour.cpp
+    header_check/check_algorithm_pixel_convert.cpp
+    header_check/check_algorithm_pixel_threshold.cpp
+    header_check/check_algorithm_registry.cpp
     header_check/check_backend.cpp
     header_check/check_executor.cpp
     header_check/check_export.cpp
@@ -128,6 +132,21 @@ add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_standard_measurements.cpp
     header_check/check_tile_grid.cpp
 )
+# A new algorithm header without its check source would escape the check, so
+# configuring fails until header_check/check_algorithm_<path>.cpp exists for
+# every include/slideio/processor/algorithm/<path>.hpp ('/' becomes '_').
+file(GLOB_RECURSE ALGORITHM_PUBLIC_HEADERS RELATIVE "${PROJECT_SOURCE_DIR}/include/slideio/processor/algorithm"
+    CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/slideio/processor/algorithm/*.hpp")
+get_target_property(HEADER_CHECK_SOURCES pipeline_headers_are_opencv_free SOURCES)
+foreach(header IN LISTS ALGORITHM_PUBLIC_HEADERS)
+    string(REGEX REPLACE "\\.hpp$" "" stem "${header}")
+    string(REPLACE "/" "_" stem "${stem}")
+    list(FIND HEADER_CHECK_SOURCES "header_check/check_algorithm_${stem}.cpp" listed)
+    if(listed EQUAL -1 OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/header_check/check_algorithm_${stem}.cpp")
+        message(FATAL_ERROR "tests/pipeline: include/slideio/processor/algorithm/${header} has no header check; "
+            "add header_check/check_algorithm_${stem}.cpp and list it in pipeline_headers_are_opencv_free")
+    endif()
+endforeach()
 target_include_directories(pipeline_headers_are_opencv_free PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     $<TARGET_PROPERTY:slideio::slideio,INTERFACE_INCLUDE_DIRECTORIES>)

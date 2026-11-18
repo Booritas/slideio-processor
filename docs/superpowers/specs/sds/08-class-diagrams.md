@@ -1680,11 +1680,23 @@ classDiagram
         +makeStainDeconvolution(StainVectors) OperationPtr
     }
 
+    class ColourSpace {
+        <<enumeration>>
+        Rgb
+        Grey
+        Hsv
+        Lab
+    }
+
     class StainVectors {
+        <<ThreadCompatible>>
         +hematoxylinEosin() StainVectors
         +hematoxylinDab() StainVectors
+        +count() int32_t
         +setVector(int32_t, double r, double g, double b) void
+        +getVector(int32_t, double& r, double& g, double& b) void
         +stainName(int32_t) cstr
+        +setStainName(int32_t, cstr) void
     }
 
     class filterFactories {
@@ -1712,7 +1724,37 @@ classDiagram
         +makeFixedThreshold(double, ThresholdDirection) OperationPtr
         +makeOtsuThreshold(ThresholdDirection) OperationPtr
         +makeAdaptiveThreshold(AdaptiveMethod, int32_t block, double offset, ThresholdDirection) OperationPtr
+    }
+
+    class ThresholdDirection {
+        <<enumeration>>
+        Above
+        Below
+    }
+
+    class AdaptiveMethod {
+        <<enumeration>>
+        Mean
+        Gaussian
+    }
+
+    class convertFactories {
+        <<free functions>>
         +makeTypeConvert(DataType, RoundingMode, OverflowMode) OperationPtr
+    }
+
+    class RoundingMode {
+        <<enumeration>>
+        Nearest
+        TowardZero
+        Floor
+        Ceil
+    }
+
+    class OverflowMode {
+        <<enumeration>>
+        Saturate
+        Error
     }
 
     class segmentFactories {
@@ -1760,6 +1802,12 @@ classDiagram
     colourFactories ..> Operation : returns OperationPtr
     filterFactories ..> Operation
     thresholdFactories ..> Operation
+    convertFactories ..> Operation
+    colourFactories ..> ColourSpace
+    thresholdFactories ..> ThresholdDirection
+    thresholdFactories ..> AdaptiveMethod
+    convertFactories ..> RoundingMode
+    convertFactories ..> OverflowMode
     segmentFactories ..> Operation
     measureFactories ..> Operation
     colourFactories ..> StainVectors
@@ -1775,6 +1823,22 @@ classDiagram
 The module is almost entirely free functions, and the single dashed arrow from
 `registry` to `OperationCatalog` is its entire coupling to the rest of the
 library.
+
+**What exists so far.** `registry`, `colourFactories` with `ColourSpace` and
+`StainVectors`, `thresholdFactories` with `ThresholdDirection` and
+`AdaptiveMethod`, and `convertFactories` with `RoundingMode` and
+`OverflowMode` are built, in `registry.hpp`, `pixel/colour.hpp`,
+`pixel/threshold.hpp` and `pixel/convert.hpp`; `registerPixelOperations()`
+registers their six operations. The filter, morphology, segmentation and
+measurement classes are drawn as `06-algorithm.md` specifies them and do not
+exist yet, so `registerSegmentationOperations()` and
+`registerMeasurementOperations()` register nothing. `StainVectors` is pimpl'd
+with the full copy and move set, holds at most three stains, and stores
+vectors as given (`06-algorithm.md` 6.3). Behind the free functions, each
+operation is a private `Operation` class registered through one private
+`OperationFactory` implementation that answers every declaration from a
+prototype built from default parameters; none of that is public, which is why
+it is not drawn.
 
 **The two construction paths are byte-identical, not merely equivalent.**
 `makeGaussianBlur(2.0, 0)` and `create("pixel.gaussian_blur", bag)` fill the

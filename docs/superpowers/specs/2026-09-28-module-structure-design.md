@@ -30,7 +30,7 @@ Seven modules such that:
   ("what is the v1 catalog, exactly?") remains unresolved.
 - The transaction discipline protecting store atomicity exists in exactly one
   implementation, not once per algorithm author.
-- OpenCV is confined to one module.
+- OpenCV is confined to one shared library, the engine.
 
 ## 3. Decisions
 
@@ -114,7 +114,7 @@ therefore spatial scan order, which an observing viewer gets for free.
 | `config` | core | — |
 | `pipeline` | core, config | **OpenCV**, behind a backend adapter |
 | `storage` | core, config | **SQLite** with R\*Tree |
-| `algorithm` | core, config, pipeline | via pipeline only |
+| `algorithm` | core, config, pipeline | **OpenCV**, privately, for its kernels |
 | `workspace` | core, config, pipeline, storage | — |
 | `reporting` | core, config, storage | slideio-converter, Parquet writer |
 
@@ -133,9 +133,20 @@ what the two-library split in section 5 exists to deliver.
 declared in `pipeline`; `workspace` resolves stages against that registry
 rather than linking the catalog.
 
-**OpenCV is confined to `pipeline`.** One module, one backend adapter, one
-place where the UR-IMG-12 type matrix is generated and where UR-BLD-4's
-migration lands.
+**OpenCV is confined to the engine library.** It is linked privately by
+`pipeline` and `algorithm`, the engine's two modules that compute, and by
+nothing in the data library. An earlier version of this design confined it to
+`pipeline` alone, but the catalog's neighbourhood kernels (filters and
+morphology), connected-component labelling and watershed need OpenCV's
+implementations, and re-implementing them to keep the confinement at module
+granularity would buy nothing: what the confinement protects is the viewer
+process, and the library split (section 5) already guarantees that. `algorithm`
+is still compiled against public headers only, so it reaches OpenCV directly,
+not through `pipeline`'s internals. Within the engine, the backend adapter
+stays the one place where the UR-IMG-12 type matrix is generated and where
+UR-BLD-4's migration lands. No OpenCV type, header or macro appears in a public
+header of either module, which the build checks, and every operation keeps its
+own correctness test (UR-ALG-6), so OpenCV's numerics are checked, not trusted.
 
 ### 4.1 Dependency rules
 
@@ -374,7 +385,8 @@ Owns stage semantics. Holds no schema of its own; reads and writes through
 ### 6.5 `pipeline` — the framework
 
 Everything UR-EXT-4 promises to supply so operation authors write only per-tile
-computation. The only module linking OpenCV.
+computation. With `algorithm`, one of the two modules linking OpenCV, which
+is confined to the engine library (section 4).
 
 | Component | Responsibility | Requirements |
 |---|---|---|
