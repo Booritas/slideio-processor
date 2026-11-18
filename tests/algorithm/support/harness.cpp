@@ -72,8 +72,10 @@ BlockView viewOf(int64_t width, int64_t height, std::vector<std::vector<uint8_t>
                      static_cast<int32_t>(described.size()));
 }
 
+using Around = std::function<void(const ApplyCall& apply)>;
+
 void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t width, int64_t height,
-               const Halo& halo) {
+               const Halo& halo, const Around& around) {
     detail::OperationContextState state;
     state.input = &input;
     state.output = &output;
@@ -83,8 +85,34 @@ void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t
         Rect64{-halo.left, -halo.top, width + halo.left + halo.right, height + halo.top + halo.bottom};
     state.levelScale = 1.0;
     state.tileIndex = 0;
-    op.apply(*detail::OperationContextAccess::make(std::move(state)));
+    // The context is complete before the call is made, so a caller measuring
+    // the call sees apply() alone.
+    const auto context = detail::OperationContextAccess::make(std::move(state));
+    const ApplyCall call = [&op, &context] { op.apply(*context); };
+    around(call);
 }
+
+std::vector<std::vector<uint8_t>> encodePlanes(const std::vector<DataType>& inputTypes, int64_t width,
+                                               int64_t height,
+                                               const std::function<double(int32_t, int64_t, int64_t)>& pixel) {
+    std::vector<std::vector<uint8_t>> raw;
+    for (size_t p = 0; p < inputTypes.size(); ++p) {
+        const int32_t size = dataTypeSizeBytes(inputTypes[p]);
+        std::vector<uint8_t> bytes(static_cast<size_t>(width * height * size), 0);
+        for (int64_t y = 0; y < height; ++y) {
+            for (int64_t x = 0; x < width; ++x) {
+                encode(inputTypes[p], &bytes[static_cast<size_t>((y * width + x) * size)],
+                       pixel(static_cast<int32_t>(p), x, y));
+            }
+        }
+        raw.push_back(std::move(bytes));
+    }
+    return raw;
+}
+
+Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
+               int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
+               const Around& around);
 
 } // namespace
 
@@ -103,24 +131,30 @@ double Image::at(int32_t plane, int64_t x, int64_t y) const {
 Image applyDirect(Operation& op, const std::vector<DataType>& inputTypes,
                   const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                   const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel) {
-    std::vector<std::vector<uint8_t>> raw;
-    for (size_t p = 0; p < inputTypes.size(); ++p) {
-        const int32_t size = dataTypeSizeBytes(inputTypes[p]);
-        std::vector<uint8_t> bytes(static_cast<size_t>(width * height * size), 0);
-        for (int64_t y = 0; y < height; ++y) {
-            for (int64_t x = 0; x < width; ++x) {
-                encode(inputTypes[p], &bytes[static_cast<size_t>((y * width + x) * size)],
-                       pixel(static_cast<int32_t>(p), x, y));
-            }
-        }
-        raw.push_back(std::move(bytes));
-    }
-    return applyDirectRaw(op, inputTypes, sourceChannels, width, height, raw);
+    return applyDirectRaw(op, inputTypes, sourceChannels, width, height,
+                          encodePlanes(inputTypes, width, height, pixel));
+}
+
+Image applyDirectAround(Operation& op, const std::vector<DataType>& inputTypes,
+                        const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
+                        const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                        const std::function<void(const ApplyCall& apply)>& around) {
+    return applyRaw(op, inputTypes, sourceChannels, width, height, encodePlanes(inputTypes, width, height, pixel),
+                    around);
 }
 
 Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
                      const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                      const std::vector<std::vector<uint8_t>>& rawPlanes) {
+    return applyRaw(op, inputTypes, sourceChannels, width, height, rawPlanes,
+                    [](const ApplyCall& apply) { apply(); });
+}
+
+namespace {
+
+Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
+               int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
+               const Around& around) {
     if (inputTypes.empty() || inputTypes.size() != sourceChannels.size() || inputTypes.size() != rawPlanes.size()) {
         throw std::invalid_argument("applyDirectRaw: one type, channel and plane per input plane");
     }
@@ -167,18 +201,16 @@ Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
     if (op.arity() == ChannelArity::Joint) {
         const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, 0, in.size());
         BlockView output = viewOf(width, height, out.planes, out.types, outChannels, 0, out.planes.size());
-        applyOnce(op, input, output, width, height, halo);
+        applyOnce(op, input, output, width, height, halo, around);
     } else {
         for (size_t p = 0; p < in.size(); ++p) {
             const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, p, 1);
             BlockView output = viewOf(width, height, out.planes, out.types, outChannels, p, 1);
-            applyOnce(op, input, output, width, height, halo);
+            applyOnce(op, input, output, width, height, halo, around);
         }
     }
     return out;
 }
-
-namespace {
 
 // Assembles the analysis level from the tiles, mapping each tile's level-0 rect
 // to level pixels by the scene-to-level width ratio.

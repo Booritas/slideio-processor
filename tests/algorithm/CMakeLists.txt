@@ -63,3 +63,43 @@ endif()
 gtest_discover_tests(slideio_processor_algorithm_tests TEST_PREFIX "algorithm."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${ALGORITHM_TEST_PROPERTIES})
+
+# Working-set tests measure what an operation allocates through operator new,
+# which this executable replaces with a counting pair (support/allocation_meter).
+# A shared library may allocate through its own operator new (under MSVC every
+# module has its own), so the engine's pipeline and algorithm code is compiled
+# into this executable instead of being taken from the engine library; the
+# sources are compiled with the engine's export switch, so the engine headers
+# declare those symbols as defined here rather than imported. The data library
+# and SlideIO are still linked as libraries: they allocate nothing an operation
+# measures.
+add_executable(slideio_processor_working_set_tests
+    test_allocation_meter.cpp
+    support/allocation_meter.cpp
+    support/harness.cpp
+    $<TARGET_OBJECTS:slideio-processor-pipeline>
+    $<TARGET_OBJECTS:slideio-processor-algorithm>
+)
+target_compile_definitions(slideio_processor_working_set_tests PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)
+target_link_libraries(slideio_processor_working_set_tests PRIVATE
+    slideio-processor-data slideio::slideio opencv_core opencv_imgproc rapidjson GTest::gtest_main)
+target_include_directories(slideio_processor_working_set_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/algorithm
+    ${PROJECT_SOURCE_DIR}/tests)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(slideio_processor_working_set_tests PRIVATE -ffp-contract=off)
+endif()
+# As the engine does: the static OpenCV compiled in here must not interpose on,
+# or be interposed by, the copy SlideIO's libraries carry.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(slideio_processor_working_set_tests PRIVATE -Wl,--exclude-libs,ALL)
+endif()
+if(WIN32)
+    set_property(TARGET slideio_processor_working_set_tests PROPERTY TEST_LAUNCHER
+        ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
+endif()
+gtest_discover_tests(slideio_processor_working_set_tests TEST_PREFIX "algorithm_ws."
+    DISCOVERY_MODE PRE_TEST
+    PROPERTIES ${ALGORITHM_TEST_PROPERTIES})

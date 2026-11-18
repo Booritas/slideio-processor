@@ -43,6 +43,16 @@ Image applyDirect(Operation& op, const std::vector<DataType>& inputTypes,
                   const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                   const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel);
 
+/// One apply() call of a direct application, on a context already complete.
+using ApplyCall = std::function<void()>;
+
+/// As applyDirect, but every apply() call is made by @p around, which is given
+/// the call and must make it once (to measure or observe it).
+Image applyDirectAround(Operation& op, const std::vector<DataType>& inputTypes,
+                        const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
+                        const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                        const std::function<void(const ApplyCall& apply)>& around);
+
 /// As applyDirect, but each plane is given as raw, tightly packed sample bytes
 /// (width * height * dataTypeSizeBytes(type)), for inputs a double cannot carry
 /// exactly: 64-bit integers beyond 2^53 and Float16.
