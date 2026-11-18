@@ -22,11 +22,16 @@ namespace {
 
 constexpr int64_t kMegabyte = 1 << 20;
 
-// Every block the tests allocate is written through here, so that no compiler
-// elides an allocation whose contents are never read.
-volatile uint8_t gSink = 0;
+// Every block the tests allocate has its address stored here. A compiler may
+// leave out an allocation whose address never escapes, even when its contents
+// are read (clang does so for a new-expression and for libc++'s std::allocator,
+// which allocates through __builtin_operator_new); a store to a volatile
+// object is observable, so the block must exist.
+void* volatile gEscape = nullptr;
 
-void touch(const std::vector<uint8_t>& v) { gSink = static_cast<uint8_t>(gSink + v[v.size() / 2]); }
+void escape(const void* block) { gEscape = const_cast<void*>(block); }
+
+void touch(const std::vector<uint8_t>& v) { escape(v.data()); }
 
 std::vector<uint8_t> megabyte() {
     std::vector<uint8_t> v(static_cast<size_t>(kMegabyte), uint8_t{1});
@@ -52,8 +57,7 @@ public:
     const OperationParameters& parameters() const override { return parameters_; }
     void apply(OperationContext&) override {
         const std::unique_ptr<uint8_t[]> block(new uint8_t[static_cast<size_t>(bytes_)]);
-        block[0] = 1;
-        gSink = static_cast<uint8_t>(gSink + block[0]);
+        escape(block.get());
     }
 
 private:
@@ -126,14 +130,13 @@ TEST(AllocationMeter, SizedAndAlignedDeletes) {
     // Aligned new-expressions, single and array, keep the alignment and are
     // counted; their deletes balance them.
     Wide* one = new Wide;
+    escape(one);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(one) % alignof(Wide), 0u);
     EXPECT_GE(meter.liveBytes(), static_cast<int64_t>(sizeof(Wide)));
     Wide* many = new Wide[100];
+    escape(many);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(many) % alignof(Wide), 0u);
     EXPECT_GE(meter.liveBytes(), static_cast<int64_t>(101 * sizeof(Wide)));
-    one->bytes[0] = 1;
-    many[99].bytes[0] = 1;
-    gSink = static_cast<uint8_t>(gSink + one->bytes[0] + many[99].bytes[0]);
     delete one;
     delete[] many;
     EXPECT_EQ(meter.liveBytes(), 0);
