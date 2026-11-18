@@ -32,6 +32,7 @@ public:
     bool producesObjects() const override;
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
     int64_t workingSetBytesPerTile() const override;
+    int64_t accumulatedStateBytes(int32_t planeCount) const override;
 
 private:
     Maker maker_;

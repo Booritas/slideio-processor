@@ -216,6 +216,17 @@ TEST(WorkingSetPixel, OtsuStateBoundsTheMeasuredState) {
     expectOtsuStateBounded("Float32, 2 planes, 1048576 bins", DataType::Float32, 2, otsuRange(1048576));
 }
 
+// The catalog answers an operation's state before constructing anything, as
+// the default-parameter instance does.
+TEST(WorkingSetPixel, CatalogMirrorsOtsuState) {
+    const OperationPtr instance = create("pixel.threshold_otsu", OperationParameters());
+    for (int32_t planes : {1, 2, 4}) {
+        const int64_t viaCatalog = OperationCatalog::instance().accumulatedStateBytes("pixel.threshold_otsu", planes);
+        EXPECT_GT(viaCatalog, 0);
+        EXPECT_EQ(viaCatalog, instance->accumulatedStateBytes(planes));
+    }
+}
+
 // A ceiling that holds a tile's buffers and the packed samples but not the
 // histograms refuses the run before it starts, naming the operation.
 TEST(WorkingSetPixel, OtsuRefusedWhenItsBinsDoNotFit) {

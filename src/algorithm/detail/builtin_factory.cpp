@@ -31,5 +31,8 @@ int32_t BuiltinFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return prototype_->outputPlaneCount(inputPlaneCount);
 }
 int64_t BuiltinFactory::workingSetBytesPerTile() const { return prototype_->workingSetBytesPerTile(); }
+int64_t BuiltinFactory::accumulatedStateBytes(int32_t planeCount) const {
+    return prototype_->accumulatedStateBytes(planeCount);
+}
 
 } // namespace slideio::processor::detail
