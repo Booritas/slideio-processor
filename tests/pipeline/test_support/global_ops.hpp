@@ -94,6 +94,8 @@ public:
     static int64_t holdingHighWater();
     /// The most live tile instances there have been since resetInstanceCounts().
     static int64_t tileInstanceHighWater();
+    /// The same, for the instances whose "stateBytes" is `stateBytes` only.
+    static int64_t tileInstanceHighWater(int64_t stateBytes);
     /// Sets the high-water marks to the live counts.
     static void resetInstanceCounts();
 

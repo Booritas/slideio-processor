@@ -618,8 +618,11 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     };
 
     // The run's instances keep their accumulated state until run() returns, the final
-    // pass applying them; each accumulation pass holds at most `cap` tile instances
-    // more. The plan bounds the sum, so it cannot overflow.
+    // pass applying them, and each accumulation pass holds at most `cap` tile
+    // instances more. One reservation covers the run's instances and the pass that
+    // may hold the most, taken in one wait while the run holds nothing else from
+    // the budget, so two runs never each hold part of what the other waits for.
+    // The plan bounds the sum, so it cannot overflow.
     const std::vector<int64_t>& stateBytes = plan.accumulatedStateBytes;
     int64_t stateSum = 0;
     int64_t largestState = 0;
@@ -634,10 +637,19 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
              std::to_string(budget.ceilingBytes()) + " bytes")
                 .c_str());
     }
-    budget.reserveOrWait(stateSum, token);
-    const Reservation stateHeld(budget, stateSum);
+    // A pass's cap: 2 x workers, or fewer when what is left beside one tile and the
+    // run's instances holds fewer. The check above leaves room for one.
     const int64_t available = budget.ceilingBytes() - tileBytes - stateSum;
     const int64_t instanceLimit = 2 * static_cast<int64_t>(pool.workerCount);
+    std::vector<int64_t> caps;
+    int64_t largestPass = 0;
+    for (int64_t bytes : stateBytes) {
+        caps.push_back(bytes == 0 ? instanceLimit : std::min(instanceLimit, available / bytes));
+        largestPass = std::max(largestPass, caps.back() * bytes);
+    }
+    const int64_t runStateBytes = stateSum + largestPass;
+    budget.reserveOrWait(runStateBytes, token);
+    const Reservation stateHeld(budget, runStateBytes);
 
     for (size_t i = 0; i < globalPositions.size(); ++i) {
         // Pass for operation g: each tile accumulates into a fresh instance, and the
@@ -648,12 +660,8 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         const char* name = state.spec.operationName(k);
         const OperationParameters& parameters = state.spec.operationParameters(k);
         // One slot per tile instance alive, from before its tile is taken until the
-        // fold has combined and destroyed it; the ceiling's check above leaves room for one.
-        const int64_t instanceState = stateBytes[i];
-        const int64_t cap = instanceState == 0 ? instanceLimit : std::min(instanceLimit, available / instanceState);
-        detail::InstanceSlots slots(cap);
-        budget.reserveOrWait(cap * instanceState, token);
-        const Reservation passHeld(budget, cap * instanceState);
+        // fold has combined and destroyed it.
+        detail::InstanceSlots slots(caps[i]);
         detail::OrderedFold<OperationPtr> fold(tileCount, [&runInstance, &slots](OperationPtr& tileInstance) {
             runInstance.combine(*tileInstance);
             // The instance goes before its slot, so a slot taken never overlaps it.

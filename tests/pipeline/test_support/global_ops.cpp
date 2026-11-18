@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -74,6 +75,8 @@ int64_t gHolding = 0;
 int64_t gHoldingHigh = 0;
 int64_t gTileInstances = 0;
 int64_t gTileInstancesHigh = 0;
+// Live tile instances and their high-water mark, by declared state.
+std::map<int64_t, std::pair<int64_t, int64_t>> gTileInstancesByState;
 FloatSumOperation::Hook gAccumulateHook;
 FloatSumOperation::Hook gApplyHook;
 
@@ -123,6 +126,7 @@ FloatSumOperation::~FloatSumOperation() {
     }
     if (tileInstance_) {
         --gTileInstances;
+        --gTileInstancesByState[stateBytes_].first;
     }
 }
 
@@ -143,10 +147,19 @@ int64_t FloatSumOperation::tileInstanceHighWater() {
     return gTileInstancesHigh;
 }
 
+int64_t FloatSumOperation::tileInstanceHighWater(int64_t stateBytes) {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    const auto found = gTileInstancesByState.find(stateBytes);
+    return found == gTileInstancesByState.end() ? 0 : found->second.second;
+}
+
 void FloatSumOperation::resetInstanceCounts() {
     std::lock_guard<std::mutex> lock(gTrackMutex);
     gHoldingHigh = gHolding;
     gTileInstancesHigh = gTileInstances;
+    for (auto& entry : gTileInstancesByState) {
+        entry.second.second = entry.second.first;
+    }
 }
 
 void FloatSumOperation::setAccumulateHook(Hook hook) {
@@ -217,6 +230,8 @@ void FloatSumOperation::accumulate(const OperationContext& context) {
         if (!tileInstance_) {
             tileInstance_ = true;
             countUp(gTileInstances, gTileInstancesHigh);
+            std::pair<int64_t, int64_t>& byState = gTileInstancesByState[stateBytes_];
+            countUp(byState.first, byState.second);
         }
         if (!holding_) {
             holding_ = true;

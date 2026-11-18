@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -577,7 +578,7 @@ bool isFirstTile(const OperationContext& context) {
 }
 
 // Waits until `read` has not changed for 100 ms, at most 2 s.
-void waitUntilSettled(int64_t (*read)()) {
+void waitUntilSettled(const std::function<int64_t()>& read) {
     using Clock = std::chrono::steady_clock;
     const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
     int64_t last = read();
@@ -639,7 +640,7 @@ TEST(GlobalContext, FoldBacklogBounded) {
 
     ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation&, const OperationContext& context) {
         if (isFirstTile(context)) {
-            waitUntilSettled(&ts::FloatSumOperation::tileInstanceHighWater);
+            waitUntilSettled([] { return ts::FloatSumOperation::tileInstanceHighWater(); });
         }
     });
     constexpr int32_t workers = 4;
@@ -671,7 +672,7 @@ TEST(GlobalContext, FoldBacklogFollowsTheCeiling) {
 
     ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation&, const OperationContext& context) {
         if (isFirstTile(context)) {
-            waitUntilSettled(&ts::FloatSumOperation::tileInstanceHighWater);
+            waitUntilSettled([] { return ts::FloatSumOperation::tileInstanceHighWater(); });
         }
     });
     ts::FloatSumOperation::resetInstanceCounts();
@@ -681,8 +682,40 @@ TEST(GlobalContext, FoldBacklogFollowsTheCeiling) {
     EXPECT_EQ(runInstance<ts::FloatSumOperation>(p, 0)->count(), 64 * kTile * kTile);
 }
 
-// UR-EXE-2: a run reserves every global-context operation's state for as long as it
-// lasts, and each accumulation pass reserves the instances it may hold.
+// UR-EXE-2: with two global-context operations of different states, each pass bounds
+// its own tile instances by its own state: what is left beside one tile, the run's
+// instances and three more tiles holds six of the smaller state or three of the larger.
+TEST(GlobalContext, EachPassBoundsItsOwnInstances) {
+    const HookGuard hooks;
+    auto s = rowScene();
+    constexpr int64_t smaller = kState;
+    constexpr int64_t larger = 2 * kState;
+    PipelineSpec spec;
+    spec.operation("test.floatSum", stateful(smaller, 0)).operation("test.floatSum", stateful(larger, 0));
+    constexpr int32_t workers = 4;
+    Pipeline p(s, config(workers), spec);
+    p.validate();
+    const int64_t tileBytes = detail::PipelineAccess::plan(p).tileBytes;
+    ASSERT_LT(3 * tileBytes, kState) << "the tiles' headroom must not make room for another instance";
+    const int64_t ceiling = tileBytes + (smaller + larger) + 6 * kState + 3 * tileBytes;
+
+    // Each pass's first tile is held until that pass's instances stop piling up behind it.
+    ts::FloatSumOperation::setAccumulateHook([](const ts::FloatSumOperation& self, const OperationContext& context) {
+        if (isFirstTile(context)) {
+            const int64_t state = self.stateBytes();
+            waitUntilSettled([state] { return ts::FloatSumOperation::tileInstanceHighWater(state); });
+        }
+    });
+    ts::FloatSumOperation::resetInstanceCounts();
+    runOnPool(p, workers, makeMemoryBudget(ceiling), CancellationToken());
+
+    EXPECT_LE(ts::FloatSumOperation::tileInstanceHighWater(smaller), 6);
+    EXPECT_LE(ts::FloatSumOperation::tileInstanceHighWater(larger), 3);
+    EXPECT_EQ(runInstance<ts::FloatSumOperation>(p, 1)->count(), 64 * kTile * kTile);
+}
+
+// UR-EXE-2: a run reserves, for as long as it lasts, every global-context operation's
+// state and the most tile instances any of its accumulation passes may hold.
 TEST(GlobalContext, StateReservedDuringTheRun) {
     auto s = scene();
     constexpr int64_t first = kState;
@@ -718,9 +751,11 @@ TEST(GlobalContext, StateReservedDuringTheRun) {
     runOnPool(p, workers, budget, CancellationToken());
 
     ASSERT_EQ(accumulateLowest.size(), 2u);
-    EXPECT_GE(accumulateLowest[first], tileBytes + first + second + cap * first);
-    EXPECT_GE(accumulateLowest[second], tileBytes + first + second + cap * second);
-    EXPECT_GE(applyLowest, tileBytes + first + second);
+    // The second pass may hold the most: cap instances of the larger state.
+    const int64_t runReservation = first + second + cap * second;
+    EXPECT_GE(accumulateLowest[first], tileBytes + runReservation);
+    EXPECT_GE(accumulateLowest[second], tileBytes + runReservation);
+    EXPECT_GE(applyLowest, tileBytes + runReservation) << "the final pass too";
     EXPECT_EQ(budget->reservedBytes(), 0) << "everything is released when run() returns";
 }
 
