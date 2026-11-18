@@ -1714,9 +1714,26 @@ classDiagram
         +makeClose(StructuringElement, int32_t n) OperationPtr
     }
 
+    class BorderMode {
+        <<enumeration>>
+        Reflect
+        Replicate
+        Constant
+    }
+
+    class StructuringShape {
+        <<enumeration>>
+        Rectangle
+        Ellipse
+        Cross
+    }
+
     class StructuringElement {
+        <<ThreadCompatible>>
         +StructuringElement(StructuringShape, int32_t w, int32_t h)
         +custom(const uint8_t* mask, int32_t w, int32_t h) StructuringElement
+        +width() int32_t
+        +height() int32_t
     }
 
     class thresholdFactories {
@@ -1812,6 +1829,7 @@ classDiagram
     measureFactories ..> Operation
     colourFactories ..> StainVectors
     filterFactories ..> StructuringElement
+    StructuringElement ..> StructuringShape
     segmentFactories ..> TissueDetectParameters
     segmentFactories ..> ConnectedComponentsParameters
     segmentFactories ..> ContourParameters
@@ -1825,16 +1843,24 @@ The module is almost entirely free functions, and the single dashed arrow from
 library.
 
 **What exists so far.** `registry`, `colourFactories` with `ColourSpace` and
-`StainVectors`, `thresholdFactories` with `ThresholdDirection` and
+`StainVectors`, `filterFactories` with `BorderMode`, `StructuringShape` and
+`StructuringElement`, `thresholdFactories` with `ThresholdDirection` and
 `AdaptiveMethod`, and `convertFactories` with `RoundingMode` and
 `OverflowMode` are built, in `registry.hpp`, `pixel/colour.hpp`,
-`pixel/threshold.hpp` and `pixel/convert.hpp`; `registerPixelOperations()`
-registers their six operations. The filter, morphology, segmentation and
-measurement classes are drawn as `06-algorithm.md` specifies them and do not
-exist yet, so `registerSegmentationOperations()` and
+`pixel/filter.hpp`, `pixel/threshold.hpp` and `pixel/convert.hpp`;
+`registerPixelOperations()` registers their seventeen operations. The
+segmentation and measurement classes are drawn as `06-algorithm.md` specifies
+them and do not exist yet, so `registerSegmentationOperations()` and
 `registerMeasurementOperations()` register nothing. `StainVectors` is pimpl'd
 with the full copy and move set, holds at most three stains, and stores
-vectors as given (`06-algorithm.md` 6.3). Behind the free functions, each
+vectors as given (`06-algorithm.md` 6.3). `StructuringElement` is pimpl'd with
+the same set, holds an odd width and height from 1 to 255 and a mask anchored
+at its centre, and is copied into each morphology operation; a moved-from
+element reports a size of 0 and is refused by every factory
+(`06-algorithm.md` 6.4). `BorderMode` is declared but taken by no factory in
+this version, because the framework supplies border context and pixels beyond
+the level read as zero; it is drawn unconnected for that reason. Behind the
+free functions, each
 operation is a private `Operation` class registered through one private
 `OperationFactory` implementation that answers every declaration from a
 prototype built from default parameters; none of that is public, which is why

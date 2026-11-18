@@ -88,8 +88,10 @@ The project builds two shared libraries:
   pipeline and its tile executor, seam merging, and a pipeline's lazy SlideIO
   scene) and the `algorithm` module (the operation catalog and its registry:
   so far the fixed, Otsu and adaptive thresholds, type conversion, colour
-  conversion and stain deconvolution, registered when the library loads), with
-  `workspace` to join it later. It links `slideio-processor-data` and
+  conversion, stain deconvolution, the Gaussian, median, Sobel, Scharr,
+  Laplacian, Canny and bilateral filters, and erode, dilate, open and close,
+  registered when the library loads), with `workspace` to join it later. It
+  links `slideio-processor-data` and
   `slideio::slideio` **publicly**, because its public headers name their types
   (`slideio::Scene` among them), and `opencv_core` and `opencv_imgproc`
   **privately**. No OpenCV type, header or macro appears in a public header;

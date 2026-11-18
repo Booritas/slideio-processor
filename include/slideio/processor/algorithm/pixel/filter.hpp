@@ -1,4 +1,4 @@
-// Requirements: UR-PIX-3, UR-PIX-4, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6
+// Requirements: UR-PIX-3, UR-PIX-4, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6, UR-ALG-8
 #pragma once
 
 /**
@@ -7,7 +7,7 @@
  * median, Sobel, Scharr, Laplacian, Canny and bilateral filters,
  * StructuringShape, StructuringElement, and erode, dilate, open and close.
  *
- * Every operation here is PerChannel with a non-zero halo derived from its
+ * Every operation here is PerChannel with a halo derived from its
  * parameters. The framework supplies exactly that border context, reading
  * pixels beyond the level as zero, so each operation except Canny produces
  * the same whole-slide output at any tile size as one tile covering the level.
@@ -245,7 +245,7 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeLaplacian(int32_t kernelSize);
  * Safe to call concurrently. The operation's apply() may run concurrently on
  * different contexts.
  * @par Requirements
- * UR-PIX-3, UR-IMG-11, UR-ALG-6
+ * UR-PIX-3, UR-IMG-11, UR-ALG-6, UR-ALG-8
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeCanny(double lowThreshold, double highThreshold,
                                                         int32_t apertureSize);
