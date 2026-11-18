@@ -39,15 +39,6 @@ float toFloat(double value) noexcept {
     return static_cast<float>(value);
 }
 
-double asDouble(const Sample& sample) noexcept {
-    switch (sample.kind) {
-    case Sample::Kind::Signed: return static_cast<double>(sample.s);
-    case Sample::Kind::Unsigned: return static_cast<double>(sample.u);
-    case Sample::Kind::Float:
-    default: return sample.f;
-    }
-}
-
 } // namespace
 
 SeparableFilter::SeparableFilter(std::vector<double> horizontal, std::vector<double> vertical)
@@ -103,7 +94,7 @@ void SeparableFilter::apply(const BlockView& input, int32_t plane, const Rect64&
     const auto computeRow = [&](int64_t j) {
         const unsigned char* row = inBase + j * inStride;
         for (int64_t x = 0; x < inWidth; ++x) {
-            samples[static_cast<size_t>(x)] = asDouble(readSample(row, originX + x, type));
+            samples[static_cast<size_t>(x)] = sampleAsDouble(readSample(row, originX + x, type));
         }
         double* sums = ring.data() + (j % bv) * width;
         for (int64_t x = 0; x < width; ++x) {

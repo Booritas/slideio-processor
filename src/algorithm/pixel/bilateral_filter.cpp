@@ -48,17 +48,6 @@ double checkedSigma(const char* key, double sigma) {
     return sigma;
 }
 
-// The value of a sample of any type the operation accepts, exactly: integers
-// of these types and every float type are held by a double without loss.
-double asDouble(const detail::Sample& sample) noexcept {
-    switch (sample.kind) {
-    case detail::Sample::Kind::Signed: return static_cast<double>(sample.s);
-    case detail::Sample::Kind::Unsigned: return static_cast<double>(sample.u);
-    case detail::Sample::Kind::Float:
-    default: return sample.f;
-    }
-}
-
 // One point of the disc and its spatial weight exp(-(dx^2 + dy^2) / (2 sigmaSpace^2)).
 struct DiscPoint {
     int64_t dx;
@@ -145,7 +134,7 @@ public:
                 const unsigned char* row = base + (originY + j) * stride;
                 double* target = samples.data() + j * inWidth;
                 for (int64_t i = 0; i < inWidth; ++i) {
-                    target[i] = asDouble(detail::readSample(row, originX + i, type));
+                    target[i] = detail::sampleAsDouble(detail::readSample(row, originX + i, type));
                 }
             }
             filterPlane(samples.data(), inWidth, tile.width, tile.height, values.data());
@@ -164,7 +153,10 @@ private:
             for (int64_t x = 0; x < width; ++x) {
                 const double* centre = samples + (y + r) * inWidth + (x + r);
                 const double c = *centre;
-                if (std::isnan(c)) {
+                // A centre that is not finite (NaN or an infinity) is written
+                // unchanged; a neighbour that is not finite is skipped, so it
+                // never spreads into its finite neighbours.
+                if (!std::isfinite(c)) {
                     values[y * width + x] = c;
                     continue;
                 }
@@ -174,7 +166,7 @@ private:
                 double norm = 0.0;
                 for (const DiscPoint& p : points_) {
                     const double s = centre[p.dy * inWidth + p.dx];
-                    if (std::isnan(s)) {
+                    if (!std::isfinite(s)) {
                         continue;
                     }
                     const double d = s - c;

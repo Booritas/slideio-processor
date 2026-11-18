@@ -258,8 +258,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeCanny(double lowThreshold, dou
  * Each output sample is the weighted mean of the samples in the disc of radius
  * diameter / 2 centred on it, a sample at distance d with value v weighing
  * exp(-d^2 / (2 @p sigmaSpace^2)) * exp(-(v - c)^2 / (2 @p sigmaColour^2)),
- * where c is the centre sample, all on the sample values as read. A NaN
- * centre gives NaN; NaN neighbours are skipped. Pixels beyond the level read
+ * where c is the centre sample, all on the sample values as read. A centre
+ * that is not finite (NaN, +inf or -inf) is written unchanged; neighbours
+ * that are not finite are skipped, contributing nothing. Pixels beyond the level read
  * as zero. Computed in double in one fixed order, so the result does not
  * depend on the tiling.
  *

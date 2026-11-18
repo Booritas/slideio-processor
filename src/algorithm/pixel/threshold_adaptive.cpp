@@ -32,10 +32,6 @@ constexpr int32_t kMaximumBlock = 1025;
     throw InternalError((std::string(kName) + ": " + problem).c_str());
 }
 
-double asDouble(const detail::Sample& sample) noexcept {
-    return sample.kind == detail::Sample::Kind::Float ? sample.f : static_cast<double>(sample.s);
-}
-
 // Mean weighs every pixel 1 (the window sum is divided by blockSize^2 when the
 // threshold is formed); Gaussian's weights are normalised to sum 1 here, once.
 std::vector<double> windowWeights(AdaptiveMethod method, int32_t blockSize) {
@@ -152,7 +148,7 @@ private:
             for (int64_t x = 0; x < width; ++x) {
                 // A NaN in the window makes t NaN, and both comparisons false.
                 const double t = sumRow[x] / divisor - offset_;
-                const double v = asDouble(detail::readSample(centreRow, origin.x + x + r, type));
+                const double v = detail::sampleAsDouble(detail::readSample(centreRow, origin.x + x + r, type));
                 const bool foreground = direction_ == ThresholdDirection::Above ? v > t : v < t;
                 outRow[x] = foreground ? 255 : 0;
             }

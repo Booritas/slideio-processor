@@ -49,8 +49,8 @@ std::string factoryRejection(int32_t diameter, double sigmaColour, double sigmaS
 
 // A direct per-pixel computation of the definition with zero padding: over the
 // disc dx^2 + dy^2 <= r^2, row by row (dy ascending), left to right (dx
-// ascending), in double, skipping NaN neighbours; a NaN centre gives NaN. The
-// expressions are shaped exactly as the operation's own, so that, with no
+// ascending), in double, skipping neighbours that are not finite; a centre
+// that is not finite is returned unchanged. The expressions are shaped exactly as the operation's own, so that, with no
 // multiply-add contraction on either side, the sums agree bit for bit.
 double directOutput(const std::function<double(int64_t, int64_t)>& v, int64_t width, int64_t height, int64_t x,
                     int64_t y, int32_t diameter, double sigmaColour, double sigmaSpace) {
@@ -58,7 +58,7 @@ double directOutput(const std::function<double(int64_t, int64_t)>& v, int64_t wi
         return px < 0 || py < 0 || px >= width || py >= height ? 0.0 : v(px, py);
     };
     const double c = at(x, y);
-    if (std::isnan(c)) {
+    if (!std::isfinite(c)) {
         return c;
     }
     const int64_t r = diameter / 2;
@@ -72,7 +72,7 @@ double directOutput(const std::function<double(int64_t, int64_t)>& v, int64_t wi
                 continue;
             }
             const double s = at(x + dx, y + dy);
-            if (std::isnan(s)) {
+            if (!std::isfinite(s)) {
                 continue;
             }
             const double spatial = std::exp(-static_cast<double>(dx * dx + dy * dy) / spaceDenominator);
@@ -274,6 +274,53 @@ TEST(BilateralFilter, NanCentreAndNeighbour) {
                 EXPECT_EQ(out.at(0, x, y), expected) << x << "," << y;
             }
         }
+    }
+}
+
+TEST(BilateralFilter, InfiniteCentreAndNeighbour) {
+    // A constant 7 with +inf at (5, 4) and -inf at (11, 6): an infinite
+    // centre is written unchanged, and an infinite neighbour is skipped, so
+    // every finite pixel stays exactly 7 (all its contributing samples are 7).
+    const double inf = std::numeric_limits<double>::infinity();
+    const auto pattern = [inf](int, int64_t x, int64_t y) {
+        if (x == 5 && y == 4) {
+            return inf;
+        }
+        if (x == 11 && y == 6) {
+            return -inf;
+        }
+        return 7.0;
+    };
+    const auto check = [&](const ts::Image& out, int64_t width, int64_t height, int64_t border) {
+        for (int64_t y = border; y < height - border; ++y) {
+            for (int64_t x = border; x < width - border; ++x) {
+                const double v = out.at(0, x, y);
+                if (x == 5 && y == 4) {
+                    EXPECT_EQ(v, inf);
+                } else if (x == 11 && y == 6) {
+                    EXPECT_EQ(v, -inf);
+                } else {
+                    EXPECT_EQ(v, 7.0) << x << "," << y;
+                }
+            }
+        }
+    };
+    const OperationPtr op = makeBilateralFilter(5, 25.0, 5.0);
+    // Away from the border, which reads as zero beyond the level.
+    const ts::Image direct = ts::applyDirect(*op, {DataType::Float32}, {0}, 17, 11,
+                                             [&](int32_t p, int64_t x, int64_t y) { return pattern(p, x, y); });
+    ASSERT_EQ(direct.types, std::vector<DataType>{DataType::Float32});
+    check(direct, 17, 11, 2);
+
+    auto scene = ts::makeSyntheticScene({{17, 11, 0, 0}}, {slideio::DataType::DT_Float32}, pattern);
+    PipelineSpec spec;
+    spec.then(op);
+    const ts::Image reference = ts::runEager(scene, spec, 4096, 1);
+    check(reference, 17, 11, 2);
+    for (int32_t tile : {8, 13}) {
+        const ts::Image tiled = ts::runEager(scene, spec, tile, 2);
+        check(tiled, 17, 11, 2);
+        EXPECT_TRUE(tiled.planes == reference.planes) << "tile " << tile;
     }
 }
 

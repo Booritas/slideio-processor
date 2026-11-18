@@ -83,13 +83,6 @@ double integerAsFloat(const Sample& sample, int bits) noexcept {
     return negative ? -rounded : rounded;
 }
 
-// The value of a sample as a double: exact for floats and for integers up to
-// 2^53 in magnitude, the nearest double (ties to even) beyond.
-double asDouble(const Sample& sample) noexcept {
-    return sample.kind == Sample::Kind::Float ? sample.f
-                                              : integerAsFloat(sample, std::numeric_limits<double>::digits);
-}
-
 template <typename T>
 void writeInteger(void* row, int64_t x, const Sample& sample, RoundingMode rounding, bool& overflowed) noexcept {
     constexpr T lowest = std::numeric_limits<T>::lowest();
@@ -169,7 +162,7 @@ void writeFloat32(void* row, int64_t x, const Sample& sample, bool& overflowed) 
 void writeFloat16(void* row, int64_t x, const Sample& sample, bool& overflowed) noexcept {
     // An integer beyond 2^53 is rounded once on the way to double, but every
     // such value overflows binary16 whatever its rounding.
-    const double value = asDouble(sample);
+    const double value = sampleAsDouble(sample);
     uint16_t bits = encodeBinary16(value);
     if (std::isfinite(value) && (bits & 0x7FFFu) == 0x7C00u) {
         bits = static_cast<uint16_t>((bits & 0x8000u) | 0x7BFFu);
@@ -179,6 +172,11 @@ void writeFloat16(void* row, int64_t x, const Sample& sample, bool& overflowed) 
 }
 
 } // namespace
+
+double sampleAsDouble(const Sample& sample) noexcept {
+    return sample.kind == Sample::Kind::Float ? sample.f
+                                              : integerAsFloat(sample, std::numeric_limits<double>::digits);
+}
 
 uint16_t encodeBinary16(double value) noexcept {
     const auto sign = static_cast<uint16_t>(std::signbit(value) ? 0x8000u : 0u);
@@ -218,7 +216,7 @@ void writeSample(void* row, int64_t x, DataType type, const Sample& sample, Roun
     case DataType::Int64: writeInteger<int64_t>(row, x, sample, rounding, overflowed); return;
     case DataType::Float16: writeFloat16(row, x, sample, overflowed); return;
     case DataType::Float32: writeFloat32(row, x, sample, overflowed); return;
-    case DataType::Float64: store(row, x, asDouble(sample)); return;
+    case DataType::Float64: store(row, x, sampleAsDouble(sample)); return;
     default: return;
     }
 }
