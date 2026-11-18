@@ -1228,6 +1228,7 @@ classDiagram
         +producesObjects() bool
         +outputPlaneCount(int32_t inputPlanes) int32_t
         +workingSetBytesPerTile() int64_t
+        +accumulatedStateBytes(int32_t planeCount) int64_t
     }
 
     class OperationContext {
@@ -1319,6 +1320,7 @@ classDiagram
         +producesObjects() bool
         +outputPlaneCount(int32_t inputPlanes) int32_t
         +workingSetBytesPerTile() int64_t
+        +accumulatedStateBytes(int32_t planeCount) int64_t
     }
 
     class OperationCatalog {
@@ -1335,6 +1337,7 @@ classDiagram
         +producesObjects(cstr name) bool
         +outputPlaneCount(cstr name, int32_t inputPlanes) int32_t
         +workingSetBytesPerTile(cstr name) int64_t
+        +accumulatedStateBytes(cstr name, int32_t planeCount) int64_t
         +writeSupportMatrix(cstr path) int64_t
     }
 
@@ -1413,8 +1416,9 @@ exactly as a built-in does (UR-EXT-5).
 answer before constructing anything, but only five of them are checked on every
 `create`: `name`, `arity`, `requiresUniformTypes`, `supportedTypes` and
 `producesObjects`, which cannot depend on parameters. `halo`,
-`tileRequirement`, `workingSetBytesPerLevelPixel`, `outputPlaneCount` and
-`workingSetBytesPerTile` can, so on the factory and through the catalog they
+`tileRequirement`, `workingSetBytesPerLevelPixel`, `outputPlaneCount`,
+`workingSetBytesPerTile` and `accumulatedStateBytes` can, so on the factory and
+through the catalog they
 describe the operation built from default parameters, and the instance is
 authoritative (`05-pipeline.md` 5.3).
 
@@ -1427,6 +1431,11 @@ it starts when that does not fit the ceiling (`05-pipeline.md` 5.5).
 one block. For such a chain `validate()` lays the run out as a single tile and
 refuses it, before a pixel is read, when the level and the declared working
 sets do not fit the budget (`05-pipeline.md` 5.1, 5.5).
+`accumulatedStateBytes(planeCount)` is what a global-context operation's
+instance holds between calls. The run reserves it for the run's instance and
+for the per-tile instances the fold may hold, bounds those instances by slots,
+and is refused before it starts when a tile, the states and one more instance
+do not fit the ceiling (`05-pipeline.md` 5.5, 5.8, 5.9).
 `IntensityPartial` lives beside `Operation` because a seam fragment carries it
 and `applyStandardMeasurements` consumes it: one formula measures an object
 finished in one tile and the same object merged from fragments, which UR-SEG-3

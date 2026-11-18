@@ -9,8 +9,11 @@
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 
+#include <slideio/processor/core/block_view.hpp>
+
 #include <algorithm/support/allocation_meter.hpp>
 #include <algorithm/support/working_set_check.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/run_plan.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -19,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -145,6 +149,73 @@ TEST(WorkingSetPixel, OtsuBoundedOverManyChannels) {
                         planes);
 }
 
+namespace {
+
+// One 64 x 64 tile of one plane of @p type, filled so that many bins are hit.
+std::vector<uint8_t> otsuTilePlane(DataType type) {
+    constexpr int64_t kSide = 64;
+    std::vector<uint8_t> bytes(static_cast<size_t>(kSide * kSide * dataTypeSizeBytes(type)));
+    for (int64_t i = 0; i < kSide * kSide; ++i) {
+        const int64_t v = (i * 37) % 997;
+        if (type == DataType::Byte) {
+            bytes[static_cast<size_t>(i)] = static_cast<uint8_t>(v);
+        } else if (type == DataType::UInt16) {
+            const auto s = static_cast<uint16_t>(v * 61);
+            std::memcpy(&bytes[static_cast<size_t>(i * 2)], &s, 2);
+        } else {
+            const auto s = static_cast<float>(v - 500);
+            std::memcpy(&bytes[static_cast<size_t>(i * 4)], &s, 4);
+        }
+    }
+    return bytes;
+}
+
+// accumulate()s one tile of @p planes planes of @p type into @p op, one call
+// per plane as the framework makes them.
+void accumulateOtsuTile(Operation& op, DataType type, int32_t planes) {
+    constexpr int64_t kSide = 64;
+    std::vector<uint8_t> bytes = otsuTilePlane(type);
+    for (int32_t plane = 0; plane < planes; ++plane) {
+        BlockPlane blockPlane{bytes.data(), type, kSide * dataTypeSizeBytes(type), plane};
+        const BlockView input(kSide, kSide, Rect64{0, 0, kSide, kSide}, 0, &blockPlane, 1);
+        detail::OperationContextState state;
+        state.input = &input;
+        state.output = nullptr;
+        state.level = 0;
+        state.tileRectAtLevel = state.tileRect = Rect64{0, 0, kSide, kSide};
+        state.haloRectAtLevel = state.haloRect = Rect64{0, 0, kSide, kSide};
+        state.levelScale = 1.0;
+        state.tileIndex = 0;
+        const auto context = detail::OperationContextAccess::make(std::move(state));
+        op.accumulate(*context);
+    }
+}
+
+void expectOtsuStateBounded(const char* label, DataType type, int32_t planes, const OperationParameters& parameters) {
+    ts::AllocationMeter meter;
+    const OperationPtr run = create("pixel.threshold_otsu", parameters);
+    const int64_t declared = run->accumulatedStateBytes(planes);
+    for (int32_t tile = 0; tile < 3; ++tile) {
+        const int64_t before = meter.liveBytes();
+        const OperationPtr tileInstance = create("pixel.threshold_otsu", parameters);
+        accumulateOtsuTile(*tileInstance, type, planes);
+        EXPECT_LE(meter.liveBytes() - before, declared) << label << ": a tile instance, after accumulate()";
+        run->combine(*tileInstance);
+    }
+    EXPECT_LE(meter.liveBytes(), declared) << label << ": the run instance, after combine()";
+    EXPECT_GT(declared, 0) << label;
+}
+
+} // namespace
+
+// What an instance holds between calls, after accumulate() on its tiles and
+// after combine() with the others, is within its declaration.
+TEST(WorkingSetPixel, OtsuStateBoundsTheMeasuredState) {
+    expectOtsuStateBounded("Byte, 4 planes", DataType::Byte, 4, OperationParameters());
+    expectOtsuStateBounded("UInt16, 3 planes", DataType::UInt16, 3, OperationParameters());
+    expectOtsuStateBounded("Float32, 2 planes, 1048576 bins", DataType::Float32, 2, otsuRange(1048576));
+}
+
 // A ceiling that holds a tile's buffers and the packed samples but not the
 // histograms refuses the run before it starts, naming the operation.
 TEST(WorkingSetPixel, OtsuRefusedWhenItsBinsDoNotFit) {
@@ -177,7 +248,8 @@ TEST(WorkingSetPixel, OtsuRefusedWhenItsBinsDoNotFit) {
     EXPECT_NE(message.find("above the memory ceiling"), std::string::npos) << message;
 
     Pipeline fits(scene, config, spec);
-    fits.memoryBudget(makeMemoryBudget(tileBytes));
+    // The tile, the operation's state and one more instance of it.
+    fits.memoryBudget(makeMemoryBudget(tileBytes + 2 * otsu->accumulatedStateBytes(1)));
     EXPECT_NO_THROW(fits.validate());
     EXPECT_EQ(source->readCount(), 0);
 }

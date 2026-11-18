@@ -152,6 +152,7 @@ public:
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
     virtual int64_t workingSetBytesPerTile() const;                   // 0
+    virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
@@ -219,17 +220,28 @@ only produces a raster overrides none of them:
   parameters. Together the two bound what one call holds beyond its input and
   output: the rect's area × `workingSetBytesPerLevelPixel()` +
   `workingSetBytesPerTile()`.
+- `accumulatedStateBytes(planeCount)` — for a global-context operation, the
+  bytes one instance holds between calls: after `accumulate()` on any number of
+  tiles of `planeCount` planes, and after `combine()` with any number of
+  instances of the same parameters. `planeCount` is the plane count of the
+  operation's input step in the run's plan. The figure excludes what the two
+  working-set figures cover during a call, and defaults to 0. The run reserves
+  it for the instances it keeps (5.5, "Memory"; 5.9) and is refused before it
+  starts when it does not fit the memory ceiling.
 
-The two working-set figures are upper bounds, not estimates: an operation that
+The working-set figures are upper bounds, not estimates: an operation that
 allocates more than it declares lets a run exceed its memory ceiling. A
 negative figure counts as 0. An operation that calls into a library whose
 allocations it cannot see, such as the backend's internal buffers, declares
 that library's share from the library's source; when the backend gives each of
 its threads its own buffers, the figure includes one share per backend thread.
-The figures are per call: memory an operation keeps between calls is not part
-of them (5.5, "Memory").
+The two working-set figures are per call; memory an operation keeps between
+calls is what `accumulatedStateBytes()` declares, an upper bound the
+reservation trusts. A global-context operation whose state grows with the
+tiles it has seen cannot declare an honest bound and must keep its state
+bounded.
 
-Every declaration, these five included, must be constant for the life of the
+Every declaration, these six included, must be constant for the life of the
 operation; the framework reads them once, before the run.
 
 `Halo::uniform` throws `InvalidArgumentError` for a negative width and is
@@ -432,6 +444,7 @@ public:
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
     virtual int64_t workingSetBytesPerTile() const;                   // 0
+    virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
 };
 using OperationFactoryPtr = std::shared_ptr<OperationFactory>;
 
@@ -458,6 +471,7 @@ public:
     bool producesObjects(const char* name) const;
     int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
     int64_t workingSetBytesPerTile(const char* name) const;
+    int64_t accumulatedStateBytes(const char* name, int32_t planeCount) const;
 
     /// Emits the operation-by-type support matrix as CSV, generated from the
     /// same declarations the runtime enforces.
@@ -497,11 +511,12 @@ naming a null or unknown name.
 operation's `name()`, `arity()`, `requiresUniformTypes()`, `supportedTypes()` or
 `producesObjects()` differs from the factory's, naming the field. Those five do
 not depend on the parameters, so the factory can state them exactly. `halo()`,
-`tileRequirement()`, `workingSetBytesPerLevelPixel()`, `outputPlaneCount()` and
-`workingSetBytesPerTile()` can — a box filter's halo is its `radius` parameter,
-a median's window copy grows with its kernel — and a factory sees no
+`tileRequirement()`, `workingSetBytesPerLevelPixel()`, `outputPlaneCount()`,
+`workingSetBytesPerTile()` and `accumulatedStateBytes()` can — a box filter's
+halo is its `radius` parameter, a median's window copy grows with its kernel,
+a histogram's state with its bin count — and a factory sees no
 parameters when asked. On a factory, and through the matching catalog queries,
-those five therefore describe the operation built from **default** parameters,
+those six therefore describe the operation built from **default** parameters,
 and are not compared; the operation instance is authoritative for its own
 parameters, and `Pipeline::validate()` asks the instance. An exception other
 than a `ProcessorError` thrown by a factory surfaces as `InternalError` with the
@@ -1004,13 +1019,27 @@ the ceiling, instead of waiting forever; when the framework buffers alone fit,
 so that a working set decides, the message also names the operation with the
 largest working set.
 
-What the working-set figures do not cover is memory an operation keeps
-between calls. A global-context operation's pass-level state — the per-tile
-instances the ordered fold holds while they wait for their predecessors, each
-with its accumulated state, such as a thresholding operation's per-channel
-histograms (5.8) — lives outside every tile's reservation. With very large
-accumulated state, many channels and a fold running far ahead, a run can
-exceed the ceiling by that state.
+The working-set figures do not cover memory an operation keeps between calls.
+A global-context operation's instances do: the run's instance and the per-tile
+instances the ordered fold holds while they wait for their predecessors (5.8),
+each with the state `accumulatedStateBytes(planeCount)` declares, such as a
+thresholding operation's per-channel histograms. `planeCount` is the plane
+count of the operation's input step, and the plan records the figure of every
+global-context operation, clamped at 0. The state is accounted in three ways.
+
+- `validate()` refuses a run when one tile's bytes, the sum of those states and
+  one more instance of the largest exceed the ceiling (the sum saturates).
+  The `InvalidArgumentError` names the operation with the largest state, the
+  bytes and the ceiling. With no global-context operation the term is 0.
+- The run reserves the sum of the states, for the run's instances, and the most
+  the tile instances of any one accumulation pass may hold, with one
+  `reserveOrWait` before its first pass, and releases it when `run()` returns,
+  on every path (5.9).
+- A pass admits at most as many live tile instances, in flight or held by the
+  fold, as that figure allows: twice the worker count, or fewer when what the
+  ceiling leaves beside one tile and the sum of the states holds fewer (5.8).
+
+An instance's state beyond its declaration is not covered by the ceiling.
 
 `memoryBudget(nullptr)` restores the default budget,
 `makeMemoryBudget(config.memoryCeilingBytes())`, which is also what a run uses
@@ -1733,9 +1762,19 @@ Workers hand in `(tileIndex, T)`, and the fold applies `combine` to the
 accumulated value strictly in ascending tile index, holding an out-of-order
 result until its predecessors have arrived. A tile the restriction skips counts
 as arrived, so the fold never waits on it. How many results are held at once is
-bounded by how far completion runs ahead of the slowest tile still in flight,
-and a held per-tile instance lives outside the per-tile memory reservation,
-which is released when its tile finishes. A `combine` that throws fails the
+bounded by the pass's instance slots, not by how far completion runs ahead of
+the slowest tile. `detail::InstanceSlots` admits at most *cap* live tile
+instances of the pass, in flight or held by the fold: for an operation with
+state *s* the cap is `min(2 × workers, (ceiling − tileBytes − Σ state) / s)`,
+and `2 × workers` when *s* is 0. Validation (5.5) guarantees the cap is at
+least 1. A worker takes a slot before it is handed a tile index, so a tile
+that is waiting for a slot has read nothing, and the slot is released after the
+fold combines the tile's instance and destroys it, or when the restriction
+skips the tile. A worker waiting for a slot leaves when another tile fails (the
+pass's stop flag) or on cancellation, as `CancelledError`. A held per-tile
+instance lives outside the per-tile memory reservation, which is released when
+its tile finishes; the run's reservation (5.9) counts the instances instead. A
+`combine` that throws fails the
 pass; it runs on whichever arrival unblocks the fold, so the `TileError` names
 that arriving tile, not necessarily the tile whose result failed to combine. The fold is used for every
 global-context operation, always, because an operation does not declare whether
@@ -1833,6 +1872,16 @@ order-independently or are canonically ordered.
 `shutdown()`, which is idempotent and is called by the destructor.
 `TileExecutor::run` hands out tile indices from an atomic counter in ascending
 order, so dispatch is ordered and completion is free.
+
+**Reservations of a global-context run.** Beside each tile's own reservation
+(5.5), a run with global-context operations takes one run-level reservation of
+`Σ state + max over passes (cap × state)`, where *state* is the operation's
+`accumulatedStateBytes()` and *cap* is the pass's bound on live tile instances
+(5.8). It makes one `reserveOrWait` before the first pass and holds the bytes
+until `run()` returns, on every path; no pass reserves anything of its own.
+Concurrent runs with global-context operations whose executors share one
+budget, through one pool, whose ceiling is below the sum of their run
+reservations plus one tile may wait on each other until cancelled.
 
 **Failure.** The first tile failure stops dispatch, lets in-flight tiles finish,
 and is rethrown as `TileError` with an `ErrorContext` of the stage name, the

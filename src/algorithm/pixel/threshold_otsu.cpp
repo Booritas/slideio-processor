@@ -125,6 +125,23 @@ public:
         return bins * 16 + 2 * detail::kAllocatorBlockOverhead + kBookkeepingBytes;
     }
 
+    // What an instance holds between calls, whatever the tiles it has counted
+    // or combined: per channel, one histogram of 8 bytes per bin (the largest,
+    // 65536 bins, when there is no range; the same bound as the per-tile
+    // figure), the allocator's overhead on its bin array, and
+    // kBookkeepingBytes for the channel's map node, its Histogram64 and that
+    // histogram's state. A tile of planeCount planes has at most planeCount
+    // channels, and combining adds a channel only when it is new. Then the
+    // instance itself: its object, then kBookkeepingBytes for the parameter
+    // bag's entries and kBookkeepingBytes for the control block it is made in
+    // and the allocator's overhead on each of those blocks.
+    int64_t accumulatedStateBytes(int32_t planeCount) const override {
+        const int64_t bins = hasRange_ ? binCount_ : kMaxPerValueBinCount;
+        const int64_t perChannel = bins * 8 + kBookkeepingBytes + detail::kAllocatorBlockOverhead;
+        return std::max<int64_t>(planeCount, 0) * perChannel + static_cast<int64_t>(sizeof(OtsuThresholdOperation)) +
+               2 * kBookkeepingBytes;
+    }
+
     void accumulate(const OperationContext& context) override {
         const BlockView& in = context.input();
         const Rect64 tile = context.tileRectAtLevel();

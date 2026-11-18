@@ -222,9 +222,21 @@ tests refuse a run whose working set does not fit the ceiling (a bilateral
 filter on a large tile, Otsu with a very large bin count) and bound Otsu over
 many channels.
 
-The working sets are per call. A global-context operation's pass-level state,
-such as the per-channel histograms Otsu's per-tile instances hold while the
-ordered fold waits for earlier tiles, is not part of them (5.5, 5.8).
+The working sets are per call. What a global-context operation's instance holds
+between calls is its accumulated state, declared separately with
+`accumulatedStateBytes(planeCount)` (5.1). Otsu's is, per plane, one histogram
+of 8 bytes per bin (the largest per-value histogram of 65,536 bins when there is
+no range), the allocator's overhead on its bin array and a fixed bookkeeping
+share for the channel's map node, its `Histogram64` and that histogram's state;
+plus the instance's own object, its parameter bag and its control block. A tile
+of `planeCount` planes has at most that many channels, and combining adds a
+channel only when it is new, so the figure bounds a per-tile instance after
+`accumulate()` and the run's instance after `combine()` alike. The pipeline
+reserves it for the run's instance and for the per-tile instances the fold may
+hold, and refuses a run whose tile, states and one more instance do not fit the
+ceiling (5.5, 5.8, 5.9). A test measures the instances' live bytes under the
+meter against the declaration, for a `Byte`, a `UInt16` and a ranged `Float32`
+input.
 
 ## 6.3 Colour and stains — `algorithm/pixel/colour.hpp`
 
