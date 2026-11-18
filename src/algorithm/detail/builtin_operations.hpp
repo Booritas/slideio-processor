@@ -26,4 +26,7 @@ OperationFactoryPtr makeTypeConvertFactory();
 /// pixel.stain_deconvolution
 OperationFactoryPtr makeStainDeconvolutionFactory();
 
+/// pixel.gaussian_blur
+OperationFactoryPtr makeGaussianBlurFactory();
+
 } // namespace slideio::processor::detail

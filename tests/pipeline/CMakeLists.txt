@@ -116,6 +116,7 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 add_library(pipeline_headers_are_opencv_free OBJECT
     header_check/check_algorithm_pixel_colour.cpp
     header_check/check_algorithm_pixel_convert.cpp
+    header_check/check_algorithm_pixel_filter.cpp
     header_check/check_algorithm_pixel_threshold.cpp
     header_check/check_algorithm_registry.cpp
     header_check/check_backend.cpp
