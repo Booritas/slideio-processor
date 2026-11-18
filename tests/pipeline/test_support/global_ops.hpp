@@ -10,6 +10,7 @@
 #include <slideio/processor/pipeline/reduction.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace slideio::processor::testing_support {
@@ -38,9 +39,21 @@ namespace slideio::processor::testing_support {
 /// - "stateBytes" (default 0): what accumulatedStateBytes() returns, unchecked, so a
 ///   test can declare any figure, negative ones included. The plane count of its
 ///   last call is kept in lastStatePlaneCount().
+///
+/// Instance tracking, process-wide, for every instance: an instance holds state from
+/// its first accumulate() or combine() until it is destroyed, and is a tile instance
+/// from its first accumulate(). Hooks, process-wide and empty by default: one runs
+/// at the start of every accumulate(), one at the start of every apply(), on any
+/// instance. Tests that use either run one at a time and clear the hooks.
 class FloatSumOperation : public Operation {
 public:
+    /// Runs at the start of accumulate() or apply(); what it throws, the call throws.
+    using Hook = std::function<void(const FloatSumOperation& self, const OperationContext& context)>;
+
     explicit FloatSumOperation(const OperationParameters& parameters);
+    ~FloatSumOperation() override;
+    FloatSumOperation(const FloatSumOperation&) = delete;
+    FloatSumOperation& operator=(const FloatSumOperation&) = delete;
     const char* name() const override;
     ChannelArity arity() const override;
     bool requiresUniformTypes() const override;
@@ -72,6 +85,23 @@ public:
     /// Zeroes the count of finished accumulate() calls that "holdFirstTile" waits on.
     static void resetHold();
 
+    /// The "stateBytes" parameter.
+    int64_t stateBytes() const;
+
+    /// Live instances holding state, the run's accumulated instance included.
+    static int64_t holdingInstances();
+    /// The most holdingInstances() has been since resetInstanceCounts().
+    static int64_t holdingHighWater();
+    /// The most live tile instances there have been since resetInstanceCounts().
+    static int64_t tileInstanceHighWater();
+    /// Sets the high-water marks to the live counts.
+    static void resetInstanceCounts();
+
+    /// Sets the hook accumulate() runs; an empty one clears it.
+    static void setAccumulateHook(Hook hook);
+    /// Sets the hook apply() runs; an empty one clears it.
+    static void setApplyHook(Hook hook);
+
 private:
     OperationParameters parameters_;
     bool offset_ = true;
@@ -82,6 +112,8 @@ private:
     int64_t count_ = 0;
     double mean_ = 0.0;
     bool finalised_ = false;
+    bool holding_ = false;
+    bool tileInstance_ = false;
 };
 
 /// "test.otsu": PerChannel, Byte, halo 0, output Byte, global context.

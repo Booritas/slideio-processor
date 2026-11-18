@@ -6,6 +6,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace slideio::processor::testing_support {
 
@@ -66,6 +68,33 @@ int64_t gOthersDone = 0;
 
 std::atomic<int32_t> gLastStatePlaneCount{0};
 
+// Instance tracking and the hooks.
+std::mutex gTrackMutex;
+int64_t gHolding = 0;
+int64_t gHoldingHigh = 0;
+int64_t gTileInstances = 0;
+int64_t gTileInstancesHigh = 0;
+FloatSumOperation::Hook gAccumulateHook;
+FloatSumOperation::Hook gApplyHook;
+
+// Runs a copy of `hook`, outside the lock, so the hook may block or throw.
+void runHook(const FloatSumOperation::Hook& hook, const FloatSumOperation& self, const OperationContext& context) {
+    FloatSumOperation::Hook copy;
+    {
+        std::lock_guard<std::mutex> lock(gTrackMutex);
+        copy = hook;
+    }
+    if (copy) {
+        copy(self, context);
+    }
+}
+
+// Caller holds gTrackMutex.
+void countUp(int64_t& live, int64_t& high) {
+    ++live;
+    high = std::max(high, live);
+}
+
 } // namespace
 
 // --- FloatSumOperation --------------------------------------------------------------
@@ -85,6 +114,49 @@ FloatSumOperation::FloatSumOperation(const OperationParameters& parameters) : pa
     parameters_.getInt("failFinalize", failFinalize);
     failFinalize_ = failFinalize != 0;
     parameters_.getInt("stateBytes", stateBytes_);
+}
+
+FloatSumOperation::~FloatSumOperation() {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    if (holding_) {
+        --gHolding;
+    }
+    if (tileInstance_) {
+        --gTileInstances;
+    }
+}
+
+int64_t FloatSumOperation::stateBytes() const { return stateBytes_; }
+
+int64_t FloatSumOperation::holdingInstances() {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    return gHolding;
+}
+
+int64_t FloatSumOperation::holdingHighWater() {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    return gHoldingHigh;
+}
+
+int64_t FloatSumOperation::tileInstanceHighWater() {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    return gTileInstancesHigh;
+}
+
+void FloatSumOperation::resetInstanceCounts() {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    gHoldingHigh = gHolding;
+    gTileInstancesHigh = gTileInstances;
+}
+
+void FloatSumOperation::setAccumulateHook(Hook hook) {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    gAccumulateHook = std::move(hook);
+}
+
+void FloatSumOperation::setApplyHook(Hook hook) {
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    gApplyHook = std::move(hook);
 }
 
 int64_t FloatSumOperation::accumulatedStateBytes(int32_t planeCount) const {
@@ -120,6 +192,7 @@ void FloatSumOperation::resetHold() {
 }
 
 void FloatSumOperation::accumulate(const OperationContext& context) {
+    runHook(gAccumulateHook, *this, context);
     const Rect64 tile = context.tileRectAtLevel();
     const bool first = tile.x == 0 && tile.y == 0;
     if (first && holdFirstTile_ > 0) {
@@ -139,6 +212,17 @@ void FloatSumOperation::accumulate(const OperationContext& context) {
     }
     sum_ += tilePartial(context.tileRectAtLevel(), sampleSum, offset_);
     count_ += view.width() * view.height() * view.planeCount();
+    {
+        std::lock_guard<std::mutex> lock(gTrackMutex);
+        if (!tileInstance_) {
+            tileInstance_ = true;
+            countUp(gTileInstances, gTileInstancesHigh);
+        }
+        if (!holding_) {
+            holding_ = true;
+            countUp(gHolding, gHoldingHigh);
+        }
+    }
     if (!first) {
         {
             std::lock_guard<std::mutex> lock(gHoldMutex);
@@ -152,6 +236,11 @@ void FloatSumOperation::combine(const Operation& other) {
     const FloatSumOperation& o = sameKind<FloatSumOperation>(*this, other);
     sum_ += o.sum_;
     count_ += o.count_;
+    std::lock_guard<std::mutex> lock(gTrackMutex);
+    if (!holding_) {
+        holding_ = true;
+        countUp(gHolding, gHoldingHigh);
+    }
 }
 
 void FloatSumOperation::finalizeAccumulation() {
@@ -163,6 +252,7 @@ void FloatSumOperation::finalizeAccumulation() {
 }
 
 void FloatSumOperation::apply(OperationContext& context) {
+    runHook(gApplyHook, *this, context);
     if (!finalised_) {
         throw InternalError("test.floatSum: apply() before finalizeAccumulation()");
     }
