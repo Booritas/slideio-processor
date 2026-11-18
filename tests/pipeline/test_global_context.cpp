@@ -1,4 +1,4 @@
-// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-STG-3
+// Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-EXE-2, UR-STG-3
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
