@@ -8,6 +8,7 @@ add_library(slideio-processor-algorithm OBJECT
     detail/sample_codec.cpp
     detail/separable.cpp
     pixel/bilateral_filter.cpp
+    pixel/canny.cpp
     pixel/colour_convert.cpp
     pixel/convert_type.cpp
     pixel/derivatives.cpp

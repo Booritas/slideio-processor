@@ -56,4 +56,7 @@ OperationFactoryPtr makeCloseFactory();
 /// pixel.bilateral_filter
 OperationFactoryPtr makeBilateralFilterFactory();
 
+/// pixel.canny
+OperationFactoryPtr makeCannyFactory();
+
 } // namespace slideio::processor::detail
