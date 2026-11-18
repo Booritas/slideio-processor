@@ -441,11 +441,33 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 " bytes" + decidedBy(mulSat(area, tilePixelBytes), area));
     }
 
+    // The state a global-context operation's instances keep between calls. A run holds
+    // every operation's instance, and a pass holds one more of the operation it runs: the
+    // sum and the largest must fit beside one tile.
     std::vector<size_t> globalContextPositions;
+    std::vector<int64_t> accumulatedStateBytes;
+    int64_t stateSum = 0;
+    int64_t largestState = 0;
+    const char* largestStateName = nullptr;
     for (size_t k = 0; k < operations.size(); ++k) {
         if (operations[k]->needsGlobalContext()) {
             globalContextPositions.push_back(k);
+            const int64_t state = std::max<int64_t>(
+                0, operations[k]->accumulatedStateBytes(static_cast<int32_t>(planeTypes[k].size())));
+            accumulatedStateBytes.push_back(state);
+            stateSum = addSat(stateSum, state);
+            if (state > largestState) {
+                largestState = state;
+                largestStateName = operations[k]->name();
+            }
         }
+    }
+    const int64_t stateNeed = addSat(tileBytes, addSat(stateSum, largestState));
+    if (stateNeed > inputs.ceilingBytes) {
+        invalid(std::string(largestStateName) + " keeps accumulated state: a tile of " + bytesText(tileBytes) +
+                " bytes with the global-context operations' state and one more instance of the largest needs " +
+                bytesText(stateNeed) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
+                " bytes");
     }
 
     return RunPlan{level,
@@ -457,6 +479,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                    std::move(targetLayers),
                    chainHalo,
                    std::move(globalContextPositions),
+                   std::move(accumulatedStateBytes),
                    restricted,
                    tileBytes,
                    Rect64{0, 0, levels[static_cast<size_t>(level)].width, levels[static_cast<size_t>(level)].height}};

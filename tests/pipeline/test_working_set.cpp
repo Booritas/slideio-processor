@@ -7,12 +7,14 @@
 
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/run_plan.hpp>
+#include <pipeline/test_support/global_ops.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -229,4 +231,96 @@ TEST(WorkingSet, CatalogAnswers) {
     const OperationPtr op = catalog.create("test.workingSet", workingSet(7, 9));
     EXPECT_EQ(op->workingSetBytesPerLevelPixel(), 7);
     EXPECT_EQ(op->workingSetBytesPerTile(), 9);
+}
+
+// A global-context chain whose operations declare the state their instances keep.
+namespace {
+
+OperationParameters stateful(int64_t stateBytes) {
+    OperationParameters parameters;
+    parameters.setInt("stateBytes", stateBytes);
+    return parameters;
+}
+
+PipelineSpec statefulChain(std::initializer_list<int64_t> states) {
+    PipelineSpec spec;
+    for (int64_t state : states) {
+        spec.operation("test.floatSum", stateful(state));
+    }
+    return spec;
+}
+
+std::shared_ptr<ts::SyntheticSource> statefulSource() {
+    ts::registerGlobalOperations();
+    return byteSource();
+}
+
+// The memory ceiling the chain is validated against, with a budget of exactly that many bytes.
+std::string validateWithCeiling(const std::shared_ptr<ts::SyntheticSource>& source, const PipelineSpec& spec,
+                                int64_t ceiling) {
+    Pipeline p(ts::makeSyntheticScene(source), config(64), spec);
+    p.memoryBudget(makeMemoryBudget(ceiling));
+    return validateMessage(p);
+}
+
+} // namespace
+
+TEST(WorkingSet, StateDefaultsToZero) {
+    auto source = byteSource();
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    const OperationPtr op = catalog.create("test.threshold", OperationParameters());
+    EXPECT_EQ(op->accumulatedStateBytes(3), 0);
+    EXPECT_EQ(catalog.accumulatedStateBytes("test.threshold", 3), 0);
+    const OperationFactoryPtr factory = ts::makeThresholdFactory();
+    EXPECT_EQ(factory->accumulatedStateBytes(3), 0);
+    EXPECT_THROW(catalog.accumulatedStateBytes("test.nope", 1), InvalidArgumentError);
+    EXPECT_THROW(catalog.accumulatedStateBytes(nullptr, 1), InvalidArgumentError);
+}
+
+TEST(WorkingSet, StateRecordedPerGlobalOperation) {
+    ts::registerTestOperations();
+    ts::registerGlobalOperations();
+    auto source = std::make_shared<ts::SyntheticSource>(
+        std::vector<ts::SyntheticLevel>{{1000, 800, 0, 0}},
+        std::vector<slideio::DataType>(3, slideio::DataType::DT_Byte), flat);
+    PipelineSpec spec;
+    spec.channels(ChannelSelection::range(0, 2));
+    spec.operation("test.floatSum", stateful(1000))
+        .operation("test.workingSet", workingSet(0, 0))
+        .operation("test.floatSum", stateful(3000));
+    ts::FloatSumOperation::resetStatePlaneCount();
+    Pipeline p(ts::makeSyntheticScene(source), config(64), spec);
+    p.validate();
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    ASSERT_EQ(plan.accumulatedStateBytes.size(), 2u);
+    EXPECT_EQ(plan.accumulatedStateBytes[0], 1000);
+    EXPECT_EQ(plan.accumulatedStateBytes[1], 3000);
+    EXPECT_EQ(ts::FloatSumOperation::lastStatePlaneCount(), 2);
+}
+
+TEST(WorkingSet, NegativeStateCountsAsZero) {
+    auto source = statefulSource();
+    Pipeline p(ts::makeSyntheticScene(source), config(64), statefulChain({-5}));
+    p.validate();
+    const std::vector<int64_t>& state = detail::PipelineAccess::plan(p).accumulatedStateBytes;
+    ASSERT_EQ(state.size(), 1u);
+    EXPECT_EQ(state[0], 0);
+}
+
+TEST(WorkingSet, StateRefusedOverTheCeiling) {
+    auto source = statefulSource();
+    const int64_t state = 100000;
+    const int64_t tileBytes = tileBytesOf(source, 64, statefulChain({0}));
+    const std::string refused = validateWithCeiling(source, statefulChain({state}), tileBytes + 2 * state - 1);
+    EXPECT_TRUE(contains(refused, "test.floatSum")) << refused;
+    EXPECT_TRUE(contains(refused, "above the memory ceiling")) << refused;
+    EXPECT_EQ(validateWithCeiling(source, statefulChain({state}), tileBytes + 2 * state), "");
+}
+
+TEST(WorkingSet, TwoStatesSumAndMax) {
+    auto source = statefulSource();
+    const int64_t tileBytes = tileBytesOf(source, 64, statefulChain({0, 0}));
+    const PipelineSpec spec = statefulChain({1000, 3000});
+    EXPECT_EQ(validateWithCeiling(source, spec, tileBytes + 4000 + 3000), "");
+    EXPECT_TRUE(contains(validateWithCeiling(source, spec, tileBytes + 4000 + 3000 - 1), "above the memory ceiling"));
 }

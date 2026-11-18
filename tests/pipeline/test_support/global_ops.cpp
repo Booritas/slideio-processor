@@ -6,6 +6,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -63,6 +64,8 @@ std::mutex gHoldMutex;
 std::condition_variable gHoldChanged;
 int64_t gOthersDone = 0;
 
+std::atomic<int32_t> gLastStatePlaneCount{0};
+
 } // namespace
 
 // --- FloatSumOperation --------------------------------------------------------------
@@ -81,7 +84,16 @@ FloatSumOperation::FloatSumOperation(const OperationParameters& parameters) : pa
     int64_t failFinalize = 0;
     parameters_.getInt("failFinalize", failFinalize);
     failFinalize_ = failFinalize != 0;
+    parameters_.getInt("stateBytes", stateBytes_);
 }
+
+int64_t FloatSumOperation::accumulatedStateBytes(int32_t planeCount) const {
+    gLastStatePlaneCount.store(planeCount);
+    return stateBytes_;
+}
+
+int32_t FloatSumOperation::lastStatePlaneCount() { return gLastStatePlaneCount.load(); }
+void FloatSumOperation::resetStatePlaneCount() { gLastStatePlaneCount.store(0); }
 
 const char* FloatSumOperation::name() const { return "test.floatSum"; }
 ChannelArity FloatSumOperation::arity() const { return ChannelArity::PerChannel; }

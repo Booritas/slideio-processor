@@ -662,6 +662,30 @@ public:
      * UR-EXE-2, UR-EXT-4
      */
     virtual int64_t workingSetBytesPerTile() const;
+    /**
+     * @brief Returns, for a global-context operation, the bytes one instance
+     * holds between calls: after accumulate() on any number of tiles of
+     * @p planeCount planes, and after combine() with any number of instances
+     * of the same parameters.
+     *
+     * It excludes what workingSetBytesPerLevelPixel() and
+     * workingSetBytesPerTile() already cover during a call. The run reserves
+     * it for the instances it keeps, and is refused before it starts when it
+     * does not fit the memory ceiling. A negative figure counts as 0. The
+     * figure is an upper bound the reservation trusts: an instance's state
+     * beyond its declaration is not covered by the memory ceiling, so a
+     * global-context operation whose state grows with the tiles it has seen
+     * cannot declare an honest bound and must keep its state bounded.
+     * @param planeCount Number of planes the operation's input step has;
+     * at least 1.
+     * @return Bytes per instance; 0 by default.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXE-2, UR-EXT-4
+     */
+    virtual int64_t accumulatedStateBytes(int32_t planeCount) const;
 };
 /** @brief Shared ownership of an operation, as the catalog and pipeline hold it. */
 using OperationPtr = std::shared_ptr<Operation>;

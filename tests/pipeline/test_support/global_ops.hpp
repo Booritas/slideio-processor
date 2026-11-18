@@ -35,6 +35,9 @@ namespace slideio::processor::testing_support {
 ///   that use it run one at a time.
 /// - "failFinalize" (default 0): 1 makes finalizeAccumulation() throw
 ///   IoError("deliberate failure").
+/// - "stateBytes" (default 0): what accumulatedStateBytes() returns, unchecked, so a
+///   test can declare any figure, negative ones included. The plane count of its
+///   last call is kept in lastStatePlaneCount().
 class FloatSumOperation : public Operation {
 public:
     explicit FloatSumOperation(const OperationParameters& parameters);
@@ -50,6 +53,11 @@ public:
     void accumulate(const OperationContext& context) override;
     void combine(const Operation& other) override;
     void finalizeAccumulation() override;
+    int64_t accumulatedStateBytes(int32_t planeCount) const override;
+
+    /// The planeCount of the last accumulatedStateBytes() call on any instance; 0 after resetStatePlaneCount().
+    static int32_t lastStatePlaneCount();
+    static void resetStatePlaneCount();
 
     /// The accumulated sum, offsets included.
     double sum() const;
@@ -69,6 +77,7 @@ private:
     bool offset_ = true;
     int64_t holdFirstTile_ = 0;
     bool failFinalize_ = false;
+    int64_t stateBytes_ = 0;
     double sum_ = 0.0;
     int64_t count_ = 0;
     double mean_ = 0.0;

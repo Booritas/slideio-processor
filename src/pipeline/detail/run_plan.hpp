@@ -36,6 +36,9 @@ struct RunPlan {
     std::vector<LayerId> targetLayers;             ///< Per operation; invalid when it produces no objects.
     Halo chainHalo;                                ///< The operations' halos summed edge by edge.
     std::vector<size_t> globalContextPositions;    ///< Chain positions of needsGlobalContext() operations.
+    /// Parallel to globalContextPositions: each operation's accumulatedStateBytes() for
+    /// its input step's plane count, a negative figure as 0.
+    std::vector<int64_t> accumulatedStateBytes;
     bool restricted;                               ///< A ROI, a polygon or a mask source is bound.
     /// Upper bound on one tile's buffers: the largest tile grown by chainHalo,
     /// times the bytes per pixel of every step's planes, the reader's interleave

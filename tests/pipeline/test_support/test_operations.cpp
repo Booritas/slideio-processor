@@ -551,6 +551,9 @@ int32_t PrototypeFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return prototype_->outputPlaneCount(inputPlaneCount);
 }
 int64_t PrototypeFactory::workingSetBytesPerTile() const { return prototype_->workingSetBytesPerTile(); }
+int64_t PrototypeFactory::accumulatedStateBytes(int32_t planeCount) const {
+    return prototype_->accumulatedStateBytes(planeCount);
+}
 
 OperationFactoryPtr makeThresholdFactory() {
     return std::make_shared<PrototypeFactory>(

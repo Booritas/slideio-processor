@@ -55,4 +55,8 @@ int64_t Operation::workingSetBytesPerTile() const {
     return 0;
 }
 
+int64_t Operation::accumulatedStateBytes(int32_t) const {
+    return 0;
+}
+
 } // namespace slideio::processor
