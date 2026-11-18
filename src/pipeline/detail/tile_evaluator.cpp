@@ -1,6 +1,7 @@
-// Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3
+// Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3, UR-SEG-3
 #include <pipeline/detail/tile_evaluator.hpp>
 
+#include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
@@ -30,9 +31,11 @@ bool holds(const Rect64& r, Point64 p) {
 
 // The object sink an operation sees on one tile: an object is kept only when its
 // anchor lies in the tile's level-0 rect, then only when the tile's mask is
-// set there. Flushing is the run's business, so flush() does nothing. One
-// filter serves one tile, but an operation may emit from threads of its own, so
-// the count is atomic.
+// set there; a kept object's rings are normalised, the form a merged object
+// has, before it goes on to the target, which finishes it. The anchor is the
+// same before and after. Flushing is the run's business, so flush() does
+// nothing. One filter serves one tile, but an operation may emit from threads
+// of its own, so the count is atomic.
 class TileObjectFilter : public ObjectSink {
 public:
     TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters)
@@ -48,7 +51,11 @@ public:
             ++counters_.droppedByRestriction;
             return;
         }
-        target_->emit(record);
+        ObjectRecord normalised(record);
+        Polygon geometry = record.geometry();
+        normaliseRings(geometry);
+        normalised.setGeometry(geometry);
+        target_->emit(normalised);
         ++emitted_;
     }
     void flush() override {}

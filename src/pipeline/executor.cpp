@@ -1,6 +1,7 @@
 // Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
 #include <slideio/processor/pipeline/executor.hpp>
 
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/fragment_spill.hpp>
 #include <pipeline/detail/instance_slots.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
@@ -478,8 +479,19 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         merger = std::make_unique<SeamMerger>(impl_->grid, pool.budget, scratch->path());
     }
 
+    // Every object, from a tile or merged, reaches the sink through its
+    // producer's finishObject(). A layer has one producer (validate() checks).
+    // The pixel size is not known to the run yet: 0.
+    std::vector<std::pair<LayerId, const Operation*>> producers;
+    for (size_t k = 0; k < operations.size(); ++k) {
+        if (operations[k]->producesObjects()) {
+            producers.emplace_back(plan.targetLayers[k], operations[k].get());
+        }
+    }
+    detail::FinishingSink finishing(sink, std::move(producers), 0.0, plan.level, &state.counters.droppedByFilter);
+
     detail::Bindings bindings;
-    bindings.objectSink = &sink;
+    bindings.objectSink = &finishing;
     bindings.edgeSink = state.edgeSink;
     bindings.annotationSink = state.annotationSink;
     bindings.rasterSink = state.rasterSink;
@@ -708,7 +720,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         [&](int64_t tile, const char** operation, SlotHold&) {
             evaluator.evaluate(tile, token, operation);
             if (merger) {
-                merger->notifyTileComplete(tile, sink);
+                merger->notifyTileComplete(tile, finishing);
                 if (maskRelease) {
                     maskRelease->tileCompleted(tile);
                 }
@@ -717,7 +729,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         nullptr);
     if (merger) {
         try {
-            merger->resolve(sink, progress, token);
+            merger->resolve(finishing, progress, token);
         } catch (...) {
             detail::rethrowSeamMergeFailure(std::current_exception(), stageName);
         }

@@ -243,9 +243,18 @@ void BoxMeanOperation::apply(OperationContext& context) {
 // --- ComponentsOperation ----------------------------------------------------------
 
 ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
-    : parameters_(parameters), seams_(false), haloScan_(false), halo_(0) {
+    : parameters_(parameters),
+      seams_(false),
+      haloScan_(false),
+      halo_(0),
+      rotateRings_(false),
+      finishMinArea_(0.0),
+      finishTag_(false) {
     parameters_.getBool("seams", seams_);
     parameters_.getBool("haloScan", haloScan_);
+    parameters_.getBool("rotateRings", rotateRings_);
+    parameters_.getDouble("finishMinArea", finishMinArea_);
+    parameters_.getBool("finishTag", finishTag_);
     int64_t halo = 0;
     parameters_.getInt("halo", halo);
     if (halo < 0 || halo > 1024) {
@@ -265,6 +274,17 @@ DataType ComponentsOperation::outputType(DataType) const { return DataType::Byte
 const OperationParameters& ComponentsOperation::parameters() const { return parameters_; }
 bool ComponentsOperation::producesObjects() const { return true; }
 int32_t ComponentsOperation::outputPlaneCount(int32_t) const { return 1; }
+
+bool ComponentsOperation::finishObject(ObjectRecord& record, const ObjectFinishContext&) const {
+    Measurement area;
+    if (record.measurements().find("area", area) && area.value() < finishMinArea_) {
+        return false;
+    }
+    if (finishTag_) {
+        record.measurements().set("finished", 1.0, MeasurementUnit::Dimensionless);
+    }
+    return true;
+}
 
 void ComponentsOperation::apply(OperationContext& context) {
     const BlockView& in = context.input();
@@ -376,6 +396,25 @@ void ComponentsOperation::apply(OperationContext& context) {
             ObjectSink* sink = context.objectSink();
             if (sink == nullptr) {
                 throw InternalError("test.components: the run supplied no object sink");
+            }
+            if (rotateRings_) {
+                // Start one pixel along the first edge: a vertex the normal form drops.
+                const std::vector<Point64>& ring = outer.front();
+                const Point64 a = ring[0];
+                const Point64 b = ring[1];
+                const Point64 step{(b.x > a.x) - (b.x < a.x), (b.y > a.y) - (b.y < a.y)};
+                std::vector<Point64> rotated{Point64{a.x + step.x, a.y + step.y}};
+                rotated.insert(rotated.end(), ring.begin() + 1, ring.end());
+                rotated.push_back(a);
+                if (rotated[0].x == b.x && rotated[0].y == b.y) {
+                    rotated.erase(rotated.begin() + 1);
+                }
+                Polygon moved;
+                moved.addRing(rotated.data(), static_cast<int64_t>(rotated.size()), false);
+                for (const std::vector<Point64>& hole : holes) {
+                    moved.addRing(hole.data(), static_cast<int64_t>(hole.size()), true);
+                }
+                polygon = std::move(moved);
             }
             ObjectRecord record;
             record.setGeometry(polygon);

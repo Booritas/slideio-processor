@@ -1,10 +1,10 @@
-// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11
+// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-SEG-3, UR-SEG-5, UR-SEG-7
 #pragma once
 
 /**
  * @file operation.hpp
  * @brief The operation contract: ChannelArity, TileRequirement, Halo,
- * IntensityPartial, OperationContext and Operation.
+ * IntensityPartial, ObjectFinishContext, OperationContext and Operation.
  */
 
 #include <slideio/processor/core/block_view.hpp>
@@ -22,6 +22,8 @@
 #include <memory>
 
 namespace slideio::processor {
+
+class ObjectRecord;
 
 namespace detail {
 struct OperationContextAccess;
@@ -127,6 +129,21 @@ struct SLIDEIO_PROCESSOR_ENGINE_EXPORTS IntensityPartial {
     double  minimum;      ///< Smallest sample.
     double  maximum;      ///< Largest sample.
     int32_t channel;      ///< The scene channel the samples come from.
+};
+
+/**
+ * @brief What the framework tells an operation about the run when it finishes
+ * one of the operation's objects.
+ *
+ * A plain data structure, exempt from pimpl per C-2.
+ * @par Thread-safety
+ * ThreadCompatible.
+ * @par Requirements
+ * UR-SEG-5, UR-SEG-7
+ */
+struct SLIDEIO_PROCESSOR_ENGINE_EXPORTS ObjectFinishContext {
+    double  pixelSizeMicrons; ///< The level-0 pixel size in micrometres; 0 when unknown.
+    int32_t level;            ///< The run's analysis level.
 };
 
 /**
@@ -686,6 +703,40 @@ public:
      * UR-EXE-2, UR-EXT-4
      */
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;
+    /**
+     * @brief Finishes one of the operation's objects before it reaches the
+     * run's object sink.
+     *
+     * Called once for every object the operation produces, whether it was
+     * found whole in one tile or merged from seam fragments, after its rings
+     * are normalised and its standard measurements applied, so one rule treats
+     * both. It may add or remove measurements and remove hole rings; it must
+     * not change the outer ring, whose topmost-leftmost vertex is the object's
+     * identity, nor the layer.
+     * @param record The object, in level-0 coordinates; finished in place.
+     * @param context The run's pixel size and analysis level.
+     * @return True to keep the object, false to discard it, which the run
+     * counts; true by default, leaving the record unchanged.
+     * @throws Whatever the implementation throws; the run fails with it.
+     * @par Thread-safety
+     * Must be reentrant: called concurrently from the threads evaluating
+     * tiles and merging fragments.
+     * @par Requirements
+     * UR-SEG-3, UR-SEG-5, UR-SEG-7
+     */
+    virtual bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const;
+    /**
+     * @brief Tells whether the operation's objects are 8-connected, so that
+     * two of its fragments meeting only at a tile corner belong to one object.
+     * Constant for the life of the operation.
+     * @return False by default.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-SEG-3
+     */
+    virtual bool objectsAreEightConnected() const;
 };
 /** @brief Shared ownership of an operation, as the catalog and pipeline hold it. */
 using OperationPtr = std::shared_ptr<Operation>;

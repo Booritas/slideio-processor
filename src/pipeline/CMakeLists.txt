@@ -13,6 +13,7 @@ add_library(slideio-processor-pipeline OBJECT
     tile_grid.cpp
     executor.cpp
     detail/combine_partials.cpp
+    detail/finishing_sink.cpp
     detail/fragment_merge.cpp
     detail/fragment_spill.cpp
     detail/half.cpp

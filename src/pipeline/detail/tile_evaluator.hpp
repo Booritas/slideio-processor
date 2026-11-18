@@ -26,11 +26,13 @@ namespace slideio::processor::detail {
 struct RunCounters {
     std::atomic<int64_t> droppedOutsideTile{0};    ///< Objects whose anchor left the emitting tile.
     std::atomic<int64_t> droppedByRestriction{0};  ///< Objects whose anchor the tile's mask excludes.
+    std::atomic<int64_t> droppedByFilter{0};       ///< Objects their producer's finishObject() discards.
     std::atomic<int64_t> tilesSkipped{0};          ///< Tiles whose mask is empty inside the tile.
 
     void reset() noexcept {
         droppedOutsideTile = 0;
         droppedByRestriction = 0;
+        droppedByFilter = 0;
         tilesSkipped = 0;
     }
 };

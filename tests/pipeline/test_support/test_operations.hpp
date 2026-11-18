@@ -106,6 +106,13 @@ private:
 /// in the whole input (the halo rect) instead of the tile rect, and every one is
 /// emitted, wherever its anchor lies: the framework's anchor-ownership rule keeps
 /// each object once.
+/// When bool parameter "rotateRings" is true (default false), the outer ring of
+/// every object (not of a seam fragment) is emitted starting one pixel along its
+/// first edge instead, past its topmost-leftmost vertex, which the framework
+/// must normalise back.
+/// Its finishObject() discards an object whose "area" is below double parameter
+/// "finishMinArea" (default 0) and, when bool parameter "finishTag" is true
+/// (default false), sets the Dimensionless measurement "finished" = 1.
 class ComponentsOperation : public Operation {
 public:
     explicit ComponentsOperation(const OperationParameters& parameters);
@@ -120,12 +127,16 @@ public:
     bool producesObjects() const override;
     /// 1 for either form: the mask copy.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+    bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const override;
 
 private:
     OperationParameters parameters_;
     bool seams_;
     bool haloScan_;
     int32_t halo_;
+    bool rotateRings_;
+    double finishMinArea_;
+    bool finishTag_;
 };
 
 /// "test.wholeLevel": PerChannel, Byte and Float32, halo 0, output Float32, a
