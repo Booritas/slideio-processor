@@ -1,19 +1,28 @@
-// Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3
+// Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
 #include <slideio/processor/pipeline/executor.hpp>
 
+#include <pipeline/detail/fragment_spill.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/restriction.hpp>
+#include <pipeline/detail/seam_merge_failure.hpp>
+#include <pipeline/detail/seam_merger_access.hpp>
+#include <pipeline/detail/tile_reservation.hpp>
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
+#include <slideio/processor/pipeline/seam_merger.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -60,6 +69,70 @@ public:
 private:
     MemoryBudget& budget_;
     int64_t bytes_;
+};
+
+// A directory of one run's own, `<base>/pipeline-<32 random lowercase hex>`
+// (the platform's temporary directory when `base` is empty), created on
+// construction and removed with everything in it on destruction.
+class RunScratchDirectory {
+public:
+    // Forming the path (not UTF-8, say) or drawing the random name can throw a
+    // standard exception; it is reported as the IoError a failed creation is.
+    explicit RunScratchDirectory(const char* base) {
+        std::string cause;
+        try {
+            std::error_code error;
+            std::filesystem::path root;
+            if (base == nullptr || base[0] == '\0') {
+                root = std::filesystem::temp_directory_path(error);
+            } else {
+                root = std::filesystem::u8path(base);
+            }
+            if (!error) {
+                path_ = root / ("pipeline-" + detail::randomHexName());
+                std::filesystem::create_directories(path_, error);
+            }
+            if (!error) {
+                text_ = path_.u8string();
+                return;
+            }
+            cause = error.message();
+        } catch (const std::bad_alloc&) {
+            removeCreated();
+            throw;
+        } catch (const std::exception& e) {
+            cause = e.what();
+        }
+        removeCreated();
+        ErrorContext context;
+        context.cause = cause.c_str();
+        throw IoError(("TileExecutor::run: cannot create a scratch directory under '" +
+                       (base != nullptr ? std::string(base) : std::string()) + "'")
+                          .c_str(),
+                      context);
+    }
+    ~RunScratchDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+    RunScratchDirectory(const RunScratchDirectory&) = delete;
+    RunScratchDirectory& operator=(const RunScratchDirectory&) = delete;
+
+    /// The directory, UTF-8.
+    const char* path() const noexcept { return text_.c_str(); }
+
+private:
+    // On a failed construction no destructor runs: removes the directory if it
+    // was created before the failure.
+    void removeCreated() {
+        std::error_code ignored;
+        if (!path_.empty()) {
+            std::filesystem::remove_all(path_, ignored);
+        }
+    }
+
+    std::filesystem::path path_;
+    std::string text_;
 };
 
 // What the workers of one pass share. Held by shared_ptr by run() and by every
@@ -317,7 +390,9 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     if (!state.plan) {
         pipeline.validate();
     }
-    detail::RunPlan& plan = *state.plan;
+    // The run holds the plan it started with; the plan is never written.
+    const std::shared_ptr<const detail::RunPlan> heldPlan = state.plan;
+    const detail::RunPlan& plan = *heldPlan;
     if (!sameGrid(plan.grid, impl_->grid)) {
         throw InvalidArgumentError("TileExecutor::run: the pipeline's tile grid differs from the executor's");
     }
@@ -342,22 +417,32 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     impl_->total = total;
     state.counters.reset();
 
-    // Each run accumulates into fresh instances, never on top of an earlier run's.
-    // All are created first and then swapped in together, so a failed create
-    // leaves the plan as it was.
-    std::vector<OperationPtr> fresh;
-    fresh.reserve(globalPositions.size());
+    // Each run accumulates into fresh instances of its own, never on top of an
+    // earlier run's and never in the plan: the run applies the plan's operations
+    // with its fresh instances in their positions.
+    std::vector<OperationPtr> operations = plan.operations;
     for (size_t g : globalPositions) {
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);
         try {
-            fresh.push_back(catalog.create(name, state.spec.operationParameters(k)));
+            operations[g] = catalog.create(name, state.spec.operationParameters(k));
         } catch (...) {
             reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
         }
     }
-    for (size_t i = 0; i < globalPositions.size(); ++i) {
-        plan.operations[globalPositions[i]] = std::move(fresh[i]);
+    state.lastRunOperations = operations;
+
+    // A chain that produces objects gets a seam merger for the run, working in a
+    // scratch directory of the run's own. Declared before the evaluator, whose
+    // callback reaches the merger, so the evaluator goes first, then the merger,
+    // removing its scratch file, then the directory: on every way out of run().
+    const bool producesObjects = std::any_of(operations.begin(), operations.end(),
+                                             [](const OperationPtr& op) { return op->producesObjects(); });
+    std::unique_ptr<RunScratchDirectory> scratch;
+    std::unique_ptr<SeamMerger> merger;
+    if (producesObjects) {
+        scratch = std::make_unique<RunScratchDirectory>(impl_->config.scratchDirectory());
+        merger = std::make_unique<SeamMerger>(impl_->grid, pool.budget, scratch->path());
     }
 
     detail::Bindings bindings;
@@ -370,7 +455,36 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
-    const detail::TileEvaluator evaluator(plan, *state.reader, std::move(bindings));
+    bindings.memoryBudget = &budget;
+    if (merger) {
+        // Fragments are partial by definition, so they bypass the tile-ownership
+        // and restriction filters; the merged object's anchor is tested instead.
+        bindings.seamFragment = [target = merger.get()](const Polygon& fragment, LayerId layer,
+                                                        const IntensityPartial* partials, int32_t count,
+                                                        int64_t tileIndex) {
+            target->addFragment(tileIndex, fragment, layer, partials, count);
+        };
+    }
+    const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));
+
+    // A merged object is stored only when the restriction admits its anchor. The
+    // tile masks admits() caches are released as tiles settle, about one grid row
+    // after they complete, so the cache holds about one row of tile masks, each
+    // charged to the pool's budget when it fits and not cached otherwise. The
+    // merger calls the filter only from notifyTileComplete() and resolve(),
+    // never after run() leaves them.
+    std::unique_ptr<detail::TileMaskRelease> maskRelease;
+    if (merger && evaluator.restriction().restricted()) {
+        maskRelease = std::make_unique<detail::TileMaskRelease>(evaluator.restriction(), plan.grid);
+        detail::SeamMergerAccess::setFilter(
+            *merger, [release = maskRelease.get(), counters = &state.counters](Point64 anchor) {
+                const bool admitted = release->admits(anchor);
+                if (!admitted) {
+                    ++counters->droppedByRestriction;
+                }
+                return admitted;
+            });
+    }
 
     std::atomic<int64_t>& completed = impl_->completed;
 
@@ -398,6 +512,8 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                     {
                         budget.reserveOrWait(tileBytes, token);
                         const Reservation held(budget, tileBytes);
+                        // A lazy scene read inside this tile must not wait for these bytes.
+                        const detail::TileReservationMark mark;
                         if (own.stop) {
                             break;
                         }
@@ -457,7 +573,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     for (size_t g : globalPositions) {
         // Pass for operation g: each tile accumulates into a fresh instance, and the
         // instances fold into the run's instance in ascending tile index.
-        Operation& runInstance = *plan.operations[g];
+        Operation& runInstance = *operations[g];
         const auto k = static_cast<int32_t>(g);
         const char* name = state.spec.operationName(k);
         const OperationParameters& parameters = state.spec.operationParameters(k);
@@ -488,7 +604,26 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
             reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
         }
     }
-    runPass([&](int64_t tile, const char** operation) { evaluator.evaluate(tile, token, operation); });
+    // The final pass. Every tile, a skipped one included, is reported to the
+    // merger as it completes, so objects close during the pass; a failure there is
+    // the tile's. After a failure or a cancellation nothing is resolved: the
+    // merger is destroyed with whatever it still holds.
+    runPass([&](int64_t tile, const char** operation) {
+        evaluator.evaluate(tile, token, operation);
+        if (merger) {
+            merger->notifyTileComplete(tile, sink);
+            if (maskRelease) {
+                maskRelease->tileCompleted(tile);
+            }
+        }
+    });
+    if (merger) {
+        try {
+            merger->resolve(sink, progress, token);
+        } catch (...) {
+            detail::rethrowSeamMergeFailure(std::current_exception(), stageName);
+        }
+    }
 }
 
 } // namespace slideio::processor

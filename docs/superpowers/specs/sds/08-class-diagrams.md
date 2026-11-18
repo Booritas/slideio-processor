@@ -1485,7 +1485,22 @@ classDiagram
         +mergedObjectCount() int64_t
         +residentFragmentCount() int64_t
         +spilledFragmentCount() int64_t
+        +spilledBytes() int64_t
         +largestComponentFragmentCount() int64_t
+    }
+
+    class PipelineSceneSource {
+        <<detail, ThreadSafe>>
+        +levelCount() int32_t
+        +rect(int32_t level) Rect64
+        +readBlock(int32_t level, Rect64, BlockView& out) void
+        +metadata() SceneMetadata
+        +readLevelBlock(int level, Rect, Size, channels, buffer) bool
+        +supportsConcurrentReads() bool
+    }
+
+    class ISceneSource {
+        <<SlideIO, interface>>
     }
 
     class IntensityPartial {
@@ -1551,9 +1566,13 @@ classDiagram
     Pipeline ..> TileGrid : lays out at the analysis level
     Pipeline ..> LevelSelector : chooses the level
     Pipeline ..> TileExecutor : eager path
+    Pipeline o-- PipelineSceneSource : lazy path, built on first use, shared with its scene
+    ISceneSource <|.. PipelineSceneSource
+    PipelineSceneSource o-- MemoryBudget : tile bytes, never waited for on a marked thread
     Pipeline ..> Operation : validates declarations first
     TileGrid o-- LevelSelector : one mapping, used by every tile
     TileExecutor o-- WorkerPool
+    TileExecutor *-- SeamMerger : one per run that produces objects
     TileExecutor ..> SeamMerger : notifyTileComplete per tile
     SeamMerger o-- TileGrid
     SeamMerger ..> IntensityPartial : carried per fragment
@@ -1574,13 +1593,33 @@ deriving the level-0 rectangles from them through one mapping removes the
 possibility rather than narrowing it (UR-SEG-3, UR-QA-2, UR-QA-3).
 
 `TileExecutor ··> SeamMerger : notifyTileComplete` is the memory argument. A
-component closes as soon as every tile bordering it has completed — it does
-not need the pass to finish — so most merged objects are emitted *during* the
-tile pass and the resident set is proportional to the frontier of in-flight
+component closes as soon as every tile it holds or expects has completed — it
+does not need the pass to finish — so most merged objects are emitted *during*
+the tile pass and the resident set is proportional to the frontier of in-flight
 tiles rather than to the slide. Held to the end instead, the reference scale
 gives ~10⁶ fragments at 700 B–1 KB each: ~700 MB against a 2 GB ceiling, and
 roughly double that at 512 px tiles. The test that proves correctness across
 three tile sizes is then no longer the test most likely to exhaust memory.
+
+`TileExecutor *-- SeamMerger` is per run: the executor creates a merger, in a
+scratch directory of the run's own, only when some operation of the chain
+produces objects, reports every tile to it (skipped ones too), calls `resolve`
+only on success, and destroys it — reservations released, spill file and
+directory removed — on every path (`05-pipeline.md` 5.5, 5.7). The merger
+reserves each held fragment's bytes from the run's `MemoryBudget` but **never
+waits** for them: short of memory it spills the oldest-opened components, then
+the incoming fragment itself, since the bytes it would wait for may be held by
+the very tile calling it.
+
+`PipelineSceneSource` is the lazy path behind `levelCount`, `rect`,
+`readBlock` and `asScene`: a `detail::` class implementing SlideIO's
+`ISceneSource`, built once from a snapshot of the bindings that matter to
+pixels and handed to `slideio::makeScene`. Its level 0 is the analysis level,
+at scale 1, and its levels mirror the source's from there. Each tile it
+evaluates reserves memory from the pipeline's budget, but on a thread already
+holding a tile reservation — a worker of another pipeline reading this scene —
+it only tries, and evaluates unreserved when the bytes do not fit, so nested
+pipelines sharing one budget cannot deadlock (`05-pipeline.md` 5.5).
 
 `Reduction::isOrderIndependent()` exists because float addition is not
 associative. Integer accumulators return `true` and combine in any order;
@@ -1603,7 +1642,8 @@ before the final pass, and `TileExecutor::tilesTotal` counts every pass
 macro (`05-pipeline.md` 5.5) — and is the lazy path of
 UR-EXE-1. It is implementable only through the SlideIO addition specified in
 [the scene-source design](../2026-10-08-scene-source-design.md); the spike
-found no route to it from the public reader API alone.
+found no route to it from the public reader API alone. It is built on that
+addition (`ISceneSource`, `SceneMetadata`, `makeScene`), as drawn above.
 
 ---
 

@@ -4,6 +4,8 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/standard_measurements.hpp>
 
+#include <pipeline/detail/fragment_merge.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -123,24 +125,9 @@ std::vector<std::vector<Point64>> traceRings(const std::vector<Point64>& pixels,
 
 } // namespace
 
-std::vector<Point64> normaliseRing(const std::vector<Point64>& ring) {
-    std::vector<Point64> kept;
-    const size_t n = ring.size();
-    for (size_t i = 0; i < n; ++i) {
-        const Point64& prev = ring[(i + n - 1) % n];
-        const Point64& cur = ring[i];
-        const Point64& next = ring[(i + 1) % n];
-        const int64_t cross = (cur.x - prev.x) * (next.y - cur.y) - (cur.y - prev.y) * (next.x - cur.x);
-        if (cross != 0) {
-            kept.push_back(cur);
-        }
-    }
-    const auto first = std::min_element(kept.begin(), kept.end(), [](const Point64& a, const Point64& b) {
-        return a.y != b.y ? a.y < b.y : a.x < b.x;
-    });
-    std::rotate(kept.begin(), first, kept.end());
-    return kept;
-}
+// The engine's normalisation, so emitted fragments and merged objects share one
+// implementation (the only engine-internal call the test operations make).
+std::vector<Point64> normaliseRing(const std::vector<Point64>& ring) { return detail::normaliseRing(ring); }
 
 // --- CollectingObjectSink ---------------------------------------------------------
 

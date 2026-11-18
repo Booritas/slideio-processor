@@ -71,16 +71,41 @@ ctest --test-dir build -C Release --output-on-failure
 
 Run a single test with `-R <regex>`.
 
-OpenCV comes in through Conan now, but no library links it yet. The first
-`./build.sh -c debug` may build OpenCV Debug from source when the Conan cache lacks it.
+OpenCV comes in through Conan and is linked privately into
+`slideio-processor-engine` only. The first `./build.sh -c debug` may build
+OpenCV Debug from source when the Conan cache lacks it.
 
 SQLite comes in through Conan and is linked privately into `slideio-processor-data`.
+
+## Libraries
+
+The project builds two shared libraries:
+
+- **`slideio-processor-data`** — the `core`, `config` and `storage` modules. It
+  links libtiff and SQLite privately and links neither SlideIO nor OpenCV; the
+  configure step fails if either ever reaches its link line.
+- **`slideio-processor-engine`** — the `pipeline` module (operations, the
+  pipeline and its tile executor, seam merging, and a pipeline's lazy SlideIO
+  scene), with `algorithm` and `workspace` to join it later. It links
+  `slideio-processor-data` and `slideio::slideio` **publicly**, because its
+  public headers name their types (`slideio::Scene` among them), and
+  `opencv_core` and `opencv_imgproc` **privately**. No OpenCV type, header or
+  macro appears in a public header; the build compiles every pipeline header
+  without an OpenCV include path to keep it so. SlideIO's libraries carry their
+  own static OpenCV; the two copies never meet, because SlideIO's API passes
+  buffers, not OpenCV objects. Under MSVC the engine's configuration must match
+  SlideIO's (Release with Release, Debug with Debug), which the build checks.
+
+A consumer of the pipeline links `slideio-processor-engine` and gets the data
+library and SlideIO with it.
 
 ## Documentation
 
 `include/slideio/processor/core/core.hpp` includes the whole `core` module, and
-`include/slideio/processor/config/config.hpp` the whole `config` module, and
-`include/slideio/processor/storage/storage.hpp` the whole `storage` module. API
+`include/slideio/processor/config/config.hpp` the whole `config` module,
+`include/slideio/processor/storage/storage.hpp` the whole `storage` module, and
+`include/slideio/processor/pipeline/pipeline_all.hpp` the whole `pipeline`
+module (`pipeline.hpp` is the `Pipeline` class). API
 documentation is generated from the headers with Doxygen; the `docs` target
 exists only when Doxygen is installed:
 

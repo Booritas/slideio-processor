@@ -164,6 +164,17 @@ public:
      * ascending tile index (a skipped tile combining nothing), and finalises;
      * it writes no sink. Results therefore do not depend on the worker count.
      *
+     * When an operation of the chain produces objects, the run joins the
+     * fragments of objects cut by tile seams with a SeamMerger, which works in
+     * a directory of the run's own, `pipeline-<32 random lowercase hex digits>`
+     * under the configuration's scratch directory (the platform's temporary
+     * directory when that is empty). Every tile of the final pass, a skipped one
+     * included, is reported to it as it completes, so merged objects reach
+     * @p sink during the pass; whatever remains is resolved after the last tile.
+     * A merged object is stored only when the restriction admits its anchor.
+     * The directory is removed before run() returns or throws, on every path; a
+     * chain producing no objects creates none.
+     *
      * The object sink and the pipeline's edge, annotation and raster sinks are
      * called concurrently from the pool's worker threads, so each must be
      * ThreadSafe. run() flushes none of them; Pipeline::runInto flushes each
@@ -181,19 +192,25 @@ public:
      * pool's budget ceiling; when the pool has been shut down.
      * @throws UnsupportedDataTypeError As Pipeline::validate().
      * @throws ChannelArityError As Pipeline::validate().
-     * @throws IoError As Pipeline::validate().
-     * @throws TileError When a tile fails; hasTile() is true, tileX() and
-     * tileY() are its column and row. When creating or finalising a
-     * global-context operation fails; hasTile() is then false.
+     * @throws IoError As Pipeline::validate(); when the run's scratch
+     * directory cannot be created, its path not being formable (not UTF-8,
+     * say) included, with the reason as the cause; as SeamMerger::resolve().
+     * @throws TileError When a tile fails, merging the objects its completion
+     * closes included; hasTile() is true, tileX() and tileY() are its column
+     * and row. When creating or finalising a global-context operation fails, or
+     * when the seam merge after the last tile (SeamMerger::resolve()) throws
+     * anything but a ProcessorError or std::bad_alloc, such as a standard
+     * exception from @p sink, with its what() as the cause; hasTile() is then
+     * false.
      * @throws CancelledError When @p token is cancelled or an operation throws it.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded, or as Pipeline::validate().
+     * recorded, or as Pipeline::validate() or SeamMerger::resolve().
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * Safe to call concurrently; runs on one executor are serialised. The
      * pipeline must not be used by any other thread during the call.
      * @par Requirements
-     * UR-EXE-1, UR-EXE-2, UR-EXE-4, UR-EXE-5, UR-QA-3
+     * UR-EXE-1, UR-EXE-2, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
      */
     void run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token);
 

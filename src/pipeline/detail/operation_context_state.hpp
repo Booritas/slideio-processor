@@ -12,6 +12,11 @@
 
 namespace slideio::processor::detail {
 
+/// The seam merger's entry point: a fragment, its layer, its intensity partials
+/// (`count` of them, null when none) and the index of the tile that emitted it.
+using SeamFragmentCallback =
+    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t count, int64_t tileIndex)>;
+
 /// Everything an OperationContext reports, as plain members. Every
 /// pointer is borrowed from the run and must outlive the context built from it.
 /// A null pointer reads as the documented fallback: a null view, a null sink,
@@ -31,8 +36,10 @@ struct OperationContextState {
     const ChannelSelection* channels = nullptr;
     const CancellationToken* cancellation = nullptr;
     const RasterMask* mask = nullptr;
+    /// The index in the run's grid of the tile being evaluated; handed to seamFragment.
+    int64_t tileIndex = -1;
     /// The seam merger's entry point; empty when the run has none.
-    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> seamFragment;
+    SeamFragmentCallback seamFragment;
 };
 
 /// Builds the context the framework hands to Operation::apply().

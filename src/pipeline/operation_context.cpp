@@ -144,7 +144,7 @@ void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
     if (!impl_->state.seamFragment) {
         throw InternalError("emitSeamFragment: this run has no seam merger");
     }
-    impl_->state.seamFragment(fragment, layer, partials, partialCount);
+    impl_->state.seamFragment(fragment, layer, partials, partialCount, impl_->state.tileIndex);
 }
 
 } // namespace slideio::processor

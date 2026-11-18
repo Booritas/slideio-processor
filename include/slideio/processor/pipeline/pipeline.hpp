@@ -45,7 +45,8 @@ struct PipelineAccess;
  * defines `ScenePtr` as a preprocessor macro.
  * @par Thread-safety
  * ThreadConfined for configuration; the scene returned by asScene() is
- * ThreadSafe for reads.
+ * ThreadSafe for reads, and so are levelCount(), rect() and readBlock() among
+ * themselves.
  * @par Requirements
  * UR-EXE-1, UR-ALG-1, UR-ALG-5, UR-PIX-6, UR-IMG-5, UR-STG-3
  */
@@ -75,6 +76,21 @@ public:
     /**
      * @brief Sets the memory budget the run reserves its buffers from, and
      * whose ceiling validate() checks the run against.
+     *
+     * A run reserves each tile's bytes while the tile is evaluated, waiting until
+     * they fit. Reading this pipeline lazily (readBlock(), or the scene asScene()
+     * returns) reserves each evaluated tile's bytes the same way, except on a
+     * thread that already holds a tile reservation, such as a worker of another
+     * pipeline whose input is this pipeline's scene: there it reserves only if the
+     * bytes fit at once and otherwise evaluates the tile unreserved, since waiting
+     * for bytes that only that thread's own tiles can free could deadlock. One
+     * budget may therefore be shared by a pipeline and the pipelines reading it,
+     * at the cost of the ceiling being exceeded by such unreserved tiles.
+     * Holding a tile reservation is a property of the thread: work an operation
+     * hands to other threads (a parallel loop reading a lazy auxiliary, say) does
+     * not inherit it, and those threads wait for memory as any other. A lazy read
+     * on a thread holding no tile reservation (a viewer's, say) waits until the
+     * bytes fit and cannot be cancelled while it waits.
      * @param budget The budget; null restores the default, a budget whose
      * ceiling is the configuration's memoryCeilingBytes().
      * @return This pipeline, for chaining.
@@ -234,12 +250,51 @@ public:
     /**
      * @brief Lazy: evaluated per requested block. Construction computes no pixels,
      * and the result is a valid input to another Pipeline.
+     *
+     * Validates first when no validation result is held (metadata only), then
+     * returns a SlideIO scene whose pixels are computed on demand through
+     * readBlock(). The scene keeps the validation result and the bindings that matter to pixels
+     * (the spec, the source scene, the configuration, the memory budget, the mask
+     * source and the auxiliary rasters) as they are now: later binding calls or
+     * validate() on this Pipeline do not change it, and it may outlive the
+     * Pipeline. The mask source and the auxiliary rasters stay borrowed and must
+     * outlive the scene; the sinks are never called.
+     *
+     * The scene describes the output pyramid of levelCount() levels. Its level k
+     * is output level k, the size of source level analysisLevel() + k (pixels
+     * outside rect(k) read as zero), with that level's magnification and
+     * defaultTileSize(); its scales are the source levels' scales relative to the
+     * analysis level's. Its rect has the source scene's origin and the analysis
+     * level's size, so with analysis level 0 it is the source scene's rect, and
+     * its resolution and magnification are the source's, converted to the analysis
+     * level. Its name is the source scene's name followed by "/pipeline"; it has
+     * one channel per final plane of the chain, named "c0", "c1" and so on, of the
+     * plane's type. A read of the scene names an output level, or a scene
+     * rectangle and a block size: the latter reads the coarsest output level whose
+     * resolution is at least the one requested on both axes and resamples
+     * nearest-neighbour, so no value is invented. Channels of different types are
+     * read one type per call, as SlideIO requires. Reads may overlap: the scene
+     * declares concurrent reads, and each read evaluates its own tiles.
+     * Each tile a read evaluates reserves memory from this pipeline's budget as
+     * memoryBudget() describes, so another pipeline reading the scene may share
+     * that budget without deadlocking. That holds for reads on the threads
+     * evaluating that pipeline's tiles; threads an operation hands work to wait
+     * for memory as any other, and a read on a thread holding no tile
+     * reservation (a viewer's, say) waits until the bytes fit and cannot be
+     * cancelled while it waits.
      * @return The scene.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @throws InvalidArgumentError As validate(); when the chain has a
+     * global-context operation ("global-context operations need runInto"), since a
+     * block is evaluated without the accumulation pass runInto() makes.
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate(); when SlideIO fails to describe the source scene.
+     * @throws InternalError As validate(); when SlideIO refuses the description.
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * ThreadConfined; the returned scene is ThreadSafe for reads.
      * @par Requirements
-     * UR-EXE-1, UR-PIX-6
+     * UR-EXE-1, UR-PIX-6, UR-IMG-4
      */
     std::shared_ptr<slideio::Scene> asScene() const;
 
@@ -255,26 +310,37 @@ public:
      * the object, edge, annotation and raster sinks are flushed, once each, in
      * that order; on failure or cancellation none is, and no worker thread
      * outlives the call.
+     *
+     * Objects cut by tile seams are merged during the run, as
+     * TileExecutor::run() describes, so each reaches @p sink once and whole,
+     * before the sinks are flushed. The run's scratch directory,
+     * `pipeline-<32 random lowercase hex digits>` under the configuration's
+     * scratch directory, exists only while a chain producing objects runs and is
+     * removed on every path.
      * @param sink Receives the objects the chain emits; called concurrently.
      * @param progress Receives progress reports; may be null.
      * @param token Cancels the run.
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws IoError As validate().
+     * @throws IoError As validate(); when the run's scratch directory cannot
+     * be created; when merged fragments cannot be read back from it.
      * @throws TileError When a tile fails: the stage, the operation when one
      * threw, the tile's column and row (hasTile() is true), and the original
      * text as the cause. Also when creating or finalising a global-context
-     * operation fails; hasTile() is then false. Nothing is flushed then.
+     * operation fails, or when the seam merge after the last tile fails with
+     * anything but a ProcessorError or std::bad_alloc (a standard exception from
+     * @p sink, say); hasTile() is then false. Nothing is flushed then.
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded, or as validate(); nothing is flushed.
+     * recorded, when seam fragments do not merge, or as validate(); nothing is
+     * flushed.
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements
-     * UR-EXE-1, UR-ALG-5, UR-IMG-5, UR-STG-3
+     * UR-EXE-1, UR-ALG-5, UR-IMG-5, UR-STG-3, UR-SEG-3
      */
     void runInto(ObjectSink& sink, ProgressObserver* progress, const CancellationToken& token);
     /**
@@ -284,14 +350,16 @@ public:
      * @throws InvalidArgumentError As validate().
      * @throws UnsupportedDataTypeError As validate().
      * @throws ChannelArityError As validate().
-     * @throws IoError As validate().
+     * @throws IoError As validate(); as runInto(), when the run's scratch
+     * directory cannot be created or merged fragments cannot be read back from it.
      * @throws TileError As runInto(): hasTile() is true for a tile failure and
-     * false for a failure creating or finalising a global-context operation.
-     * Nothing is flushed then.
+     * false for a failure creating or finalising a global-context operation or
+     * of the seam merge after the last tile. Nothing is flushed then.
      * @throws CancelledError When @p token is cancelled or an operation throws
      * it; nothing is flushed.
      * @throws InternalError When a tile failed and its failure could not be
-     * recorded, or as validate(); nothing is flushed.
+     * recorded, when seam fragments do not merge, or as validate(); nothing is
+     * flushed.
      * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
      * ThreadConfined.
@@ -301,36 +369,78 @@ public:
     void run(ProgressObserver* progress, const CancellationToken& token);
 
     /**
-     * @brief The number of pyramid levels of the output scene.
-     * @return The count.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @brief The number of pyramid levels of the output.
+     *
+     * The output mirrors the source scene's levels from the analysis level down:
+     * output level k is the chain evaluated on source level analysisLevel() + k,
+     * with halos in that level's pixels, never rescaled. So the count is the
+     * source's level count minus analysisLevel(). Like rect() and readBlock(), it
+     * validates on first use when no validation result is held, and resolves the
+     * chain at every output level once, reading no pixel; a binding call discards
+     * that resolution.
+     * @return The count, at least 1.
+     * @throws InvalidArgumentError As validate(); when the chain has a
+     * global-context operation ("global-context operations need runInto").
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
-     * ThreadConfined.
+     * ThreadSafe against itself, rect() and readBlock(); ThreadConfined against
+     * validate() and the binding calls.
      * @par Requirements
      * UR-PIX-6
      */
     int32_t levelCount() const;
     /**
-     * @brief The extent of one output level.
-     * @param level The level.
+     * @brief The region one output level covers: the run's region (the scene, the
+     * ROI and the polygon's bounding box intersected) laid out at source level
+     * analysisLevel() + @p level, as the tile grid would cover it there.
+     * @param level The output level, from 0 to levelCount() - 1.
      * @return The rectangle, in that level's pixels.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     * @throws InvalidArgumentError When @p level is out of range; as levelCount().
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
-     * ThreadConfined.
+     * As levelCount().
      * @par Requirements
      * UR-PIX-6
      */
     Rect64 rect(int32_t level) const;
     /**
      * @brief Computes one block of the output.
-     * @param level The level.
-     * @param region The block, in that level's pixels.
-     * @param out Receives the block.
-     * @throws InternalError Always, until the lazy mode is implemented.
+     *
+     * Evaluates every tile of the level's grid that meets @p region, one at a
+     * time on the calling thread, each reserving the per-tile memory a run
+     * reserves from the memory budget while it is evaluated (the caller's view itself is not
+     * reserved), as memoryBudget() describes, and copies the part over @p region
+     * into @p out. The region may extend beyond rect(@p level): what lies outside
+     * it, or outside the restriction (ROI, polygon, mask source), reads as zero.
+     * No sink is called: emitted objects and seam fragments are dropped.
+     * @param level The output level, from 0 to levelCount() - 1.
+     * @param region The block, in that level's pixels; not empty.
+     * @param out Receives the block: the chain's final plane count and types,
+     * and @p region's size.
+     * @throws InvalidArgumentError When @p level is out of range, @p region is
+     * empty, or @p out is null or has the wrong size, plane count or plane
+     * types; as levelCount().
+     * @throws UnsupportedDataTypeError As validate().
+     * @throws ChannelArityError As validate().
+     * @throws IoError As validate().
+     * @throws TileError When a tile fails, as runInto() reports it: the stage,
+     * the operation when one threw, the tile's column and row, and the original
+     * text as the cause. @p out is then partly written.
+     * @throws CancelledError When an operation throws it.
+     * @throws InternalError As validate().
+     * @throws std::bad_alloc When allocation fails outside a tile.
      * @par Thread-safety
-     * ThreadConfined.
+     * As levelCount(): concurrent calls are safe and validate once between them.
      * @par Requirements
-     * UR-PIX-6
+     * UR-PIX-6, UR-ALG-5, UR-EXE-1
      */
     void readBlock(int32_t level, const Rect64& region, BlockView& out) const;
 

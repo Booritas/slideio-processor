@@ -479,15 +479,24 @@ Every accumulator is 64-bit. An intensity sum over a whole-slide tissue region
 exceeds 2³¹ trivially, and UR-IMG-2's static check covers this path.
 
 **Across a tile seam the operation emits partials, not measurements.** For a
-region touching a boundary it calls `emitSeamFragment` with an
-`IntensityPartial` per channel (`05-pipeline.md` 5.7) instead of finishing the
-measurement, because the rest of the object is in another tile. `SeamMerger`
-recomputes the geometric measurements from the merged polygon and combines the
-intensity partials in canonical fragment order. Area, perimeter, centroid and
-intensity statistics are then identical to single-tile processing, which is
-what UR-SEG-3's acceptance criterion measures across three tile sizes — and
-the reason this operation cannot simply average or sum what each tile
-computed.
+region touching a boundary it calls the four-argument
+`emitSeamFragment(fragment, layer, partials, partialCount)` with one
+`IntensityPartial` per channel (`05-pipeline.md` 5.1, 5.7) instead of finishing
+the measurement, because the rest of the object is in another tile. The
+two-argument form carries no partials and suits an operation that measures no
+intensity. `SeamMerger` merges the fragments into one polygon, combines the
+partials per channel in canonical fragment order (ascending fragment anchor,
+ties by tile index), and measures the result with `applyStandardMeasurements`
+(`05-pipeline.md` 5.1). An object finished inside one tile is measured by the
+same function, from its polygon and partials built the same way, so the two
+paths share one formula rather than two that must agree. Area, perimeter,
+centroid and intensity statistics are then identical to single-tile
+processing — bitwise for Byte intensities, to a relative 10⁻¹² for Float32,
+whose sums regroup with the tile size (`05-pipeline.md` 5.7) — which is what
+UR-SEG-3's acceptance criterion measures across three tile sizes, and the
+reason this operation cannot simply average or sum what each tile computed.
+`applyStandardMeasurements` sets the pixel-unit measurements; the calibrated
+units below are added here.
 
 Measurements with a physical dimension are available in both pixels and
 calibrated units. A scene lacking resolution metadata yields pixel units with

@@ -25,7 +25,7 @@ inline constexpr double kMinLevelScale = 1e-6;
 /// window), so the rounding is identical for every window and two windows
 /// sharing a seam agree on it at any scale. Callers supply:
 /// - RasterMask: originLevel = region.x / region.y, pixelW = pixelH = levelScale.
-/// - BlockView (Task 12): pixelW = slideRect.width / width (likewise H), and
+/// - BlockView: pixelW = slideRect.width / width (likewise H), and
 ///   originLevelX = llround(slideRect.x / pixelW) (likewise Y).
 struct PixelGrid {
     int64_t originLevelX, originLevelY;

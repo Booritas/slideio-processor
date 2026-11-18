@@ -355,6 +355,8 @@ public:
 
     /// The run's restriction, rasterised over this tile's halo rect, or null
     /// when the run is unrestricted (5.5). Level coordinates, like `input()`.
+    /// At a non-integer level scale, a side whose halo is zero may extend one
+    /// pixel further left or up; read it through its own regionAtLevel().
     ///
     /// Consulting it is OPTIONAL for objects. The framework filters what this
     /// operation emits through objectSink() whether or not it is read, so an
@@ -375,7 +377,11 @@ public:
     /// Equivalent to the four-argument form with no partials.
     /// @param fragment The fragment, in level-0 coordinates.
     /// @param layer The layer the merged object belongs to.
-    /// @throws InternalError When this run has no seam merger.
+    /// @throws InternalError When the run has no seam merger: an eager run
+    /// makes one only when an operation of the chain declares producesObjects().
+    /// Where fragments have nowhere to go by design, they are dropped silently
+    /// instead: in a lazy read (Pipeline::readBlock(), the scene asScene()
+    /// returns) and in a global-context accumulation pass.
     /// @par Thread-safety
     /// ThreadConfined; the merger behind it is ThreadSafe.
     /// @par Requirements
@@ -392,7 +398,11 @@ public:
      * @param partialCount Number of partials; not negative.
      * @throws InvalidArgumentError When @p partialCount is negative, or
      * @p partials is null while @p partialCount is positive.
-     * @throws InternalError When this run has no seam merger.
+     * @throws InternalError When the run has no seam merger: an eager run
+     * makes one only when an operation of the chain declares producesObjects().
+     * Where fragments have nowhere to go by design, they are dropped silently
+     * instead: in a lazy read (Pipeline::readBlock(), the scene asScene()
+     * returns) and in a global-context accumulation pass.
      * @par Thread-safety
      * ThreadConfined; the merger behind it is ThreadSafe.
      * @par Requirements

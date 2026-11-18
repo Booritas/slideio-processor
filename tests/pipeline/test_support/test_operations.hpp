@@ -3,6 +3,8 @@
 
 // Operations the pipeline tests run, written against the public headers only,
 // exactly as an extension author would (UR-EXT-2). Plans B and C build on them.
+// The one exception is normaliseRing, which delegates to the engine's
+// detail::normaliseRing so that fragments and merged objects share one form.
 
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>

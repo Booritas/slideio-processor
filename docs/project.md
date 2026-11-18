@@ -84,7 +84,8 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
 - [Scene source implementation plan](superpowers/plans/2026-10-08-scene-source.md) —
   eight TDD tasks delivering the SlideIO half, **delivered** as SlideIO PR #86
   (merged 2026-10-17). Excludes `Pipeline::asScene()`,
-  which waits on the `pipeline` module existing.
+  which waited on the `pipeline` module existing; `Pipeline::asScene()` is
+  **delivered** by pipeline plan C, built on that seam.
 - [Storage implementation plan A](superpowers/plans/2026-10-20-storage-a.md) —
   plan A of three for the `storage` module: the SQLite store file and its schema,
   the layer and vocabulary registries, the object writer and queries, stage
@@ -104,14 +105,19 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   plan A of three for the `pipeline` module: the engine library and the OpenCV
   backend adapter, the operation contract, parameters and catalog with its support
   matrix, `PipelineSpec` and its JSON record, level selection and the tile grid, and
-  reductions. Adopts the whole-level operations proposal.
+  reductions. Adopts the whole-level operations proposal. **Delivered** as PR #9
+  (merged 2026-11-16).
 - [Pipeline implementation plan B](superpowers/plans/2026-11-16-pipeline-b.md) —
   plan B of three: `Pipeline` validation, planar block reads, per-tile chain
   evaluation, the worker pool and tile executor, restrictions, sinks, auxiliary
-  rasters and the two-pass global context.
+  rasters and the two-pass global context. **Delivered** as PR #10 (merged
+  2026-11-17).
 - [Pipeline implementation plan C](superpowers/plans/2026-11-16-pipeline-c.md) —
-  plan C of three: `SeamMerger`, the UR-SEG-3 tiling-invariance suite and
-  `Pipeline::asScene()`. Completes the module.
+  plan C of three: `SeamMerger` (seam joining, incremental close, spilling that
+  never waits for memory), the UR-SEG-3 tiling-invariance suite,
+  `Pipeline::asScene()` with nested pipelines sharing one budget, and the
+  `pipeline_all.hpp` umbrella header. Completes the module. **Implemented** on
+  branch `feat/pipeline-c`, awaiting review and merge.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

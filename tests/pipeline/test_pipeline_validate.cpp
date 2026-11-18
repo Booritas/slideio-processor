@@ -351,13 +351,8 @@ TEST(PipelineValidate, BindingsCheckTheirArguments) {
     EXPECT_TRUE(p.spec().equals(specOf("test.threshold")));
 }
 
-TEST(PipelineValidate, LazySceneViewNotYetImplemented) {
+TEST(PipelineValidate, RunValidatesFirst) {
     auto source = byteSource();
-    Pipeline p(ts::makeSyntheticScene(source), config(), specOf("test.threshold"));
-    EXPECT_THROW(p.asScene(), InternalError);
-    EXPECT_THROW(p.levelCount(), InternalError);
-    EXPECT_THROW(p.rect(0), InternalError);
-
     // run() validates first, so a bad spec fails with the validation error.
     Pipeline bad(ts::makeSyntheticScene(source), config(), specOf("test.V.nope"));
     EXPECT_THROW(bad.run(nullptr, CancellationToken()), InvalidArgumentError);

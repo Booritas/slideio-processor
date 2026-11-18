@@ -8,15 +8,19 @@ add_library(slideio-processor-pipeline OBJECT
     pipeline.cpp
     pipeline_spec.cpp
     reduction.cpp
+    seam_merger.cpp
     standard_measurements.cpp
     tile_grid.cpp
     executor.cpp
     detail/combine_partials.cpp
+    detail/fragment_merge.cpp
+    detail/fragment_spill.cpp
     detail/half.cpp
     detail/level_mapping.cpp
     detail/level_table.cpp
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
+    detail/pipeline_scene_source.cpp
     detail/plane_buffers.cpp
     detail/run_plan.cpp
     detail/restriction.cpp

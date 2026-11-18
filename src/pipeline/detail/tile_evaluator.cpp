@@ -129,13 +129,19 @@ T& required(T* binding, const char* what) {
 
 } // namespace
 
-TileEvaluator::TileEvaluator(const RunPlan& plan, const SceneReader& reader, Bindings bindings)
+TileEvaluator::TileEvaluator(const RunPlan& plan, std::vector<OperationPtr> operations, const SceneReader& reader,
+                             Bindings bindings)
     : plan_(plan),
+      operations_(std::move(operations)),
       reader_(reader),
       bindings_(std::move(bindings)),
       restriction_(plan, required(bindings_.spec, "spec"), required(bindings_.selector, "level selector"),
-                   bindings_.maskSource) {
+                   bindings_.maskSource, bindings_.memoryBudget) {
     required(bindings_.counters, "run counters");
+    if (operations_.size() != plan_.operations.size() ||
+        std::any_of(operations_.begin(), operations_.end(), [](const OperationPtr& op) { return !op; })) {
+        throw InvalidArgumentError("TileEvaluator: the operations do not match the plan's chain");
+    }
 }
 
 const RestrictionFilter& TileEvaluator::restriction() const noexcept { return restriction_; }
@@ -145,7 +151,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     if (runningOperation != nullptr) {
         *runningOperation = nullptr;
     }
-    const std::vector<OperationPtr>& operations = plan_.operations;
+    const std::vector<OperationPtr>& operations = operations_;
     if (accumulation != nullptr &&
         (accumulation->position >= operations.size() || accumulation->accumulator == nullptr)) {
         throw InvalidArgumentError("TileEvaluator::evaluate: the accumulation names no operation");
@@ -206,8 +212,8 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     TileObjectFilter objects(bindings_.objectSink, grid.tileRect(tileIndex), tileMask, *bindings_.counters);
     // An accumulation pass writes no sink: what the operations before the
     // accumulating one emit is dropped, seam fragments included.
-    const std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t)> dropFragment =
-        [](const Polygon&, LayerId, const IntensityPartial*, int32_t) {};
+    const SeamFragmentCallback dropFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t,
+                                                 int64_t) {};
 
     for (size_t k = 0; k < end; ++k) {
         token.throwIfCancelled();
@@ -256,6 +262,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.channels = &bindings_.spec->channels();
         state.cancellation = &token;
         state.mask = tileMask;
+        state.tileIndex = tileIndex;
 
         // The operation's declarations decide the call shape; when it accumulates,
         // the call goes to the accumulator, a fresh instance of the same operation.
