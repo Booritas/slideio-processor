@@ -74,6 +74,7 @@ void registerPixelOperations() {
     registerOne("pixel.morph_dilate", &detail::makeDilateFactory);
     registerOne("pixel.morph_open", &detail::makeOpenFactory);
     registerOne("pixel.morph_close", &detail::makeCloseFactory);
+    registerOne("pixel.bilateral_filter", &detail::makeBilateralFilterFactory);
 }
 
 void registerSegmentationOperations() {}

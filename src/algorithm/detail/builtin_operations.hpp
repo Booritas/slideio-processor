@@ -53,4 +53,7 @@ OperationFactoryPtr makeOpenFactory();
 /// pixel.morph_close
 OperationFactoryPtr makeCloseFactory();
 
+/// pixel.bilateral_filter
+OperationFactoryPtr makeBilateralFilterFactory();
+
 } // namespace slideio::processor::detail
