@@ -83,7 +83,9 @@ Triple rgbToHsv(const Triple& rgb) noexcept {
     const double v = max / 255.0;
     const double s = max > 0.0 ? delta / max : 0.0;
     double h = 0.0;
-    if (delta > 0.0) {
+    // H is 0 whenever S is 0, also out of gamut where every component is at or
+    // below zero and the components still differ.
+    if (delta > 0.0 && s > 0.0) {
         if (max == r) {
             h = 60.0 * ((g - b) / delta);
         } else if (max == g) {

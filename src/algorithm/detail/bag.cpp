@@ -34,10 +34,17 @@ double BagReader::getDouble(const char* key, double fallback) {
         return fallback;
     }
     double value = 0.0;
-    if (!parameters_.getDouble(key, value)) {
-        throwBadValue(key, "must be a double");
+    if (parameters_.getDouble(key, value)) {
+        return value;
     }
-    return value;
+    // A JSON reader stores a number written without a fraction, such as 128, as
+    // an integer; it is the same value when a double holds it exactly.
+    constexpr int64_t kExactLimit = int64_t{1} << 53;
+    int64_t integer = 0;
+    if (parameters_.getInt(key, integer) && integer >= -kExactLimit && integer <= kExactLimit) {
+        return static_cast<double>(integer);
+    }
+    throwBadValue(key, "must be a double, or an integer of magnitude at most 2^53");
 }
 
 int64_t BagReader::getInt(const char* key, int64_t fallback) {

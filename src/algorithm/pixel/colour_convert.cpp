@@ -9,8 +9,10 @@
 #include "detail/colour_math.hpp"
 #include "detail/rgb_input.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -43,6 +45,17 @@ double readValue(const unsigned char* row, int64_t x, DataType type) {
 void writeFloat(unsigned char* row, int64_t x, double value) {
     const auto sample = static_cast<float>(value);
     std::memcpy(row + x * static_cast<int64_t>(sizeof(float)), &sample, sizeof(float));
+}
+
+// Whether any of the first @p count components of @p pixel is NaN.
+bool hasNaN(const detail::Triple& pixel, int32_t count) {
+    const double components[3] = {pixel.c0, pixel.c1, pixel.c2};
+    for (int32_t i = 0; i < count; ++i) {
+        if (std::isnan(components[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 class ColourConvertOperation : public Operation {
@@ -106,6 +119,13 @@ public:
                 double* components[3] = {&pixel.c0, &pixel.c1, &pixel.c2};
                 for (int32_t plane = 0; plane < inPlanes; ++plane) {
                     *components[plane] = readValue(inRows[plane], x + offset.x, in.planeType(plane));
+                }
+                if (hasNaN(pixel, inPlanes)) {
+                    // A pixel with any NaN component is NaN in every output component.
+                    for (int32_t plane = 0; plane < outPlanes; ++plane) {
+                        writeFloat(outRows[plane], x, std::numeric_limits<double>::quiet_NaN());
+                    }
+                    continue;
                 }
                 const detail::Triple rgb = toRgb(pixel);
                 if (to_ == ColourSpace::Grey) {

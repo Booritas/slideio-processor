@@ -1,11 +1,14 @@
 // Requirements: UR-PIX-5, UR-QA-3, UR-EXE-1, UR-ALG-6
 #include <slideio/processor/algorithm/pixel/threshold.hpp>
+#include <slideio/processor/algorithm/pixel/colour.hpp>
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
 #include <algorithm/support/harness.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/parameters_json.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 
@@ -117,6 +120,23 @@ int64_t binOf(double v, double lo, double hi, int64_t n) {
     return std::min(n - 1, std::max<int64_t>(0, index));
 }
 
+// Accumulates one width x height tile at the origin, its planes given as raw
+// samples, as the framework's first pass would.
+void accumulateTile(Operation& op, const std::vector<DataType>& types, const std::vector<int32_t>& channels,
+                    int64_t width, int64_t height, std::vector<std::vector<uint8_t>> planes) {
+    std::vector<BlockPlane> described;
+    for (size_t p = 0; p < planes.size(); ++p) {
+        described.push_back(BlockPlane{planes[p].data(), types[p], width * dataTypeSizeBytes(types[p]), channels[p]});
+    }
+    const BlockView input(width, height, Rect64{0, 0, width, height}, 0, described.data(),
+                          static_cast<int32_t>(described.size()));
+    detail::OperationContextState state;
+    state.input = &input;
+    state.tileRectAtLevel = state.haloRectAtLevel = state.tileRect = state.haloRect = Rect64{0, 0, width, height};
+    state.tileIndex = 0;
+    op.accumulate(*detail::OperationContextAccess::make(std::move(state)));
+}
+
 PipelineSpec otsuSpec(const OperationPtr& op) {
     PipelineSpec spec;
     spec.then(op);
@@ -207,7 +227,8 @@ TEST(ThresholdOtsu, DeclaresItsContract) {
                  "Otsu N. A threshold selection method from gray-level histograms. IEEE Trans SMC 1979;9:62-66; "
                  "equals the threshold of a full in-memory histogram of the same slide");
     EXPECT_STREQ(OperationCatalog::instance().complexityNote(kName),
-                 "O(n) in the number of samples, plus O(bins) once per channel; two passes over the slide");
+                 "O(n) in the number of samples, plus O(bins) per tile per channel and O(bins) per channel to "
+                 "finalise; two passes over the slide");
 }
 
 TEST(ThresholdOtsu, RejectsBadParameters) {
@@ -245,6 +266,22 @@ TEST(ThresholdOtsu, RejectsBadParameters) {
     EXPECT_THROW(makeOtsuThreshold(static_cast<ThresholdDirection>(7)), InvalidArgumentError);
 }
 
+TEST(ThresholdOtsu, IntegerRangeReadAsDouble) {
+    const OperationPtr fromInt = OperationCatalog::instance().create(
+        kName, OperationParameters().setInt("histogramMinimum", 0).setInt("histogramMaximum", 255));
+    const OperationPtr fromDouble = OperationCatalog::instance().create(
+        kName, OperationParameters().setDouble("histogramMinimum", 0.0).setDouble("histogramMaximum", 255.0));
+    EXPECT_TRUE(detail::parametersEqual(fromInt->parameters(), fromDouble->parameters()));
+    const std::string beyondMin = rejection(OperationParameters()
+                                                .setInt("histogramMinimum", -(int64_t{1} << 53) - 1)
+                                                .setDouble("histogramMaximum", 1.0));
+    EXPECT_NE(beyondMin.find("'histogramMinimum'"), std::string::npos) << beyondMin;
+    const std::string beyondMax = rejection(OperationParameters()
+                                                .setDouble("histogramMinimum", 0.0)
+                                                .setInt("histogramMaximum", (int64_t{1} << 53) + 1));
+    EXPECT_NE(beyondMax.find("'histogramMaximum'"), std::string::npos) << beyondMax;
+}
+
 TEST(ThresholdOtsu, CombineRefusesAnotherKindOrShape) {
     const OperationPtr otsu = makeOtsuThreshold(ThresholdDirection::Above);
     const OperationPtr fixed = makeFixedThreshold(1.0, ThresholdDirection::Above);
@@ -253,6 +290,74 @@ TEST(ThresholdOtsu, CombineRefusesAnotherKindOrShape) {
         FAIL() << "combine accepted another kind of operation";
     } catch (const InvalidArgumentError& e) {
         EXPECT_NE(std::string(e.what()).find(kName), std::string::npos) << e.what();
+    }
+
+    // Two accumulators of channel 0 whose histograms span different ranges.
+    const auto ranged = [](double maximum) {
+        return OperationCatalog::instance().create(
+            kName, OperationParameters().setDouble("histogramMinimum", 0.0).setDouble("histogramMaximum", maximum));
+    };
+    const OperationPtr narrow = ranged(100.0);
+    const OperationPtr wide = ranged(200.0);
+    std::vector<uint8_t> samples(16, uint8_t{50});
+    accumulateTile(*narrow, {DataType::Byte}, {0}, 4, 4, {samples});
+    accumulateTile(*wide, {DataType::Byte}, {0}, 4, 4, {samples});
+    try {
+        narrow->combine(*wide);
+        FAIL() << "combine accepted a histogram of another shape";
+    } catch (const InvalidArgumentError& e) {
+        EXPECT_NE(std::string(e.what()).find(kName), std::string::npos) << e.what();
+    }
+}
+
+TEST(ThresholdOtsu, RefusesRepeatedSourceChannels) {
+    // One call holding two planes of channel 0.
+    const OperationPtr direct = makeOtsuThreshold(ThresholdDirection::Above);
+    std::vector<uint8_t> samples(16, uint8_t{50});
+    try {
+        accumulateTile(*direct, {DataType::Byte, DataType::Byte}, {0, 0}, 4, 4, {samples, samples});
+        FAIL() << "accumulate accepted two planes of one source channel";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find(kName), std::string::npos) << message;
+        EXPECT_NE(message.find("distinct"), std::string::npos) << message;
+    }
+
+    // Grey -> HSV gives its three planes the grey plane's one source channel, and
+    // the framework hands them to Otsu one plane at a time.
+    auto scene = ts::makeSyntheticScene({{90, 70, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        [](int, int64_t x, int64_t y) { return static_cast<double>((x + y) % 256); });
+    PipelineSpec spec;
+    spec.then(makeColourConvert(ColourSpace::Grey, ColourSpace::Hsv));
+    spec.operation(kName,
+                   OperationParameters().setDouble("histogramMinimum", 0.0).setDouble("histogramMaximum", 360.0));
+    try {
+        ts::runEager(scene, spec, 64, 2);
+        FAIL() << "a run repeating a source channel into Otsu succeeded";
+    } catch (const TileError& e) {
+        const std::string cause = e.cause();
+        EXPECT_NE(cause.find(kName), std::string::npos) << cause;
+        EXPECT_NE(cause.find("distinct"), std::string::npos) << cause;
+    }
+}
+
+TEST(ThresholdOtsu, Int8BinsFromItsMinimum) {
+    // -1 and 0 are adjacent bins 127 and 128 of Int8's per-value histogram.
+    const auto pixel = [](int, int64_t x, int64_t) { return x % 2 == 0 ? -1.0 : 0.0; };
+    auto scene = ts::makeSyntheticScene({{90, 70, 0, 0}}, {slideio::DataType::DT_Int8}, pixel);
+    const ts::Image above = ts::runEager(scene, otsuSpec(makeOtsuThreshold(ThresholdDirection::Above)), 64, 4);
+    const ts::Image below = ts::runEager(scene, otsuSpec(makeOtsuThreshold(ThresholdDirection::Below)), 64, 4);
+    for (int64_t x = 0; x < 4; ++x) {
+        EXPECT_EQ(above.at(0, x, 5), x % 2 == 0 ? 0.0 : 255.0) << x;
+        EXPECT_EQ(below.at(0, x, 5), x % 2 == 0 ? 255.0 : 0.0) << x;
+    }
+
+    // -100 and 50, at the type's negative end and past zero.
+    auto spread = ts::makeSyntheticScene({{90, 70, 0, 0}}, {slideio::DataType::DT_Int8},
+                                         [](int, int64_t x, int64_t) { return x % 3 == 0 ? -100.0 : 50.0; });
+    const ts::Image out = ts::runEager(spread, otsuSpec(makeOtsuThreshold(ThresholdDirection::Above)), 64, 4);
+    for (int64_t x = 0; x < 6; ++x) {
+        EXPECT_EQ(out.at(0, x, 3), x % 3 == 0 ? 0.0 : 255.0) << x;
     }
 }
 

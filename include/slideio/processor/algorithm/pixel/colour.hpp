@@ -45,7 +45,8 @@ enum class ColourSpace : int32_t {
  *   D65 white (0.95047, 1, 1.08883), L* in [0, 100].
  *
  * The output is never clamped: an out-of-gamut Lab or HSV input gives RGB
- * outside 0-255 rather than a saturated value.
+ * outside 0-255 rather than a saturated value. A pixel with a NaN in any
+ * input component is NaN in every output component.
  *
  * The input each source space needs is checked when the operation is applied:
  * - ColourSpace::Rgb: exactly three Byte planes holding scene channels 0, 1

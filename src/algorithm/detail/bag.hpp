@@ -20,6 +20,9 @@ class BagReader {
 public:
     BagReader(const char* operationName, const OperationParameters& parameters);
 
+    /// A double key. An integer value of magnitude at most 2^53, which a double
+    /// holds exactly, is accepted as that double; a larger one throws as a
+    /// value of the wrong type does.
     double getDouble(const char* key, double fallback);
     int64_t getInt(const char* key, int64_t fallback);
     bool getBool(const char* key, bool fallback);

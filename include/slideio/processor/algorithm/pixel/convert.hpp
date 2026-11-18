@@ -65,7 +65,10 @@ enum class OverflowMode : int32_t {
  * target), and NaN converted to an integer type becomes 0. Under
  * OverflowMode::Error the tile fails with InvalidArgumentError
  * `"pixel.convert_type: <n> samples of <source type> do not fit <target type>"`,
- * counting every overflowing sample of the tile; it never names a value.
+ * counting every overflowing sample of the tile; it never names a value. When
+ * planes of several types overflow, the source types are listed in plane
+ * order, each once and separated by ", ", e.g.
+ * `"pixel.convert_type: 4 samples of Int16, Int32 do not fit Int8"`.
  *
  * Its parameters are `target` (a dataTypeName() spelling; `"Float32"` when
  * created by name without it), `rounding` (`"Nearest"` by default) and

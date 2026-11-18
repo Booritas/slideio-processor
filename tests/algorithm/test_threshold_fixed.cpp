@@ -135,7 +135,7 @@ TEST(ThresholdFixed, RejectsUnknownKeyAndBadValues) {
     const std::string wrongType = rejection(OperationParameters().setString("value", "ninety"));
     EXPECT_NE(wrongType.find("value"), std::string::npos) << wrongType;
     EXPECT_EQ(wrongType.find("ninety"), std::string::npos) << wrongType;
-    EXPECT_FALSE(rejection(OperationParameters().setInt("value", 7)).empty());
+    EXPECT_FALSE(rejection(OperationParameters().setBool("value", true)).empty());
     EXPECT_FALSE(rejection(OperationParameters().setDouble("direction", 1.0)).empty());
 
     EXPECT_THROW(makeFixedThreshold(std::numeric_limits<double>::quiet_NaN(), ThresholdDirection::Above),
@@ -143,6 +143,56 @@ TEST(ThresholdFixed, RejectsUnknownKeyAndBadValues) {
     EXPECT_THROW(makeFixedThreshold(std::numeric_limits<double>::infinity(), ThresholdDirection::Above),
                  InvalidArgumentError);
     EXPECT_THROW(makeFixedThreshold(1.0, static_cast<ThresholdDirection>(7)), InvalidArgumentError);
+}
+
+TEST(ThresholdFixed, IntegerValueReadAsDouble) {
+    // An integer a double holds exactly is the same value as that double.
+    for (int64_t value : {int64_t{128}, int64_t{-5}, int64_t{1} << 53, -(int64_t{1} << 53)}) {
+        const OperationPtr fromInt =
+            OperationCatalog::instance().create("pixel.threshold_fixed", OperationParameters().setInt("value", value));
+        const OperationPtr fromDouble = OperationCatalog::instance().create(
+            "pixel.threshold_fixed", OperationParameters().setDouble("value", static_cast<double>(value)));
+        EXPECT_TRUE(detail::parametersEqual(fromInt->parameters(), fromDouble->parameters())) << value;
+        double stored = 0.0;
+        EXPECT_TRUE(fromInt->parameters().getDouble("value", stored)) << value;
+    }
+    // One beyond 2^53 has no exact double: refused, naming the key and not the value.
+    for (int64_t value : {(int64_t{1} << 53) + 1, -(int64_t{1} << 53) - 1}) {
+        const std::string message = rejection(OperationParameters().setInt("value", value));
+        EXPECT_NE(message.find("pixel.threshold_fixed"), std::string::npos) << message;
+        EXPECT_NE(message.find("'value'"), std::string::npos) << message;
+        EXPECT_EQ(message.find(std::to_string(value)), std::string::npos) << message;
+    }
+}
+
+TEST(ThresholdFixed, HandWrittenIntegerJsonCreates) {
+    // A recorded configuration written by hand with "value": 128 reads back as an
+    // integer and still creates the operation.
+    PipelineSpec written;
+    written.operation("pixel.threshold_fixed",
+                      OperationParameters().setDouble("value", 128.5).setString("direction", "Above"));
+    const int32_t n = written.toJson(nullptr, 0);
+    std::vector<char> buffer(static_cast<size_t>(n) + 1);
+    written.toJson(buffer.data(), n + 1);
+    std::string json(buffer.data(), static_cast<size_t>(n));
+    const size_t at = json.find("128.5");
+    ASSERT_NE(at, std::string::npos) << json;
+    json.replace(at, 5, "128");
+    const PipelineSpec spec = PipelineSpec::fromJson(json.c_str());
+    int64_t asInt = 0;
+    ASSERT_TRUE(spec.operationParameters(0).getInt("value", asInt)) << json;
+    EXPECT_EQ(asInt, 128);
+    const OperationPtr op = OperationCatalog::instance().create(spec.operationName(0), spec.operationParameters(0));
+    EXPECT_TRUE(detail::parametersEqual(op->parameters(),
+                                        makeFixedThreshold(128.0, ThresholdDirection::Above)->parameters()));
+
+    auto scene = ts::makeSyntheticScene({{20, 10, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        [](int, int64_t x, int64_t) { return static_cast<double>(x * 13); });
+    const ts::Image out = ts::runEager(scene, spec, 64, 1);
+    ASSERT_EQ(out.width, 20);
+    for (int64_t x = 0; x < 20; ++x) {
+        EXPECT_EQ(out.at(0, x, 0), x * 13 > 128 ? 255.0 : 0.0) << x;
+    }
 }
 
 TEST(ThresholdFixed, StrictComparisonEveryType) {
@@ -194,6 +244,49 @@ TEST(ThresholdFixed, Int64Near2Pow53IsExact) {
     const ts::Image unsignedBelow = ts::applyDirectRaw(
         *topBelow, {DataType::UInt64}, {0}, 1, 1, {rawOf(std::vector<uint64_t>{18446744073709551615ull})});
     EXPECT_EQ(row(unsignedBelow), (std::vector<double>{255}));
+}
+
+TEST(ThresholdFixed, UInt64NegativeAndFractional) {
+    const std::vector<uint8_t> samples = rawOf(std::vector<uint64_t>{0, 4, 5, 18446744073709551615ull});
+    const auto run = [&](double value, ThresholdDirection direction) {
+        const OperationPtr op = makeFixedThreshold(value, direction);
+        return row(ts::applyDirectRaw(*op, {DataType::UInt64}, {0}, 4, 1, {samples}));
+    };
+    // Below zero: every sample is above, none below.
+    EXPECT_EQ(run(-0.5, ThresholdDirection::Above), (std::vector<double>{255, 255, 255, 255}));
+    EXPECT_EQ(run(-0.5, ThresholdDirection::Below), (std::vector<double>{0, 0, 0, 0}));
+    EXPECT_EQ(run(-1e19, ThresholdDirection::Above), (std::vector<double>{255, 255, 255, 255}));
+    EXPECT_EQ(run(-1e19, ThresholdDirection::Below), (std::vector<double>{0, 0, 0, 0}));
+    // Between two integers.
+    EXPECT_EQ(run(4.5, ThresholdDirection::Above), (std::vector<double>{0, 0, 255, 255}));
+    EXPECT_EQ(run(4.5, ThresholdDirection::Below), (std::vector<double>{255, 255, 0, 0}));
+    EXPECT_EQ(run(0.25, ThresholdDirection::Below), (std::vector<double>{255, 0, 0, 0}));
+}
+
+TEST(ThresholdFixed, Int64NearItsLimits) {
+    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    constexpr int64_t kBelowTwo63 = kMax - 1023; // 2^63 - 1024, the largest double below 2^63
+    const std::vector<uint8_t> samples =
+        rawOf(std::vector<int64_t>{kMin, kMin + 1, kBelowTwo63, kBelowTwo63 + 1, kMax});
+    const auto run = [&](double value, ThresholdDirection direction) {
+        const OperationPtr op = makeFixedThreshold(value, direction);
+        return row(ts::applyDirectRaw(*op, {DataType::Int64}, {0}, 5, 1, {samples}));
+    };
+    constexpr double kTwo63 = 9223372036854775808.0;
+    // 2^63 lies above every Int64.
+    EXPECT_EQ(run(kTwo63, ThresholdDirection::Above), (std::vector<double>{0, 0, 0, 0, 0}));
+    EXPECT_EQ(run(kTwo63, ThresholdDirection::Below), (std::vector<double>{255, 255, 255, 255, 255}));
+    // 2^63 - 1024 is an Int64 value: compared exactly.
+    EXPECT_EQ(run(static_cast<double>(kBelowTwo63), ThresholdDirection::Above), (std::vector<double>{0, 0, 0, 255, 255}));
+    EXPECT_EQ(run(static_cast<double>(kBelowTwo63), ThresholdDirection::Below),
+              (std::vector<double>{255, 255, 0, 0, 0}));
+    // -2^63 is the minimum itself: nothing is below it, everything else above.
+    EXPECT_EQ(run(-kTwo63, ThresholdDirection::Above), (std::vector<double>{0, 255, 255, 255, 255}));
+    EXPECT_EQ(run(-kTwo63, ThresholdDirection::Below), (std::vector<double>{0, 0, 0, 0, 0}));
+    // Below the type's range.
+    EXPECT_EQ(run(-1e19, ThresholdDirection::Above), (std::vector<double>{255, 255, 255, 255, 255}));
+    EXPECT_EQ(run(-1e19, ThresholdDirection::Below), (std::vector<double>{0, 0, 0, 0, 0}));
 }
 
 TEST(ThresholdFixed, TiledEqualsSingleTile) {

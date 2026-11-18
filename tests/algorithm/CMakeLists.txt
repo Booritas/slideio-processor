@@ -1,9 +1,10 @@
 include(GoogleTest)
 
 # The algorithm tests reach the pipeline's detail headers (the operation context,
-# parameter comparison) and the algorithm's own sample codec, so src/ and tests/
-# are on their include path; the algorithm library itself never has src/ on its
-# path. Detail code the engine does not export is compiled in directly.
+# parameter comparison) and the algorithm's own sample codec and colour maths,
+# so src/ and tests/ are on their include path; the algorithm library itself
+# never has src/ on its path. Detail code the engine does not export is
+# compiled in directly.
 add_executable(slideio_processor_algorithm_tests
     test_registry.cpp
     test_colour_convert.cpp
@@ -13,6 +14,7 @@ add_executable(slideio_processor_algorithm_tests
     test_threshold_otsu.cpp
     test_threshold_adaptive.cpp
     support/harness.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
 )
@@ -22,6 +24,12 @@ target_include_directories(slideio_processor_algorithm_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/algorithm
     ${PROJECT_SOURCE_DIR}/tests)
+# The tests compare floating-point results bit for bit with direct references
+# and across tile sizes, so neither side may fuse a multiply and an add into
+# an FMA the other does not. MSVC does not contract by default.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(slideio_processor_algorithm_tests PRIVATE -ffp-contract=off)
+endif()
 
 # SlideIO's DLLs live in its install tree; see tests/pipeline/CMakeLists.txt for
 # why PATH goes through both ENVIRONMENT_MODIFICATION and TEST_LAUNCHER.

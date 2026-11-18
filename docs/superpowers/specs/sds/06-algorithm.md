@@ -99,7 +99,12 @@ never the value, so a misspelt recorded configuration fails rather than
 replaying as defaults. An enumeration is stored as its enumerator spelling
 (`"Above"`, `"Gaussian"`, `"TowardZero"`), and a `DataType` as
 `dataTypeName()` (`"Float32"`); an unknown spelling is a value out of range and
-throws the same way. A typed factory refuses an argument out of range, or an
+throws the same way. A `double` key also accepts an integer whose magnitude is
+at most 2⁵³, so exactly representable as a double: a configuration written by
+hand with `"value": 128` reads back from JSON as an integer and still creates
+the operation. The operation stores the value as a `double`, so its bag equals
+the one created with `128.0` and round-trips unchanged; a larger integer is a
+value of the wrong type. A typed factory refuses an argument out of range, or an
 enumeration value that is not an enumerator, with `InvalidArgumentError` naming
 the operation and the parameter.
 
@@ -215,7 +220,8 @@ white point. The four-digit matrix often quoted misses the published Lab
 values by about 8 × 10⁻³, which the seven-digit form does not. An input of the
 wrong plane count or type for its source space throws `ChannelArityError` or
 `UnsupportedDataTypeError` naming the operation. The output is never clamped:
-an out-of-gamut Lab or HSV input gives RGB outside 0 to 255.
+an out-of-gamut Lab or HSV input gives RGB outside 0 to 255. A pixel with a NaN
+in any input component is NaN in every output component, whatever the pair.
 
 Because RGB output is `Float32` and RGB input must be `Byte`, an `X → Rgb`
 conversion cannot feed an `Rgb → Y` conversion; a chain wanting `X → Y` uses
@@ -398,6 +404,16 @@ the highest non-empty bin. The second pass makes a bin above k\* foreground for
 `Above`, and a bin at or below it foreground for `Below`. A channel that counted
 nothing — every sample NaN or outside the restriction — is all background.
 
+**Otsu, distinct channels.** Each source channel has one histogram, so the
+planes of a tile must come from distinct source channels. A `Joint` operation
+that writes several planes from one source channel gives them all that channel
+— `pixel.colour_convert` from `Grey` to `Hsv` does — and Otsu after it
+would otherwise pool H, S and V into one histogram. The first pass refuses
+such a tile with `InvalidArgumentError` naming the operation and stating that
+the source channels must be distinct, and so does the second when one call
+holds such planes; a run reports it as a `TileError` naming the operation,
+with that message as its `cause()`.
+
 **Adaptive.** `pixel.threshold_adaptive` compares each sample with
 T = W − `offset`, W the average of the `blockSize` × `blockSize` window centred
 on it: for `Mean` the window sum over `blockSize`²; for `Gaussian` the
@@ -449,7 +465,9 @@ target's minimum or maximum — for a float target, the largest finite value wit
 the sample's sign — and NaN converted to an integer type becomes 0. Under
 `OverflowMode::Error` the tile fails with `InvalidArgumentError`
 `"pixel.convert_type: <n> samples of <source type> do not fit <target type>"`,
-counting every overflowing sample of the tile and naming no value. The
+counting every overflowing sample of the tile and naming no value. When planes
+of several types overflow, the source types are listed in plane order, each
+once (`"… 4 samples of Int16, Int32 do not fit Int8"`). The
 `RoundingMode` affects only conversions to an integer type.
 
 `Float16` is decoded exactly by the module's own binary16 routine and encoded

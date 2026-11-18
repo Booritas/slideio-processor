@@ -5,6 +5,7 @@
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
+#include <algorithm/detail/colour_math.hpp>
 #include <algorithm/support/harness.hpp>
 #include <pipeline/detail/parameters_json.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
@@ -13,6 +14,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -220,6 +222,59 @@ TEST(ColourConvert, KnownValues) {
     const double lowest = std::fmin(wide.at(0, 0, 0), std::fmin(wide.at(1, 0, 0), wide.at(2, 0, 0)));
     const double highest = std::fmax(wide.at(0, 0, 0), std::fmax(wide.at(1, 0, 0), wide.at(2, 0, 0)));
     EXPECT_TRUE(lowest < 0.0 || highest > 255.0) << lowest << " " << highest;
+}
+
+TEST(ColourConvert, HueIsZeroWhenSaturationIsZero) {
+    // Out of gamut, every component at or below zero: S is 0, so H is 0 too,
+    // although the components differ.
+    const detail::Triple dark = detail::rgbToHsv(detail::Triple{-10.0, -20.0, -30.0});
+    EXPECT_EQ(dark.c1, 0.0);
+    EXPECT_EQ(dark.c0, 0.0);
+    const detail::Triple zeroTop = detail::rgbToHsv(detail::Triple{0.0, -20.0, -30.0});
+    EXPECT_EQ(zeroTop.c1, 0.0);
+    EXPECT_EQ(zeroTop.c0, 0.0);
+
+    // The same through the operation: a Lab pixel below black, whose RGB
+    // components are all negative and unequal.
+    const double lab[3] = {-50.0, 20.0, 10.0};
+    const detail::Triple rgb = detail::labToRgb(detail::Triple{lab[0], lab[1], lab[2]});
+    ASSERT_LE(std::fmax(rgb.c0, std::fmax(rgb.c1, rgb.c2)), 0.0);
+    ASSERT_NE(rgb.c0, rgb.c1);
+    const OperationPtr labToHsv = makeColourConvert(ColourSpace::Lab, ColourSpace::Hsv);
+    const ts::Image hsv = ts::applyDirect(*labToHsv, {DataType::Float32, DataType::Float32, DataType::Float32},
+                                          {0, 1, 2}, 1, 1, [&](int32_t plane, int64_t, int64_t) { return lab[plane]; });
+    EXPECT_EQ(hsv.at(1, 0, 0), 0.0);
+    EXPECT_EQ(hsv.at(0, 0, 0), 0.0);
+}
+
+TEST(ColourConvert, NaNComponentGivesNaNEverywhere) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<DataType> threeFloat{DataType::Float32, DataType::Float32, DataType::Float32};
+    // Each source space with a NaN in each component, to every other space.
+    for (ColourSpace from : {ColourSpace::Grey, ColourSpace::Hsv, ColourSpace::Lab}) {
+        const int32_t inPlanes = from == ColourSpace::Grey ? 1 : 3;
+        for (ColourSpace to : {ColourSpace::Rgb, ColourSpace::Grey, ColourSpace::Hsv, ColourSpace::Lab}) {
+            if (to == from) {
+                continue;
+            }
+            const OperationPtr op = makeColourConvert(from, to);
+            for (int32_t nanPlane = 0; nanPlane < inPlanes; ++nanPlane) {
+                const double finite[3] = {30.0, 0.5, 0.5};
+                const auto pixel = [&](int32_t plane, int64_t, int64_t) {
+                    return plane == nanPlane ? nan : finite[plane];
+                };
+                const ts::Image out =
+                    from == ColourSpace::Grey
+                        ? ts::applyDirect(*op, {DataType::Float32}, {0}, 1, 1, pixel)
+                        : ts::applyDirect(*op, threeFloat, {0, 1, 2}, 1, 1, pixel);
+                for (int32_t plane = 0; plane < static_cast<int32_t>(out.planes.size()); ++plane) {
+                    EXPECT_TRUE(std::isnan(out.at(plane, 0, 0)))
+                        << static_cast<int>(from) << " -> " << static_cast<int>(to) << ", NaN in " << nanPlane
+                        << ", output plane " << plane;
+                }
+            }
+        }
+    }
 }
 
 TEST(ColourConvert, InputChecks) {

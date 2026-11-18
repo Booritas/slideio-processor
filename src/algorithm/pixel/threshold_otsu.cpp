@@ -11,6 +11,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -106,6 +107,20 @@ public:
         const Rect64 tile = context.tileRectAtLevel();
         const Rect64 haloRect = context.haloRectAtLevel();
         const RasterMask* mask = context.mask();
+        requireDistinctChannels(in);
+        // The framework hands a PerChannel operation one plane per call, so the
+        // channels of a tile are gathered across the calls for that tile rect.
+        if (!sameRect(tile, countedTile_)) {
+            countedTile_ = tile;
+            channelsInTile_.clear();
+        }
+        for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
+            const int32_t channel = in.planeSourceChannel(plane);
+            if (std::find(channelsInTile_.begin(), channelsInTile_.end(), channel) != channelsInTile_.end()) {
+                failRepeatedChannel(channel);
+            }
+            channelsInTile_.push_back(channel);
+        }
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             ChannelState& state = stateFor(in.planeSourceChannel(plane), in.planeType(plane));
             accumulatePlane(in, plane, tile, haloRect, mask, state);
@@ -150,6 +165,7 @@ public:
                                  " planes for " + std::to_string(in.planeCount()) + " input planes")
                                     .c_str());
         }
+        requireDistinctChannels(in);
         const Rect64 tile = context.tileRectAtLevel();
         const Rect64 haloRect = context.haloRectAtLevel();
         const int64_t offsetX = tile.x - haloRect.x;
@@ -186,6 +202,28 @@ public:
     }
 
 private:
+    static bool sameRect(const Rect64& a, const Rect64& b) {
+        return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+    }
+
+    // One histogram per source channel can count only one plane of each channel:
+    // a Joint operation that writes several planes from one source channel, as
+    // a conversion from grey to HSV does, gives them all that channel.
+    [[noreturn]] static void failRepeatedChannel(int32_t channel) {
+        fail("input planes repeat source channel " + std::to_string(channel) +
+             "; the planes' source channels must be distinct");
+    }
+
+    static void requireDistinctChannels(const BlockView& in) {
+        for (int32_t plane = 1; plane < in.planeCount(); ++plane) {
+            for (int32_t earlier = 0; earlier < plane; ++earlier) {
+                if (in.planeSourceChannel(earlier) == in.planeSourceChannel(plane)) {
+                    failRepeatedChannel(in.planeSourceChannel(plane));
+                }
+            }
+        }
+    }
+
     // The channel's state, created with its bin shape on first sight.
     ChannelState& stateFor(int32_t channel, DataType type) {
         auto found = channels_.find(channel);
@@ -355,6 +393,9 @@ private:
     int32_t binCount_ = 0;
     OperationParameters parameters_;
     std::map<int32_t, ChannelState> channels_;
+    // The tile rect being accumulated and the source channels counted for it.
+    Rect64 countedTile_{0, 0, -1, -1};
+    std::vector<int32_t> channelsInTile_;
 };
 
 bool hasKey(const OperationParameters& parameters, const char* key) {
@@ -400,7 +441,8 @@ OperationFactoryPtr makeOtsuThresholdFactory() {
         &otsuThresholdFromParameters,
         "Otsu N. A threshold selection method from gray-level histograms. IEEE Trans SMC 1979;9:62-66; equals the "
         "threshold of a full in-memory histogram of the same slide",
-        "O(n) in the number of samples, plus O(bins) once per channel; two passes over the slide");
+        "O(n) in the number of samples, plus O(bins) per tile per channel and O(bins) per channel to finalise; "
+        "two passes over the slide");
 }
 
 } // namespace detail

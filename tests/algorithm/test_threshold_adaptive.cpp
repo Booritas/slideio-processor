@@ -150,7 +150,17 @@ TEST(ThresholdAdaptive, RejectsEvenOrSmallBlock) {
     EXPECT_NE(method.find("method"), std::string::npos) << method;
     EXPECT_EQ(method.find("Median"), std::string::npos) << method;
     EXPECT_FALSE(rejection(OperationParameters().setDouble("blockSize", 5.0)).empty());
-    EXPECT_FALSE(rejection(OperationParameters().setInt("offset", 2)).empty());
+    EXPECT_FALSE(rejection(OperationParameters().setBool("offset", true)).empty());
+}
+
+TEST(ThresholdAdaptive, IntegerOffsetReadAsDouble) {
+    const OperationPtr fromInt = OperationCatalog::instance().create(kName, OperationParameters().setInt("offset", 2));
+    const OperationPtr fromDouble =
+        OperationCatalog::instance().create(kName, OperationParameters().setDouble("offset", 2.0));
+    EXPECT_TRUE(detail::parametersEqual(fromInt->parameters(), fromDouble->parameters()));
+    const std::string beyond = rejection(OperationParameters().setInt("offset", (int64_t{1} << 53) + 1));
+    EXPECT_NE(beyond.find("'offset'"), std::string::npos) << beyond;
+    EXPECT_NE(beyond.find(kName), std::string::npos) << beyond;
 }
 
 TEST(ThresholdAdaptive, StepEdgeAnalytic) {

@@ -199,16 +199,25 @@ public:
         const Rect64 r = tile.slideRect();
         const int64_t x0 = std::llround(static_cast<double>(r.x) / downsample_);
         const int64_t y0 = std::llround(static_cast<double>(r.y) / downsample_);
+        // Only the part of the tile inside the level is kept; a tile at or past
+        // its edge contributes nothing.
+        const int64_t skipX = std::max<int64_t>(0, -x0);
+        const int64_t skipY = std::max<int64_t>(0, -y0);
+        const int64_t columns = std::min(tile.width(), width_ - x0) - skipX;
+        const int64_t rows = std::min(tile.height(), height_ - y0);
+        ++tiles_;
+        if (columns <= 0 || rows <= skipY) {
+            return;
+        }
         for (int32_t p = 0; p < tile.planeCount() && p < static_cast<int32_t>(types_.size()); ++p) {
             const int64_t size = dataTypeSizeBytes(types_[static_cast<size_t>(p)]);
-            for (int64_t y = 0; y < tile.height() && y0 + y < height_; ++y) {
+            for (int64_t y = skipY; y < rows; ++y) {
                 const auto* row = static_cast<const uint8_t*>(tile.planeData(p)) + y * tile.planeRowStrideBytes(p);
-                const int64_t columns = std::min(tile.width(), width_ - x0);
-                std::memcpy(&planes_[static_cast<size_t>(p)][static_cast<size_t>(((y0 + y) * width_ + x0) * size)],
-                            row, static_cast<size_t>(columns * size));
+                std::memcpy(
+                    &planes_[static_cast<size_t>(p)][static_cast<size_t>(((y0 + y) * width_ + x0 + skipX) * size)],
+                    row + skipX * size, static_cast<size_t>(columns * size));
             }
         }
-        ++tiles_;
     }
     void flush() override {}
     int64_t tilesWritten() const override {

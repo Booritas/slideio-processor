@@ -8,9 +8,11 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/sample_codec.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace slideio::processor {
 
@@ -64,7 +66,9 @@ public:
                              context.tileRectAtLevel().y - context.haloRectAtLevel().y};
         // Every overflowing sample of the tile is counted before the tile fails.
         int64_t overflowCount = 0;
-        DataType overflowSource = DataType::Unknown;
+        // The source types with an overflowing sample, in plane order, each once.
+        std::string overflowSources;
+        std::vector<DataType> namedTypes;
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             const DataType source = in.planeType(plane);
             if (!isSampleType(source)) {
@@ -79,14 +83,15 @@ public:
                                         .c_str());
             }
             const int64_t planeOverflows = convertPlane(in, out, plane, offset);
-            if (planeOverflows > 0 && overflowCount == 0) {
-                overflowSource = source;
+            if (planeOverflows > 0 && std::find(namedTypes.begin(), namedTypes.end(), source) == namedTypes.end()) {
+                namedTypes.push_back(source);
+                overflowSources += (overflowSources.empty() ? "" : ", ") + std::string(dataTypeName(source));
             }
             overflowCount += planeOverflows;
         }
         if (overflow_ == OverflowMode::Error && overflowCount > 0) {
             throw InvalidArgumentError((std::string(kName) + ": " + std::to_string(overflowCount) + " samples of " +
-                                        dataTypeName(overflowSource) + " do not fit " + dataTypeName(target_))
+                                        overflowSources + " do not fit " + dataTypeName(target_))
                                            .c_str());
         }
     }

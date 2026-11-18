@@ -72,7 +72,10 @@ bool pipelineValidates(const char* name, DataType type) {
 } // namespace
 
 TEST(Registry, RegisteredAtLoad) {
-    EXPECT_TRUE(OperationCatalog::instance().isRegistered("pixel.threshold_fixed"));
+    for (const char* name : {"pixel.threshold_fixed", "pixel.convert_type", "pixel.colour_convert",
+                             "pixel.stain_deconvolution", "pixel.threshold_otsu", "pixel.threshold_adaptive"}) {
+        EXPECT_TRUE(OperationCatalog::instance().isRegistered(name)) << name;
+    }
 }
 
 TEST(Registry, IdempotentAndThreadSafe) {

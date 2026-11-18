@@ -88,6 +88,13 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeFixedThreshold(double value, T
  * binCount; a NaN sample is background, and so is every sample of a channel
  * that counted nothing.
  *
+ * The planes of a tile must come from distinct source channels, since each
+ * channel has one histogram. A Joint operation that writes several planes from
+ * one source channel gives them all that channel: `pixel.colour_convert` from
+ * grey to HSV does. Otsu after it throws InvalidArgumentError naming the
+ * operation and stating that the source channels must be distinct; within a
+ * run this is reported as a TileError naming the operation.
+ *
  * Its parameters are `direction` (`"Above"` or `"Below"`; `"Above"` by
  * default) and, only when created by name with a histogram range, the doubles
  * `histogramMinimum` and `histogramMaximum` (finite, the minimum less than the

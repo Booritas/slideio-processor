@@ -1,10 +1,12 @@
 // Requirements: UR-IMG-13, UR-IMG-10, UR-IMG-11, UR-ALG-6
 #include <slideio/processor/algorithm/pixel/convert.hpp>
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
 #include <algorithm/support/harness.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/parameters_json.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 
@@ -390,4 +392,41 @@ TEST(ConvertType, ThroughAPipeline) {
         }
         EXPECT_EQ(mismatches, 0) << "tile " << tile;
     }
+}
+
+TEST(ConvertType, ErrorNamesEveryOverflowingSourceType) {
+    // One call over planes of several types, as a caller applying the operation
+    // to a multi-plane tile makes it: Int16 (2 overflow), Byte (none), Int32 (1),
+    // Int16 again (1), all into Int8.
+    std::vector<std::vector<uint8_t>> planes{rawOf(std::vector<int16_t>{200, -200, 5}),
+                                             rawOf(std::vector<uint8_t>{1, 2, 3}),
+                                             rawOf(std::vector<int32_t>{1000, 0, 0}),
+                                             rawOf(std::vector<int16_t>{0, 0, 300})};
+    const std::vector<DataType> types{DataType::Int16, DataType::Byte, DataType::Int32, DataType::Int16};
+    std::vector<BlockPlane> inPlanes;
+    std::vector<std::vector<uint8_t>> outBytes(planes.size(), std::vector<uint8_t>(3, 0));
+    std::vector<BlockPlane> outPlanes;
+    for (size_t p = 0; p < planes.size(); ++p) {
+        inPlanes.push_back(BlockPlane{planes[p].data(), types[p], 3 * dataTypeSizeBytes(types[p]),
+                                      static_cast<int32_t>(p)});
+        outPlanes.push_back(BlockPlane{outBytes[p].data(), DataType::Int8, 3, static_cast<int32_t>(p)});
+    }
+    const BlockView input(3, 1, Rect64{0, 0, 3, 1}, 0, inPlanes.data(), static_cast<int32_t>(inPlanes.size()));
+    BlockView output(3, 1, Rect64{0, 0, 3, 1}, 0, outPlanes.data(), static_cast<int32_t>(outPlanes.size()));
+    const auto apply = [&](OverflowMode overflow) {
+        const OperationPtr op = makeTypeConvert(DataType::Int8, RoundingMode::Nearest, overflow);
+        detail::OperationContextState state;
+        state.input = &input;
+        state.output = &output;
+        state.tileRectAtLevel = state.haloRectAtLevel = state.tileRect = state.haloRect = Rect64{0, 0, 3, 1};
+        state.tileIndex = 0;
+        op->apply(*detail::OperationContextAccess::make(std::move(state)));
+    };
+    try {
+        apply(OverflowMode::Error);
+        FAIL() << "no InvalidArgumentError";
+    } catch (const InvalidArgumentError& e) {
+        EXPECT_STREQ(e.what(), "pixel.convert_type: 4 samples of Int16, Int32 do not fit Int8");
+    }
+    EXPECT_NO_THROW(apply(OverflowMode::Saturate));
 }
