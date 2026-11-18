@@ -24,8 +24,11 @@ namespace slideio::processor::detail {
 /// as context.input() does.
 ///
 /// A region touching the tile's edge goes to context.emitSeamFragment() with
-/// its partials, since the rest of it may lie in another tile. Any other is a
-/// finished object on context.targetLayer() with applyStandardMeasurements()
+/// its partials, since the rest of it may lie in another tile, and its join
+/// key: @p joinKeys[r] for region r of @p traced, or 0 for every region when
+/// @p joinKeys is null. The merger joins it only with fragments of an equal
+/// key, so a key must name the region identically in every tile. Any other is
+/// a finished object on context.targetLayer() with applyStandardMeasurements()
 /// over its polygon and partials, emitted to context.objectSink(); when the
 /// run supplied no object sink it is not emitted. Throws what
 /// OperationContext::toLevel0() and emitSeamFragment() throw.
@@ -34,6 +37,6 @@ namespace slideio::processor::detail {
 /// one buffer of the longest ring's vertices, both allocated once; then, one
 /// region at a time, its polygon and its record.
 void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
-                 const BlockView& input, int32_t firstIntensityPlane);
+                 const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys = nullptr);
 
 } // namespace slideio::processor::detail

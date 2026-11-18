@@ -514,8 +514,8 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         // and restriction filters; the merged object's anchor is tested instead.
         bindings.seamFragment = [target = merger.get()](const Polygon& fragment, LayerId layer,
                                                         const IntensityPartial* partials, int32_t count,
-                                                        int64_t tileIndex) {
-            target->addFragment(tileIndex, fragment, layer, partials, count);
+                                                        int64_t joinKey, int64_t tileIndex) {
+            target->addFragment(tileIndex, fragment, layer, partials, count, joinKey);
         };
     }
     const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));

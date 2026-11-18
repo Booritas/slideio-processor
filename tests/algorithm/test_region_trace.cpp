@@ -317,11 +317,13 @@ namespace {
 
 // "test.regions": Joint, halo 1. Plane 0 is a mask labelled 4-connected (or
 // 8-connected) over the tile rect; planes 1.. are measured. Finishes its
-// objects with the standard selection.
+// objects with the standard selection. Keyed, its seam fragments carry key
+// 100 + their region index; otherwise 0.
 class RegionsOperation : public Operation {
 public:
-    explicit RegionsOperation(bool eightConnected = false)
-        : eightConnected_(eightConnected), plan_(MeasurementSelection::standard(), 0.0, 0.0, true) {}
+    explicit RegionsOperation(bool eightConnected = false, bool keyed = false)
+        : eightConnected_(eightConnected), keyed_(keyed),
+          plan_(MeasurementSelection::standard(), 0.0, 0.0, true) {}
     const char* name() const override { return "test.regions"; }
     ChannelArity arity() const override { return ChannelArity::Joint; }
     bool requiresUniformTypes() const override { return false; }
@@ -376,11 +378,17 @@ public:
         }
         const detail::TracedRegions regions =
             detail::traceRegions(labels.data(), width, height, width, eightConnected_);
-        detail::emitRegions(context, labels.data(), width, regions, in, 1);
+        // Keyed, region r gets key 100 + r; otherwise every key is the default 0.
+        std::vector<int64_t> keys;
+        for (size_t r = 0; keyed_ && r < regions.regions.size(); ++r) {
+            keys.push_back(100 + static_cast<int64_t>(r));
+        }
+        detail::emitRegions(context, labels.data(), width, regions, in, 1, keyed_ ? keys.data() : nullptr);
     }
 
 private:
     bool eightConnected_;
+    bool keyed_;
     OperationParameters parameters_;
     detail::MeasurementPlan plan_;
 };
@@ -423,6 +431,27 @@ TEST(RegionEmit, InteriorRegionIsAFinishedObjectWithPartials) {
 
     ASSERT_EQ(result.fragments.size(), 1u);
     EXPECT_EQ(result.fragments[0].boundingBox(), (Rect64{8, 5, 2, 1}));
+}
+
+TEST(RegionEmit, FragmentsCarryTheirRegionKeys) {
+    // Regions 0 and 2 (in raster order) touch the tile's edge; region 1 is interior.
+    auto pixel = [](int32_t, int64_t x, int64_t y) {
+        const bool corner = x <= 1 && y <= 1;
+        const bool interior = x >= 4 && x <= 5 && y >= 3 && y <= 4;
+        const bool far = x >= 8 && y >= 6;
+        return corner || interior || far ? 1.0 : 0.0;
+    };
+    RegionsOperation unkeyed;
+    const ts::DirectObjects plain = ts::applyDirectObjects(unkeyed, {DataType::Byte}, {0}, 10, 8, pixel);
+    ASSERT_EQ(plain.fragments.size(), 2u);
+    EXPECT_EQ(plain.fragmentKeys, (std::vector<int64_t>{0, 0}));
+
+    RegionsOperation keyed(false, true);
+    const ts::DirectObjects result = ts::applyDirectObjects(keyed, {DataType::Byte}, {0}, 10, 8, pixel);
+    ASSERT_EQ(result.objects.size(), 1u);
+    ASSERT_EQ(result.fragments.size(), 2u);
+    EXPECT_EQ(result.fragments[0].boundingBox(), (Rect64{0, 0, 2, 2}));
+    EXPECT_EQ(result.fragmentKeys, (std::vector<int64_t>{100, 102}));
 }
 
 TEST(RegionEmit, NoIntensityPlanesMeansNoIntensityMeasurements) {

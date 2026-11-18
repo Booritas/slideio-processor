@@ -259,7 +259,8 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
       finishMinArea_(0.0),
       finishTag_(false),
       finishContext_(false),
-      eightConnected_(false) {
+      eightConnected_(false),
+      keyByValue_(false) {
     parameters_.getBool("seams", seams_);
     parameters_.getBool("haloScan", haloScan_);
     parameters_.getBool("rotateRings", rotateRings_);
@@ -267,6 +268,7 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
     parameters_.getBool("finishTag", finishTag_);
     parameters_.getBool("finishContext", finishContext_);
     parameters_.getBool("eightConnected", eightConnected_);
+    parameters_.getBool("keyByValue", keyByValue_);
     int64_t halo = 0;
     parameters_.getInt("halo", halo);
     if (halo < 0 || halo > 1024) {
@@ -355,6 +357,7 @@ void ComponentsOperation::apply(OperationContext& context) {
                 continue;
             }
             const int32_t label = ++nextLabel;
+            const unsigned char value = sample(sx, sy);
             std::vector<Point64> pixels;
             std::vector<Point64> stack = {Point64{sx, sy}};
             labels[at(sx, sy)] = label;
@@ -378,7 +381,7 @@ void ComponentsOperation::apply(OperationContext& context) {
                     const int64_t nx = p.x + step.x;
                     const int64_t ny = p.y + step.y;
                     if (nx >= 0 && ny >= 0 && nx < width && ny < height && labels[at(nx, ny)] == 0 &&
-                        sample(nx, ny) != 0) {
+                        sample(nx, ny) != 0 && (!keyByValue_ || sample(nx, ny) == value)) {
                         labels[at(nx, ny)] = label;
                         stack.push_back(Point64{nx, ny});
                     }
@@ -410,7 +413,7 @@ void ComponentsOperation::apply(OperationContext& context) {
             }
 
             if (seams_ && touchesEdge) {
-                context.emitSeamFragment(polygon, context.targetLayer(), &partial, 1);
+                context.emitSeamFragment(polygon, context.targetLayer(), &partial, 1, keyByValue_ ? value : 0);
                 continue;
             }
             ObjectSink* sink = context.objectSink();

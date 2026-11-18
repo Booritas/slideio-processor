@@ -495,3 +495,46 @@ TEST(SeamSpill, FullyHeldBudgetSpillsInsteadOfWaiting) {
     EXPECT_EQ(sink.emittedCount(), 2);
     EXPECT_EQ(budget->reservedBytes(), 0);
 }
+
+// Every fragment goes to the scratch file before the one across its seam
+// arrives; each still joins only the fragments of its own key: the region of key
+// 11 in tile 0 lies along both regions of tile 1 on the seam x = 10.
+TEST(SeamSpill, KeySurvivesSpill) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    ScratchDirectory scratch;
+    const MemoryBudgetPtr budget = makeMemoryBudget(1000);
+    ASSERT_TRUE(budget->tryReserve(1000));
+    ts::CollectingObjectSink sink;
+    {
+        SeamMerger merger(grid, budget, scratch.utf8().c_str());
+        const IntensityPartial tall = partial(40, 40.0, 40.0, 1.0, 1.0);
+        const IntensityPartial lower = partial(20, 20.0, 20.0, 1.0, 1.0);
+        const IntensityPartial upper = partial(20, 40.0, 80.0, 2.0, 2.0);
+        merger.addFragment(0, rectangle(5, 1, 5, 8), kLayer, &tall, 1, 11);
+        merger.notifyTileComplete(0, sink);
+        EXPECT_EQ(merger.spilledFragmentCount(), 1);
+        merger.addFragment(1, rectangle(10, 1, 5, 4), kLayer, &upper, 1, 12);
+        merger.addFragment(1, rectangle(10, 5, 5, 4), kLayer, &lower, 1, 11);
+        merger.notifyTileComplete(1, sink);
+        EXPECT_EQ(merger.spilledFragmentCount(), 3);
+        merger.resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(merger.mergedObjectCount(), 2);
+    }
+    budget->release(1000);
+    EXPECT_EQ(budget->reservedBytes(), 0);
+
+    const std::vector<Emitted> emitted = summarise(sink.records());
+    ASSERT_EQ(emitted.size(), 2u);
+    const std::vector<std::vector<Point64>> joined = {{{5, 1}, {10, 1}, {10, 5}, {15, 5}, {15, 9}, {5, 9}}};
+    const std::vector<std::vector<Point64>> alone = {{{10, 1}, {15, 1}, {15, 5}, {10, 5}}};
+    EXPECT_TRUE(emitted[0].rings == joined);
+    EXPECT_TRUE(emitted[1].rings == alone);
+    for (size_t i = 0; i < emitted.size(); ++i) {
+        const auto mean = std::find_if(emitted[i].measurements.begin(), emitted[i].measurements.end(),
+                                       [](const std::pair<std::string, double>& m) {
+                                           return m.first == "intensity.0.mean";
+                                       });
+        ASSERT_NE(mean, emitted[i].measurements.end());
+        EXPECT_EQ(mean->second, i == 0 ? 1.0 : 2.0) << "object " << i;
+    }
+}

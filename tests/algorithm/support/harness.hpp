@@ -83,6 +83,8 @@ struct DirectObjects {
     std::vector<ObjectRecord> objects;
     /// Seam fragments, level-0 polygons as emitted, in emission order.
     std::vector<Polygon> fragments;
+    /// Each seam fragment's join key, parallel to fragments.
+    std::vector<int64_t> fragmentKeys;
 };
 
 /// As applyDirect, for an operation producing objects: the context has an

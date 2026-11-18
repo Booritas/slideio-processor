@@ -13,9 +13,11 @@
 namespace slideio::processor::detail {
 
 /// The seam merger's entry point: a fragment, its layer, its intensity partials
-/// (`count` of them, null when none) and the index of the tile that emitted it.
+/// (`count` of them, null when none), its join key (fragments join only with
+/// fragments of an equal key) and the index of the tile that emitted it.
 using SeamFragmentCallback =
-    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t count, int64_t tileIndex)>;
+    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t count, int64_t joinKey,
+                       int64_t tileIndex)>;
 
 /// Everything an OperationContext reports, as plain members. Every
 /// pointer is borrowed from the run and must outlive the context built from it.

@@ -218,7 +218,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     // An accumulation pass writes no sink: what the operations before the
     // accumulating one emit is dropped, seam fragments included.
     const SeamFragmentCallback dropFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t,
-                                                 int64_t) {};
+                                                 int64_t, int64_t) {};
 
     for (size_t k = 0; k < end; ++k) {
         token.throwIfCancelled();

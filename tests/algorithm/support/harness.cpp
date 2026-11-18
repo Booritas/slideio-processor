@@ -380,8 +380,10 @@ DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inp
     DirectObjectSink sink(op, pixelSizeMicrons, result.objects);
     ObjectPlumbing plumbing;
     plumbing.sink = &sink;
-    plumbing.fragments = [&result](const Polygon& fragment, LayerId, const IntensityPartial*, int32_t, int64_t) {
+    plumbing.fragments = [&result](const Polygon& fragment, LayerId, const IntensityPartial*, int32_t,
+                                   int64_t joinKey, int64_t) {
         result.fragments.push_back(fragment);
+        result.fragmentKeys.push_back(joinKey);
     };
     applyRaw(op, inputTypes, sourceChannels, width, height, encodePlanes(inputTypes, width, height, pixel),
              [](const ApplyCall& apply) { apply(); }, pixelSizeMicrons, &plumbing);

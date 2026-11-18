@@ -419,7 +419,7 @@ public:
     /**
      * @brief Records a fragment touching a tile seam together with its
      * per-channel intensity partials, which the merger combines when the
-     * object closes.
+     * object closes. Equivalent to the five-argument form with join key 0.
      * @param fragment The fragment, in level-0 coordinates.
      * @param layer The layer the merged object belongs to.
      * @param partials One partial per channel, read during this call only;
@@ -439,6 +439,37 @@ public:
      */
     void emitSeamFragment(const Polygon& fragment, LayerId layer,
                           const IntensityPartial* partials, int32_t partialCount);
+    /**
+     * @brief Records a fragment touching a tile seam with its intensity
+     * partials and the identity of the region it belongs to.
+     *
+     * The merger joins two fragments touching across a seam only when their
+     * layer and their join key are both equal, so distinct regions that touch
+     * across a seam (neighbouring labels of a label raster, neighbouring
+     * watershed basins) stay distinct objects. The key must therefore name the
+     * region the same way in every tile: a value derived from the region's
+     * samples or from level coordinates, never from a tile-local index.
+     * Operations whose regions are separated by background use 0, as the
+     * other overloads do.
+     * @param fragment The fragment, in level-0 coordinates.
+     * @param layer The layer the merged object belongs to.
+     * @param partials One partial per channel, read during this call only;
+     * may be null when @p partialCount is 0.
+     * @param partialCount Number of partials; not negative.
+     * @param joinKey The region's identity; any value.
+     * @throws InvalidArgumentError When @p partialCount is negative, or
+     * @p partials is null while @p partialCount is positive.
+     * @throws InternalError When the run has no seam merger, as for the
+     * four-argument form; fragments are dropped silently where they have
+     * nowhere to go by design (a lazy read, a global-context accumulation
+     * pass).
+     * @par Thread-safety
+     * ThreadConfined; the merger behind it is ThreadSafe.
+     * @par Requirements
+     * UR-SEG-3, UR-SEG-4, UR-SEG-8
+     */
+    void emitSeamFragment(const Polygon& fragment, LayerId layer,
+                          const IntensityPartial* partials, int32_t partialCount, int64_t joinKey);
 
 private:
     friend struct detail::OperationContextAccess;

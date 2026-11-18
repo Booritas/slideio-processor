@@ -59,6 +59,7 @@ struct SeamComponent {
 struct SeamEdgeContact {
     int64_t fragment; ///< The fragment id.
     int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
     SeamContact contact;
 };
 
@@ -67,6 +68,7 @@ struct SeamEdgeContact {
 struct SeamPointContact {
     int64_t fragment; ///< The fragment id.
     int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
     Point64 at;       ///< The point, in level-0 coordinates.
 };
 
@@ -169,7 +171,8 @@ public:
     // to the scratch file while the budget is short.
     // `points` are the fragment's seam points, each with a tile touching it, on
     // an 8-connected layer, and empty otherwise.
-    void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
+    // The fragment joins only fragments of its layer and `joinKey`.
+    void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer, int64_t joinKey,
              const std::vector<detail::SeamContact>& contacts,
              const std::vector<detail::SeamPointNeighbour>& points, const std::vector<int64_t>& neighbours,
              int64_t bytes);

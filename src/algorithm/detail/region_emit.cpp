@@ -30,7 +30,7 @@ void addSample(IntensityPartial& partial, double v) {
 } // namespace
 
 void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
-                 const BlockView& input, int32_t firstIntensityPlane) {
+                 const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys) {
     const std::vector<TracedRegion>& regions = traced.regions;
     if (regions.empty()) {
         return;
@@ -100,7 +100,8 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
                 polygon.addRing(mapped.data(), ring.count, ring.isHole);
             }
             if (region.touchesEdge) {
-                context.emitSeamFragment(polygon, context.targetLayer(), own, planes);
+                context.emitSeamFragment(polygon, context.targetLayer(), own, planes,
+                                         joinKeys != nullptr ? joinKeys[r] : 0);
                 continue;
             }
             record.setGeometry(polygon);

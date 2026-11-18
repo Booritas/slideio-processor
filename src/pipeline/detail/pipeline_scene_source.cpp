@@ -271,7 +271,7 @@ void PipelineSceneSource::readBlock(int32_t level, const Rect64& region, BlockVi
     bindings.rasterSink = &copy;
     bindings.auxiliaries = snapshot_.auxiliaries;
     bindings.maskSource = snapshot_.maskSource;
-    bindings.seamFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t) {};
+    bindings.seamFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t, int64_t) {};
     bindings.spec = &snapshot_.spec;
     bindings.selector = snapshot_.selector.get();
     bindings.counters = &counters;

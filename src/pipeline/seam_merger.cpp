@@ -135,7 +135,7 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
     }
 }
 
-void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
+void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer, int64_t joinKey,
                            const std::vector<detail::SeamContact>& contacts,
                            const std::vector<detail::SeamPointNeighbour>& points,
                            const std::vector<int64_t>& neighbours, int64_t bytes) {
@@ -168,29 +168,32 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     fragments_.push_back(std::move(slot));
     parent_.push_back(id);
 
-    // Join with the fragments across each contact's seam, then wait there for
-    // the ones still to come.
+    // Join with the fragments of the same key across each contact's seam, then
+    // wait there for the ones still to come. The key waits with the contact, in
+    // memory, so a fragment written to the scratch file keeps it.
     for (size_t i = 0; i < contacts.size(); ++i) {
         std::vector<detail::SeamEdgeContact>& waiting = edges_[edgeKey(tile, neighbourAcross(tile, contacts[i]))];
         for (const detail::SeamEdgeContact& other : waiting) {
-            if (other.tile != tile && !fragments_[static_cast<size_t>(other.fragment)].taken &&
+            if (other.tile != tile && other.joinKey == joinKey &&
+                !fragments_[static_cast<size_t>(other.fragment)].taken &&
                 components_.at(find(other.fragment)).layer == layer &&
                 detail::contactsJoin(other.contact, contacts[i])) {
                 unite(id, other.fragment);
             }
         }
-        waiting.push_back(detail::SeamEdgeContact{id, tile, contacts[i]});
+        waiting.push_back(detail::SeamEdgeContact{id, tile, joinKey, contacts[i]});
     }
     // On an 8-connected layer, likewise at each point shared with another tile.
     for (const detail::SeamPointNeighbour& point : points) {
         std::vector<detail::SeamPointContact>& waiting = points_[edgeKey(tile, point.tile)];
         for (const detail::SeamPointContact& other : waiting) {
-            if (other.tile != tile && other.at == point.at && !fragments_[static_cast<size_t>(other.fragment)].taken &&
+            if (other.tile != tile && other.at == point.at && other.joinKey == joinKey &&
+                !fragments_[static_cast<size_t>(other.fragment)].taken &&
                 components_.at(find(other.fragment)).layer == layer) {
                 unite(id, other.fragment);
             }
         }
-        waiting.push_back(detail::SeamPointContact{id, tile, point.at});
+        waiting.push_back(detail::SeamPointContact{id, tile, joinKey, point.at});
     }
 
     ++fragmentCount;
@@ -470,7 +473,7 @@ SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char*
 SeamMerger::~SeamMerger() = default;
 
 void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId layer,
-                             const IntensityPartial* partials, int32_t partialCount) {
+                             const IntensityPartial* partials, int32_t partialCount, int64_t joinKey) {
     checkTile(impl_->grid, tileIndex, "addFragment");
     if (fragment.isEmpty()) {
         throw InvalidArgumentError("SeamMerger::addFragment: the fragment is empty");
@@ -528,7 +531,7 @@ void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId
     const int64_t bytes =
         points * 16 + static_cast<int64_t>(partialCount) * static_cast<int64_t>(sizeof(IntensityPartial)) + 64;
 
-    impl_->add(std::move(held), layer, contacts, pointNeighbours, neighbours, bytes);
+    impl_->add(std::move(held), layer, joinKey, contacts, pointNeighbours, neighbours, bytes);
 }
 
 void SeamMerger::notifyTileComplete(int64_t tileIndex, ObjectSink& sink) {

@@ -139,6 +139,11 @@ void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer) 
 
 void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
                                         const IntensityPartial* partials, int32_t partialCount) {
+    emitSeamFragment(fragment, layer, partials, partialCount, 0);
+}
+
+void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
+                                        const IntensityPartial* partials, int32_t partialCount, int64_t joinKey) {
     if (partialCount < 0) {
         throw InvalidArgumentError("emitSeamFragment: partialCount must not be negative");
     }
@@ -148,7 +153,7 @@ void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
     if (!impl_->state.seamFragment) {
         throw InternalError("emitSeamFragment: this run has no seam merger");
     }
-    impl_->state.seamFragment(fragment, layer, partials, partialCount, impl_->state.tileIndex);
+    impl_->state.seamFragment(fragment, layer, partials, partialCount, joinKey, impl_->state.tileIndex);
 }
 
 } // namespace slideio::processor

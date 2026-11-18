@@ -76,7 +76,9 @@ struct CornerMerger {
             detail::SeamMergerAccess::setEightConnected(merger, kLayer);
         }
     }
-    void add(int64_t tile, const Polygon& fragment) { merger.addFragment(tile, fragment, kLayer, nullptr, 0); }
+    void add(int64_t tile, const Polygon& fragment, int64_t joinKey = 0) {
+        merger.addFragment(tile, fragment, kLayer, nullptr, 0, joinKey);
+    }
     void complete(int64_t tile) { merger.notifyTileComplete(tile, sink); }
 
     TileGrid grid;
@@ -344,6 +346,41 @@ TEST(FragmentMerge, DiagonalAcrossCornerStaysSplitOn4Connected) {
         ASSERT_EQ(record.geometry().ringCount(), 1);
         EXPECT_EQ(record.geometry().ringPointCount(0), 4);
     }
+}
+
+// Pixels (4,4) in tile 0 and (5,5) in tile 3 meet at the tile corner, and (3..4,
+// 0..1) in tile 0 and (5..6, 2..3) in tile 1 diagonally along the seam x = 5:
+// with different keys they stay apart on an 8-connected layer.
+TEST(FragmentMerge, DifferentKeysAtDiagonalPointStaySeparate) {
+    CornerMerger corner(true);
+    corner.add(0, rectangle(4, 4, 1, 1), 1);
+    corner.add(3, rectangle(5, 5, 1, 1), 2);
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        corner.complete(tile);
+    }
+    ASSERT_EQ(corner.sink.emittedCount(), 2);
+    for (const ObjectRecord& record : corner.sink.records()) {
+        ASSERT_EQ(record.geometry().ringCount(), 1);
+        EXPECT_EQ(record.geometry().ringPointCount(0), 4);
+    }
+
+    CornerMerger along(true);
+    along.add(0, rectangle(3, 0, 2, 2), 3);
+    along.add(1, rectangle(5, 2, 2, 2), 4);
+    along.complete(0);
+    along.complete(1);
+    EXPECT_EQ(along.sink.emittedCount(), 2);
+
+    // The corner pair under one key joins, as with key 0 in DiagonalAcrossCornerJoins.
+    CornerMerger same(true);
+    same.add(0, rectangle(4, 4, 1, 1), 9);
+    same.add(3, rectangle(5, 5, 1, 1), 9);
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        same.complete(tile);
+    }
+    ASSERT_EQ(same.sink.emittedCount(), 1);
+    ASSERT_EQ(same.sink.records().front().geometry().ringCount(), 1);
+    EXPECT_EQ(same.sink.records().front().geometry().ringPointCount(0), 8);
 }
 
 TEST(FragmentMerge, DiagonalAlongSeamJoins) {

@@ -120,6 +120,10 @@ private:
 /// 8-connected instead: labelled with diagonal neighbours, traced turning left
 /// where a component touches itself diagonally (one outer ring through that
 /// point, the seam merger's rule), and objectsAreEightConnected() is true.
+/// When bool parameter "keyByValue" is true (default false), components are
+/// maximal connected sets of equal non-zero mask value (a label raster) instead,
+/// and each seam fragment carries that value as its join key, so regions of
+/// different values touching across a seam stay apart; otherwise the key is 0.
 class ComponentsOperation : public Operation {
 public:
     explicit ComponentsOperation(const OperationParameters& parameters);
@@ -147,6 +151,7 @@ private:
     bool finishTag_;
     bool finishContext_;
     bool eightConnected_;
+    bool keyByValue_;
 };
 
 /// "test.pixelSizeProbe": PerChannel, Byte and Float32, halo 0, output Float32: a copy of
