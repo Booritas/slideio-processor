@@ -595,11 +595,20 @@ with `stageFromRecord`, and derives the graph from the definitions without
 writing anything, so `openReadOnly` works. A declare in a reopened workspace
 therefore derives from, and cycle-checks against, the stages persisted earlier.
 A row whose record does not parse is kept by name only: a warning naming the
-stage is logged, the stage has an empty definition, so no reads, writes or
-edges (nothing is derived from or to it until it is redeclared), and it is
-never runnable. Redeclaring it with a real definition repairs it and marks it
-stale. Layers a stage wrote under an earlier declaration stay recorded as its
+stage is logged, the stage has an empty definition, so it derives no reads or
+writes of its own, and it is never runnable. Redeclaring it with a real
+definition repairs it and marks it stale. Layers a stage wrote under an earlier declaration stay recorded as its
 written layers, because storage has no way to remove one.
+
+The edges around an unreadable stage are not lost. At restore the stored
+dependency rows on either side of it — its own and other stages' dependencies
+on it — are pinned into the graph as non-explicit edges (storage records no
+explicit flag), and every later `declare` carries the pins, so a reader of a
+broken writer's layer stays blocked, the writer never being runnable, instead of
+becoming runnable. Redeclaring the stage successfully drops its pins and normal
+derivation resumes. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
+and `isRunnable` all read this one in-memory graph; only the status and stale
+flag of each dependency come from storage. Restore writes nothing.
 
 ## 4.4 Stage runner — `workspace/stage_runner.hpp`
 

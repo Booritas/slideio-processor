@@ -554,3 +554,75 @@ TEST(StageRegistry, UnreadableRecordIsKeptByNameAndNeverRunnable) {
     EXPECT_TRUE(r.isStale(broken));
     ws->close();
 }
+
+TEST(StageRegistry, UnreadableWriterKeepsReaderDependency) {
+    Fixture f;
+    const StageId w = f.stages().declare(writer("w", f.x));
+    StageDefinition rd("r");
+    rd.readsLayer(f.x).writesLayer(f.y);
+    const StageId r = f.stages().declare(rd);
+    ASSERT_EQ(f.stages().dependencyCount(r), 1);
+    f.workspace->store()->stageStateWriter().setConfiguration(w, "this is not a record");
+    f.workspace->close();
+
+    // A read-only open restores the pinned edge and writes nothing.
+    {
+        WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+        ASSERT_EQ(ro->stages().dependencyCount(r), 1);
+        EXPECT_EQ(ro->stages().dependencyAt(r, 0), w);
+        EXPECT_FALSE(ro->stages().isExplicitDependency(r, 0));
+        EXPECT_FALSE(ro->stages().isRunnable(r));
+        ro->close();
+    }
+
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ws->stages();
+    ASSERT_EQ(s.dependencyCount(r), 1);
+    EXPECT_EQ(s.dependencyAt(r, 0), w);
+    EXPECT_FALSE(s.isExplicitDependency(r, 0));
+    EXPECT_FALSE(s.isRunnable(r));
+    EXPECT_THROW(s.dependencyAt(r, 1), InvalidArgumentError);
+
+    // An unrelated declare rewrites every row and carries the pinned edge.
+    s.declare(writer("other", f.tissue));
+    ASSERT_EQ(s.dependencyCount(r), 1);
+    ASSERT_EQ(ws->store()->stageStates().dependencyCount(r), 1);
+    EXPECT_EQ(ws->store()->stageStates().dependencyAt(r, 0), w);
+
+    // Redeclaring w validly drops the pin; derivation is normal again.
+    EXPECT_EQ(s.declare(writer("w", f.x)), w);
+    EXPECT_TRUE(s.isRunnable(w));
+    ASSERT_EQ(s.dependencyCount(r), 1);
+    EXPECT_EQ(s.dependencyAt(r, 0), w);
+    EXPECT_TRUE(s.isStale(w));
+    ws->close();
+}
+
+TEST(StageRegistry, RestoreFallsBackToPersistedDependenciesWhenRederivationFails) {
+    Fixture f;
+    const StageId w = f.stages().declare(writer("w", f.x));
+    StageDefinition rd("r");
+    rd.readsLayer(f.x).writesLayer(f.y);
+    const StageId r = f.stages().declare(rd);
+    // A record whose explicit dependency names a stage that does not exist.
+    StageDefinition ghost("orphan");
+    ghost.dependsOn("ghost");
+    const std::string ghostRecord =
+        detail::stageRecordJson(ghost, f.workspace->layers(), f.workspace->store()->rasters());
+    const StageId orphan = f.workspace->store()->stageStateWriter().declare("orphan", ghostRecord.c_str());
+    f.workspace->close();
+
+    const LogCapture log;
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ws->stages();
+    ASSERT_EQ(s.count(), 3);
+    ASSERT_EQ(s.dependencyCount(r), 1);
+    EXPECT_EQ(s.dependencyAt(r, 0), w);
+    EXPECT_EQ(s.dependencyCount(orphan), 0);
+    bool warned = false;
+    for (const auto& m : log.messages()) {
+        if (m.first == LogLevel::Warning && m.second.find("persisted dependencies") != std::string::npos) warned = true;
+    }
+    EXPECT_TRUE(warned);
+    ws->close();
+}

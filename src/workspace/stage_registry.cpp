@@ -12,12 +12,14 @@
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace slideio::processor {
@@ -82,6 +84,23 @@ Graph deriveGraph(const std::vector<Entry>& entries) {
         }
         std::vector<Edge>& edges = graph[stage.id];
         for (const auto& d : deps) edges.push_back({d.first, d.second});
+    }
+    return graph;
+}
+
+// Edges (stage, dependency) kept from the stored rows around a stage whose record could
+// not be read: its empty definition derives none of them.
+using Pins = std::set<std::pair<int32_t, int32_t>>;
+
+// deriveGraph plus the pinned edges, each non-explicit unless already derived.
+Graph deriveWithPins(const std::vector<Entry>& entries, const Pins& pins) {
+    Graph graph = deriveGraph(entries);
+    for (const auto& pin : pins) {
+        std::vector<Edge>& edges = graph[pin.first];
+        const auto at = std::find_if(edges.begin(), edges.end(), [&](const Edge& e) { return e.dependency == pin.second; });
+        if (at != edges.end()) continue;
+        edges.push_back({pin.second, false});
+        std::sort(edges.begin(), edges.end(), [](const Edge& a, const Edge& b) { return a.dependency < b.dependency; });
     }
     return graph;
 }
@@ -168,7 +187,7 @@ public:
     // the next. The in-memory graph changes only after the whole rewrite succeeds. One
     // function, so redeclaring a stage can reuse it.
     void deriveAndPersist() {
-        Graph next = deriveGraph(entries());
+        Graph next = deriveWithPins(entries(), pins);
         StageStateWriter& writer = store.stageStateWriter();
         for (const auto& stage : next) {
             writer.clearDependencies(StageId(stage.first));
@@ -230,8 +249,19 @@ public:
             }
             definitions[id.value()] = std::move(def);
         }
+        // Pin the stored edges on either side of an unreadable stage: its empty definition
+        // derives none of them, and dropping them would let a reader of its layers run.
+        for (const auto& d : definitions) {
+            const StageId id(d.first);
+            for (int32_t i = 0; i < reader.dependencyCount(id); ++i) {
+                const int32_t dependency = reader.dependencyAt(id, i).value();
+                if (unreadable.count(d.first) != 0 || unreadable.count(dependency) != 0) {
+                    pins.insert({d.first, dependency});
+                }
+            }
+        }
         try {
-            graph = deriveGraph(entries());
+            graph = deriveWithPins(entries(), pins);
         } catch (const StageError& e) {
             // Only a damaged store gets here (an explicit dependency on a stage that is
             // gone). Keep what was persisted, with every edge treated as derived.
@@ -255,6 +285,8 @@ public:
     std::map<int32_t, std::unique_ptr<StageDefinition>> definitions;
     // Stages restored by name only, whose record could not be read.
     std::set<int32_t> unreadable;
+    // Edges kept from the stored rows around unreadable stages, until they are redeclared.
+    Pins pins;
     Graph graph;
 };
 
@@ -281,7 +313,14 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     } else {
         candidate.push_back({std::numeric_limits<int32_t>::max(), &definition});
     }
-    requireAcyclic(deriveGraph(candidate), candidate);
+    // Redeclaring an unreadable stage drops the edges pinned around it.
+    Pins candidatePins = impl_->pins;
+    if (redeclared && impl_->unreadable.count(existing.value()) != 0) {
+        for (auto it = candidatePins.begin(); it != candidatePins.end();) {
+            it = (it->first == existing.value() || it->second == existing.value()) ? candidatePins.erase(it) : std::next(it);
+        }
+    }
+    requireAcyclic(deriveWithPins(candidate, candidatePins), candidate);
 
     // Everything that can run out of memory is allocated before the store is touched:
     // the copy, and for a new stage a map node parked under a placeholder key until the
@@ -301,6 +340,7 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
         writer.setConfiguration(existing, record.c_str());
         held->second.swap(copy);
         impl_->unreadable.erase(existing.value());
+        impl_->pins = std::move(candidatePins);
         for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
             writer.addWrittenLayer(existing, definition.writtenLayerAt(i));
         }
@@ -355,13 +395,23 @@ const char* StageRegistry::configuration(StageId stage) const { SLIDEIO_REGISTRY
 
 int64_t StageRegistry::completedAtUnixMs(StageId stage) const { SLIDEIO_REGISTRY_READ(completedAtUnixMs(stage)); }
 
-int32_t StageRegistry::dependencyCount(StageId stage) const { SLIDEIO_REGISTRY_READ(dependencyCount(stage)); }
+#undef SLIDEIO_REGISTRY_READ
 
-StageId StageRegistry::dependencyAt(StageId stage, int32_t index) const {
-    SLIDEIO_REGISTRY_READ(dependencyAt(stage, index));
+// The dependency accessors read the registry's own graph, the one source (it holds the
+// edges pinned around unreadable stages, which the stored rows also carry).
+int32_t StageRegistry::dependencyCount(StageId stage) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    return static_cast<int32_t>(impl_->edgesOf(stage).size());
 }
 
-#undef SLIDEIO_REGISTRY_READ
+StageId StageRegistry::dependencyAt(StageId stage, int32_t index) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    const std::vector<Edge>& edges = impl_->edgesOf(stage);
+    if (index < 0 || static_cast<size_t>(index) >= edges.size()) {
+        throw InvalidArgumentError("the dependency index is out of range");
+    }
+    return StageId(edges[static_cast<size_t>(index)].dependency);
+}
 
 bool StageRegistry::isExplicitDependency(StageId stage, int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
@@ -376,9 +426,9 @@ bool StageRegistry::isRunnable(StageId stage) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     if (impl_->unreadable.count(stage.value()) != 0) return false;
     const StageStateReader& reader = impl_->store.stageStates();
-    const int32_t n = reader.dependencyCount(stage);
-    for (int32_t i = 0; i < n; ++i) {
-        const StageId dependency = reader.dependencyAt(stage, i);
+    const std::vector<Edge>& edges = impl_->edgesOf(stage);
+    for (const Edge& edge : edges) {
+        const StageId dependency(edge.dependency);
         if (reader.status(dependency) != StageStatus::Complete || reader.isStale(dependency)) return false;
     }
     return true;

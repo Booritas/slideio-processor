@@ -31,10 +31,17 @@ namespace slideio::processor {
  * recomputed on every declare, so a reader declared before its writer gains the
  * dependency when the writer is declared. The constructor restores every stored stage
  * (definition and dependencies) so a reopened workspace is complete before any declare;
- * a row whose record does not parse is kept by name only, logged as a warning naming the
- * stage, never runnable, and has no reads, writes or edges. In this version staleness follows these
- * dependencies only; the layer-ordering and derived-from paths and the StalenessGraph
- * arrive later.
+ * nothing is written, so a read-only open works.
+ *
+ * A row whose record does not parse is kept by name only: a warning naming the stage is
+ * logged and the stage has an empty definition, which derives no reads or writes. It is
+ * never runnable. Its stored edges, its own dependencies and the dependencies of other
+ * stages on it, are pinned into the graph as non-explicit edges and carried by every
+ * later declare, so a reader of its layers stays blocked rather than becoming runnable.
+ * Redeclaring the stage with a real definition drops the pins and normal derivation
+ * resumes. The dependency accessors, isExplicitDependency and isRunnable all read this
+ * one graph. In this version staleness follows these dependencies only; the
+ * layer-ordering and derived-from paths and the StalenessGraph arrive later.
  * @par Thread-safety
  * ThreadSafe: one mutex serialises every member.
  * @par Requirements
@@ -223,7 +230,8 @@ public:
      */
     int32_t dependencyCount(StageId stage) const;
     /**
-     * @brief Returns one effective dependency, in ascending StageId order.
+     * @brief Returns one effective dependency, in ascending StageId order. Read from the
+     * registry's graph, like dependencyCount() and isExplicitDependency().
      * @param stage The stage.
      * @param index Zero-based position, below dependencyCount().
      * @return The stage depended on.
@@ -252,7 +260,9 @@ public:
      * @brief Tells whether every effective dependency is Complete and not stale.
      * @param stage The stage.
      * @return True when so; true for a stage with no dependencies, except one whose
-     * record could not be restored, which is never runnable.
+     * record could not be restored, which is never runnable, so a stage depending on it
+     * stays blocked (the dependencies are read from the registry's graph, pinned edges
+     * included).
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the store is closed.
      * @par Thread-safety
