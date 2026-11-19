@@ -142,9 +142,22 @@ StageDefinition& StageDefinition::readsLayerAsRaster(const char* bindingName, La
 }
 
 StageDefinition& StageDefinition::restrictToLayer(LayerId layer) {
-    impl_->hasRestriction = true;
-    impl_->restriction = layer;
-    impl_->noteRead(layer);
+    Impl& i = *impl_;
+    if (i.hasRestriction && i.restriction != layer) {
+        // The replaced restriction stops being read unless another declaration still reads it.
+        const LayerId old = i.restriction;
+        const bool stillRead =
+            std::find(i.explicitReads.begin(), i.explicitReads.end(), old) != i.explicitReads.end() ||
+            std::find(i.annotates.begin(), i.annotates.end(), old) != i.annotates.end() ||
+            std::any_of(i.layerRasters.begin(), i.layerRasters.end(),
+                        [old](const Impl::LayerRaster& r) { return r.layer == old; });
+        if (!stillRead) {
+            i.allReads.erase(std::remove(i.allReads.begin(), i.allReads.end(), old), i.allReads.end());
+        }
+    }
+    i.hasRestriction = true;
+    i.restriction = layer;
+    i.noteRead(layer);
     return *this;
 }
 

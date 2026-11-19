@@ -335,3 +335,39 @@ TEST(StageRecord, SameDeclarationComparesEveryField) {
     EXPECT_FALSE(same([&](StageDefinition& d) { d.pipeline(PipelineSpec()); }));
     EXPECT_FALSE(detail::sameDeclaration(StageDefinition("a"), StageDefinition("b")));
 }
+
+TEST(StageDefinition, ReplacedRestrictionIsNoLongerRead) {
+    Fixture f;
+    StageDefinition def("s");
+    def.restrictToLayer(f.tissue).restrictToLayer(f.cells);
+    ASSERT_EQ(def.readLayerCount(), 1);
+    EXPECT_EQ(def.readLayerAt(0), f.cells);
+
+    // A layer that is also read another way stays read, in its first-declaration place.
+    StageDefinition kept("k");
+    kept.readsLayer(f.tissue).restrictToLayer(f.tissue).restrictToLayer(f.cells);
+    ASSERT_EQ(kept.readLayerCount(), 2);
+    EXPECT_EQ(kept.readLayerAt(0), f.tissue);
+    EXPECT_EQ(kept.readLayerAt(1), f.cells);
+
+    // Reads agree with those of the definition rebuilt from its record.
+    const std::string json = detail::stageRecordJson(def, f.store->layers(), f.store->rasters());
+    const StageDefinition back = detail::stageFromRecord(json.c_str(), f.store->layers(), f.store->rasters());
+    ASSERT_EQ(back.readLayerCount(), 1);
+    EXPECT_EQ(back.readLayerAt(0), f.cells);
+}
+
+TEST(StageRecord, MalformedPipelineIsInvalidArgument) {
+    Fixture f;
+    LayerRegistry& l = f.store->layers();
+    RasterRegistry& r = f.store->rasters();
+    const std::string json = detail::stageRecordJson(StageDefinition("s"), l, r);
+    const size_t at = json.find("\"pipeline\":");
+    ASSERT_NE(at, std::string::npos);
+    const std::string head = json.substr(0, at);
+    EXPECT_THROW(detail::stageFromRecord((head + "\"pipeline\":[]}").c_str(), l, r), InvalidArgumentError);
+    EXPECT_THROW(detail::stageFromRecord((head + "\"pipeline\":{\"specVersion\":7}}").c_str(), l, r),
+                 InvalidArgumentError);
+    EXPECT_THROW(detail::stageFromRecord(head.substr(0, head.size() - 1).append("}").c_str(), l, r),
+                 InvalidArgumentError);
+}
