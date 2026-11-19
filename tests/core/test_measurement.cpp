@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -75,4 +76,16 @@ TEST(Measurement, RestoredBorrowsItsName) {
     EXPECT_STREQ(unnamed.name(), "");
     EXPECT_EQ(unnamed.value(), 2.0);
     EXPECT_FALSE(unnamed.isCalibrated());
+}
+
+TEST(Measurement, PixelSizeFromResolution) {
+    EXPECT_DOUBLE_EQ(pixelSizeMicronsFromResolution(0.25e-6, 0.25e-6), 0.25);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(0.0, 0.0), 0.0);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(0.25e-6, 0.5e-6), 0.0);   // anisotropic
+    EXPECT_EQ(pixelSizeMicronsFromResolution(0.25e-6, 0.0), 0.0);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(-0.25e-6, -0.25e-6), 0.0);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(std::nan(""), 0.25e-6), 0.0);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(INFINITY, INFINITY), 0.0);
+    EXPECT_NEAR(pixelSizeMicronsFromResolution(0.25e-6, 0.25e-6 * (1.0 + 5e-7)), 0.25 * (1.0 + 2.5e-7), 1e-12);
+    EXPECT_EQ(pixelSizeMicronsFromResolution(0.25e-6, 0.25e-6 * (1.0 + 5e-6)), 0.0);
 }

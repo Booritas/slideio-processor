@@ -311,7 +311,8 @@ and the merger both emit into.
 
 **`pixelSizeMicrons()`** is the scene's level-0 pixel size in micrometres:
 the mean of SlideIO's x and y resolution × 10⁶ when both are finite, positive
-and agree to within 10⁻⁶ relative, else 0 — unknown or anisotropic pixels.
+and agree to within 10⁻⁶ relative, else 0 — unknown or anisotropic pixels; that
+rule is `pixelSizeMicronsFromResolution` (`01-core.md` 1.5).
 The executor and the lazy path fill it from the run's scene, so calibration
 needs no parameter and a recorded configuration stays slide-independent. It
 is the same at every analysis level; a level pixel is `levelScale()` times

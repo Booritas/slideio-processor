@@ -410,6 +410,9 @@ public:
     void remove(const char* name) noexcept;
     void clear() noexcept;
 };
+
+// The level-0 pixel size a scene's resolution implies; 0 when unknown.
+double pixelSizeMicronsFromResolution(double xMetres, double yMetres) noexcept;
 ```
 
 **Thread-safety:** ThreadCompatible. **Requirements:** UR-SEG-5, UR-SEG-6.
@@ -429,6 +432,14 @@ existing name replaces its value and unit in place.
 resolution metadata is recorded in pixel units, so a consumer can tell
 "3.2 µm²" from "3.2 px² and no calibration was available" — the distinction
 UR-SEG-6 requires be documented rather than silently collapsed.
+
+`pixelSizeMicronsFromResolution(xMetres, yMetres)` is the one rule that turns a
+scene's resolution into a level-0 pixel size in micrometres: the mean of the two
+values × 10⁶ when both are finite, positive and agree to within 10⁻⁶ relative,
+else 0 (unknown or anisotropic pixels). It takes the two values rather than a
+scene because `core` does not link SlideIO; `OperationContext::pixelSizeMicrons()`
+(`05-pipeline.md` 5.1) and `scenePixelSizeMicrons` (`06-algorithm.md` 6.8) read the
+scene's resolution and call it. ThreadSafe, `noexcept`.
 
 ## 1.6 Object record — `core/object_record.hpp`
 

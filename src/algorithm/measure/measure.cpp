@@ -2,10 +2,9 @@
 #include <slideio/processor/algorithm/measure/measure.hpp>
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/measurement.hpp>
 #include <slideio/slideio/scene.hpp>
 
-#include <algorithm>
-#include <cmath>
 #include <memory>
 #include <tuple>
 
@@ -95,24 +94,13 @@ int32_t MeasurementSelection::count() const noexcept {
     return n;
 }
 
-// The rule OperationContext::pixelSizeMicrons() applies to the run's scene. The
-// pipeline's copy lives in its detail, which this module does not reach, so the
-// few lines are repeated here and tested against the same resolutions.
 double scenePixelSizeMicrons(std::shared_ptr<slideio::Scene> scene) noexcept {
     if (!scene) {
         return 0.0;
     }
     try {
         const std::tuple<double, double> resolution = scene->getResolution();
-        const double x = std::get<0>(resolution);
-        const double y = std::get<1>(resolution);
-        if (!std::isfinite(x) || !std::isfinite(y) || !(x > 0.0) || !(y > 0.0)) {
-            return 0.0;
-        }
-        if (std::fabs(x - y) > 1e-6 * std::max(x, y)) {
-            return 0.0;
-        }
-        return 0.5 * (x + y) * 1e6;
+        return pixelSizeMicronsFromResolution(std::get<0>(resolution), std::get<1>(resolution));
     } catch (...) {
         return 0.0;
     }

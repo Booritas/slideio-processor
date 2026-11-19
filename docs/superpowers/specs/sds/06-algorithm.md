@@ -1313,8 +1313,9 @@ pixels, yields pixel units only — no `.um` names, and no measurement with
 `Measurement::isCalibrated()` true — and `sceneIsCalibrated()` returns false
 for it: that is the documented indication UR-SEG-6 requires rather than a
 silent fallback. `sceneIsCalibrated` and `scenePixelSizeMicrons` apply the same
-rule as the run, so a caller can tell before running what the objects will
-carry; a null scene, or one whose resolution cannot be read, gives false and 0.
+rule as the run (`pixelSizeMicronsFromResolution`, `01-core.md` 1.5), so a
+caller can tell before running what the objects will carry; a null scene, or
+one whose resolution cannot be read, gives false and 0.
 
 ## 6.9 Correctness references
 
