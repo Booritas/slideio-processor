@@ -1,6 +1,7 @@
 // Requirements: UR-EXT-1, UR-EXT-5, UR-ALG-4, UR-STG-4
 #include <pipeline/test_support/operation_conformance.hpp>
 
+#include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <pipeline/detail/parameters_json.hpp>
@@ -28,8 +29,16 @@ void expectSameDeclarations(const Operation& a, const Operation& b) {
     EXPECT_EQ(a.workingSetBytesPerLevelPixel(), b.workingSetBytesPerLevelPixel());
     EXPECT_EQ(a.producesObjects(), b.producesObjects());
     EXPECT_EQ(a.workingSetBytesPerTile(), b.workingSetBytesPerTile());
+    // An operation refuses a plane count it does not take by throwing; -1 here.
+    const auto planesOf = [](const Operation& op, int32_t n) {
+        try {
+            return op.outputPlaneCount(n);
+        } catch (const ProcessorError&) {
+            return -1;
+        }
+    };
     for (int32_t n = 1; n <= 4; ++n) {
-        EXPECT_EQ(a.outputPlaneCount(n), b.outputPlaneCount(n)) << "outputPlaneCount(" << n << ")";
+        EXPECT_EQ(planesOf(a, n), planesOf(b, n)) << "outputPlaneCount(" << n << ")";
     }
 }
 

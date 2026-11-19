@@ -25,6 +25,7 @@ add_executable(slideio_processor_algorithm_tests
     test_connected_components.cpp
     test_contours.cpp
     test_watershed.cpp
+    test_tissue_detect.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp

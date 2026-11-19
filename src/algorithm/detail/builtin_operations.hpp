@@ -68,4 +68,7 @@ OperationFactoryPtr makeContoursFactory();
 /// segment.watershed
 OperationFactoryPtr makeWatershedFactory();
 
+/// segment.tissue_detect
+OperationFactoryPtr makeTissueDetectFactory();
+
 } // namespace slideio::processor::detail

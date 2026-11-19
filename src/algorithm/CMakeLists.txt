@@ -28,6 +28,7 @@ add_library(slideio-processor-algorithm OBJECT
     segment/connected_components.cpp
     segment/contours.cpp
     segment/watershed.cpp
+    segment/tissue_detect.cpp
 )
 set_target_properties(slideio-processor-algorithm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled into the engine, so the export switch is defined here.

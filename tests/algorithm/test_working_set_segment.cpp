@@ -1,4 +1,4 @@
-// Requirements: UR-EXE-2, UR-ALG-8, UR-SEG-2, UR-SEG-8
+// Requirements: UR-EXE-2, UR-ALG-8, UR-SEG-1, UR-SEG-2, UR-SEG-8
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
@@ -436,5 +436,83 @@ TEST(WorkingSetSegment, WatershedPerCallCoversOneSmallObject) {
     const std::vector<std::vector<uint8_t>> planes = valuePlanesOf(
         [](int64_t x, int64_t y) { return x >= 5 && x < 7 && y >= 5 && y < 7 ? 1.0 : 0.0; }, 12, 12, 3, 0);
     const int64_t peak = ts::measureWorkingSetPeakOn(*op, types, planes, 6, 6, ts::WorkingSetCall::Apply);
+    EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
+}
+
+namespace {
+
+// Three Byte planes, pink where @p mask is foreground and white elsewhere; with
+// @p margin, white within that many pixels of the edge.
+std::vector<std::vector<uint8_t>> rgbPlanesOf(const Mask& mask, int64_t width, int64_t height, int64_t margin) {
+    static const uint8_t pink[3] = {225, 150, 195};
+    std::vector<std::vector<uint8_t>> planes(3, std::vector<uint8_t>(static_cast<size_t>(width * height)));
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            const bool inside = x >= margin && y >= margin && x < width - margin && y < height - margin;
+            const bool tissue = inside && mask.foreground(x, y);
+            for (size_t p = 0; p < 3; ++p) {
+                planes[p][static_cast<size_t>(y * width + x)] = tissue ? pink[p] : 245;
+            }
+        }
+    }
+    return planes;
+}
+
+OperationPtr tissueDetect(int32_t radius) {
+    return makeTissueDetect(TissueDetectParameters().closingRadiusPx(radius));
+}
+
+} // namespace
+
+TEST(WorkingSetSegment, TissueDetectBoundedOnThePattern) {
+    for (const int32_t radius : {0, 2}) {
+        const auto make = [radius] { return tissueDetect(radius); };
+        expectApplyBounded("segment.tissue_detect", make, {DataType::Byte, DataType::Byte, DataType::Byte});
+        expectApplyBounded("segment.tissue_detect", make, {DataType::UInt16, DataType::UInt16, DataType::UInt16});
+    }
+}
+
+// The declaration covers the worst masks, each region emitted as a seam
+// fragment (the masks reach the tile's edge) or as a finished object (the
+// masks kept inside): without a closing the masks are traced as they are; a
+// closing of radius 1 or 2 fills their gaps and holes first.
+TEST(WorkingSetSegment, TissueDetectBoundedOnAdversarialMasks) {
+    for (const int64_t tile : ts::kWorkingSetTileSizes) {
+        for (const int32_t radius : {0, 1, 2}) {
+            const int64_t halo = 2 * radius + 1;
+            const int64_t haloSide = tile + 2 * halo;
+            for (const Mask& mask : adversarialMasks()) {
+                for (const bool interior : {false, true}) {
+                    const std::vector<std::vector<uint8_t>> planes =
+                        rgbPlanesOf(mask, haloSide, haloSide, interior ? halo + 3 : 0);
+                    const OperationPtr op = tissueDetect(radius);
+                    const int64_t peak =
+                        ts::measureWorkingSetPeakOn(*op, {DataType::Byte, DataType::Byte, DataType::Byte}, planes,
+                                                    tile, tile, ts::WorkingSetCall::Apply);
+                    const int64_t declared = ts::declaredWorkingSet(*op, tile, tile);
+                    EXPECT_LE(peak, declared) << mask.name << (interior ? ", kept inside" : "") << ", tile " << tile
+                                              << ", radius " << radius << ": measured " << peak << ", declared "
+                                              << declared;
+                }
+            }
+        }
+    }
+}
+
+TEST(WorkingSetSegment, CatalogMirrorsTissueDetect) {
+    const OperationPtr op = makeTissueDetect(TissueDetectParameters());
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    EXPECT_EQ(catalog.workingSetBytesPerLevelPixel("segment.tissue_detect"), op->workingSetBytesPerLevelPixel());
+    EXPECT_EQ(catalog.workingSetBytesPerTile("segment.tissue_detect"), op->workingSetBytesPerTile());
+}
+
+// One small object finished whole, its measurements in micrometres too: what
+// does not scale with the tile is within the per-call figure alone.
+TEST(WorkingSetSegment, TissueDetectPerCallCoversOneSmallObject) {
+    const Mask square{"square", [](int64_t x, int64_t y) { return x >= 3 && x < 5 && y >= 3 && y < 5; }};
+    const OperationPtr op = tissueDetect(0);
+    const int64_t peak =
+        ts::measureWorkingSetPeakOn(*op, {DataType::Byte, DataType::Byte, DataType::Byte},
+                                    rgbPlanesOf(square, 8, 8, 0), 6, 6, ts::WorkingSetCall::Apply);
     EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
 }

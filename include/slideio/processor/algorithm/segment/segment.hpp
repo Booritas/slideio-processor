@@ -1,11 +1,12 @@
-// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-SEG-8
+// Requirements: UR-SEG-1, UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-SEG-8
 #pragma once
 
 /**
  * @file segment.hpp
  * @brief Segmentation operations: Connectivity, the connected-components
  * labelling with its per-object measurements, the contours of a label raster,
- * and the marker-controlled watershed that separates touching objects.
+ * the marker-controlled watershed that separates touching objects, and tissue
+ * detection on RGB.
  *
  * A segmentation operation writes objects to a layer of the run. Each object is
  * found on the tile it lies in; one cut by tile seams is emitted in fragments
@@ -30,6 +31,7 @@ namespace detail {
 struct ConnectedComponentsParametersAccess;
 struct ContourParametersAccess;
 struct WatershedParametersAccess;
+struct TissueDetectParametersAccess;
 } // namespace detail
 
 /**
@@ -721,5 +723,210 @@ private:
  * UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-7, UR-SEG-8
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParameters& parameters);
+
+/**
+ * @brief The parameters of `segment.tissue_detect`, set one by one and passed
+ * to makeTissueDetect().
+ *
+ * Each setter stores what the operation's parameter bag records under the key
+ * of the same name, so the typed factory and the catalog build the same
+ * operation from the same bag:
+ * | Key | Type | Default | Range |
+ * |---|---|---|---|
+ * | `saturationThreshold` | double | 0.07 | 0 to 1 |
+ * | `minimumRegionAreaPx` | int | 0 | at least 0 |
+ * | `closingRadiusPx` | int | 2 | 0 to 127 |
+ * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
+ *
+ * A moved-from object may only be assigned to or destroyed.
+ * @par Thread-safety
+ * ThreadCompatible.
+ * @par Requirements
+ * UR-SEG-1, UR-SEG-7
+ */
+class SLIDEIO_PROCESSOR_ENGINE_EXPORTS TissueDetectParameters {
+public:
+    /**
+     * @brief Creates the default parameters: a saturation threshold of 0.07,
+     * no area bound, a closing radius of 2 pixels, the run's only bound layer.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Safe to call concurrently.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters();
+    /**
+     * @brief Copies parameters; the copy shares nothing with the original.
+     * @param other The parameters to copy; not moved-from.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Reads @p other; ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters(const TissueDetectParameters& other);
+    /**
+     * @brief Moves parameters. The moved-from object may only be assigned to
+     * or destroyed.
+     * @param other The parameters to move from.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters(TissueDetectParameters&& other) noexcept;
+    /**
+     * @brief Replaces these parameters with a copy of others.
+     * @param other The parameters to copy; not moved-from.
+     * @return These parameters.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& operator=(const TissueDetectParameters& other);
+    /**
+     * @brief Replaces these parameters by moving others. The moved-from object
+     * may only be assigned to or destroyed.
+     * @param other The parameters to move from.
+     * @return These parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& operator=(TissueDetectParameters&& other) noexcept;
+    /**
+     * @brief Destroys the parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    ~TissueDetectParameters();
+
+    /**
+     * @brief Sets the saturation above which a pixel is tissue; 0.07 by
+     * default.
+     * @param threshold The threshold, from 0 to 1; checked by
+     * makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& saturationThreshold(double threshold);
+    /**
+     * @brief Sets the smallest area a tissue region may have to be kept, in
+     * square level-0 pixels, inclusive; 0 by default (no bound).
+     * @param areaPx The bound; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-7
+     */
+    TissueDetectParameters& minimumRegionAreaPx(int64_t areaPx);
+    /**
+     * @brief Sets the radius, in pixels of the analysis level, of the disc the
+     * tissue mask is closed with; 2 by default, and 0 for no closing.
+     *
+     * The radius derives the halo, 2 * radius + 1.
+     * @param radiusPx The radius, from 0 to 127; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& closingRadiusPx(int32_t radiusPx);
+    /**
+     * @brief Names the bound layer the tissue regions go to.
+     *
+     * An empty name, the default, leaves the key out of the parameter bag, and
+     * the run then uses its only bound layer; a run binding several layers
+     * needs a name.
+     * @param layerName The layer's name, UTF-8; not null; copied.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p layerName is null or these
+     * parameters are moved-from.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    TissueDetectParameters& targetLayer(const char* layerName);
+
+private:
+    friend struct detail::TissueDetectParametersAccess;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Creates `segment.tissue_detect`: Joint over three planes of one type,
+ * `Byte` or `UInt16`, halo 2 * `closingRadiusPx` + 1, one `Byte` output plane,
+ * producing objects.
+ *
+ * The three planes are a pixel's red, green and blue samples, in any order. A
+ * pixel is tissue when its saturation, (max - min) / max over its three
+ * samples, exceeds `saturationThreshold`; a pixel whose samples are all 0,
+ * as pixels beyond the level are, is background. The tissue mask is then
+ * closed, dilated and then eroded, with a disc of radius `closingRadiusPx` in
+ * pixels of the analysis level: the pixels within that Euclidean distance of
+ * its centre. The closing bridges gaps and fills holes narrower than the
+ * disc, and is exact under tiling: the halo holds every pixel a tile pixel's
+ * closed value depends on. Each maximal 4-connected set of closed tissue
+ * pixels is one object, its outline and holes traced along pixel edges in
+ * level-0 coordinates (UR-SEG-4); an object cut by tile seams is merged from
+ * its fragments.
+ *
+ * Nothing is measured but the geometry: each object has `area` and
+ * `perimeter` in level-0 pixels, also as `area.um2` and `perimeter.um` when
+ * the scene is calibrated. Holes are kept. An object whose final area is below
+ * `minimumRegionAreaPx` is discarded before it is stored, however it was
+ * assembled (UR-SEG-7); the area is in level-0 pixels, so the bound means the
+ * same at every analysis level.
+ *
+ * The run selects exactly three channels: validating a run that gives the
+ * operation another number fails with ChannelArityError, and so does its
+ * outputPlaneCount() asked for another number.
+ *
+ * The output plane holds 255 for each closed tissue pixel of the tile and 0
+ * elsewhere.
+ *
+ * **Run it at a coarse analysis level.** Tissue does not need full resolution
+ * (PipelineSpec::analysisLevel), and one tissue region may span the level:
+ * the run holds its seam fragments until the region is complete, so the
+ * memory they take grows with the region's outline at the analysis level.
+ *
+ * By name, an unknown key, a value of the wrong type or a value out of range
+ * throws InvalidArgumentError naming the key, never the value.
+ * @param parameters The parameters; not moved-from.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p parameters is moved-from or a value is
+ * out of its range (the threshold not from 0 to 1, a negative area bound, the
+ * radius not from 0 to 127); the message names the operation and the
+ * parameter, never the value.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() and finishObject() may
+ * run concurrently on different contexts and objects.
+ * @par Requirements
+ * UR-SEG-1, UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-7
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeTissueDetect(const TissueDetectParameters& parameters);
 
 } // namespace slideio::processor
