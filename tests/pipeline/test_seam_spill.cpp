@@ -306,8 +306,7 @@ TEST(SeamSpill, OldestComponentsSpillFirst) {
     // Two open objects of different sizes, each waiting for the tile across its seam.
     const Fragment square{0, rectangle(5, 2, 5, 4), {}};                                          // 4 points
     const Fragment hexagon{3, polygonOf({{{4, 12}, {10, 12}, {10, 16}, {8, 16}, {8, 18}, {4, 18}}}), {}}; // 6 points
-    // Clear of every seam, so it waits on no edge and needs only its own bytes.
-    const Fragment late{6, rectangle(2, 24, 7, 3), {}};
+    const Fragment late{6, rectangle(2, 24, 8, 3), {}};
     // The bytes each takes in the scratch file: ring count, per ring a hole flag,
     // a point count and the points, then a partial count.
     const int64_t squareFile = 4 + 1 + 8 + 4 * 16 + 4;
@@ -315,16 +314,17 @@ TEST(SeamSpill, OldestComponentsSpillFirst) {
 
     for (const bool squareFirst : {true, false}) {
         ScratchDirectory scratch;
-        // Room for both fragments and their one edge contact each.
+        // Room for both fragments and their one edge contact each, and for the
+        // edge contact of the third (on x = 10), but not for the third itself.
         const MemoryBudgetPtr budget =
-            makeMemoryBudget(residentBytes(square) + residentBytes(hexagon) + 2 * detail::kSeamEdgeContactBytes);
+            makeMemoryBudget(residentBytes(square) + residentBytes(hexagon) + 3 * detail::kSeamEdgeContactBytes);
         SeamMerger merger(grid, budget, scratch.utf8().c_str());
         add(merger, squareFirst ? square : hexagon);
         add(merger, squareFirst ? hexagon : square);
         EXPECT_EQ(merger.spilledFragmentCount(), 0);
-        EXPECT_EQ(budget->availableBytes(), 0);
+        EXPECT_EQ(budget->availableBytes(), detail::kSeamEdgeContactBytes);
 
-        // The budget is full: the third fragment pushes out the oldest object only.
+        // The budget is short: the third fragment pushes out the oldest object only.
         add(merger, late);
         EXPECT_EQ(merger.spilledFragmentCount(), 1);
         EXPECT_EQ(merger.spilledBytes(), squareFirst ? squareFile : hexagonFile);
