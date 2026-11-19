@@ -5,6 +5,7 @@ include(GoogleTest)
 # path for the create-failure test seam (src/workspace/detail/create_fault.hpp).
 add_executable(slideio_processor_workspace_tests
     support/test_slide.cpp
+    test_layer_lifecycle.cpp
     test_workspace.cpp
 )
 target_link_libraries(slideio_processor_workspace_tests PRIVATE

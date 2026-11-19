@@ -1,4 +1,4 @@
-// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2
+// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-STG-10, UR-STG-12
 #pragma once
 
 /**
@@ -12,6 +12,7 @@
 #include <slideio/processor/pipeline/export.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/store.hpp>
+#include <slideio/processor/workspace/layer_lifecycle.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -256,6 +257,17 @@ public:
      * UR-STG-1
      */
     LayerRegistry& layers() noexcept;
+
+    /**
+     * @brief Returns the layer lifecycle, which declares and drops layers.
+     * @return The lifecycle, owned by this workspace and valid while it lives.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-10, UR-STG-12
+     */
+    LayerLifecycle& layerLifecycle() noexcept;
 
     /**
      * @brief Closes the store, releasing the writer lock, and releases the slide.

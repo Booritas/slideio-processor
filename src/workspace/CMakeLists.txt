@@ -1,4 +1,5 @@
 add_library(slideio-processor-workspace OBJECT
+    layer_lifecycle.cpp
     workspace.cpp
 )
 set_target_properties(slideio-processor-workspace PROPERTIES POSITION_INDEPENDENT_CODE ON)

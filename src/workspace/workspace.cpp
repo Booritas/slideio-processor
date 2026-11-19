@@ -188,6 +188,7 @@ public:
                                    .build()),
           budget(makeMemoryBudget(configurationIn.memoryCeilingBytes())),
           store(std::move(storeIn)),
+          lifecycle(store->layers()),
           slide(std::move(slideIn)),
           scene(std::move(sceneIn)) {}
 
@@ -200,6 +201,7 @@ public:
     const MemoryBudgetPtr budget;
     // Never reset: store() and layers() answer after close() with the closed store.
     const StorePtr store;
+    LayerLifecycle lifecycle;
 
     // Guards the slide, the scene and `closed` against close() on another thread.
     std::mutex mutex;
@@ -383,6 +385,8 @@ const Configuration& Workspace::scratchConfiguration() const noexcept { return i
 MemoryBudgetPtr Workspace::memoryBudget() noexcept { return impl_->budget; }
 
 LayerRegistry& Workspace::layers() noexcept { return impl_->store->layers(); }
+
+LayerLifecycle& Workspace::layerLifecycle() noexcept { return impl_->lifecycle; }
 
 void Workspace::close() {
     std::shared_ptr<slideio::Scene> scene;
