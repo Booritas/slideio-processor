@@ -182,6 +182,15 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   `Pipeline::validate()`. **Adopted** with pipeline plan A, which amends SDS 05
   and 08; the enforcement lands in plan B, and a whole-level chain is forced to
   one tile.
+- [Workspace implementation plan A](superpowers/plans/2026-11-19-workspace-a.md) —
+  plan A of three for the `workspace` module: `Workspace` (the directory binding one
+  slide scene to a store, the writer lock, the read-only open), `LayerLifecycle`,
+  `StageDefinition` with its durable record, and `StageRegistry` with derived
+  dependencies, redeclaration, staleness along the effective dependencies and
+  restore at open. Plan B is `StageRunner` (SDS 04 §4.4); plan C is
+  `StalenessGraph` (§4.5, adding the layer-ordering and derived-from paths and
+  `StageRegistry::staleness()`) and `declareCoarseToFine`.
+  **Implemented** on `feat/workspace-a`, awaiting review and merge.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

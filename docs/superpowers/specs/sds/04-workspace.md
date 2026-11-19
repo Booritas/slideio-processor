@@ -572,6 +572,35 @@ instead would make staleness depend on key order and float formatting, so a
 redeclaration that changed nothing could mark a slide's worth of downstream
 work stale.
 
+**Plan A: staleness follows the effective dependencies only (decision 6).**
+Until plan C adds `StalenessGraph` and `staleness()`, `markStale` walks the
+reversed effective dependencies — the `LayerRead`, `RasterRead` and explicit
+`dependsOn` edges — and nothing else. The layer-ordering and derived-from paths
+of 4.5 are not followed yet, and `staleness()` is not declared. `markStale`
+sets the flag through `StageStateWriter::setStale` on the stage and on every
+stage reachable from it; `clearStale` sets it on that stage alone. A
+redeclaration marks along the old dependents first, then writes the record,
+re-derives, and marks again along the new ones, so a failure part way never
+leaves a changed stage current.
+
+**Plan A: persisted dependencies and restore (decision 7).** Every `declare`
+rewrites the dependency rows of every stage (`clearDependencies`, then
+`addDependency`) and records the declaring stage's written layers
+(`addWrittenLayer`), so `StageStateReader` and `LayerRegistry::writerStageAt`
+show the derived graph without linking this module, and a later declare repairs
+the rows of an earlier one that failed part way. The in-memory graph changes
+only after the whole rewrite succeeds. The registry is complete when the
+workspace opens: its constructor reads every stage row, rebuilds the definition
+with `stageFromRecord`, and derives the graph from the definitions without
+writing anything, so `openReadOnly` works. A declare in a reopened workspace
+therefore derives from, and cycle-checks against, the stages persisted earlier.
+A row whose record does not parse is kept by name only: a warning naming the
+stage is logged, the stage has an empty definition, so no reads, writes or
+edges (nothing is derived from or to it until it is redeclared), and it is
+never runnable. Redeclaring it with a real definition repairs it and marks it
+stale. Layers a stage wrote under an earlier declaration stay recorded as its
+written layers, because storage has no way to remove one.
+
 ## 4.4 Stage runner — `workspace/stage_runner.hpp`
 
 ```cpp

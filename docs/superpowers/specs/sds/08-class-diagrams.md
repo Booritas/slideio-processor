@@ -1020,6 +1020,7 @@ classDiagram
         +create(cstr wsPath, cstr slidePath, int32_t scene, Configuration) WorkspacePtr
         +open(cstr wsPath, Configuration) WorkspacePtr
         +openReadOnly(cstr wsPath, Configuration) WorkspacePtr
+        +path() cstr
         +slidePath() cstr
         +sceneIndex() int32_t
         +isReadOnly() bool
@@ -1055,7 +1056,24 @@ classDiagram
         +pipeline(PipelineSpec) StageDefinition
         +restrictToLayer(LayerId) StageDefinition
         +name() cstr
-        +configurationJson(char* buf, int32_t cap) int32_t
+        +pipeline() PipelineSpec
+        +readLayerCount() int32_t
+        +readLayerAt(int32_t) LayerId
+        +writtenLayerCount() int32_t
+        +writtenLayerAt(int32_t) LayerId
+        +annotatedLayerCount() int32_t
+        +annotatedLayerAt(int32_t) LayerId
+        +writesAnyRaster() bool
+        +writtenRaster() RasterId
+        +readRasterCount() int32_t
+        +readRasterBindingAt(int32_t) cstr
+        +readRasterAt(int32_t) RasterId
+        +rasterLayerCount() int32_t
+        +rasterBindingAt(int32_t) cstr
+        +rasterLayerAt(int32_t) LayerId
+        +rasterContentAt(int32_t) LayerRasterContent
+        +explicitDependencyCount() int32_t
+        +explicitDependencyAt(int32_t) cstr
         +hasLayerRestriction() bool
         +layerRestriction() LayerId
     }
@@ -1063,15 +1081,21 @@ classDiagram
     class StageRegistry {
         <<ThreadSafe>>
         +declare(StageDefinition) StageId
+        +count() int32_t
+        +at(int32_t) StageId
         +find(cstr name, StageId& out) bool
+        +name(StageId) cstr
         +status(StageId) StageStatus
         +isStale(StageId) bool
+        +configuration(StageId) cstr
+        +completedAtUnixMs(StageId) int64_t
+        +dependencyCount(StageId) int32_t
         +dependencyAt(StageId, int32_t) StageId
         +isExplicitDependency(StageId, int32_t) bool
         +isRunnable(StageId) bool
+        +definition(StageId) StageDefinition
         +markStale(StageId) void
         +clearStale(StageId) void
-        +staleness() StalenessGraph
     }
 
     class StageRunner {

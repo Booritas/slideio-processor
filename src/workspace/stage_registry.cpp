@@ -2,6 +2,7 @@
 #include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/log.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
@@ -15,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -181,14 +183,82 @@ public:
         return found->second;
     }
 
+    // Sets the stale flag on the stage and on every stage reachable from it through the
+    // reversed edges of the current graph. Caller holds the mutex.
+    void markStaleLocked(StageId stage) {
+        edgesOf(stage);
+        std::vector<int32_t> pending{stage.value()};
+        std::set<int32_t> seen{stage.value()};
+        StageStateWriter& writer = store.stageStateWriter();
+        while (!pending.empty()) {
+            const int32_t current = pending.back();
+            pending.pop_back();
+            writer.setStale(StageId(current), true);
+            for (const auto& other : graph) {
+                for (const Edge& edge : other.second) {
+                    if (edge.dependency == current && seen.insert(other.first).second) pending.push_back(other.first);
+                }
+            }
+        }
+    }
+
+    // Rebuilds the definitions and the graph from the stored rows. A row whose record does
+    // not parse is kept by name only: an empty definition, so no reads, no writes and no
+    // edges, listed in `unreadable` so it is never runnable. Writes nothing, so it works
+    // on a read-only store.
+    void restore() {
+        const StageStateReader& reader = store.stageStates();
+        for (int32_t i = 0; i < reader.count(); ++i) {
+            const StageId id = reader.at(i);
+            const char* name = reader.name(id);
+            std::unique_ptr<StageDefinition> def;
+            try {
+                def = std::make_unique<StageDefinition>(
+                    detail::stageFromRecord(reader.configuration(id), store.layers(), store.rasters()));
+                if (std::string(def->name()) != name) {
+                    throw InvalidArgumentError("the record names a different stage");
+                }
+            } catch (const std::bad_alloc&) {
+                throw;
+            } catch (const std::exception& e) {
+                logMessage(LogLevel::Warning,
+                           "StageRegistry: the record of stage %s cannot be read (%s); the stage is kept by name only "
+                           "and is never runnable",
+                           quoted(name).c_str(), e.what());
+                def = std::make_unique<StageDefinition>(name);
+                unreadable.insert(id.value());
+            }
+            definitions[id.value()] = std::move(def);
+        }
+        try {
+            graph = deriveGraph(entries());
+        } catch (const StageError& e) {
+            // Only a damaged store gets here (an explicit dependency on a stage that is
+            // gone). Keep what was persisted, with every edge treated as derived.
+            logMessage(LogLevel::Warning, "StageRegistry: the stored stages cannot be re-derived (%s); using the "
+                                          "persisted dependencies",
+                       e.what());
+            graph.clear();
+            for (const auto& d : definitions) {
+                std::vector<Edge>& edges = graph[d.first];
+                const StageId id(d.first);
+                for (int32_t i = 0; i < reader.dependencyCount(id); ++i) {
+                    edges.push_back({reader.dependencyAt(id, i).value(), false});
+                }
+            }
+        }
+    }
+
     Store& store;
     mutable std::mutex mutex;
     // Held by StageId; unique_ptr keeps references from definition() stable.
     std::map<int32_t, std::unique_ptr<StageDefinition>> definitions;
+    // Stages restored by name only, whose record could not be read.
+    std::set<int32_t> unreadable;
     Graph graph;
 };
 
-StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {}
+StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) { impl_->restore(); }
 
 StageRegistry::~StageRegistry() = default;
 
@@ -197,25 +267,51 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     Store& store = impl_->store;
     StageStateReader& reader = store.stageStates();
     StageId existing;
-    if (reader.find(definition.name(), existing)) {
-        throw InvalidArgumentError(("stage " + quoted(definition.name()) + " is already declared").c_str());
-    }
+    const bool redeclared = reader.find(definition.name(), existing);
     impl_->validate(definition);
     const std::string record = detail::stageRecordJson(definition, store.layers(), store.rasters());
 
-    // Validate the candidate graph in memory; nothing is written until it passes.
+    // Validate the candidate graph in memory; nothing is written until it passes. A
+    // redeclared stage takes the place of its held definition.
     std::vector<Entry> candidate = impl_->entries();
-    candidate.push_back({std::numeric_limits<int32_t>::max(), &definition});
+    if (redeclared) {
+        for (Entry& e : candidate) {
+            if (e.id == existing.value()) e.definition = &definition;
+        }
+    } else {
+        candidate.push_back({std::numeric_limits<int32_t>::max(), &definition});
+    }
     requireAcyclic(deriveGraph(candidate), candidate);
 
     // Everything that can run out of memory is allocated before the store is touched:
-    // the copy, and a map node parked under a placeholder key until the id is known.
+    // the copy, and for a new stage a map node parked under a placeholder key until the
+    // id is known.
     auto copy = std::make_unique<StageDefinition>(definition);
+    StageStateWriter& writer = store.stageStateWriter();
+
+    if (redeclared) {
+        const auto held = impl_->definitions.find(existing.value());
+        if (held == impl_->definitions.end()) throw InvalidArgumentError("the stage has no definition in the registry");
+        if (impl_->unreadable.count(existing.value()) == 0 && detail::sameDeclaration(*held->second, definition)) {
+            return existing;
+        }
+        // Stale first, along the old dependents: if a later write fails the stage is
+        // still marked, never silently current with a new record.
+        impl_->markStaleLocked(existing);
+        writer.setConfiguration(existing, record.c_str());
+        held->second.swap(copy);
+        impl_->unreadable.erase(existing.value());
+        for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
+            writer.addWrittenLayer(existing, definition.writtenLayerAt(i));
+        }
+        impl_->deriveAndPersist();
+        impl_->markStaleLocked(existing);
+        return existing;
+    }
+
     const int32_t placeholder = std::numeric_limits<int32_t>::min();
     impl_->definitions[placeholder] = std::move(copy);
     auto node = impl_->definitions.extract(placeholder);
-
-    StageStateWriter& writer = store.stageStateWriter();
     const StageId id = writer.declare(definition.name(), record.c_str());
     // The stage now exists in the store, so its definition is kept even if a later
     // write throws; the next declare rewrites every dependency row.
@@ -224,6 +320,17 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) writer.addWrittenLayer(id, definition.writtenLayerAt(i));
     impl_->deriveAndPersist();
     return id;
+}
+
+void StageRegistry::markStale(StageId stage) {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->markStaleLocked(stage);
+}
+
+void StageRegistry::clearStale(StageId stage) {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->edgesOf(stage);
+    impl_->store.stageStateWriter().setStale(stage, false);
 }
 
 // Every accessor takes the registry mutex, so a reader never observes a declaration
@@ -267,6 +374,7 @@ bool StageRegistry::isExplicitDependency(StageId stage, int32_t index) const {
 
 bool StageRegistry::isRunnable(StageId stage) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
+    if (impl_->unreadable.count(stage.value()) != 0) return false;
     const StageStateReader& reader = impl_->store.stageStates();
     const int32_t n = reader.dependencyCount(stage);
     for (int32_t i = 0; i < n; ++i) {

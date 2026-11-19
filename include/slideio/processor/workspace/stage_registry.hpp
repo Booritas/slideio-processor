@@ -29,7 +29,10 @@ namespace slideio::processor {
  * The effective dependencies of a stage are every stage writing a layer it reads, every
  * stage whose written raster it reads, and its explicit dependsOn names. They are
  * recomputed on every declare, so a reader declared before its writer gains the
- * dependency when the writer is declared. In this version staleness follows these
+ * dependency when the writer is declared. The constructor restores every stored stage
+ * (definition and dependencies) so a reopened workspace is complete before any declare;
+ * a row whose record does not parse is kept by name only, logged as a warning naming the
+ * stage, never runnable, and has no reads, writes or edges. In this version staleness follows these
  * dependencies only; the layer-ordering and derived-from paths and the StalenessGraph
  * arrive later.
  * @par Thread-safety
@@ -50,7 +53,16 @@ public:
      * candidate dependency graph is built and checked for cycles in memory first. The
      * record (stageRecordJson) becomes the stage's configuration, each written layer is
      * recorded against the stage, and every stage's dependency rows are brought up to
-     * date. Declaring a name that already exists throws InvalidArgumentError.
+     * date.
+     *
+     * Declaring a name that already exists is a redeclaration: when it is the same
+     * declaration (detail sameDeclaration: pipelines equal by value, lists compared
+     * without regard to order) nothing changes and the same id returns, also in a
+     * read-only workspace; otherwise the record is rewritten, the dependencies are
+     * re-derived and the stage and its dependents are marked stale (see markStale()). A
+     * redeclaration that would form a cycle is refused and changes nothing. Layers the
+     * old declaration wrote stay recorded as written by the stage; storage has no way to
+     * drop them.
      * An explicit dependsOn naming the stage itself throws StageError.
      *
      * Every call to StageStateWriter is its own transaction, so a storage failure in the
@@ -58,8 +70,8 @@ public:
      * incomplete written-layer or dependency rows. The next declare rewrites every
      * stage's dependency rows and so repairs the dependencies.
      * @param definition The stage; copied.
-     * @return The new stage's id.
-     * @throws InvalidArgumentError When the name is already declared, or a layer or
+     * @return The stage's id; the existing id for a redeclaration.
+     * @throws InvalidArgumentError When a layer or
      * raster the definition names is unknown, or it writes the pixel layer.
      * @throws StageError When an explicit dependency names an unknown stage (the message
      * names both stages) or the stage itself, or the effective graph would contain a
@@ -72,6 +84,35 @@ public:
      * UR-STG-2, UR-STG-4
      */
     StageId declare(const StageDefinition& definition);
+
+    /**
+     * @brief Marks a stage and everything that depends on it, transitively, as stale.
+     *
+     * Staleness follows the effective dependencies (reads of layers and rasters and
+     * explicit dependsOn) in reverse: the stage and every stage reachable from it through
+     * the stages that depend on them. Each is set through StageStateWriter::setStale, so
+     * StageStateReader::isStale agrees. A stage whose record could not be restored takes
+     * part like any other, but has no edges.
+     * @param stage The stage.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the workspace is read-only or closed.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8
+     */
+    void markStale(StageId stage);
+    /**
+     * @brief Clears the stale flag of one stage; its dependents are not touched.
+     * @param stage The stage.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the workspace is read-only or closed.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8
+     */
+    void clearStale(StageId stage);
 
     /**
      * @brief Returns the number of stages.
@@ -210,7 +251,8 @@ public:
     /**
      * @brief Tells whether every effective dependency is Complete and not stale.
      * @param stage The stage.
-     * @return True when so; always true for a stage with no dependencies.
+     * @return True when so; true for a stage with no dependencies, except one whose
+     * record could not be restored, which is never runnable.
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the store is closed.
      * @par Thread-safety
@@ -223,7 +265,9 @@ public:
     /**
      * @brief Returns the definition a stage was declared with.
      * @param stage The stage.
-     * @return The definition; the reference stays valid until the next declare.
+     * @return The definition; the reference stays valid until the next declare. For a
+     * stage whose record could not be restored it is an empty definition holding only
+     * the name.
      * @throws InvalidArgumentError When the stage is unknown.
      * @par Thread-safety
      * ThreadSafe to call; the returned definition is immutable.

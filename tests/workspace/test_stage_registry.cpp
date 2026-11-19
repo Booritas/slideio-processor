@@ -6,6 +6,10 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/log.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
+#include <slideio/processor/pipeline/operation_parameters.hpp>
+#include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
@@ -20,7 +24,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace slideio::processor;
 using testing_support::TempDirectory;
@@ -179,13 +187,6 @@ TEST(StageRegistry, ReadOfUndeclaredLayerIsInvalidArgument) {
     EXPECT_EQ(f.workspace->store()->stageStates().count(), 0);
 }
 
-TEST(StageRegistry, DuplicateNameIsInvalidArgument) {
-    Fixture f;
-    f.stages().declare(writer("a", f.x));
-    EXPECT_THROW(f.stages().declare(writer("a", f.y)), InvalidArgumentError);
-    EXPECT_EQ(f.stages().count(), 1);
-}
-
 TEST(StageRegistry, CycleIsStageErrorNamingStages) {
     Fixture f;
     StageDefinition a("alpha");
@@ -283,4 +284,273 @@ TEST(StageRegistry, ExplicitDependencyOnItselfIsStageError) {
     EXPECT_NE(message.find("\"selfish\""), std::string::npos);
     EXPECT_THROW(f.stages().declare(s), StageError);
     EXPECT_EQ(f.stages().count(), 0);
+}
+
+namespace {
+
+// Four stages: background -> nuclei -> cells, and an unrelated one.
+struct Chain {
+    explicit Chain(Fixture& f) {
+        background = f.stages().declare(writer("background", f.background));
+        StageDefinition n("nuclei");
+        n.readsLayer(f.background).writesLayer(f.nuclei);
+        nuclei = f.stages().declare(n);
+        StageDefinition c("cells");
+        c.readsLayer(f.nuclei).writesLayer(f.x);
+        cells = f.stages().declare(c);
+        other = f.stages().declare(writer("other", f.y));
+    }
+    StageId background, nuclei, cells, other;
+};
+
+PipelineSpec blurSpec(double sigma) {
+    PipelineSpec spec;
+    spec.operation("pixel.gaussian_blur", OperationParameters().setDouble("sigma", sigma));
+    return spec;
+}
+
+class CaptureSink : public LogSink {
+public:
+    void write(LogLevel level, const char* message) override {
+        std::lock_guard<std::mutex> guard(mutex);
+        got.emplace_back(level, message);
+    }
+    std::mutex mutex;
+    std::vector<std::pair<LogLevel, std::string>> got;
+};
+
+// Installs a capture sink for the scope and restores the process defaults.
+class LogCapture {
+public:
+    LogCapture() : sink_(std::make_shared<CaptureSink>()) {
+        setLogSink(sink_);
+        setLogLevel(LogLevel::Warning);
+    }
+    ~LogCapture() {
+        setLogSink(nullptr);
+        setLogLevel(LogLevel::Warning);
+    }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+    std::vector<std::pair<LogLevel, std::string>> messages() const {
+        std::lock_guard<std::mutex> guard(sink_->mutex);
+        return sink_->got;
+    }
+
+private:
+    std::shared_ptr<CaptureSink> sink_;
+};
+
+std::string workspacePath(const Fixture& f) { return (f.dir.path() / "ws").u8string(); }
+
+} // namespace
+
+TEST(StageRegistry, MarkStaleIsTransitive) {
+    Fixture f;
+    const Chain c(f);
+    f.stages().markStale(c.background);
+    EXPECT_TRUE(f.stages().isStale(c.background));
+    EXPECT_TRUE(f.stages().isStale(c.nuclei));
+    EXPECT_TRUE(f.stages().isStale(c.cells));
+    EXPECT_FALSE(f.stages().isStale(c.other));
+    StageStateReader& reader = f.workspace->store()->stageStates();
+    EXPECT_TRUE(reader.isStale(c.nuclei));
+    EXPECT_TRUE(reader.isStale(c.cells));
+    EXPECT_FALSE(reader.isStale(c.other));
+    EXPECT_THROW(f.stages().markStale(StageId(9999)), InvalidArgumentError);
+}
+
+TEST(StageRegistry, ClearStaleIsNotTransitive) {
+    Fixture f;
+    const Chain c(f);
+    f.stages().markStale(c.background);
+    f.stages().clearStale(c.nuclei);
+    EXPECT_TRUE(f.stages().isStale(c.background));
+    EXPECT_FALSE(f.stages().isStale(c.nuclei));
+    EXPECT_TRUE(f.stages().isStale(c.cells));
+    EXPECT_THROW(f.stages().clearStale(StageId(9999)), InvalidArgumentError);
+}
+
+TEST(StageRegistry, ReconfiguredStageAndDependentsGoStale) {
+    Fixture f;
+    StageDefinition bg("background");
+    bg.writesLayer(f.background);
+    const StageId background = f.stages().declare(bg);
+    StageDefinition n("nuclei");
+    n.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blurSpec(1.0));
+    const StageId nuclei = f.stages().declare(n);
+    StageDefinition c("cells");
+    c.readsLayer(f.nuclei).writesLayer(f.x);
+    const StageId cells = f.stages().declare(c);
+    const std::string before = f.stages().configuration(nuclei);
+
+    StageDefinition changed("nuclei");
+    changed.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blurSpec(2.0));
+    EXPECT_EQ(f.stages().declare(changed), nuclei);
+    EXPECT_EQ(f.stages().count(), 3);
+    EXPECT_FALSE(f.stages().isStale(background));
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+    EXPECT_TRUE(f.stages().isStale(cells));
+    EXPECT_NE(std::string(f.stages().configuration(nuclei)), before);
+    EXPECT_EQ(std::string(f.stages().configuration(nuclei)),
+              detail::stageRecordJson(changed, f.workspace->layers(), f.workspace->store()->rasters()));
+    EXPECT_TRUE(detail::sameDeclaration(f.stages().definition(nuclei), changed));
+    ASSERT_EQ(f.stages().dependencyCount(nuclei), 1);
+    EXPECT_EQ(f.stages().dependencyAt(nuclei, 0), background);
+}
+
+TEST(StageRegistry, EquivalentRedeclarationMarksNothingStale) {
+    Fixture f;
+    // The created operation holds every parameter (defaults included), so the by-name spec names both.
+    const OperationParameters params = OperationParameters().setDouble("sigma", 1.5).setInt("kernelSize", 0);
+    PipelineSpec viaThen;
+    viaThen.then(OperationCatalog::instance().create("pixel.gaussian_blur", params));
+    PipelineSpec viaOperation;
+    viaOperation.operation("pixel.gaussian_blur", params);
+
+    StageDefinition first("blur");
+    first.writesLayer(f.x).pipeline(viaThen);
+    const StageId id = f.stages().declare(first);
+    StageDefinition second("blur");
+    second.writesLayer(f.x).pipeline(viaOperation);
+    EXPECT_EQ(f.stages().declare(second), id);
+    EXPECT_FALSE(f.stages().isStale(id));
+    EXPECT_EQ(f.stages().count(), 1);
+}
+
+TEST(StageRegistry, RedeclarationThatWouldCycleIsRefused) {
+    Fixture f;
+    const Chain c(f);
+    const std::string record = f.stages().configuration(c.background);
+    StageDefinition loop("background");
+    loop.readsLayer(f.x).writesLayer(f.background);
+    const std::string message = messageOf([&] { f.stages().declare(loop); });
+    EXPECT_NE(message.find("background"), std::string::npos);
+    EXPECT_THROW(f.stages().declare(loop), StageError);
+    EXPECT_EQ(std::string(f.stages().configuration(c.background)), record);
+    EXPECT_EQ(f.stages().dependencyCount(c.background), 0);
+    EXPECT_FALSE(f.stages().isStale(c.background));
+    EXPECT_FALSE(f.stages().isStale(c.nuclei));
+    EXPECT_EQ(f.stages().count(), 4);
+}
+
+TEST(StageRegistry, ReopenedWorkspaceRestoresDefinitions) {
+    Fixture f;
+    StageDefinition bg("background");
+    bg.writesLayer(f.background);
+    StageDefinition n("nuclei");
+    n.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blurSpec(1.0)).dependsOn("background");
+    StageDefinition c("cells");
+    c.readsLayer(f.nuclei).writesLayer(f.x);
+    const StageId bgId = f.stages().declare(bg);
+    const StageId nId = f.stages().declare(n);
+    const StageId cId = f.stages().declare(c);
+    f.stages().markStale(cId);
+    f.workspace->close();
+
+    WorkspacePtr w = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = w->stages();
+    ASSERT_EQ(r.count(), 3);
+    StageId found;
+    ASSERT_TRUE(r.find("nuclei", found));
+    EXPECT_EQ(found, nId);
+    EXPECT_STREQ(r.name(bgId), "background");
+    EXPECT_STREQ(r.name(cId), "cells");
+    ASSERT_EQ(r.dependencyCount(nId), 1);
+    EXPECT_EQ(r.dependencyAt(nId, 0), bgId);
+    EXPECT_TRUE(r.isExplicitDependency(nId, 0));
+    ASSERT_EQ(r.dependencyCount(cId), 1);
+    EXPECT_EQ(r.dependencyAt(cId, 0), nId);
+    EXPECT_FALSE(r.isExplicitDependency(cId, 0));
+    EXPECT_FALSE(r.isStale(bgId));
+    EXPECT_FALSE(r.isStale(nId));
+    EXPECT_TRUE(r.isStale(cId));
+    EXPECT_TRUE(detail::sameDeclaration(r.definition(bgId), bg));
+    EXPECT_TRUE(detail::sameDeclaration(r.definition(nId), n));
+    EXPECT_TRUE(detail::sameDeclaration(r.definition(cId), c));
+
+    EXPECT_EQ(r.declare(n), nId);
+    EXPECT_EQ(r.declare(bg), bgId);
+    EXPECT_FALSE(r.isStale(nId));
+    EXPECT_FALSE(r.isStale(bgId));
+    w->close();
+}
+
+TEST(StageRegistry, ReadOnlyWorkspaceSeesStagesButCannotDeclare) {
+    Fixture f;
+    const Chain c(f);
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    EXPECT_EQ(r.count(), 4);
+    ASSERT_EQ(r.dependencyCount(c.cells), 1);
+    EXPECT_EQ(r.dependencyAt(c.cells, 0), c.nuclei);
+    EXPECT_STREQ(r.definition(c.nuclei).name(), "nuclei");
+    EXPECT_THROW(r.declare(writer("more", f.y)), IoError);
+    EXPECT_THROW(r.markStale(c.background), IoError);
+    EXPECT_THROW(r.clearStale(c.background), IoError);
+    EXPECT_EQ(r.count(), 4);
+    ro->close();
+}
+
+TEST(StageRegistry, DeclareAfterReopenDerivesFromPersistedStages) {
+    Fixture f;
+    StageDefinition w("writer");
+    w.readsLayer(f.y).writesLayer(f.x);
+    const StageId writerId = f.stages().declare(w);
+    f.workspace->close();
+
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ws->stages();
+    StageDefinition reader("reader");
+    reader.readsLayer(f.x).writesLayer(f.tissue);
+    const StageId readerId = r.declare(reader);
+    ASSERT_EQ(r.dependencyCount(readerId), 1);
+    EXPECT_EQ(r.dependencyAt(readerId, 0), writerId);
+    StageStateReader& states = ws->store()->stageStates();
+    ASSERT_EQ(states.dependencyCount(readerId), 1);
+    EXPECT_EQ(states.dependencyAt(readerId, 0), writerId);
+
+    // A stage writing y would make the persisted writer depend on a stage that reads x.
+    StageDefinition closer("closer");
+    closer.readsLayer(f.x).writesLayer(f.y);
+    const std::string message = messageOf([&] { r.declare(closer); });
+    EXPECT_NE(message.find("writer"), std::string::npos);
+    EXPECT_NE(message.find("closer"), std::string::npos);
+    EXPECT_THROW(r.declare(closer), StageError);
+    EXPECT_EQ(r.count(), 2);
+    EXPECT_EQ(states.count(), 2);
+    EXPECT_EQ(r.dependencyCount(writerId), 0);
+    EXPECT_EQ(states.dependencyCount(writerId), 0);
+    EXPECT_EQ(ws->layers().writerStageCount(f.y), 0);
+    ws->close();
+}
+
+TEST(StageRegistry, UnreadableRecordIsKeptByNameAndNeverRunnable) {
+    Fixture f;
+    f.workspace->store()->stageStateWriter().declare("broken", "this is not a record");
+    const StageId good = f.stages().declare(writer("good", f.x));
+    f.workspace->close();
+
+    const LogCapture log;
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ws->stages();
+    ASSERT_EQ(r.count(), 2);
+    StageId broken;
+    ASSERT_TRUE(r.find("broken", broken));
+    EXPECT_FALSE(r.isRunnable(broken));
+    EXPECT_TRUE(r.isRunnable(good));
+    EXPECT_EQ(r.dependencyCount(broken), 0);
+    EXPECT_EQ(r.definition(broken).writtenLayerCount(), 0);
+    bool warned = false;
+    for (const auto& m : log.messages()) {
+        if (m.first == LogLevel::Warning && m.second.find("\"broken\"") != std::string::npos) warned = true;
+        EXPECT_EQ(m.second.find("\"good\""), std::string::npos);
+    }
+    EXPECT_TRUE(warned);
+
+    // Declaring the stage again with a real definition repairs it.
+    EXPECT_EQ(r.declare(writer("broken", f.y)), broken);
+    EXPECT_TRUE(r.isRunnable(broken));
+    EXPECT_TRUE(r.isStale(broken));
+    ws->close();
 }
