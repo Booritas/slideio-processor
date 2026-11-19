@@ -37,31 +37,42 @@ struct RunCounters {
     }
 };
 
-class FinishingSink;
-
 /// The object sink an operation sees on one tile: an object is kept only when
 /// its anchor lies in the tile's level-0 rect, then only when the tile's mask
 /// is set there; a kept object's rings are normalised, the form a merged object
 /// has, before it goes on to the target, which finishes it. The anchor is the
 /// same before and after. An object emitted already normalised goes on as it
-/// is, and one that is not is copied once, its geometry normalised in the
-/// copy, which a FinishingSink target then finishes in place; so a tile object
-/// is copied at most once on its way to the run's sink. Flushing is the run's
-/// business, so flush() does nothing. One filter serves one tile, but an
+/// is; one that is not is normalised in place when handed over with
+/// emitOwned(), else in a copy, and either way handed on with the target's
+/// emitOwned(), which a FinishingSink target finishes in place; so a tile
+/// object is copied at most once on its way to the run's sink. Flushing is the
+/// run's business, so flush() does nothing. One filter serves one tile, but an
 /// operation may emit from threads of its own, so the count is atomic.
 class TileObjectFilter : public ObjectSink {
 public:
     /// `target`, `mask` and `counters` are borrowed; `mask` may be null.
     TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters);
 
+    /// As emitKept().
     void emit(const ObjectRecord& record) override;
+    /// Filters and normalises `record` as above; true when the target kept it.
+    bool emitKept(const ObjectRecord& record) override;
+    /// As emitKept(), normalising @p record itself rather than a copy of it.
+    bool emitOwned(ObjectRecord&& record) override;
     void flush() override {}
-    /// The objects passed on to the target, not those its finishing step discarded.
+    /// The objects the target kept, not those its finishing step discarded.
     int64_t emittedCount() const override { return emitted_.load(); }
 
 private:
+    // Whether @p record's anchor lies in the tile and the mask; counts it as
+    // dropped when not.
+    bool admits(const ObjectRecord& record);
+    // Normalises the rings of @p record.
+    static void normalise(ObjectRecord& record);
+    // Counts a record the target kept; returns @p kept.
+    bool passed(bool kept);
+
     ObjectSink* target_;
-    FinishingSink* finishing_; // target_, when it is the run's finishing sink
     Rect64 tileRect_;
     const RasterMask* mask_;
     RunCounters& counters_;

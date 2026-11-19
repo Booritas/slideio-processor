@@ -169,7 +169,10 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
      are.
   6. Joining scans every waiting edge contact of a tile pair under the
      merger's lock; index them by seam line and position.
-  **Not started.**
+  The `ObjectSink` and `Operation` vtables change: the new virtuals are
+  appended after the existing ones, acceptable before the first release, as
+  there are no published binaries.
+  **Implemented** on branch feat/plan-c-followup.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

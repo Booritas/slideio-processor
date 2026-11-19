@@ -1,7 +1,10 @@
+// Requirements: UR-SEG-5, UR-SEG-6
 #include <slideio/processor/core/measurement.hpp>
 
 #include <slideio/processor/core/error.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -126,6 +129,16 @@ void MeasurementSet::clear() noexcept {
     if (impl_) {
         impl_->entries.clear();
     }
+}
+
+double pixelSizeMicronsFromResolution(double xMetres, double yMetres) noexcept {
+    if (!std::isfinite(xMetres) || !std::isfinite(yMetres) || !(xMetres > 0.0) || !(yMetres > 0.0)) {
+        return 0.0;
+    }
+    if (std::fabs(xMetres - yMetres) > 1e-6 * std::max(xMetres, yMetres)) {
+        return 0.0;
+    }
+    return 0.5 * (xMetres + yMetres) * 1e6;
 }
 
 } // namespace slideio::processor

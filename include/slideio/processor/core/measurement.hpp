@@ -195,4 +195,22 @@ private:
     std::unique_ptr<Impl> impl_; // null until a measurement is set
 };
 
+/**
+ * @brief The level-0 pixel size, in micrometres, that a scene's resolution implies.
+ *
+ * The one rule every calibrated measurement and every calibration check uses: the
+ * mean of the two resolutions times 10^6 when both are finite, positive and agree
+ * to within 10^-6 relative, else 0 (unknown or anisotropic pixels).
+ * @param xMetres Horizontal resolution, metres per pixel.
+ * @param yMetres Vertical resolution, metres per pixel.
+ * @return The pixel size in micrometres, or 0 when it is unknown or the pixels are
+ * anisotropic.
+ * @throws Nothing.
+ * @par Thread-safety
+ * ThreadSafe: a pure function.
+ * @par Requirements
+ * UR-SEG-5, UR-SEG-6
+ */
+SLIDEIO_PROCESSOR_DATA_EXPORTS double pixelSizeMicronsFromResolution(double xMetres, double yMetres) noexcept;
+
 } // namespace slideio::processor

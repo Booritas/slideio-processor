@@ -787,7 +787,7 @@ themselves without passing through a lossy intermediate (UR-IMG-10).
 ```cpp
 enum class Connectivity : int32_t { FourConnected, EightConnected };
 
-/// segment.connected_components — Joint, halo 1, every type, one Int32 plane,
+/// segment.connected_components — Joint, halo none, every type, one Int32 plane,
 /// writes objects. Plane 0 is segmented; planes 1 to 3 are measured.
 class ConnectedComponentsParameters {
 public:
@@ -801,7 +801,7 @@ public:
 };
 OperationPtr makeConnectedComponents(const ConnectedComponentsParameters&);
 
-/// segment.contours — PerChannel, halo 1, integers up to 32 bits and Float32,
+/// segment.contours — PerChannel, halo none, integers up to 32 bits and Float32,
 /// one Int32 plane per input plane, writes objects. Traces a label raster.
 class ContourParameters {
 public:
@@ -938,7 +938,12 @@ lies outside the area bounds; it adds the centroid and bounding box when
 selected and the calibrated units when the pixel size is known (6.8); and it
 removes every measurement of a kind not selected. An operation that measures
 nothing beyond the geometry (`segment.contours`, `segment.tissue_detect`) keeps
-`area` and `perimeter` and their calibrated forms.
+`area` and `perimeter` and their calibrated forms. A segmenter therefore
+always finishes, and keeps the default `finishesObjects()` of true
+(`05-pipeline.md` 5.1): whatever its parameters, its measurement plan writes or
+strips the standard measurements — `area` is set when selected and removed
+when not, so even an empty selection with no area bounds and holes kept
+changes the record.
 
 **Channels and measured intensity.** `segment.connected_components` and
 `segment.watershed` are **Joint** with no uniform-type requirement: plane 0 is
@@ -1313,8 +1318,9 @@ pixels, yields pixel units only — no `.um` names, and no measurement with
 `Measurement::isCalibrated()` true — and `sceneIsCalibrated()` returns false
 for it: that is the documented indication UR-SEG-6 requires rather than a
 silent fallback. `sceneIsCalibrated` and `scenePixelSizeMicrons` apply the same
-rule as the run, so a caller can tell before running what the objects will
-carry; a null scene, or one whose resolution cannot be read, gives false and 0.
+rule as the run (`pixelSizeMicronsFromResolution`, `01-core.md` 1.5), so a
+caller can tell before running what the objects will carry; a null scene, or
+one whose resolution cannot be read, gives false and 0.
 
 ## 6.9 Correctness references
 

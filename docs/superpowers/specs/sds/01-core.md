@@ -410,6 +410,9 @@ public:
     void remove(const char* name) noexcept;
     void clear() noexcept;
 };
+
+// The level-0 pixel size a scene's resolution implies; 0 when unknown.
+double pixelSizeMicronsFromResolution(double xMetres, double yMetres) noexcept;
 ```
 
 **Thread-safety:** ThreadCompatible. **Requirements:** UR-SEG-5, UR-SEG-6.
@@ -429,6 +432,14 @@ existing name replaces its value and unit in place.
 resolution metadata is recorded in pixel units, so a consumer can tell
 "3.2 µm²" from "3.2 px² and no calibration was available" — the distinction
 UR-SEG-6 requires be documented rather than silently collapsed.
+
+`pixelSizeMicronsFromResolution(xMetres, yMetres)` is the one rule that turns a
+scene's resolution into a level-0 pixel size in micrometres: the mean of the two
+values × 10⁶ when both are finite, positive and agree to within 10⁻⁶ relative,
+else 0 (unknown or anisotropic pixels). It takes the two values rather than a
+scene because `core` does not link SlideIO; `OperationContext::pixelSizeMicrons()`
+(`05-pipeline.md` 5.1) and `scenePixelSizeMicrons` (`06-algorithm.md` 6.8) read the
+scene's resolution and call it. ThreadSafe, `noexcept`.
 
 ## 1.6 Object record — `core/object_record.hpp`
 
@@ -699,6 +710,12 @@ public:
     virtual void emit(const ObjectRecord& record) = 0;
     virtual void flush() = 0;
     virtual int64_t emittedCount() const = 0;
+    /// Emits one object and tells whether the sink kept it (false: discarded).
+    /// Default: emit(record); return true.
+    virtual bool emitKept(const ObjectRecord& record);
+    /// As emitKept(), for a record the caller gives up: the sink may move from
+    /// it or finish it in place. Default: return emitKept(record).
+    virtual bool emitOwned(ObjectRecord&& record);
 };
 
 class EdgeSink {
@@ -951,6 +968,18 @@ An operation emits into an `ObjectSink` and knows nothing about transactions,
 batching or SQLite; the batching and journal atomicity of decision 6 exist in
 exactly one implementation, which an algorithm author cannot bypass because
 they never see a database.
+
+`emit()` is all a sink must implement; `emitKept()` and `emitOwned()` exist
+for the sinks the framework chains in front of the run's own
+(`05-pipeline.md` 5.1, 5.5). A filter or a finishing step may discard an object,
+so `emitKept()` tells the caller whether it was kept, which is what lets the
+tile filter count only objects that reached the store. An operation that
+built a record and has no further use for it hands it over with
+`emitOwned()`, and every link of the chain may then normalise, finish and
+pass on that one record instead of copying it at each step; a sink that
+overrides neither still receives the record through `emit()`, once copied
+at most. Each of the three names has one signature, so a sink may override
+any of them alone without hiding the others.
 
 `EdgeSink` is the same arrangement for containment. UR-RES-5 and UR-STG-3
 require a stage to assert parent edges — a `cells` stage attaching

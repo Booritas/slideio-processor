@@ -67,4 +67,8 @@ bool Operation::objectsAreEightConnected() const {
     return false;
 }
 
+bool Operation::finishesObjects() const {
+    return true;
+}
+
 } // namespace slideio::processor

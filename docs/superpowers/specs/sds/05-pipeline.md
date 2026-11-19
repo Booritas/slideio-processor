@@ -184,6 +184,9 @@ public:
     // the object unchanged.
     virtual bool finishObject(ObjectRecord& record,
                               const ObjectFinishContext& context) const;  // true
+    // Whether finishObject may change or discard an object; when false the
+    // run passes the operation's objects on without calling it.
+    virtual bool finishesObjects() const;                             // true
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
@@ -303,15 +306,27 @@ false discards the object, counted in the run's `droppedByFilter` counter.
 `ObjectFinishContext` carries what the operation cannot know from the record
 alone: the level-0 pixel size and the analysis level. The default returns true
 and changes nothing, so an operation that emits finished measurements itself is
-unaffected. Because a merged object is finished by the operation producing its
-layer, **a layer has at most one producer in a run**, which `validate()` checks
+unaffected. An operation whose `finishesObjects()` returns false declares that
+it has no finishing step: the framework reads it once per producer, when it
+builds the finishing wrapper, and passes that operation's objects on as it
+passes those of a layer with no producer — without calling `finishObject`,
+without copying the record, and without counting anything in
+`droppedByFilter`. It is true by default, so an operation that overrides
+`finishObject` alone is still finished. Because a merged object is finished by
+the operation producing its layer, **a layer has at most one producer in a
+run**, which `validate()` checks
 (5.5); the framework routes each record by its layer to that producer, through
 one wrapper of the run's sink (`detail::FinishingSink`) that the tile filter
-and the merger both emit into.
+and the merger both emit into. The merger hands each merged record over with
+`ObjectSink::emitOwned` (`01-core.md` 1.9), so the finishing step finishes that
+record in place; the tile filter does the same with any record it owns (5.5),
+and counts an object only when the finishing step's `emitKept` or `emitOwned`
+returns true, that is, when the object was not discarded.
 
 **`pixelSizeMicrons()`** is the scene's level-0 pixel size in micrometres:
 the mean of SlideIO's x and y resolution × 10⁶ when both are finite, positive
-and agree to within 10⁻⁶ relative, else 0 — unknown or anisotropic pixels.
+and agree to within 10⁻⁶ relative, else 0 — unknown or anisotropic pixels; that
+rule is `pixelSizeMicronsFromResolution` (`01-core.md` 1.5).
 The executor and the lazy path fill it from the run's scene, so calibration
 needs no parameter and a recorded configuration stays slide-independent. It
 is the same at every analysis level; a level pixel is `levelScale()` times
@@ -1238,11 +1253,15 @@ filter. An object that passes both has its rings normalised by the framework
 (`detail::normaliseRings`, as a merged object's are, 5.7), so operations emit
 rings in any rotation — the outer ring positive (clockwise on screen, y down),
 holes negative — and a polygon already in normal form is passed on without
-being copied again. It then goes to its producer's `finishObject` (5.1) and,
-unless that discards it, to the run's sink. Every object a tile keeps is
-normalised this way, in a lazy read (below) as in a run, so a degenerate ring
-— all its vertices collinear, or a spike of zero area — fails the run, or the
-read, with `InvalidArgumentError` instead of being stored.
+being copied again. An operation that emits with `emitOwned()` hands its record
+over: the filter normalises that record in place (copying only its polygon)
+and the finishing step finishes it, so the record itself is not copied; one
+emitted with `emit()` is copied once, to be normalised or else to be finished.
+It then goes to its producer's `finishObject` (5.1) and, unless that discards
+it, to the run's sink. Every object a tile keeps is normalised this way, in a
+lazy read (below) as in a run, so a degenerate ring — all its vertices
+collinear, or a spike of zero area — fails the run, or the read, with
+`InvalidArgumentError` instead of being stored.
 
 ### The tile mask
 
@@ -1642,6 +1661,13 @@ the tiles on either side of one seam line, join when they have contacts on
 that line whose intervals **overlap with positive length**. Touching at a
 single point does not join them on an ordinary layer: objects are
 4-connected.
+The contacts wait per pair of side-adjacent tiles, until both have completed,
+on two sides — the lower tile index's and the higher's — each ordered by the
+interval's begin and keeping its longest interval. A new contact looks only
+at the other side, from the contacts beginning less than that longest
+interval before its own begin up to the last beginning before its end: those
+are the only ones its interval can overlap, so it does not scan every contact
+waiting on the seam.
 
 **8-connected layers.** On a layer whose producer declares
 `objectsAreEightConnected()` (5.1), which the executor passes to the merger
@@ -1780,22 +1806,25 @@ fragment larger than the whole ceiling goes straight to the file. Waiting is
 never right here: `addFragment` is called from inside a tile, whose own bytes
 are part of what is taken, and the memory still taken may be held by the very
 workers that would have to finish to free it, so a wait could never end. Union-
-find entries, contacts and per-component bookkeeping stay resident — they are
-small and fixed-size, so joining and closing decisions never require a read.
+find entries, contacts and per-component bookkeeping stay resident, so joining
+and closing decisions never require a read.
 Choosing oldest-first is deliberate: a long-open component is by definition one
 whose tiles are not finishing soon, so it is the cheapest to evict and the
 least likely to be wanted again this minute.
 
-Seam points of 8-connected layers are the exception to "small and
-fixed-size": a fragment waits at each of its seam vertices for each other
-tile touching it, so a jagged outline along a long seam leaves many. They stay
-in memory when their fragment is written out, so the budget holds their bytes
-separately, `detail::kSeamPointContactBytes` per waiting point, from arrival
-until both tiles of the pair complete. They are reserved the same way: while
-`tryReserve` fails, the oldest-opened components are written out. When nothing
-is left to write out, the points are kept without a reservation, since joining
-needs them, and the merger counts those bytes; this happens only when the
-workers' own tiles hold the whole budget.
+What waits on the seams is not small in total: a fragment waits on each seam
+it lies on with one edge contact per maximal interval, and on an 8-connected
+layer also at each of its seam vertices for each other tile touching it, so a
+jagged outline along a long seam leaves many. Edge contacts and seam points
+stay in memory when their fragment is written out, so the budget holds their
+bytes separately, with the tile pair they wait between:
+`detail::kSeamEdgeContactBytes` per waiting edge contact and
+`detail::kSeamPointContactBytes` per waiting point, from arrival until both
+tiles of the pair complete. They are reserved the same way: while `tryReserve`
+fails, the oldest-opened components are written out. When nothing is left to
+write out, they are kept without a reservation, since joining needs them, and
+the merger counts those bytes; this happens only when the workers' own tiles
+hold the whole budget.
 
 Spilled fragments are appended to one file per merger,
 `seam-<32 random lowercase hex digits>.bin` in the scratch directory, created on

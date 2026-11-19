@@ -13,27 +13,39 @@ FinishingSink::FinishingSink(ObjectSink& target, std::vector<std::pair<LayerId, 
     : target_(target),
       producers_(std::move(producers)),
       context_{pixelSizeMicrons, level},
-      droppedByFilter_(droppedByFilter) {}
+      droppedByFilter_(droppedByFilter) {
+    // A producer without a finishing step is treated as no producer: its
+    // records pass on unchanged, uncopied and uncounted.
+    for (std::pair<LayerId, const Operation*>& producer : producers_) {
+        if (producer.second != nullptr && !producer.second->finishesObjects()) {
+            producer.second = nullptr;
+        }
+    }
+}
 
 void FinishingSink::emit(const ObjectRecord& record) { emitKept(record); }
 
 bool FinishingSink::emitKept(const ObjectRecord& record) {
     const Operation* producer = producerOf(record.layer());
     if (producer == nullptr) {
-        target_.emit(record);
-        ++emitted_;
-        return true;
+        const bool kept = target_.emitKept(record);
+        if (kept) {
+            ++emitted_;
+        }
+        return kept;
     }
     ObjectRecord finished(record);
     return finishAndPass(*producer, finished);
 }
 
-bool FinishingSink::emitOwned(ObjectRecord& record) {
+bool FinishingSink::emitOwned(ObjectRecord&& record) {
     const Operation* producer = producerOf(record.layer());
     if (producer == nullptr) {
-        target_.emit(record);
-        ++emitted_;
-        return true;
+        const bool kept = target_.emitOwned(std::move(record));
+        if (kept) {
+            ++emitted_;
+        }
+        return kept;
     }
     return finishAndPass(*producer, record);
 }
@@ -61,9 +73,11 @@ bool FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& recor
         }
         return false;
     }
-    target_.emit(record);
-    ++emitted_;
-    return true;
+    const bool passed = target_.emitOwned(std::move(record));
+    if (passed) {
+        ++emitted_;
+    }
+    return passed;
 }
 
 void FinishingSink::flush() { target_.flush(); }

@@ -228,7 +228,7 @@ private:
 
 /**
  * @brief Creates `segment.connected_components`: Joint over one to four
- * planes, halo 1, every input type, one `Int32` output plane, producing
+ * planes, halo none, every input type, one `Int32` output plane, producing
  * objects.
  *
  * Plane 0 is segmented: a pixel is foreground when its sample is neither 0 nor
@@ -406,7 +406,7 @@ private:
 };
 
 /**
- * @brief Creates `segment.contours`: PerChannel, halo 1, integer inputs up to
+ * @brief Creates `segment.contours`: PerChannel, halo none, integer inputs up to
  * 32 bits and `Float32`, one `Int32` output plane per input plane, producing
  * objects.
  *

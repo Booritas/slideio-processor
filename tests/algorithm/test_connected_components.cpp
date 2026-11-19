@@ -182,6 +182,7 @@ TEST(ConnectedComponents, KnownObjectsCountAndShape) {
     };
     for (const Connectivity connectivity : {Connectivity::FourConnected, Connectivity::EightConnected}) {
         const OperationPtr op = makeConnectedComponents(ConnectedComponentsParameters().connectivity(connectivity));
+        EXPECT_TRUE(op->halo().isEmpty());
         const ts::DirectObjects result = ts::applyDirectObjects(*op, {DataType::Byte}, {0}, 32, 24, pixel);
         ASSERT_EQ(result.objects.size(), 6u);
         EXPECT_TRUE(result.fragments.empty());
@@ -331,6 +332,8 @@ TEST(ConnectedComponents, TypedAndNamedBagsAreEqual) {
     EXPECT_STREQ(defaults->parameters().getString("measurements", ""),
                  "Area,Perimeter,Centroid,BoundingBox,IntensityMean,IntensityStdDev,IntensityMin,IntensityMax");
     EXPECT_STREQ(defaults->parameters().getString("targetLayer", "absent"), "absent");
+    // A segmenter always finishes: its plan writes or strips the standard measurements.
+    EXPECT_TRUE(defaults->finishesObjects());
     const OperationPtr cleared =
         makeConnectedComponents(ConnectedComponentsParameters().targetLayer("nuclei").targetLayer(""));
     EXPECT_EQ(jsonOf(cleared->parameters()), jsonOf(defaults->parameters()));

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -52,30 +53,6 @@ struct SeamComponent {
     std::unordered_set<int64_t> openTiles; ///< Tiles held or expected that have not completed.
     int64_t first = 0;                     ///< The smallest member id: when it opened.
     int64_t residentCount = 0;             ///< Members still in memory.
-};
-
-/// A seam contact waiting on the edge between two tiles for the fragment on the
-/// other side.
-struct SeamEdgeContact {
-    int64_t fragment; ///< The fragment id.
-    int64_t tile;     ///< The tile that emitted it.
-    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
-    SeamContact contact;
-};
-
-/// A seam point of a fragment of an 8-connected layer, waiting between its
-/// tile and another tile touching the point for a fragment sharing it.
-struct SeamPointContact {
-    int64_t fragment; ///< The fragment id.
-    int64_t tile;     ///< The tile that emitted it.
-    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
-    Point64 at;       ///< The point, in level-0 coordinates.
-};
-
-/// A seam point of a new fragment and one other tile touching it.
-struct SeamPointNeighbour {
-    Point64 at;   ///< The point, in level-0 coordinates.
-    int64_t tile; ///< A tile other than the fragment's whose rect touches the point.
 };
 
 /// Bytes held in a memory budget, given back when the holder is destroyed.
@@ -120,6 +97,48 @@ public:
 private:
     MemoryBudgetPtr budget_;
     int64_t bytes_ = 0;
+};
+
+/// A seam contact waiting on the edge between two tiles for the fragment on the
+/// other side.
+struct SeamEdgeContact {
+    int64_t fragment; ///< The fragment id.
+    int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
+    SeamContact contact;
+};
+
+/// The edge contacts waiting between two side-adjacent tiles until both
+/// complete. Side 0 holds the contacts of the lower tile index of the pair,
+/// side 1 those of the higher, each keyed by the contact's begin; longest is
+/// the longest interval (end - begin) on that side, which bounds the search.
+/// Intervals on one side may overlap (several layers or join keys). The
+/// contacts stay in memory when their fragments are written to the scratch
+/// file, so the budget bytes held for them are held here, not with the
+/// fragments.
+struct SeamEdgesWaiting {
+    std::multimap<int64_t, SeamEdgeContact> bySide[2];
+    int64_t longest[2] = {0, 0};
+    BudgetHold held;
+};
+
+/// The bytes one waiting edge contact is allowed: the contact and one multimap
+/// node (key, links and colour).
+constexpr int64_t kSeamEdgeContactBytes = static_cast<int64_t>(sizeof(SeamEdgeContact)) + 64;
+
+/// A seam point of a fragment of an 8-connected layer, waiting between its
+/// tile and another tile touching the point for a fragment sharing it.
+struct SeamPointContact {
+    int64_t fragment; ///< The fragment id.
+    int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
+    Point64 at;       ///< The point, in level-0 coordinates.
+};
+
+/// A seam point of a new fragment and one other tile touching it.
+struct SeamPointNeighbour {
+    Point64 at;   ///< The point, in level-0 coordinates.
+    int64_t tile; ///< A tile other than the fragment's whose rect touches the point.
 };
 
 /// Hashes a level-0 point, for the merger's index of seam points.
@@ -228,8 +247,9 @@ public:
     std::atomic<int64_t> largestComponentFragmentCount{0};
     std::atomic<int64_t> spilledFragmentCount{0};
     std::atomic<int64_t> spilledBytes{0};
-    // Bytes of seam points kept while the budget could not hold them.
-    std::atomic<int64_t> unreservedPointBytes{0};
+    // Bytes of seam points and edge contacts kept while the budget could not
+    // hold them.
+    std::atomic<int64_t> unreservedSeamBytes{0};
 
 private:
     int64_t find(int64_t fragment);
@@ -244,11 +264,11 @@ private:
     // other components while the budget is short, then the fragment itself when
     // nothing else is left to spill. Never waits for memory.
     void reserveFor(int64_t id, int64_t bytes);
-    // Holds `bytes` for seam points waiting in `waiting`, spilling the
-    // oldest-opened components while the budget is short. Never waits: when
-    // nothing is left to spill, the points are kept without a reservation and
-    // counted in unreservedPointBytes.
-    void holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes);
+    // Holds `bytes` in `held` for seam points or edge contacts waiting between
+    // two tiles, spilling the oldest-opened components while the budget is
+    // short. Never waits: when nothing is left to spill, they are kept without
+    // a reservation and counted in unreservedSeamBytes.
+    void holdWaiting(detail::BudgetHold& held, int64_t bytes);
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
     std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
@@ -256,7 +276,7 @@ private:
     std::unique_ptr<detail::FragmentSpill> spill_;                 // Created at the first spill; never reset.
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
-    std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.
+    std::unordered_map<int64_t, detail::SeamEdgesWaiting> edges_;  // Tile pair -> contacts.
     std::unordered_map<int64_t, detail::SeamPointsWaiting> points_; // Tile pair -> seam points.
     std::vector<char> completed_;                                  // Per tile.
 };

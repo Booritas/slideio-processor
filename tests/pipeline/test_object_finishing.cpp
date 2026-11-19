@@ -19,9 +19,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -206,6 +208,137 @@ TEST(ObjectFinishing, TileFilterCountsOnlyWhatFinishingKeeps) {
     EXPECT_EQ(target.emittedCount(), 2);
     EXPECT_EQ(filter.emittedCount(), 2);
     EXPECT_EQ(finishing.emittedCount(), 2);
+}
+
+namespace {
+
+// A sink noting, for each record, whether it arrived through emitOwned(), and
+// keeping the records that did.
+class OwnershipSink : public ObjectSink {
+public:
+    void emit(const ObjectRecord&) override { owned.push_back(false); }
+    bool emitOwned(ObjectRecord&& record) override {
+        owned.push_back(true);
+        records.push_back(std::move(record));
+        return true;
+    }
+    void flush() override {}
+    int64_t emittedCount() const override { return static_cast<int64_t>(owned.size()); }
+
+    std::vector<bool> owned;
+    std::vector<ObjectRecord> records;
+};
+
+// A 10 x 10 square of area 100 on kLayer whose ring starts at its anchor
+// (normalised) or not.
+ObjectRecord squareRecord(bool normalised) {
+    const std::vector<Point64> fromAnchor = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+    const std::vector<Point64> rotated = {{20, 10}, {20, 20}, {10, 20}, {10, 10}};
+    const std::vector<Point64>& ring = normalised ? fromAnchor : rotated;
+    Polygon polygon;
+    polygon.addRing(ring.data(), static_cast<int32_t>(ring.size()), false);
+    ObjectRecord r;
+    r.setGeometry(polygon);
+    r.setLayer(kLayer);
+    r.measurements().set("area", 100.0, MeasurementUnit::Dimensionless);
+    return r;
+}
+
+} // namespace
+
+TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
+    ts::registerTestOperations();
+    OperationParameters parameters = componentParameters(false);
+    parameters.setDouble("finishMinArea", 50.0);
+    const OperationPtr producer = OperationCatalog::instance().create("test.components", parameters);
+    OwnershipSink target;
+    detail::FinishingSink finishing(target, {{kLayer, producer.get()}}, 0.0, 0);
+    detail::RunCounters counters;
+    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
+
+    for (const bool normalised : {false, true}) {
+        filter.emit(squareRecord(normalised));
+    }
+    EXPECT_EQ(target.owned, (std::vector<bool>{true, true}));
+    EXPECT_EQ(filter.emittedCount(), 2);
+    EXPECT_EQ(finishing.emittedCount(), 2);
+
+    // A record handed over not normalised is normalised in place and passed on.
+    EXPECT_TRUE(filter.emitOwned(squareRecord(false)));
+    EXPECT_EQ(target.owned, (std::vector<bool>{true, true, true}));
+    ASSERT_EQ(target.records.size(), 3u);
+    const std::vector<Point64> outer = ringOf(target.records.back().geometry(), 0);
+    ASSERT_FALSE(outer.empty());
+    EXPECT_TRUE(outer.front() == (Point64{10, 10}));
+    EXPECT_TRUE(outer.front() == target.records.back().geometry().anchor());
+    EXPECT_EQ(filter.emittedCount(), 3);
+    EXPECT_EQ(finishing.emittedCount(), 3);
+}
+
+TEST(ObjectFinishing, OperationWithoutFinishingIsPassedThrough) {
+    const std::shared_ptr<slideio::Scene> scene = blobScene();
+    for (bool seams : {false, true}) {
+        SCOPED_TRACE(seams ? "with seams" : "without seams");
+        OperationParameters finishing = componentParameters(seams);
+        finishing.setDouble("finishMinArea", 50.0);
+        PipelineSpec finished;
+        finished.operation("test.components", finishing);
+        OperationParameters passing = finishing;
+        passing.setBool("noFinishing", true);
+        PipelineSpec passed;
+        passed.operation("test.components", passing);
+
+        // With finishing, objects are tagged, and without seams some
+        // tile-clipped pieces fall below the minimum area.
+        int64_t droppedFinishing = -1;
+        EXPECT_TRUE(allFinished(run(scene, 100, finished, &droppedFinishing)));
+        if (!seams) {
+            ASSERT_GT(droppedFinishing, 0);
+        }
+
+        int64_t dropped = -1;
+        const std::vector<ObjectRecord> records = run(scene, 100, passed, &dropped);
+        ASSERT_FALSE(records.empty());
+        for (size_t i = 0; i < records.size(); ++i) {
+            Measurement tag;
+            EXPECT_FALSE(records[i].measurements().find("finished", tag)) << "object " << i << " is finished";
+        }
+        EXPECT_EQ(dropped, 0);
+    }
+}
+
+namespace {
+
+// An operation overriding finishObject() alone.
+class FinishOnlyOperation : public Operation {
+public:
+    const char* name() const override { return "test.finishOnly"; }
+    ChannelArity arity() const override { return ChannelArity::Joint; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte); }
+    Halo halo() const override { return Halo::uniform(0); }
+    DataType outputType(DataType) const override { return DataType::Byte; }
+    const OperationParameters& parameters() const override { return parameters_; }
+    void apply(OperationContext&) override {}
+    bool finishObject(ObjectRecord&, const ObjectFinishContext&) const override { return false; }
+
+private:
+    OperationParameters parameters_;
+};
+
+} // namespace
+
+TEST(ObjectFinishing, FinishingIsTheDefault) {
+    const FinishOnlyOperation operation;
+    EXPECT_TRUE(operation.finishesObjects());
+
+    // So the sink calls its finishObject(), which discards the record.
+    ts::CollectingObjectSink target;
+    std::atomic<int64_t> dropped{0};
+    detail::FinishingSink finishing(target, {{kLayer, &operation}}, 0.0, 0, &dropped);
+    EXPECT_FALSE(finishing.emitKept(squareRecord(true)));
+    EXPECT_EQ(target.emittedCount(), 0);
+    EXPECT_EQ(dropped.load(), 1);
 }
 
 TEST(ObjectFinishing, TileObjectRingsAreNormalised) {
