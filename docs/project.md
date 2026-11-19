@@ -149,7 +149,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   three channels besides the one they segment. The catalog closes at
   twenty-one operations. Segmenters measure the scene's samples
   (`OperationContext::sourceInput()`), not planes earlier steps transformed.
-  **Implemented** as PR #15, awaiting review and merge.
+  **Delivered** as PR #15 (merged 2026-11-19).
 - **Plan C review follow-up** — the PR #15 review findings deferred to one PR
   after #15 merges, each a spec or public-API change rather than a defect:
   1. `segment.connected_components` and `segment.contours` declare a halo of
