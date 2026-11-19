@@ -23,8 +23,13 @@ void readRing(const Polygon& polygon, int32_t ring, std::vector<Point64>& points
 
 // The area-weighted centroid, outer rings positive and holes negative whatever
 // their orientation; the mean of ring 0's vertices when the area is 0, as
-// Polygon::centroid() does.
+// Polygon::centroid() does. Sums are taken relative to the anchor, so the
+// shoelace products stay within double's exact integer range at level-0
+// coordinates of large slides.
 void centroidOf(const Polygon& polygon, double& cx, double& cy) {
+    const Point64 anchor = polygon.anchor();
+    const double ax = static_cast<double>(anchor.x);
+    const double ay = static_cast<double>(anchor.y);
     double twiceArea = 0.0;
     double sumX = 0.0;
     double sumY = 0.0;
@@ -35,10 +40,12 @@ void centroidOf(const Polygon& polygon, double& cx, double& cy) {
         double x = 0.0;
         double y = 0.0;
         for (size_t i = 0; i < points.size(); ++i) {
-            const double x0 = static_cast<double>(points[i].x);
-            const double y0 = static_cast<double>(points[i].y);
-            const double x1 = static_cast<double>(points[(i + 1) % points.size()].x);
-            const double y1 = static_cast<double>(points[(i + 1) % points.size()].y);
+            const Point64& p0 = points[i];
+            const Point64& p1 = points[(i + 1) % points.size()];
+            const double x0 = static_cast<double>(p0.x - anchor.x);
+            const double y0 = static_cast<double>(p0.y - anchor.y);
+            const double x1 = static_cast<double>(p1.x - anchor.x);
+            const double y1 = static_cast<double>(p1.y - anchor.y);
             const double cross = x0 * y1 - x1 * y0;
             a += cross;
             x += (x0 + x1) * cross;
@@ -54,8 +61,8 @@ void centroidOf(const Polygon& polygon, double& cx, double& cy) {
         sumY += y;
     }
     if (twiceArea != 0.0) {
-        cx = sumX / (3.0 * twiceArea);
-        cy = sumY / (3.0 * twiceArea);
+        cx = sumX / (3.0 * twiceArea) + ax;
+        cy = sumY / (3.0 * twiceArea) + ay;
         return;
     }
     cx = 0.0;
@@ -65,11 +72,11 @@ void centroidOf(const Polygon& polygon, double& cx, double& cy) {
     }
     readRing(polygon, 0, points);
     for (const Point64& p : points) {
-        cx += static_cast<double>(p.x);
-        cy += static_cast<double>(p.y);
+        cx += static_cast<double>(p.x - anchor.x);
+        cy += static_cast<double>(p.y - anchor.y);
     }
-    cx /= static_cast<double>(points.size());
-    cy /= static_cast<double>(points.size());
+    cx = cx / static_cast<double>(points.size()) + ax;
+    cy = cy / static_cast<double>(points.size()) + ay;
 }
 
 // Sets a geometric measurement in pixels and, when the scene is calibrated, in

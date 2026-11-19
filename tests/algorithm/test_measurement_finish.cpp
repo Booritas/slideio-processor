@@ -142,6 +142,19 @@ TEST(MeasurementFinish, CentroidAndBoundingBoxExact) {
     EXPECT_EQ(value(record, "boundingBox.height"), 4.0);
 }
 
+TEST(MeasurementFinish, CentroidExactFarFromTheOrigin) {
+    // A long object at level-0 coordinates of a large slide: summed in slide
+    // coordinates, the shoelace products leave double's exact integer range
+    // and the centroid drifts by about 1e-10 pixels.
+    Polygon polygon;
+    addBox(polygon, 200000, 300000, 10001, 100001, false);
+    ObjectRecord record = recordOf(polygon);
+    const detail::MeasurementPlan plan(MeasurementSelection::geometryOnly(), 0.0, 0.0, true);
+    ASSERT_TRUE(plan.finish(record, kUncalibrated));
+    EXPECT_EQ(value(record, "centroid.x"), 205000.5);
+    EXPECT_EQ(value(record, "centroid.y"), 350000.5);
+}
+
 TEST(MeasurementFinish, CentroidIsUnroundedAndHolesWeighNegatively) {
     // An L of three unit pixels: (0,0), (1,0), (0,1). Centroid (5/6, 5/6), which
     // Polygon::centroid() would round to (1, 1).
