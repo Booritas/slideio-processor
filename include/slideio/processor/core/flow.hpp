@@ -41,6 +41,17 @@ public:
      */
     virtual void emit(const ObjectRecord& record) = 0;
     /**
+     * @brief Makes everything emitted so far durable or visible.
+     * @throws ProcessorError Implementation-defined.
+     */
+    virtual void flush() = 0;
+    /**
+     * @brief Returns the number of objects emitted.
+     * @return The count.
+     * @throws ProcessorError Implementation-defined.
+     */
+    virtual int64_t emittedCount() const = 0;
+    /**
      * @brief Emits one object and tells whether the sink kept it.
      *
      * A sink that may discard an object (a filter, a finishing step) overrides
@@ -61,17 +72,6 @@ public:
      * @throws ProcessorError Implementation-defined.
      */
     virtual bool emitOwned(ObjectRecord&& record);
-    /**
-     * @brief Makes everything emitted so far durable or visible.
-     * @throws ProcessorError Implementation-defined.
-     */
-    virtual void flush() = 0;
-    /**
-     * @brief Returns the number of objects emitted.
-     * @return The count.
-     * @throws ProcessorError Implementation-defined.
-     */
-    virtual int64_t emittedCount() const = 0;
 };
 
 /**

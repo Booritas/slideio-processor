@@ -183,3 +183,11 @@ struct SeamEdgesWaiting {
 - [ ] **Step 4: Run** `ctest ... -R "Seam"`, then the full suite.
 - [ ] **Step 5: Update** SDS 05 and traceability; in `docs/project.md` mark "Plan C review follow-up" **Implemented** (PR number added at push).
 - [ ] **Step 6: Commit** `fix(pipeline): charge waiting seam edge contacts to the memory budget`.
+
+## Rulings
+
+- Task 2: `halo()` is pure virtual, so the two segmenters return `Halo::none()` explicitly instead of removing the override — a pure virtual cannot be left unimplemented.
+- Task 4: no `MeasurementPlan` configuration is a no-op (finish() always writes or strips `area`), so `MeasurementPlan::changesObjects()`, the segmenters' `finishesObjects()` overrides and the `MeasurementFinish.ChangesObjectsOnlyWhenFinishDoes` test were dropped; segmenters keep the default (true), and `ConnectedComponents.TypedAndNamedBagsAreEqual` asserts it — a segmenter's finishing step always changes its objects.
+- Task 5: the test suite is `SeamMerger` (the file's convention), not `SeamMerge`, and its Step 1 tests guard behaviour rather than fail first — the behaviour already existed and the tests pin it.
+- Task 6: two exact-budget tests (`OldestComponentsSpillFirst`, `UnwritableScratchIsIoError`) had budgets raised by the new contact charge, with their geometry kept — the charge adds bytes per waiting contact, so the old budgets no longer forced the intended spill.
+- Final review: the new virtuals were moved after the existing ones — the project appends new virtuals to keep the vtable order stable.

@@ -708,14 +708,14 @@ class ObjectSink {
 public:
     virtual ~ObjectSink();
     virtual void emit(const ObjectRecord& record) = 0;
+    virtual void flush() = 0;
+    virtual int64_t emittedCount() const = 0;
     /// Emits one object and tells whether the sink kept it (false: discarded).
     /// Default: emit(record); return true.
     virtual bool emitKept(const ObjectRecord& record);
     /// As emitKept(), for a record the caller gives up: the sink may move from
     /// it or finish it in place. Default: return emitKept(record).
     virtual bool emitOwned(ObjectRecord&& record);
-    virtual void flush() = 0;
-    virtual int64_t emittedCount() const = 0;
 };
 
 class EdgeSink {

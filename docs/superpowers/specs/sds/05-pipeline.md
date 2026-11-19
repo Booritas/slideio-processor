@@ -312,8 +312,9 @@ builds the finishing wrapper, and passes that operation's objects on as it
 passes those of a layer with no producer — without calling `finishObject`,
 without copying the record, and without counting anything in
 `droppedByFilter`. It is true by default, so an operation that overrides
-`finishObject` alone is still finished. Because a merged object is finished by the operation producing its
-layer, **a layer has at most one producer in a run**, which `validate()` checks
+`finishObject` alone is still finished. Because a merged object is finished by
+the operation producing its layer, **a layer has at most one producer in a
+run**, which `validate()` checks
 (5.5); the framework routes each record by its layer to that producer, through
 one wrapper of the run's sink (`detail::FinishingSink`) that the tile filter
 and the merger both emit into. The merger hands each merged record over with

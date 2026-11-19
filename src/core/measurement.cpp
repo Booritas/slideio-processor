@@ -1,3 +1,4 @@
+// Requirements: UR-SEG-5, UR-SEG-6
 #include <slideio/processor/core/measurement.hpp>
 
 #include <slideio/processor/core/error.hpp>

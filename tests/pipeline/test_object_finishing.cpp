@@ -277,28 +277,34 @@ TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
 
 TEST(ObjectFinishing, OperationWithoutFinishingIsPassedThrough) {
     const std::shared_ptr<slideio::Scene> scene = blobScene();
-    OperationParameters finishing = componentParameters(false);
-    finishing.setDouble("finishMinArea", 50.0);
-    PipelineSpec finished;
-    finished.operation("test.components", finishing);
-    OperationParameters passing = finishing;
-    passing.setBool("noFinishing", true);
-    PipelineSpec passed;
-    passed.operation("test.components", passing);
+    for (bool seams : {false, true}) {
+        SCOPED_TRACE(seams ? "with seams" : "without seams");
+        OperationParameters finishing = componentParameters(seams);
+        finishing.setDouble("finishMinArea", 50.0);
+        PipelineSpec finished;
+        finished.operation("test.components", finishing);
+        OperationParameters passing = finishing;
+        passing.setBool("noFinishing", true);
+        PipelineSpec passed;
+        passed.operation("test.components", passing);
 
-    // With finishing, some tile-clipped pieces fall below the minimum area.
-    int64_t droppedFinishing = -1;
-    run(scene, 100, finished, &droppedFinishing);
-    ASSERT_GT(droppedFinishing, 0);
+        // With finishing, objects are tagged, and without seams some
+        // tile-clipped pieces fall below the minimum area.
+        int64_t droppedFinishing = -1;
+        EXPECT_TRUE(allFinished(run(scene, 100, finished, &droppedFinishing)));
+        if (!seams) {
+            ASSERT_GT(droppedFinishing, 0);
+        }
 
-    int64_t dropped = -1;
-    const std::vector<ObjectRecord> records = run(scene, 100, passed, &dropped);
-    ASSERT_FALSE(records.empty());
-    for (size_t i = 0; i < records.size(); ++i) {
-        Measurement tag;
-        EXPECT_FALSE(records[i].measurements().find("finished", tag)) << "object " << i << " is finished";
+        int64_t dropped = -1;
+        const std::vector<ObjectRecord> records = run(scene, 100, passed, &dropped);
+        ASSERT_FALSE(records.empty());
+        for (size_t i = 0; i < records.size(); ++i) {
+            Measurement tag;
+            EXPECT_FALSE(records[i].measurements().find("finished", tag)) << "object " << i << " is finished";
+        }
+        EXPECT_EQ(dropped, 0);
     }
-    EXPECT_EQ(dropped, 0);
 }
 
 namespace {

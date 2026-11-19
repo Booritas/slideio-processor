@@ -788,21 +788,6 @@ public:
      */
     virtual bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const;
     /**
-     * @brief Tells whether finishObject() may change or discard an object.
-     *
-     * When false, the run passes the operation's objects on without calling
-     * finishObject(), and so without copying them. Constant for the life of
-     * the operation.
-     * @return True by default, so an operation that overrides finishObject()
-     * alone is still finished.
-     * @throws Nothing.
-     * @par Thread-safety
-     * Must be reentrant: may be called concurrently.
-     * @par Requirements
-     * UR-SEG-3, UR-SEG-5, UR-SEG-7
-     */
-    virtual bool finishesObjects() const;
-    /**
      * @brief Tells whether the operation's objects are 8-connected, so that
      * two of its fragments whose pixels meet only diagonally across a seam, at
      * a tile corner or along a seam, belong to one object.
@@ -820,6 +805,21 @@ public:
      * UR-SEG-3
      */
     virtual bool objectsAreEightConnected() const;
+    /**
+     * @brief Tells whether finishObject() may change or discard an object.
+     *
+     * When false, the run passes the operation's objects on without calling
+     * finishObject(), and so without copying them. Constant for the life of
+     * the operation.
+     * @return True by default, so an operation that overrides finishObject()
+     * alone is still finished.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be reentrant: may be called concurrently.
+     * @par Requirements
+     * UR-SEG-3, UR-SEG-5, UR-SEG-7
+     */
+    virtual bool finishesObjects() const;
 };
 /** @brief Shared ownership of an operation, as the catalog and pipeline hold it. */
 using OperationPtr = std::shared_ptr<Operation>;
