@@ -38,7 +38,7 @@ public:
     bool        isReadOnly() const noexcept;
 
     StorePtr          store() noexcept;
-    slideio::ScenePtr scene() noexcept;
+    std::shared_ptr<slideio::Scene> scene() noexcept;  // SlideIO's ScenePtr is a macro
     const Configuration& configuration() const noexcept;
 
     /// `configuration()` with `scratchDirectory` pointed at a subdirectory of
@@ -62,6 +62,20 @@ A workspace is a directory whose location is a single path, so a complete
 analysis copies or archives as one unit (UR-STG-9). It holds the store, the
 recorded state of every stage, and the binding to the slide and scene.
 
+**Directory layout.** The store is `<workspace>/workspace.store`; its sidecars
+(`-wal`, `-shm`, `-writer.lock`) and its raster directory
+`workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
+`<workspace>/scratch/`. `create` makes the directory, and throws `IoError` when
+the path exists and is not an empty directory; it opens the slide and checks the
+scene index (`InvalidArgumentError` when out of range) before making anything.
+
+**Slide binding.** The binding is the store's `Provenance`: `slideId` holds the
+slide path as given (UTF-8) and `sceneIndex` the scene. `open` and
+`openReadOnly` reopen the slide from it with `slideio::openSlide(path, "")`; a
+slide that no longer opens, or no longer has the scene, is an `IoError` naming
+the path. The workspace keeps the slide object alive as long as its scene, and
+`close` releases both.
+
 `create` and `open` clear the scratch subdirectory that `scratchConfiguration`
 points at. Seam spill files (5.7) are owned by one run and removed when it
 ends, so anything still there was left by a process that died mid-stage —
@@ -80,10 +94,12 @@ spared.
 objects together rather than opening the store directly. It takes no writer
 lock and is safe alongside a running script process (UR-OBS-1).
 
-`memoryBudget()` returns the single `MemoryBudget` instance handed to both
-`pipeline` and `storage`, which is the only way UR-EXE-2's ceiling can span
-raster tiles, object accumulation and store buffers together rather than
-raster processing alone.
+`memoryBudget()` returns the single `MemoryBudget` instance,
+`makeMemoryBudget(configuration().memoryCeilingBytes())`, made once per
+`Workspace` and handed to every pipeline it runs, so UR-EXE-2's ceiling spans
+raster tiles and object accumulation across them together rather than one
+pipeline alone. `storage` takes no budget today, so store buffers are not
+reserved against this instance.
 
 A workspace holds **exactly one** slide — open question 9, closed by UR-EXE-9.
 Batch processing needs N slides to be N independent single-writer stores, which

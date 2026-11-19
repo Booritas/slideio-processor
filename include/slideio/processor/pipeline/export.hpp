@@ -6,7 +6,7 @@
  * @brief Export macro for the slideio-processor-engine shared library.
  *
  * Every exported class, free function and interface of the engine library
- * (the pipeline module, later also algorithm and workspace) carries
+ * (the pipeline, algorithm and workspace modules) carries
  * SLIDEIO_PROCESSOR_ENGINE_EXPORTS. The library itself is compiled with
  * SLIDEIO_PROCESSOR_ENGINE_API defined.
  */

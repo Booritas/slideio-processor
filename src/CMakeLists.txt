@@ -3,6 +3,7 @@ add_subdirectory(config)
 add_subdirectory(storage)
 add_subdirectory(pipeline)
 add_subdirectory(algorithm)
+add_subdirectory(workspace)
 
 # Linking the object library (rather than $<TARGET_OBJECTS:...>) puts its
 # objects into the DLL and lets its usage requirements propagate.
@@ -41,15 +42,14 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
     endforeach()
 endforeach()
 
-# The engine library (design 5.1): pipeline and algorithm, later also
-# workspace. Its public headers name slideio::Scene and the data library's types,
+# The engine library (design 5.1): pipeline, algorithm and workspace. Its public headers name slideio::Scene and the data library's types,
 # so both are PUBLIC; OpenCV is static and PRIVATE. SlideIO's DLLs carry
 # their own static OpenCV, and the two copies never meet: SlideIO's API is
 # buffer-based, so no cv:: object crosses it.
 add_library(slideio-processor-engine SHARED)
 target_link_libraries(slideio-processor-engine
     PUBLIC slideio-processor-data slideio::slideio
-    PRIVATE slideio-processor-pipeline slideio-processor-algorithm opencv_core opencv_imgproc)
+    PRIVATE slideio-processor-pipeline slideio-processor-algorithm slideio-processor-workspace opencv_core opencv_imgproc)
 target_include_directories(slideio-processor-engine PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_definitions(slideio-processor-engine PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)
