@@ -172,7 +172,9 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   The `ObjectSink` and `Operation` vtables change: the new virtuals are
   appended after the existing ones, acceptable before the first release, as
   there are no published binaries.
-  **Implemented** on branch feat/plan-c-followup.
+  **Implemented** and merged into `main` (1d03935) without a PR; see
+  [the plan](superpowers/plans/2026-11-19-plan-c-followup.md), whose Rulings
+  section records the deviations.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
