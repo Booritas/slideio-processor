@@ -7,6 +7,7 @@ add_executable(slideio_processor_workspace_tests
     support/test_slide.cpp
     test_layer_lifecycle.cpp
     test_stage_definition.cpp
+    test_stage_registry.cpp
     test_workspace.cpp
 )
 target_link_libraries(slideio_processor_workspace_tests PRIVATE

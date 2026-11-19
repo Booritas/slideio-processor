@@ -1,4 +1,4 @@
-// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-STG-10, UR-STG-12
+// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-STG-10, UR-STG-12, UR-STG-2, UR-STG-4
 #pragma once
 
 /**
@@ -13,6 +13,7 @@
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/workspace/layer_lifecycle.hpp>
+#include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -268,6 +269,18 @@ public:
      * UR-STG-10, UR-STG-12
      */
     LayerLifecycle& layerLifecycle() noexcept;
+
+    /**
+     * @brief Returns the stage registry, which declares stages and derives their
+     * dependencies.
+     * @return The registry, owned by this workspace and valid while it lives.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-2, UR-STG-4
+     */
+    StageRegistry& stages() noexcept;
 
     /**
      * @brief Closes the store, releasing the writer lock, and releases the slide.

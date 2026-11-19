@@ -1,0 +1,286 @@
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8
+#include <slideio/processor/workspace/stage_registry.hpp>
+
+#include <slideio/processor/core/error.hpp>
+#include <slideio/processor/storage/layer_registry.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
+#include <slideio/processor/storage/stage_state_writer.hpp>
+
+#include <workspace/detail/stage_record.hpp>
+
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace slideio::processor {
+
+namespace {
+
+struct Entry {
+    int32_t id;
+    const StageDefinition* definition;
+};
+
+struct Edge {
+    int32_t dependency;
+    bool isExplicit;
+};
+
+// Stage id to its effective dependencies, ascending by dependency id, each once.
+using Graph = std::map<int32_t, std::vector<Edge>>;
+
+std::string quoted(const char* name) { return std::string("\"") + name + "\""; }
+
+bool writesAnyOf(const StageDefinition& writer, const StageDefinition& reader) {
+    for (int32_t r = 0; r < reader.readLayerCount(); ++r) {
+        const LayerId layer = reader.readLayerAt(r);
+        for (int32_t w = 0; w < writer.writtenLayerCount(); ++w) {
+            if (writer.writtenLayerAt(w) == layer) return true;
+        }
+    }
+    if (writer.writesAnyRaster()) {
+        for (int32_t r = 0; r < reader.readRasterCount(); ++r) {
+            if (reader.readRasterAt(r) == writer.writtenRaster()) return true;
+        }
+    }
+    return false;
+}
+
+// Derives the effective dependencies of every entry: writers of what it reads, and
+// its explicit dependsOn names. Throws StageError for an unknown or self-named
+// explicit dependency.
+Graph deriveGraph(const std::vector<Entry>& entries) {
+    std::map<std::string, int32_t> byName;
+    for (const Entry& e : entries) byName[e.definition->name()] = e.id;
+
+    Graph graph;
+    for (const Entry& stage : entries) {
+        std::map<int32_t, bool> deps;
+        for (const Entry& other : entries) {
+            if (other.id != stage.id && writesAnyOf(*other.definition, *stage.definition)) deps[other.id] |= false;
+        }
+        for (int32_t i = 0; i < stage.definition->explicitDependencyCount(); ++i) {
+            const char* target = stage.definition->explicitDependencyAt(i);
+            const auto found = byName.find(target);
+            if (found == byName.end()) {
+                throw StageError(("stage " + quoted(stage.definition->name()) + " depends on stage " +
+                                  quoted(target) + ", which is not declared")
+                                     .c_str());
+            }
+            if (found->second == stage.id) {
+                throw StageError(("stage " + quoted(stage.definition->name()) + " depends on itself").c_str());
+            }
+            deps[found->second] = true;
+        }
+        std::vector<Edge>& edges = graph[stage.id];
+        for (const auto& d : deps) edges.push_back({d.first, d.second});
+    }
+    return graph;
+}
+
+// Depth-first search for a cycle; throws StageError naming the stages in it.
+void requireAcyclic(const Graph& graph, const std::vector<Entry>& entries) {
+    std::map<int32_t, const char*> names;
+    for (const Entry& e : entries) names[e.id] = e.definition->name();
+
+    enum class Mark { Unvisited, OnPath, Done };
+    std::map<int32_t, Mark> marks;
+    std::vector<int32_t> path;
+    std::function<void(int32_t)> visit = [&](int32_t id) {
+        marks[id] = Mark::OnPath;
+        path.push_back(id);
+        for (const Edge& edge : graph.at(id)) {
+            const Mark mark = marks[edge.dependency];
+            if (mark == Mark::OnPath) {
+                std::string text;
+                const auto start = std::find(path.begin(), path.end(), edge.dependency);
+                for (auto it = start; it != path.end(); ++it) text += quoted(names[*it]) + " -> ";
+                text += quoted(names[edge.dependency]);
+                throw StageError(("the stages form a dependency cycle: " + text).c_str());
+            }
+            if (mark == Mark::Unvisited) visit(edge.dependency);
+        }
+        path.pop_back();
+        marks[id] = Mark::Done;
+    };
+    for (const Entry& e : entries) {
+        if (marks[e.id] == Mark::Unvisited) visit(e.id);
+    }
+}
+
+bool sameDependencies(const std::vector<Edge>& a, const std::vector<Edge>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].dependency != b[i].dependency) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+class StageRegistry::Impl {
+public:
+    explicit Impl(Store& storeIn) noexcept : store(storeIn) {}
+
+    std::vector<Entry> entries() const {
+        std::vector<Entry> result;
+        for (const auto& d : definitions) result.push_back({d.first, d.second.get()});
+        return result;
+    }
+
+    // Every id the definition names must be known to the store, and the pixel layer
+    // is never written to.
+    void validate(const StageDefinition& def) const {
+        const LayerRegistry& layers = store.layers();
+        const std::string stage = quoted(def.name());
+        const auto requireLayer = [&](LayerId layer, const char* role) {
+            if (!layers.exists(layer)) {
+                throw InvalidArgumentError(("stage " + stage + " " + role + " layer id " +
+                                            std::to_string(layer.value()) + ", which is not declared")
+                                               .c_str());
+            }
+        };
+        for (int32_t i = 0; i < def.readLayerCount(); ++i) requireLayer(def.readLayerAt(i), "reads");
+        for (int32_t i = 0; i < def.writtenLayerCount(); ++i) {
+            const LayerId layer = def.writtenLayerAt(i);
+            requireLayer(layer, "writes");
+            if (layer == layers.pixelLayer()) {
+                throw InvalidArgumentError(("stage " + stage + " writes the pixel layer").c_str());
+            }
+        }
+        for (int32_t i = 0; i < def.annotatedLayerCount(); ++i) requireLayer(def.annotatedLayerAt(i), "annotates");
+        if (def.hasLayerRestriction()) requireLayer(def.layerRestriction(), "is restricted to");
+        const RasterRegistry& rasters = store.rasters();
+        const auto requireRaster = [&](RasterId raster, const char* role) {
+            if (!rasters.exists(raster)) {
+                throw InvalidArgumentError(("stage " + stage + " " + role + " raster id " +
+                                            std::to_string(raster.value()) + ", which is not declared")
+                                               .c_str());
+            }
+        };
+        if (def.writesAnyRaster()) requireRaster(def.writtenRaster(), "writes");
+        for (int32_t i = 0; i < def.readRasterCount(); ++i) requireRaster(def.readRasterAt(i), "reads");
+    }
+
+    // Derives the dependencies of every held stage and brings the stored rows up to
+    // date: a stage's rows are rewritten (clear, then add) when they differ from what
+    // was last persisted. One function, so redeclaring a stage can reuse it.
+    void deriveAndPersist() {
+        Graph next = deriveGraph(entries());
+        StageStateWriter& writer = store.stageStateWriter();
+        for (const auto& stage : next) {
+            const auto previous = graph.find(stage.first);
+            const bool unchanged = previous != graph.end() ? sameDependencies(previous->second, stage.second)
+                                                           : stage.second.empty();
+            if (unchanged) continue;
+            writer.clearDependencies(StageId(stage.first));
+            for (const Edge& edge : stage.second) writer.addDependency(StageId(stage.first), StageId(edge.dependency));
+        }
+        graph = std::move(next);
+    }
+
+    const std::vector<Edge>& edgesOf(StageId stage) const {
+        const auto found = graph.find(stage.value());
+        if (found == graph.end()) throw InvalidArgumentError("the stage is not known to the registry");
+        return found->second;
+    }
+
+    Store& store;
+    mutable std::mutex mutex;
+    // Held by StageId; unique_ptr keeps references from definition() stable.
+    std::map<int32_t, std::unique_ptr<StageDefinition>> definitions;
+    Graph graph;
+};
+
+StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {}
+
+StageRegistry::~StageRegistry() = default;
+
+StageId StageRegistry::declare(const StageDefinition& definition) {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    Store& store = impl_->store;
+    StageStateReader& reader = store.stageStates();
+    StageId existing;
+    if (reader.find(definition.name(), existing)) {
+        throw InvalidArgumentError(("stage " + quoted(definition.name()) + " is already declared").c_str());
+    }
+    impl_->validate(definition);
+    const std::string record = detail::stageRecordJson(definition, store.layers(), store.rasters());
+
+    // Validate the candidate graph in memory; nothing is written until it passes.
+    std::vector<Entry> candidate = impl_->entries();
+    candidate.push_back({std::numeric_limits<int32_t>::max(), &definition});
+    requireAcyclic(deriveGraph(candidate), candidate);
+
+    StageStateWriter& writer = store.stageStateWriter();
+    const StageId id = writer.declare(definition.name(), record.c_str());
+    impl_->definitions[id.value()] = std::make_unique<StageDefinition>(definition);
+    for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) writer.addWrittenLayer(id, definition.writtenLayerAt(i));
+    impl_->deriveAndPersist();
+    return id;
+}
+
+int32_t StageRegistry::count() const noexcept { return impl_->store.stageStates().count(); }
+
+StageId StageRegistry::at(int32_t index) const { return impl_->store.stageStates().at(index); }
+
+bool StageRegistry::find(const char* name, StageId& out) const noexcept {
+    return impl_->store.stageStates().find(name, out);
+}
+
+const char* StageRegistry::name(StageId stage) const { return impl_->store.stageStates().name(stage); }
+
+StageStatus StageRegistry::status(StageId stage) const { return impl_->store.stageStates().status(stage); }
+
+bool StageRegistry::isStale(StageId stage) const { return impl_->store.stageStates().isStale(stage); }
+
+const char* StageRegistry::configuration(StageId stage) const {
+    return impl_->store.stageStates().configuration(stage);
+}
+
+int64_t StageRegistry::completedAtUnixMs(StageId stage) const {
+    return impl_->store.stageStates().completedAtUnixMs(stage);
+}
+
+int32_t StageRegistry::dependencyCount(StageId stage) const {
+    return impl_->store.stageStates().dependencyCount(stage);
+}
+
+StageId StageRegistry::dependencyAt(StageId stage, int32_t index) const {
+    return impl_->store.stageStates().dependencyAt(stage, index);
+}
+
+bool StageRegistry::isExplicitDependency(StageId stage, int32_t index) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    const std::vector<Edge>& edges = impl_->edgesOf(stage);
+    if (index < 0 || static_cast<size_t>(index) >= edges.size()) {
+        throw InvalidArgumentError("the dependency index is out of range");
+    }
+    return edges[static_cast<size_t>(index)].isExplicit;
+}
+
+bool StageRegistry::isRunnable(StageId stage) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    const StageStateReader& reader = impl_->store.stageStates();
+    const int32_t n = reader.dependencyCount(stage);
+    for (int32_t i = 0; i < n; ++i) {
+        const StageId dependency = reader.dependencyAt(stage, i);
+        if (reader.status(dependency) != StageStatus::Complete || reader.isStale(dependency)) return false;
+    }
+    return true;
+}
+
+const StageDefinition& StageRegistry::definition(StageId stage) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    const auto found = impl_->definitions.find(stage.value());
+    if (found == impl_->definitions.end()) throw InvalidArgumentError("the stage has no definition in the registry");
+    return *found->second;
+}
+
+} // namespace slideio::processor
