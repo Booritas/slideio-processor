@@ -65,11 +65,16 @@ recorded state of every stage, and the binding to the slide and scene.
 **Directory layout.** The store is `<workspace>/workspace.store`; its sidecars
 (`-wal`, `-shm`, `-writer.lock`) and its raster directory
 `workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
-`<workspace>/scratch/`. `create` makes the directory, and throws `IoError` when
-the path exists and is not an empty directory; it opens the slide and checks the
-scene index (`InvalidArgumentError` when out of range) before making anything. A
-`create` that fails later removes what it made, and only that: the directory when
-it did not exist, its contents when it existed empty, so a retry can succeed.
+`<workspace>/scratch/`. `create` makes the directory, and only it: the parent
+must exist, and a missing parent is an `IoError` naming the path, with nothing
+made. It throws `IoError` when the path exists and is not an empty directory; it
+opens the slide and checks the scene index (`InvalidArgumentError` when out of
+range) before making anything. A `create` that fails later removes what it made,
+and only that, tracked rather than inferred: the store, its sidecars, its raster
+directory and scratch when it created the store, and the directory when it
+created the directory and nothing else is left in it. So a retry can succeed, and
+a `create` racing another on the same path — which fails, finding the directory
+or the store already made — never removes the winner's workspace.
 
 **Slide binding.** The binding is the store's `Provenance`: `slideId` holds the
 slide path (UTF-8) and `sceneIndex` the scene. The path is stored absolute and

@@ -272,6 +272,71 @@ TEST(Workspace, FailedCreateLeavesNoDirectory) {
 
 namespace {
 
+// What a racing create made: the winner's workspace, created on the loser's path
+// between the loser's occupancy check and its first write.
+struct Race {
+    const char* workspacePath = nullptr;
+    const char* slidePath = nullptr;
+    const Configuration* config = nullptr;
+    WorkspacePtr winner;
+};
+
+void createWinner(void* context) {
+    Race& race = *static_cast<Race*>(context);
+    race.winner = Workspace::create(race.workspacePath, race.slidePath, 0, *race.config);
+}
+
+// The loser's create fails, and the winner's live workspace keeps every file and stays
+// open and writable.
+void expectLoserRemovesNothing(const fs::path& path, const std::string& slide, const Configuration& config) {
+    const std::string pathText = path.u8string();
+    Race race{pathText.c_str(), slide.c_str(), &config, nullptr};
+    detail::hookNextWorkspaceCreateForTesting(&createWinner, &race);
+    EXPECT_THROW(Workspace::create(pathText.c_str(), slide.c_str(), 0, config), IoError);
+    ASSERT_TRUE(race.winner);
+    EXPECT_TRUE(fs::is_regular_file(path / "workspace.store"));
+    EXPECT_TRUE(fs::is_regular_file(path / "workspace.store-writer.lock"));
+    EXPECT_TRUE(fs::is_directory(path / "scratch"));
+    EXPECT_EQ(std::string(race.winner->store()->provenance().slideId()), slide);
+    LayerId tissue;
+    EXPECT_NO_THROW(tissue = race.winner->layers().declareSemantic("tissue", race.winner->layers().pixelLayer()));
+    EXPECT_TRUE(race.winner->layers().exists(tissue));
+    // The winner still holds the writer lock.
+    race.winner->close();
+    WorkspacePtr reopened = Workspace::open(pathText.c_str(), config);
+    EXPECT_TRUE(reopened->layers().find("tissue", tissue));
+}
+
+} // namespace
+
+// Two creates on one path both pass the occupancy check; the winner's create runs
+// inside the loser's, through the test seam, just before the loser makes anything.
+TEST(Workspace, RacingCreateLoserRemovesNothing) {
+    const Prepared t;
+    // The path did not exist: the loser finds the directory made by someone else.
+    expectLoserRemovesNothing(t.workspace, t.slideUtf8(), t.config);
+
+    // The path was an empty directory: the loser's store creation finds the winner's store.
+    const fs::path empty = t.dir.path() / "empty";
+    fs::create_directories(empty);
+    expectLoserRemovesNothing(empty, t.slideUtf8(), t.config);
+}
+
+TEST(Workspace, MissingParentIsIoErrorAndMakesNothing) {
+    const Prepared t;
+    const fs::path parent = t.dir.path() / "missing";
+    const fs::path path = parent / "ws";
+    try {
+        Workspace::create(path.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config);
+        FAIL() << "create made a workspace under a missing parent";
+    } catch (const IoError& e) {
+        EXPECT_NE(std::string(e.what()).find(path.u8string()), std::string::npos) << e.what();
+    }
+    EXPECT_FALSE(fs::exists(parent));
+}
+
+namespace {
+
 // Changes the working directory for one scope.
 class CurrentDirectory {
 public:

@@ -103,21 +103,38 @@ std::string absoluteSlidePath(const char* slidePath, const char* operation) {
     return absolute.lexically_normal().u8string();
 }
 
-// Undoes a create that failed after its occupancy check: removes the directory when
-// the create made it, or empties it again when it existed empty. A failure here is
-// logged, never thrown, so the create's own error reaches the caller.
-void undoCreate(const fs::path& directory, bool existed, const char* operation) noexcept {
+// Undoes a create that failed, removing only what that call made: with `madeStore`
+// the store, its sidecars, its raster directory and scratch, which no one else can
+// own, since CreateNew refuses an existing store; with `madeDirectory` the directory
+// itself, and only when it is then empty, so another creator's files keep it alive.
+// Nothing is removed recursively above what this call owns. A failure here is logged,
+// never thrown, so the create's own error reaches the caller.
+void undoCreate(const fs::path& directory, bool madeDirectory, bool madeStore, const char* operation) noexcept {
     try {
         std::error_code error;
-        if (!existed) {
-            fs::remove_all(directory, error);
-        } else {
-            for (fs::directory_iterator entry(directory, error), end; !error && entry != end;
-                 entry.increment(error)) {
-                std::error_code removeError;
-                fs::remove_all(entry->path(), removeError);
-                if (removeError) error = removeError;
+        auto record = [&error](const std::error_code& e) {
+            if (e && !error) error = e;
+        };
+        if (madeStore) {
+            const std::string store = (directory / kStoreName).u8string();
+            // The lock file too: Store::close releases the lock but leaves its file.
+            for (const char* suffix : {"", "-wal", "-shm", "-journal", "-writer.lock"}) {
+                std::error_code e;
+                fs::remove(fs::u8path(store + suffix), e);
+                record(e);
             }
+            std::error_code e;
+            fs::remove_all(fs::u8path(store + "-rasters"), e);
+            record(e);
+            fs::remove_all(directory / kScratchName, e);
+            record(e);
+        }
+        if (madeDirectory) {
+            std::error_code e;
+            if (fs::is_empty(directory, e) && !e) {
+                fs::remove(directory, e);
+            }
+            record(e);
         }
         if (error) {
             logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left in '%s': %s", operation,
@@ -130,9 +147,31 @@ void undoCreate(const fs::path& directory, bool existed, const char* operation) 
 
 std::atomic<bool> gFailNextCreate{false};
 
+std::mutex gHookMutex;
+void (*gHook)(void*) = nullptr;
+void* gHookContext = nullptr;
+
+// Runs and clears the hook set by hookNextWorkspaceCreateForTesting, if any.
+void runCreateHook() {
+    void (*hook)(void*) = nullptr;
+    void* context = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(gHookMutex);
+        hook = std::exchange(gHook, nullptr);
+        context = std::exchange(gHookContext, nullptr);
+    }
+    if (hook != nullptr) hook(context);
+}
+
 } // namespace
 
 void detail::failNextWorkspaceCreateForTesting() noexcept { gFailNextCreate.store(true); }
+
+void detail::hookNextWorkspaceCreateForTesting(void (*hook)(void*), void* context) noexcept {
+    std::lock_guard<std::mutex> guard(gHookMutex);
+    gHook = hook;
+    gHookContext = context;
+}
 
 class Workspace::Impl {
 public:
@@ -207,16 +246,28 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
 
     // From here a failure removes what this call made, and only that, so the path is
-    // as it was and a retry can succeed: the directory when it did not exist, or its
-    // contents when it existed empty.
-    StorePtr store;
-    try {
-        fs::create_directories(directory, error);
+    // as it was and a retry can succeed. What it made is tracked, never inferred: a
+    // racing create on the same path may own everything else there.
+    runCreateHook();
+    bool madeDirectory = false;
+    if (!existed) {
+        // Not create_directories: the parent must exist, so a mistyped path makes nothing.
+        madeDirectory = fs::create_directory(directory, error);
         if (error) {
             throwIo(std::string(kOperation) + ": cannot create the workspace directory '" + directory.u8string() + "'",
                     error.message());
         }
+        if (!madeDirectory) {
+            throwIo(std::string(kOperation) + ": '" + directory.u8string() +
+                        "' was created by someone else while this create ran",
+                    "");
+        }
+    }
+    bool madeStore = false;
+    StorePtr store;
+    try {
         store = Store::open((directory / kStoreName).u8string().c_str(), OpenMode::CreateNew, configuration);
+        madeStore = true;
         Provenance provenance = store->provenance();
         provenance.setSlideId(slideText.c_str());
         provenance.setSceneIndex(sceneIndex);
@@ -229,9 +280,9 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
                                                                  configuration, std::move(store), std::move(slide),
                                                                  std::move(scene))));
     } catch (...) {
-        // The store's files are held open until it is released.
+        // The store's files are held open, and its writer lock held, until it is released.
         store.reset();
-        undoCreate(directory, existed, kOperation);
+        undoCreate(directory, madeDirectory, madeStore, kOperation);
         throw;
     }
 }

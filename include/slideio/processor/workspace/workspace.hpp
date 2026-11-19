@@ -60,11 +60,14 @@ public:
      *
      * The slide is opened and the scene checked before anything is made. Then the
      * directory is made, the store created in it with the slide path and scene index
-     * as its provenance, and the scratch directory made. A failure after the directory
-     * check removes what the call made, and only that: the directory when it did not
-     * exist, its contents when it existed empty. The path is then as it was.
+     * as its provenance, and the scratch directory made. A failure removes what this
+     * call made, and only that, which it tracks rather than infers: the store, its
+     * sidecars, its raster directory and scratch when it created the store, and the
+     * directory when it created the directory and nothing else is left in it. A create
+     * racing on the same path therefore never removes the other's workspace.
      * @param workspacePath UTF-8 path of the workspace directory; copied. It must not
-     * exist, or be an empty directory.
+     * exist, or be an empty directory. Its parent must exist: only the workspace
+     * directory itself is made.
      * @param slidePath UTF-8 path of the slide, opened with SlideIO's driver lookup. A
      * relative path is resolved against the current directory; the absolute,
      * lexically normalised form is what slidePath() returns and the store records.
@@ -73,9 +76,11 @@ public:
      * @return The open, writable workspace.
      * @throws InvalidArgumentError When a path is null or empty, or sceneIndex is out of
      * range for the slide.
-     * @throws IoError When workspacePath exists and is not an empty directory, when the
-     * slide does not open (the message names its path), or when the directory, the
-     * store or the scratch directory cannot be made.
+     * @throws IoError When workspacePath exists and is not an empty directory, or is
+     * made by someone else while this call runs; when the slide does not open (the
+     * message names its path); when the parent directory is missing or the directory,
+     * the store or the scratch directory cannot be made (the message names
+     * workspacePath); or when the store already exists because a racing create made it.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.
