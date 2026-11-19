@@ -1033,6 +1033,14 @@ in which an operation producing objects is followed by any operation with a
 non-zero halo is therefore refused, "operation X produces objects and must not
 be followed by a halo". A point operation after it is accepted.
 
+**A per-channel object producer gets one plane.** A `PerChannel` operation
+producing objects is applied once per plane and emits into its one layer, so
+over several planes it would store every object once per plane under the same
+`ObjectId` — a label raster stored as identical channels, for one, would give
+each region twice. A chain giving such an operation more than one plane is
+refused, "operation \"X\" produces objects and runs per channel, so it must be
+given exactly one channel" — the name only. A `Joint` producer is unaffected.
+
 **Stage name.** `stageName(name)` sets the name the run reports: the
 `stageName` of every `ProgressObserver::onProgress` call and the stage in every
 `TileError`'s `ErrorContext`. The default is `"pipeline"`; a null or empty name
@@ -1219,7 +1227,10 @@ filter. An object that passes both has its rings normalised by the framework
 rings in any rotation — the outer ring positive (clockwise on screen, y down),
 holes negative — and a polygon already in normal form is passed on without
 being copied again. It then goes to its producer's `finishObject` (5.1) and,
-unless that discards it, to the run's sink.
+unless that discards it, to the run's sink. Every object a tile keeps is
+normalised this way, in a lazy read (below) as in a run, so a degenerate ring
+— all its vertices collinear, or a spike of zero area — fails the run, or the
+read, with `InvalidArgumentError` instead of being stored.
 
 ### The tile mask
 

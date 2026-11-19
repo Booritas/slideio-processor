@@ -948,9 +948,18 @@ because their working set is declared for three (6.2); validating a run that
 gives them more fails with `InvalidArgumentError` "measures at most three
 channels besides the one it segments", from `outputPlaneCount`
 (`05-pipeline.md` 5.5). A NaN intensity sample is skipped, not counted; an
-infinite one is counted. `segment.contours` is **PerChannel** and measures
-nothing; it is meant for one channel, the label raster, because every channel
-is traced into the same layer and the objects of two channels would overlap.
+infinite one is counted. The measured planes are the segmenter's **input**
+planes, after every earlier step of its chain, not the scene's raw samples: a
+PerChannel pixel operation ahead of it transforms planes 1 onward as well as
+plane 0, so blur → threshold → `segment.connected_components` measures the
+thresholded planes. They are still named `intensity.<c>.*` after the source
+channel c each plane carries. To measure raw intensities, put the segmenter
+first in its chain and give it a precomputed mask (or, for the watershed, a
+precomputed surface) as its first channel, or measure in a separate run.
+`segment.contours` is **PerChannel** and measures nothing; it runs on exactly
+one channel, the label raster: per channel over several, every region would
+be stored once per channel under one id, so validation refuses a run giving
+it more than one plane (`05-pipeline.md` 5.5).
 `segment.tissue_detect` is **Joint** over exactly three planes of one type,
 `Byte` or `UInt16`; another count throws `ChannelArityError`, the error of the
 catalog's other RGB operations.
@@ -1237,7 +1246,10 @@ operation's tiles close, so no later operation ever sees them, and a merged
 object never passes through a later operation's `apply`. The intensity
 channels are the run's own (`PipelineSpec::channels`), from plane 1 of the
 segmenter's input onward, so the selection needs no `ChannelSelection` of its
-own.
+own. They are measured as the segmenter receives them, after every earlier
+step of the chain, and named after the source channel each carries (6.7);
+measuring raw intensities means putting the segmenter first, on a precomputed
+mask or surface, or measuring in a separate run.
 
 `standard()`, `geometryOnly()` and `addAll()` are not `noexcept`: the
 selection is pimpl'd under C-2 and an empty one holds nothing, so filling one
@@ -1399,8 +1411,8 @@ close, so no later operation ever sees it — and a measurement that only some
 objects received would break UR-SEG-3. Measuring belongs where every object,
 whole or merged, passes once: its producer's finishing step (`05-pipeline.md`
 5.1). So the segmenters that see intensity, `segment.connected_components` and
-`segment.watershed`, take a `MeasurementSelection` and measure the run's other
-channels themselves, and the requirement it answered now maps to them (6.8).
+`segment.watershed`, take a `MeasurementSelection` and measure their own
+input planes besides the one they segment (6.7), and the requirement it answered now maps to them (6.8).
 
 Ten of those names are assigned here for the first time — the filter and
 morphology entries of 6.4, which the earlier drafts gave typed factories but no

@@ -186,6 +186,10 @@ public:
     ConnectedComponentsParameters& extractHoles(bool extract);
     /**
      * @brief Sets which measurements each object keeps; every kind by default.
+     *
+     * The intensity kinds are taken over the operation's input planes 1 to 3,
+     * as the earlier operations of the chain leave them, not over the scene's
+     * raw samples (see the operation's factory).
      * @param selection The kinds; may be empty, which keeps none.
      * @return These parameters, so calls can be chained.
      * @throws InvalidArgumentError When these parameters are moved-from.
@@ -243,6 +247,14 @@ private:
  * `<name>.um` or `area.um2`, when the scene is calibrated; only the kinds
  * selected are kept. An object whose final area lies outside the bounds is
  * discarded before it is stored, however it was assembled (UR-SEG-7).
+ *
+ * The measured planes are the operation's input planes, after every earlier
+ * operation of the chain: a per-channel operation ahead of it transforms them
+ * as well as plane 0, so a chain blurring and thresholding before labelling
+ * measures the thresholded samples. They are still named after the source
+ * channel each carries, `intensity.<c>.*`. To measure the scene's own samples,
+ * place the operation first in its chain and give it a precomputed mask as its
+ * first channel, or measure in a separate run.
  *
  * The output plane holds, for each pixel of an object, the object's 1-based
  * index among the objects of its tile in the order their first pixel is met
@@ -409,9 +421,10 @@ private:
  * the scene is calibrated. Without holes kept, they are those of the outer
  * ring.
  *
- * The operation is meant to run on one channel, the label raster: every
- * selected channel is traced into the same layer, so with several channels
- * the objects of one channel overlap those of another.
+ * The operation runs on exactly one channel, the label raster: run per
+ * channel over several, it would store every region once per channel under
+ * one id, so validating a run that gives it more than one plane fails with
+ * InvalidArgumentError.
  *
  * The output plane holds, for each pixel of an object, the object's 1-based
  * index among the objects of its tile in the order their first pixel is met
@@ -620,6 +633,10 @@ public:
     WatershedParameters& minimumAreaPx(int64_t areaPx);
     /**
      * @brief Sets which measurements each object keeps; every kind by default.
+     *
+     * The intensity kinds are taken over the operation's input planes 1 to 3,
+     * as the earlier operations of the chain leave them, not over the scene's
+     * raw samples (see the operation's factory).
      * @param selection The kinds; may be empty, which keeps none.
      * @return These parameters, so calls can be chained.
      * @throws InvalidArgumentError When these parameters are moved-from.
@@ -708,6 +725,14 @@ private:
  * infinite ones counted; only the kinds selected are kept. An object whose
  * final area is below `minimumAreaPx` is discarded before it is stored,
  * however it was assembled (UR-SEG-7). Holes are kept.
+ *
+ * The measured planes are the operation's input planes, after every earlier
+ * operation of the chain: a per-channel operation ahead of it transforms them
+ * as well as plane 0, so a chain smoothing before flooding measures the
+ * smoothed samples. They are still named after the source channel each
+ * carries, `intensity.<c>.*`. To measure the scene's own samples, place the
+ * operation first in its chain and give it a precomputed surface as its first
+ * channel, or measure in a separate run.
  *
  * The output plane holds, for each pixel of an object, the object's 1-based
  * index among the objects of its tile in the order their first pixel is met
