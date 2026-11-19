@@ -199,7 +199,9 @@ public:
     /**
      * @brief Returns the bound scene.
      *
-     * The workspace keeps the slide open as long as the scene.
+     * The workspace keeps the slide open as long as the scene. close() releases the
+     * slide, so a scene obtained here must not be used after close(), even though the
+     * shared pointer keeps the object alive: drop it before closing.
      * @return The scene; null after close().
      * @throws Nothing.
      * @par Thread-safety
@@ -285,7 +287,8 @@ public:
     /**
      * @brief Closes the store, releasing the writer lock, and releases the slide.
      *
-     * A second call does nothing.
+     * A second call does nothing. A scene obtained from scene() must not be used
+     * afterwards: the slide that owns it is released.
      * @throws IoError When closing the store fails; the workspace is closed even so.
      * @par Thread-safety
      * ThreadSafe.

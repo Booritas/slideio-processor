@@ -84,7 +84,15 @@ directory; `slidePath()` returns the stored form. `open` and
 `openReadOnly` reopen the slide from it with `slideio::openSlide(path, "")`; a
 slide that no longer opens, or no longer has the scene, is an `IoError` naming
 the path. The workspace keeps the slide object alive as long as its scene, and
-`close` releases both.
+`close` releases both, so a scene obtained from `scene()` must not be used after
+`close`.
+
+**Classification.** `Provenance.slideId` holds the slide path, stored absolute,
+and the workspace's error and log messages name it (a slide that does not open,
+a scene out of range, a failed create or close). Slide paths can embed patient
+identifiers or accession numbers, so a workspace store, and any log that
+carries workspace messages, is classed Confidential (HIPAA Security Rule
+§164.312(b); GDPR Art. 5(1)(c)). The library does not redact the path.
 
 `create` and `open` clear the scratch subdirectory that `scratchConfiguration`
 points at. Seam spill files (5.7) are owned by one run and removed when it
@@ -102,7 +110,8 @@ spared.
 
 `openReadOnly` is the observer's entry point when it wants stage state and
 objects together rather than opening the store directly. It takes no writer
-lock and is safe alongside a running script process (UR-OBS-1).
+lock and is safe alongside a running script process (UR-OBS-1). Its stage
+registry follows that process's declarations (4.3).
 
 `memoryBudget()` returns the single `MemoryBudget` instance,
 `makeMemoryBudget(configuration().memoryCeilingBytes())`, made once per
@@ -169,7 +178,10 @@ public:
     /// Binds an earlier stage's layer as an auxiliary raster input, readable
     /// by operations under `bindingName` at this stage's analysis level
     /// (5.1, 5.5) — the coarse half of a coarse-to-fine pair. Implies
-    /// `readsLayer`. Callable more than once with different names.
+    /// `readsLayer`. Callable more than once with different names. A binding
+    /// name names one input across `readsRaster` and `readsLayerAsRaster`:
+    /// reusing it for another target is an `InvalidArgumentError` naming the
+    /// stage and the binding, and an exact repeat is a no-op.
     StageDefinition& readsLayerAsRaster(const char* bindingName, LayerId,
                                         LayerRasterContent);
 
@@ -497,6 +509,11 @@ public:
     /// True when every effective dependency is complete and not stale.
     bool isRunnable(StageId) const;
 
+    /// The definition the stage was declared with, as the registry holds it
+    /// (restored from its record at open). Empty but for the name when the
+    /// record could not be restored.
+    const StageDefinition& definition(StageId) const;
+
     /// Marks `stage` and every stage reachable from it stale, by the four
     /// paths of 4.5. **Transitive**, and there is no non-propagating form:
     /// a caller who wanted one would be asking for exactly the UR-STG-8
@@ -509,16 +526,17 @@ public:
     /// nothing established.
     void clearStale(StageId);
 
-    /// The derived graph behind `markStale` and `isRunnable`: what a re-run
-    /// would invalidate, and why a stage is stale now (4.5). Recomputed with
-    /// the dependency set on every `declare`; the reference stays valid for
-    /// the life of the registry.
-    const StalenessGraph& staleness() const noexcept;
+    /// **Plan C; not declared in plan A** (decision 6). The derived graph
+    /// behind `markStale` and `isRunnable`: what a re-run would invalidate,
+    /// and why a stage is stale now (4.5). Recomputed with the dependency
+    /// set on every `declare`; the reference stays valid for the life of the
+    /// registry.
+    const StalenessGraph& staleness() const noexcept;  // plan C
 };
 ```
 
 **Thread-safety:** ThreadSafe. **Requirements:** UR-STG-2, UR-STG-4,
-UR-STG-8.
+UR-STG-8, UR-OBS-1.
 
 The read side duplicates `storage::StageStateReader` deliberately: an observer
 gets the same information without linking this module, while a producer gets it
@@ -588,16 +606,25 @@ rewrites the dependency rows of every stage (`clearDependencies`, then
 `addDependency`) and records the declaring stage's written layers
 (`addWrittenLayer`), so `StageStateReader` and `LayerRegistry::writerStageAt`
 show the derived graph without linking this module, and a later declare repairs
-the rows of an earlier one that failed part way. The in-memory graph changes
-only after the whole rewrite succeeds. The registry is complete when the
-workspace opens: its constructor reads every stage row, rebuilds the definition
-with `stageFromRecord`, and derives the graph from the definitions without
-writing anything, so `openReadOnly` works. A declare in a reopened workspace
-therefore derives from, and cycle-checks against, the stages persisted earlier.
-A row whose record does not parse is kept by name only: a warning naming the
-stage is logged, the stage has an empty definition, so it derives no reads or
-writes of its own, and it is never runnable. Redeclaring it with a real
-definition repairs it and marks it stale. Layers a stage wrote under an earlier declaration stay recorded as its
+the rows of an earlier one that failed part way. A redeclaration identical to
+the held one does the same in a writable workspace (both writes repeat
+harmlessly) and marks nothing stale, so declaring the stage again repairs its
+written-layer rows too; in a read-only workspace it writes nothing. The
+in-memory graph changes only after the whole rewrite succeeds. `declare`,
+`markStale` and `clearStale` check first that the store is open, so a closed
+workspace is an `IoError` rather than a misleading complaint about an
+undeclared layer. The registry is complete when the workspace opens: its
+constructor reads every stage row, rebuilds the definition with
+`stageFromRecord`, and derives the graph from the definitions without writing
+anything, so `openReadOnly` works. A declare in a reopened workspace therefore
+derives from, and cycle-checks against, the stages persisted earlier. A row
+whose record does not parse (an `InvalidArgumentError` or `InternalError` from
+`stageFromRecord`; any other failure, an `IoError` in particular, propagates),
+or whose explicit `dependsOn` names a stage that is not stored or the stage
+itself, is kept by name only: a warning naming the stage is logged, the stage
+has an empty definition, so it derives no reads or writes of its own, and it is
+never runnable. Redeclaring it with a real definition repairs it and marks it
+stale. Layers a stage wrote under an earlier declaration stay recorded as its
 written layers, because storage has no way to remove one.
 
 The edges around an unreadable stage are not lost. At restore the stored
@@ -609,6 +636,22 @@ becoming runnable. Redeclaring the stage successfully drops its pins and normal
 derivation resumes. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
 and `isRunnable` all read this one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
+
+**A read-only registry follows a live writer (UR-OBS-1).** An observer opens
+with `openReadOnly` while the script process keeps declaring, so the graph
+restored at open goes out of date while `count`, `at` and `configuration`,
+which read the `stages` table directly, do not. Before `declare`,
+`dependencyCount`, `dependencyAt`, `isExplicitDependency`, `isRunnable` and
+`definition` answer, a read-only registry compares the stored stage count and
+each stage's stored configuration with those it last restored; every declare
+or redeclare changes one of them. When either differs it restores again, under
+its mutex, building aside and swapping in, so a failure leaves the previous
+state. Storage offers no cheaper change signal through its API. Stages are
+never removed, so a stored count below the one restored means the store
+cannot be read (it is closed): the registry then answers from what it last
+read. A definition a refresh replaces is kept for the life of the registry,
+so a reference from `definition()` never dangles. The writer registry is the
+only writer, so it never re-reads.
 
 ## 4.4 Stage runner — `workspace/stage_runner.hpp`
 

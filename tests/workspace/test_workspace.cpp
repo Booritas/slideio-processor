@@ -1,4 +1,4 @@
-// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2
+// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-OBS-1
 #include "common/temp_path.hpp"
 #include "workspace/support/test_slide.hpp"
 
