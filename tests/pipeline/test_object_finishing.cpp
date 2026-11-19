@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -208,19 +209,41 @@ TEST(ObjectFinishing, TileFilterCountsOnlyWhatFinishingKeeps) {
     EXPECT_EQ(finishing.emittedCount(), 2);
 }
 
-// A sink noting, for each record, whether it arrived through emitOwned().
+namespace {
+
+// A sink noting, for each record, whether it arrived through emitOwned(), and
+// keeping the records that did.
 class OwnershipSink : public ObjectSink {
 public:
     void emit(const ObjectRecord&) override { owned.push_back(false); }
-    bool emitOwned(ObjectRecord&&) override {
+    bool emitOwned(ObjectRecord&& record) override {
         owned.push_back(true);
+        records.push_back(std::move(record));
         return true;
     }
     void flush() override {}
     int64_t emittedCount() const override { return static_cast<int64_t>(owned.size()); }
 
     std::vector<bool> owned;
+    std::vector<ObjectRecord> records;
 };
+
+// A 10 x 10 square of area 100 on kLayer whose ring starts at its anchor
+// (normalised) or not.
+ObjectRecord squareRecord(bool normalised) {
+    const std::vector<Point64> fromAnchor = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+    const std::vector<Point64> rotated = {{20, 10}, {20, 20}, {10, 20}, {10, 10}};
+    const std::vector<Point64>& ring = normalised ? fromAnchor : rotated;
+    Polygon polygon;
+    polygon.addRing(ring.data(), static_cast<int32_t>(ring.size()), false);
+    ObjectRecord r;
+    r.setGeometry(polygon);
+    r.setLayer(kLayer);
+    r.measurements().set("area", 100.0, MeasurementUnit::Dimensionless);
+    return r;
+}
+
+} // namespace
 
 TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
     ts::registerTestOperations();
@@ -233,20 +256,22 @@ TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
     detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
 
     for (const bool normalised : {false, true}) {
-        const std::vector<Point64> fromAnchor = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
-        const std::vector<Point64> rotated = {{20, 10}, {20, 20}, {10, 20}, {10, 10}};
-        const std::vector<Point64>& ring = normalised ? fromAnchor : rotated;
-        Polygon polygon;
-        polygon.addRing(ring.data(), static_cast<int32_t>(ring.size()), false);
-        ObjectRecord r;
-        r.setGeometry(polygon);
-        r.setLayer(kLayer);
-        r.measurements().set("area", 100.0, MeasurementUnit::Dimensionless);
-        filter.emit(r);
+        filter.emit(squareRecord(normalised));
     }
     EXPECT_EQ(target.owned, (std::vector<bool>{true, true}));
     EXPECT_EQ(filter.emittedCount(), 2);
     EXPECT_EQ(finishing.emittedCount(), 2);
+
+    // A record handed over not normalised is normalised in place and passed on.
+    EXPECT_TRUE(filter.emitOwned(squareRecord(false)));
+    EXPECT_EQ(target.owned, (std::vector<bool>{true, true, true}));
+    ASSERT_EQ(target.records.size(), 3u);
+    const std::vector<Point64> outer = ringOf(target.records.back().geometry(), 0);
+    ASSERT_FALSE(outer.empty());
+    EXPECT_TRUE(outer.front() == (Point64{10, 10}));
+    EXPECT_TRUE(outer.front() == target.records.back().geometry().anchor());
+    EXPECT_EQ(filter.emittedCount(), 3);
+    EXPECT_EQ(finishing.emittedCount(), 3);
 }
 
 TEST(ObjectFinishing, TileObjectRingsAreNormalised) {

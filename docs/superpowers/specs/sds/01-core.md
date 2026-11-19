@@ -971,15 +971,15 @@ they never see a database.
 
 `emit()` is all a sink must implement; `emitKept()` and `emitOwned()` exist
 for the sinks the framework chains in front of the run's own
-(`05-pipeline.md` 5.4). A filter or a finishing step may discard an object,
+(`05-pipeline.md` 5.1, 5.5). A filter or a finishing step may discard an object,
 so `emitKept()` tells the caller whether it was kept, which is what lets the
 tile filter count only objects that reached the store. An operation that
 built a record and has no further use for it hands it over with
 `emitOwned()`, and every link of the chain may then normalise, finish and
 pass on that one record instead of copying it at each step; a sink that
 overrides neither still receives the record through `emit()`, once copied
-at most. A sink overriding one of the three by name and calling another
-through its own type adds `using ObjectSink::...;` against name hiding.
+at most. Each of the three names has one signature, so a sink may override
+any of them alone without hiding the others.
 
 `EdgeSink` is the same arrangement for containment. UR-RES-5 and UR-STG-3
 require a stage to assert parent edges — a `cells` stage attaching

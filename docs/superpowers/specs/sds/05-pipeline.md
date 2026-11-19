@@ -1244,14 +1244,14 @@ filter. An object that passes both has its rings normalised by the framework
 rings in any rotation — the outer ring positive (clockwise on screen, y down),
 holes negative — and a polygon already in normal form is passed on without
 being copied again. An operation that emits with `emitOwned()` hands its record
-over: the filter normalises that record in place and the finishing step
-finishes it, so it is not copied at all; one emitted with `emit()` is copied
-once, to be normalised or else to be finished. It then goes to its producer's
-`finishObject` (5.1) and, unless that discards it, to the run's sink. Every
-object a tile keeps is normalised this way, in a lazy read (below) as in
-a run, so a degenerate ring — all its vertices collinear, or a spike of zero
-area — fails the run, or the read, with `InvalidArgumentError` instead of
-being stored.
+over: the filter normalises that record in place (copying only its polygon)
+and the finishing step finishes it, so the record itself is not copied; one
+emitted with `emit()` is copied once, to be normalised or else to be finished.
+It then goes to its producer's `finishObject` (5.1) and, unless that discards
+it, to the run's sink. Every object a tile keeps is normalised this way, in a
+lazy read (below) as in a run, so a degenerate ring — all its vertices
+collinear, or a spike of zero area — fails the run, or the read, with
+`InvalidArgumentError` instead of being stored.
 
 ### The tile mask
 

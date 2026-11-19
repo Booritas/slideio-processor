@@ -54,7 +54,7 @@ public:
      * @brief As emitKept(), for a record the caller gives up.
      *
      * The sink may move from @p record or finish it in place, so passing a
-     * record on costs no copy; the caller must not rely on its state afterwards.
+     * record on costs no copy of it; the caller must not rely on its state afterwards.
      * The default returns emitKept(record).
      * @param record The object, handed over.
      * @return True when the sink kept the object, false when it discarded it.
