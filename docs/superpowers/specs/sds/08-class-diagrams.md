@@ -1229,6 +1229,14 @@ classDiagram
         +outputPlaneCount(int32_t inputPlanes) int32_t
         +workingSetBytesPerTile() int64_t
         +accumulatedStateBytes(int32_t planeCount) int64_t
+        +objectsAreEightConnected() bool
+        +finishObject(ObjectRecord, ObjectFinishContext) bool
+    }
+
+    class ObjectFinishContext {
+        <<POD>>
+        +double pixelSizeMicrons
+        +int32_t level
     }
 
     class OperationContext {
@@ -1246,12 +1254,14 @@ classDiagram
         +tileRect() Rect64
         +haloRect() Rect64
         +levelScale() double
+        +pixelSizeMicrons() double
         +toLevel0(Point64) Point64
         +toLevel0(Polygon) Polygon
         +channels() ChannelSelection
         +cancellation() CancellationToken
         +mask() RasterMask* or null
         +emitSeamFragment(Polygon, LayerId, const IntensityPartial* p, int32_t n) void
+        +emitSeamFragment(Polygon, LayerId, const IntensityPartial* p, int32_t n, int64_t joinKey) void
     }
 
     class RasterMask {
@@ -1371,6 +1381,7 @@ classDiagram
     Operation ..> Halo
     Operation ..> ChannelArity
     Operation ..> TileRequirement : whole-level layout, forced and budgeted at validate
+    Operation ..> ObjectFinishContext : finishObject, once per object
     OperationContext ..> IntensityPartial : carried by a seam fragment
     StandardMeasurements ..> IntensityPartial : one formula, in-tile and merged
     OperationFactory ..> Operation : creates
@@ -1441,6 +1452,18 @@ and `applyStandardMeasurements` consumes it: one formula measures an object
 finished in one tile and the same object merged from fragments, which UR-SEG-3
 requires to agree.
 
+`finishObject` extends the same argument past the standard measurements. An
+object found whole in one tile and one merged from fragments reach the sink by
+different roads, and both pass through their producer's `finishObject`, with
+the run's pixel size and level in an `ObjectFinishContext`, so selected
+measurements, calibrated units, area filters and hole removal are one rule for
+both (`05-pipeline.md` 5.1). It is why a layer has at most one producer in a
+run. `objectsAreEightConnected` tells the merger, per layer, to join fragments
+whose pixels meet diagonally across a seam, and `emitSeamFragment`'s join key
+keeps apart regions that touch across one: fragments join only within one
+layer and one key (`05-pipeline.md` 5.7). `pixelSizeMicrons` is the scene's
+level-0 pixel size, so calibration needs no parameter.
+
 ### D.6.2 Execution
 
 ```mermaid
@@ -1495,7 +1518,7 @@ classDiagram
     class SeamMerger {
         <<ThreadSafe>>
         +SeamMerger(TileGrid, MemoryBudgetPtr, cstr scratchDirectory)
-        +addFragment(int64_t tile, Polygon, LayerId, const IntensityPartial* p, int32_t n) void
+        +addFragment(int64_t tile, Polygon, LayerId, const IntensityPartial* p, int32_t n, int64_t joinKey) void
         +notifyTileComplete(int64_t tile, ObjectSink) void
         +resolve(ObjectSink, ProgressObserver*, CancellationToken) void
         +fragmentCount() int64_t
@@ -1593,7 +1616,7 @@ classDiagram
     TileExecutor ..> SeamMerger : notifyTileComplete per tile
     SeamMerger o-- TileGrid
     SeamMerger ..> IntensityPartial : carried per fragment
-    SeamMerger ..> ObjectSink : merged objects, during the pass
+    SeamMerger ..> ObjectSink : merged objects, during the pass, through each producer's finishObject
     Operation ..> Reduction : global-context operations accumulate
     Pipeline ..> Backend : the one OpenCV seam
 ```
@@ -1626,7 +1649,12 @@ directory removed — on every path (`05-pipeline.md` 5.5, 5.7). The merger
 reserves each held fragment's bytes from the run's `MemoryBudget` but **never
 waits** for them: short of memory it spills the oldest-opened components, then
 the incoming fragment itself, since the bytes it would wait for may be held by
-the very tile calling it.
+the very tile calling it. Before the first tile the executor declares to the
+merger the layers whose producers' objects are 8-connected, and it wraps the
+run's sink in a private finishing sink that hands each record, by its layer, to
+the producing operation's `finishObject`; the tile filter and the merger both
+emit into that wrapper (`05-pipeline.md` 5.1, 5.5). A fragment's join key waits
+with its contacts in memory, so the spill file's records are unchanged.
 
 `PipelineSceneSource` is the lazy path behind `levelCount`, `rect`,
 `readBlock` and `asScene`: a `detail::` class implementing SlideIO's
@@ -1793,43 +1821,85 @@ classDiagram
 
     class segmentFactories {
         <<free functions>>
-        +makeTissueDetect(TissueDetectParameters) OperationPtr
         +makeConnectedComponents(ConnectedComponentsParameters) OperationPtr
         +makeContourExtraction(ContourParameters) OperationPtr
+        +makeWatershed(WatershedParameters) OperationPtr
+        +makeTissueDetect(TissueDetectParameters) OperationPtr
+    }
+
+    class Connectivity {
+        <<enumeration>>
+        FourConnected
+        EightConnected
+    }
+
+    class ConnectedComponentsParameters {
+        <<ThreadCompatible>>
+        +connectivity(Connectivity) ConnectedComponentsParameters
+        +minimumAreaPx(int64_t) ConnectedComponentsParameters
+        +maximumAreaPx(int64_t) ConnectedComponentsParameters
+        +extractHoles(bool) ConnectedComponentsParameters
+        +measurements(MeasurementSelection) ConnectedComponentsParameters
+        +targetLayer(cstr) ConnectedComponentsParameters
+    }
+
+    class ContourParameters {
+        <<ThreadCompatible>>
+        +includeHoles(bool) ContourParameters
+        +targetLayer(cstr) ContourParameters
+    }
+
+    class WatershedMarkers {
+        <<enumeration>>
+        LocalMaxima
+        AuxiliaryRaster
+    }
+
+    class WatershedParameters {
+        <<ThreadCompatible>>
+        +markers(WatershedMarkers) WatershedParameters
+        +auxiliaryName(cstr) WatershedParameters
+        +minimumMarkerDistancePx(int32_t) WatershedParameters
+        +maximumMarkerSpacingPx(int32_t) WatershedParameters
+        +minimumAreaPx(int64_t) WatershedParameters
+        +measurements(MeasurementSelection) WatershedParameters
+        +targetLayer(cstr) WatershedParameters
     }
 
     class TissueDetectParameters {
+        <<ThreadCompatible>>
         +saturationThreshold(double) TissueDetectParameters
         +minimumRegionAreaPx(int64_t) TissueDetectParameters
         +closingRadiusPx(int32_t) TissueDetectParameters
         +targetLayer(cstr) TissueDetectParameters
     }
 
-    class ConnectedComponentsParameters {
-        +connectivity(Connectivity) ConnectedComponentsParameters
-        +minimumAreaPx(int64_t) ConnectedComponentsParameters
-        +maximumAreaPx(int64_t) ConnectedComponentsParameters
-        +extractHoles(bool) ConnectedComponentsParameters
-        +targetLayer(cstr) ConnectedComponentsParameters
-    }
-
-    class ContourParameters {
-        +includeHoles(bool) ContourParameters
-        +targetLayer(cstr) ContourParameters
-    }
-
-    class measureFactories {
+    class calibration {
         <<free functions>>
-        +makeObjectMeasurements(MeasurementSelection, ChannelSelection) OperationPtr
-        +sceneIsCalibrated(ScenePtr) bool
-        +scenePixelSizeMicrons(ScenePtr) double
+        +sceneIsCalibrated(shared_ptr~Scene~) bool
+        +scenePixelSizeMicrons(shared_ptr~Scene~) double
+    }
+
+    class MeasurementKind {
+        <<enumeration>>
+        Area
+        Perimeter
+        Centroid
+        BoundingBox
+        IntensityMean
+        IntensityStdDev
+        IntensityMin
+        IntensityMax
     }
 
     class MeasurementSelection {
+        <<ThreadCompatible>>
         +standard() MeasurementSelection
         +geometryOnly() MeasurementSelection
         +add(MeasurementKind) MeasurementSelection
+        +addAll() MeasurementSelection
         +contains(MeasurementKind) bool
+        +count() int32_t
     }
 
     registry ..> OperationCatalog : registers every factory
@@ -1843,16 +1913,20 @@ classDiagram
     convertFactories ..> RoundingMode
     convertFactories ..> OverflowMode
     segmentFactories ..> Operation
-    measureFactories ..> Operation
     colourFactories ..> StainVectors
     filterFactories ..> StructuringElement
     StructuringElement ..> StructuringShape
-    segmentFactories ..> TissueDetectParameters
     segmentFactories ..> ConnectedComponentsParameters
     segmentFactories ..> ContourParameters
-    measureFactories ..> MeasurementSelection
+    segmentFactories ..> WatershedParameters
+    segmentFactories ..> TissueDetectParameters
+    ConnectedComponentsParameters ..> Connectivity
+    WatershedParameters ..> WatershedMarkers
+    ConnectedComponentsParameters ..> MeasurementSelection : measured per object
+    WatershedParameters ..> MeasurementSelection : measured per object
+    MeasurementSelection ..> MeasurementKind
     TissueDetectParameters ..> OperationParameters : targetLayer is setString
-    ConnectedComponentsParameters ..> OperationParameters
+    ConnectedComponentsParameters ..> OperationParameters : measurements is a comma-separated string
 ```
 
 The module is almost entirely free functions, and the single dashed arrow from
@@ -1865,10 +1939,21 @@ library.
 `AdaptiveMethod`, and `convertFactories` with `RoundingMode` and
 `OverflowMode` are built, in `registry.hpp`, `pixel/colour.hpp`,
 `pixel/filter.hpp`, `pixel/threshold.hpp` and `pixel/convert.hpp`;
-`registerPixelOperations()` registers their seventeen operations. The
-segmentation and measurement classes are drawn as `06-algorithm.md` specifies
-them and do not exist yet, so `registerSegmentationOperations()` and
-`registerMeasurementOperations()` register nothing. `StainVectors` is pimpl'd
+`registerPixelOperations()` registers their seventeen operations.
+`segmentFactories` with `Connectivity`, `WatershedMarkers` and the four
+parameters classes, in `segment/segment.hpp`, and `MeasurementSelection`,
+`MeasurementKind` and `calibration`, in `measure/measure.hpp`, are built too;
+`registerSegmentationOperations()` registers the four `segment.*` operations,
+and the catalog closes at twenty-one (`06-algorithm.md` 6.10). There is no
+measurement factory: the segmenters that see intensity take a
+`MeasurementSelection` and measure their own objects as each is finished, so
+`registerMeasurementOperations()` registers nothing (`06-algorithm.md` 6.8).
+The parameters classes are pimpl'd with the full copy and move set, and a
+moved-from one is refused by every setter and factory. `MeasurementSelection`
+is pimpl'd too, which is why `standard()`, `geometryOnly()` and `addAll()`,
+which allocate, are not `noexcept`. `calibration` is drawn as its own group of
+free functions; it takes `shared_ptr~Scene~`, never `ScenePtr`, as D.6.2
+explains. `StainVectors` is pimpl'd
 with the full copy and move set, holds at most three stains, and stores
 vectors as given (`06-algorithm.md` 6.3). `StructuringElement` is pimpl'd with
 the same set, holds an odd width and height from 1 to 255 and a mask anchored

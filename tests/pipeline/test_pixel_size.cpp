@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-5, UR-EXT-1
+// Requirements: UR-SEG-5, UR-SEG-6, UR-EXT-1
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/flow.hpp>

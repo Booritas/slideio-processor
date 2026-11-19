@@ -591,6 +591,12 @@ public:
      * foreground pixel must lie within this distance of the marker pixel its
      * basin reached it from. It derives the halo, 2 * spacing + 1. Exceeding
      * it fails the run; it is never approximated.
+     *
+     * Markers must lie within the spacing of every pixel, so the input
+     * flooded should peak inside each object: on a plateau, and so on a
+     * binary mask, only the topmost-leftmost pixels are markers, and the
+     * spacing is usually exceeded. Flood a distance transform of the mask
+     * instead.
      * @param spacingPx The distance; checked by makeWatershed().
      * @return These parameters, so calls can be chained.
      * @throws InvalidArgumentError When these parameters are moved-from.
@@ -656,12 +662,15 @@ private:
  * plane, producing objects.
  *
  * Plane 0 is flooded: a pixel is foreground when its sample is neither 0 nor
- * NaN, and only foreground is flooded. Basins grow from the markers downhill:
- * pixels are taken in descending value, ties by level coordinates (row, then
- * column), and each joins the basin of its highest already-flooded side
- * neighbour (ties again by level coordinates), so the order never depends on
- * where the tile lies. Samples are compared as doubles, exactly for every
- * type but 64-bit integers beyond 2^53 in magnitude. Each basin's 4-connected
+ * NaN, and only foreground is flooded. Basins grow from the markers downhill,
+ * through a frontier: the unflooded foreground pixels beside a flooded one.
+ * The frontier pixel of highest value is flooded next, ties by level
+ * coordinates (row, then column), and joins the basin of its highest flooded
+ * side neighbour (ties again by level coordinates); a pixel joins the frontier
+ * only once a neighbour is flooded, so this is not a sort of the whole tile.
+ * The order never depends on where the tile lies. Samples are compared as
+ * doubles, exactly for every type but 64-bit integers beyond 2^53 in
+ * magnitude. Each basin's 4-connected
  * parts are its objects, traced along pixel edges in level-0 coordinates
  * (UR-SEG-4); basins touching each other share the edges between them and
  * stay apart across tile seams.
@@ -681,6 +690,12 @@ private:
  * than the spacing, fails the tile, and so the run, with InvalidArgumentError
  * "segment.watershed: a region lies further than maximumMarkerSpacingPx from
  * every marker"; nothing is ever segmented partially in its place.
+ *
+ * Flood a surface that peaks inside each object, such as a distance transform
+ * of a mask or a smoothed intensity. A plateau gives only its topmost-leftmost
+ * pixels as markers, so a flat or binary input, a thresholded mask flooded as
+ * it is, gives few markers far apart and usually fails the reach rather than
+ * separating anything.
  *
  * Planes 1 to 3 are measured, so the run selects at most four channels, the
  * first of them flooded: validating a run that gives the operation more fails

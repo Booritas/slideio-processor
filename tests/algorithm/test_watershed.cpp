@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-8, UR-SEG-3, UR-ALG-6
+// Requirements: UR-SEG-8, UR-SEG-3, UR-SEG-5, UR-SEG-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/measure/measure.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/config/configuration.hpp>

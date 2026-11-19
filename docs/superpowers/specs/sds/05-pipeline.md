@@ -46,6 +46,13 @@ struct IntensityPartial {                  // POD, exempt from pimpl per C-2
     int32_t channel;
 };
 
+/// What the framework tells an operation about the run when it finishes one
+/// of the operation's objects.
+struct ObjectFinishContext {               // POD, exempt from pimpl per C-2
+    double  pixelSizeMicrons;              // level-0 pixel size; 0 when unknown
+    int32_t level;                         // the run's analysis level
+};
+
 class OperationContext {
 public:
     ~OperationContext();
@@ -97,6 +104,11 @@ public:
     /// geometry must be in level-0 coordinates (UR-SEG-4); this is how an
     /// operation working on level pixels gets there.
     double  levelScale() const noexcept;
+
+    /// The level-0 pixel size in micrometres, from the scene's resolution;
+    /// 0 when unknown or anisotropic. The same at every analysis level.
+    double  pixelSizeMicrons() const noexcept;
+
     Point64 toLevel0(Point64 levelPoint) const noexcept;
     Polygon toLevel0(const Polygon& levelPolygon) const;
 
@@ -118,6 +130,12 @@ public:
     void emitSeamFragment(const Polygon& fragment, LayerId layer);
     void emitSeamFragment(const Polygon& fragment, LayerId layer,
                           const IntensityPartial* partials, int32_t partialCount);
+    /// As above, with the identity of the region the fragment belongs to:
+    /// fragments join only when layer and join key are both equal. The
+    /// other two forms mean join key 0.
+    void emitSeamFragment(const Polygon& fragment, LayerId layer,
+                          const IntensityPartial* partials, int32_t partialCount,
+                          int64_t joinKey);
 };
 
 class Operation {
@@ -153,14 +171,22 @@ public:
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
     virtual int64_t workingSetBytesPerTile() const;                   // 0
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
+    virtual bool objectsAreEightConnected() const;                    // false
+
+    // Object-producing operations only: called once for every object the
+    // operation produces, before it reaches the run's sink. The default keeps
+    // the object unchanged.
+    virtual bool finishObject(ObjectRecord& record,
+                              const ObjectFinishContext& context) const;  // true
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
 
 **Thread-safety:** `Operation` implementations must be reentrant — `apply` is
-called concurrently on different tiles. `OperationContext` is ThreadConfined,
-one per tile. **Requirements:** UR-EXT-1 to UR-EXT-4, UR-ALG-3, UR-ALG-4,
-UR-IMG-11, UR-EXE-2.
+called concurrently on different tiles, and `finishObject` concurrently from
+the threads evaluating tiles and merging fragments. `OperationContext` is
+ThreadConfined, one per tile. **Requirements:** UR-EXT-1 to UR-EXT-4,
+UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-EXE-2, UR-SEG-3, UR-SEG-5, UR-SEG-7.
 
 This is the public extension interface, and built-in operations use it with no
 privileged access to internals (UR-EXT-2). Its acceptance criterion is that at
@@ -182,8 +208,8 @@ run starts:
   halo of 0 for an operation that needs one produces a detectable seam, which
   is the test that confirms the mechanism is what provides correctness.
 
-Five further declarations have defaults, so an ordinary tiled operation that
-only produces a raster overrides none of them:
+Further declarations have defaults, so an ordinary tiled operation that only
+produces a raster overrides none of them:
 
 - `tileRequirement()` — `Halo` says the operation needs its tile plus
   `halo()`; `WholeLevel` says it needs the analysis level in one block,
@@ -212,7 +238,11 @@ only produces a raster overrides none of them:
   `OperationContext::targetLayer()` returns.
 - `outputPlaneCount(n)` — how many planes a `Joint` operation writes for `n`
   input planes. Not consulted for `PerChannel` operations, which are applied
-  one plane at a time and so yield one plane per input plane.
+  one plane at a time and so yield one plane per input plane. An operation
+  that cannot take `n` planes throws from it, `InvalidArgumentError` or, for
+  an operation whose planes have fixed meanings such as RGB,
+  `ChannelArityError`, naming the operation; `validate()` asks it for every
+  `Joint` step, so the run is then refused before any pixel is read (5.5).
 - `workingSetBytesPerTile()` — the operation's own working memory per
   `apply()` or `accumulate()` call that does not scale with the pixels: a
   window's copy, a histogram's bins, a kernel's coefficients. Like the
@@ -228,6 +258,11 @@ only produces a raster overrides none of them:
   working-set figures cover during a call, and defaults to 0. The run reserves
   it for the instances it keeps (5.5, "Memory"; 5.9) and is refused before it
   starts when it does not fit the memory ceiling.
+- `objectsAreEightConnected()` — for an operation producing objects, true
+  when two of its pixels touching only at a corner belong to one object. The
+  executor tells the seam merger, per target layer, so that fragments of such
+  an operation whose pixels meet diagonally across a seam join (5.7). False by
+  default: objects are 4-connected.
 
 The working-set figures are upper bounds, not estimates: an operation that
 allocates more than it declares lets a run exceed its memory ceiling. A
@@ -241,8 +276,41 @@ reservation trusts. A global-context operation whose state grows with the
 tiles it has seen cannot declare an honest bound and must keep its state
 bounded.
 
-Every declaration, these six included, must be constant for the life of the
+Every declaration, these included, must be constant for the life of the
 operation; the framework reads them once, before the run.
+
+**Every object passes through its producer's `finishObject`.** An object
+found whole in one tile and the same object merged from seam fragments (5.7)
+reach the run's sink by different roads, so whatever the producer does to
+its objects — a selected set of measurements, calibrated units, an area
+filter, holes removed — must be done in one place both roads pass, or the two
+would disagree and UR-SEG-3 would fail. That place is `finishObject`. The
+framework calls it once per object after the rings are normalised (5.5) and
+the standard measurements applied (below), and after the object has passed
+the anchor tests that decide whether it is stored at all — tile ownership and
+the restriction for a tile object, the restriction for a merged one (5.5,
+5.7). The order cannot change a result, because finishing never moves the
+anchor; it only spares finishing the objects that are dropped anyway. It may add or remove measurements and
+remove hole rings; it must not change the outer ring, whose
+topmost-then-leftmost vertex is the object's identity, nor the layer.
+Returning false discards the object, counted in the run's `droppedByFilter`
+counter. `ObjectFinishContext` carries what the operation cannot know from
+the record alone: the level-0 pixel size and the analysis level. The default
+returns true and changes nothing, so an operation that emits finished
+measurements itself is unaffected. Because a merged object is finished by
+the operation producing its layer, **a layer has at most one producer in a
+run**, which `validate()` checks (5.5); the framework routes each record by
+its layer to that producer, through one wrapper of the run's sink
+(`detail::FinishingSink`) that the tile filter and the merger both emit into.
+
+**`pixelSizeMicrons()`** is the scene's level-0 pixel size in micrometres:
+the mean of SlideIO's x and y resolution × 10⁶ when both are finite, positive
+and agree to within 10⁻⁶ relative, else 0 — unknown or anisotropic pixels.
+The executor and the lazy path fill it from the run's scene, so calibration
+needs no parameter and a recorded configuration stays slide-independent. It
+is the same at every analysis level; a level pixel is `levelScale()` times
+as large. `algorithm`'s `sceneIsCalibrated` and `scenePixelSizeMicrons`
+(`06-algorithm.md` 6.8) apply the same rule.
 
 `Halo::uniform` throws `InvalidArgumentError` for a negative width and is
 therefore not `noexcept`: a negative halo is refused, never silently clamped.
@@ -283,7 +351,14 @@ boundary-touching region to `SeamMerger` (5.7) instead of emitting it as a
 finished object. A fragment brings its intensity partials with it, because
 the pixels are gone by the time its component closes (5.7), so the
 four-argument form carries one `IntensityPartial` per channel; the two-argument
-form passes none. `IntensityPartial` is declared here rather than in
+form passes none. The five-argument form adds a **join key**, the identity of
+the region the fragment belongs to: the merger joins two fragments only when
+their layers and their keys are both equal, so distinct regions touching
+across a seam — neighbouring labels of a label raster, neighbouring watershed
+basins — stay distinct objects. The key must name the region the same way in
+every tile, from its samples or from level coordinates, never from a
+tile-local index. An operation whose regions are separated by background
+uses 0, which is what the other two forms pass. `IntensityPartial` is declared here rather than in
 `seam_merger.hpp` because the context, the merger and the measurement formula
 below all need it. A negative `partialCount`, or null `partials` with a
 positive count, throws `InvalidArgumentError`. A run with no seam merger
@@ -350,8 +425,10 @@ Partials of one channel must already be combined — counts and sums added,
 minimum and maximum taken — and a repeated channel throws
 `InvalidArgumentError`, as do a negative count and null partials with a
 positive count; `out` is then unchanged. Measurements of other names in `out`
-are kept and those of the same name replaced. Calibrated units are added by
-`algorithm` (`06-algorithm.md` 6.8).
+are kept and those of the same name replaced. Calibrated units, and every
+measurement beyond these, are added by the producer's `finishObject`
+(`06-algorithm.md` 6.8), which the framework calls after this function on both
+paths.
 
 ## 5.2 Operation parameters — `pipeline/operation_parameters.hpp`
 
@@ -917,8 +994,12 @@ mis-specified stage fails in seconds rather than hours. Each failure is an
    hold, else `UnsupportedDataTypeError` names the operation and the type. A
    `Joint` operation whose `requiresUniformTypes()` is true and whose planes
    have mixed types throws `ChannelArityError` naming the operation and the
-   channels.
-8. Target layers (below).
+   channels. A `Joint` operation's `outputPlaneCount` is then asked for its
+   input's plane count, and what it throws refuses the run: a segmenter that
+   measures intensity throws `InvalidArgumentError` for more than three
+   measured planes besides the one it segments, and tissue detection
+   `ChannelArityError` for other than three (`06-algorithm.md` 6.7).
+8. Target layers (below), then the layout of objects (below).
 9. Every bound auxiliary raster declares at least one plane of a type with a
    size; otherwise the message names its binding. An auxiliary that would
    fail on its first tile is refused here instead.
@@ -938,6 +1019,19 @@ the layer, or "no target layer" when none was named.
 operation author never resolves a layer name and the same operation object
 behaves identically whether a stage or a direct caller ran it. Operations that
 do not produce objects are not consulted.
+
+**One producer per layer.** Two operations producing objects that resolve to
+the same layer are refused, "operations X and Y both target layer \"L\"" —
+names only. A layer's objects are finished by the operation producing it
+(5.1), and a merged object carries no trace of which operation emitted its
+fragments, so a second producer would leave the finisher ambiguous.
+
+**Nothing grows an object producer's tiles.** An operation producing objects
+finds its seams on its own tile rect, and a later operation's halo would grow
+that rect, so its fragments would miss the seams the merger joins on. A chain
+in which an operation producing objects is followed by any operation with a
+non-zero halo is therefore refused, "operation X produces objects and must not
+be followed by a halo". A point operation after it is accepted.
 
 **Stage name.** `stageName(name)` sets the name the run reports: the
 `stageName` of every `ProgressObserver::onProgress` call and the stage in every
@@ -1120,7 +1214,12 @@ is kept only when its anchor lies in the emitting tile's level-0 `tileRect`
 (half-open). An operation that sees halo pixels may therefore emit the same
 object from two tiles without duplicating it in the store; an object outside is
 dropped silently and counted. This ownership test comes before the restriction
-filter.
+filter. An object that passes both has its rings normalised by the framework
+(`detail::normaliseRings`, as a merged object's are, 5.7), so operations emit
+rings in any rotation — the outer ring positive (clockwise on screen, y down),
+holes negative — and a polygon already in normal form is passed on without
+being copied again. It then goes to its producer's `finishObject` (5.1) and,
+unless that discards it, to the run's sink.
 
 ### The tile mask
 
@@ -1461,8 +1560,10 @@ public:
 
     /// Records a fragment touching a tile boundary. Called from worker
     /// threads, in any order.
+    /// Joins only fragments of its layer and join key (5.1).
     void addFragment(int64_t tileIndex, const Polygon&, LayerId,
-                     const IntensityPartial* partials, int32_t partialCount);
+                     const IntensityPartial* partials, int32_t partialCount,
+                     int64_t joinKey = 0);
 
     /// Reports that a tile is finished. Components all of whose bordering
     /// tiles have completed are merged and emitted to `sink` immediately,
@@ -1513,13 +1614,37 @@ A fragment's **seam contacts** are the maximal stretches of its rings lying on a
 seam line of the grid — the level-0 edge `tileRect(c).x` of an interior column
 boundary, likewise `y` for a row boundary; the outer boundary of the grid region
 is not a seam — recorded as a line and a half-open interval in level-0
-integers. Two fragments of the same layer, in the tiles on either side of one
-seam line, join when they have contacts on that line whose intervals **overlap
-with positive length**. Touching at a single point — a corner — does not join:
-the merger is 4-connected, matching `ComponentsOperation`, so an operation that
-wants 8-connected objects must not split them at corners. Joining is
-union-find; which fragment represents a component never reaches the output,
-because identity comes from the merged object's anchor (decision 8).
+integers. Two fragments of the same layer **and the same join key** (5.1), in
+the tiles on either side of one seam line, join when they have contacts on
+that line whose intervals **overlap with positive length**. Touching at a
+single point does not join them on an ordinary layer: objects are
+4-connected.
+
+**8-connected layers.** On a layer whose producer declares
+`objectsAreEightConnected()` (5.1), which the executor passes to the merger
+per layer before the first fragment arrives, two fragments of different tiles
+with the same key also join when they **share a ring vertex lying on a seam
+line** — at a tile corner, with the diagonally adjacent tile, or at a point
+along a seam between two edge-adjacent tiles. Each fragment then holds a pixel
+touching that point, and any two pixels touching one point are 8-neighbours.
+Together with the positive-length contacts this finds every pair of fragments
+with 8-neighbouring pixels across a seam: a diagonal pair whose point is not a
+vertex of one of the fragments has a 4-neighbour pair beside it. On such a
+layer a fragment also expects every other tile touching one of its seam
+vertices — three at a corner.
+
+**Join keys.** Without them the merger would join any two same-layer
+fragments touching across a seam, so two regions that touch — neighbouring
+labels, neighbouring watershed basins — would leave as one object, and
+UR-SEG-8 and UR-QA-2 would fail. A key names the region a fragment belongs to
+the same way in every tile; fragments of different keys never join, however
+they touch, edge or point alike. The key waits with each contact in the
+merger's memory, so a fragment written to the spill file keeps its key and the
+spill record (below) does not carry it.
+
+Joining is union-find; which fragment represents a component never reaches
+the output, because identity comes from the merged object's anchor
+(decision 8).
 
 ### When an object closes
 
@@ -1531,7 +1656,9 @@ reported through `notifyTileComplete`, which the executor calls for every tile,
 re-examines only the components touching *t*; reporting a tile twice does
 nothing more. A closed component is merged, measured, tested against the
 restriction at its anchor (through the filter the executor hands the merger;
-5.5) and emitted to `sink`, then forgotten. Objects are emitted from the
+5.5) and emitted to `sink`, then forgotten. In a run the executor's `sink` is
+the finishing wrapper of 5.1, so a merged object goes through its producer's
+`finishObject` exactly as a tile object does. Objects are emitted from the
 thread that completed the tile, outside the merger's lock, so the sink must be
 ThreadSafe, as every object sink of a run is.
 
@@ -1556,16 +1683,22 @@ inside it (seam lines are axis-parallel, so no other edge can need it);
 directed edges that coincide with opposite directions — the shared seams —
 cancel; the rest are linked into rings, taking at a vertex with several
 outgoing edges the one turning most sharply right, so rings touching at a point
-separate rather than cross. Positive rings are outer, negative ones holes. The
-result is normalised exactly as `ComponentsOperation` normalises what it emits:
-collinear vertices removed, each ring starting at its topmost-then-leftmost
-vertex, the single outer ring first, then the holes ordered by first vertex (y,
-then x). A merged object and the same object found whole in one tile therefore
-compare equal point for point.
+separate rather than cross. On an 8-connected layer the linker takes the one
+turning most sharply **left** instead, so an object whose pixels touch
+diagonally keeps one outer ring passing twice through that point (which
+`Polygon::addRing` accepts), while holes touching at a point stay apart; an
+operation's own tracer applies the same rule, so an object found in one tile
+and the same object merged agree. Positive rings are outer, negative ones
+holes. The result is normalised by `detail::normaliseRings`, as the framework
+normalises every tile object (5.5): collinear vertices removed, each ring
+starting at its topmost-then-leftmost vertex, the single outer ring first,
+then the holes ordered by first vertex (y, then x). A merged object and the
+same object found whole in one tile therefore compare equal point for point.
 
 A component whose edges do not close into rings, whose fragments overlap, or
-that yields other than exactly one outer ring — positive-length joins make a
-component connected, so more than one is a defect — throws `InternalError`.
+that yields other than exactly one outer ring — the joins make a component
+4-connected, or 8-connected on such a layer, so more than one is a defect —
+throws `InternalError`.
 The message names the layer and the fragment and ring counts, **never
 coordinates or a bounding box**, which could carry clinical data.
 
@@ -1678,7 +1811,9 @@ tile's bytes per worker reading it.
 
 Geometric measurements — area, perimeter, centroid, bounding box — are
 recomputed from the merged polygon at close, so they are exactly what
-single-tile processing would produce and nothing needs carrying.
+single-tile processing would produce and nothing needs carrying: area and
+perimeter by `applyStandardMeasurements`, the rest by the producer's
+`finishObject` (5.1), which sees the merged polygon as it sees a tile object's.
 
 Intensity statistics cannot be: the pixels are gone once a tile is done. Each
 fragment therefore carries `IntensityPartial` per channel, and the merger
@@ -1710,7 +1845,10 @@ regroups the float sums, so the claim depends on the sample type:
   intensity statistics, and says why. Geometry is still exact.
 - Wider integer types are not claimed: UInt16 loses exactness at about 2.1 M
   pixels, which a level-spanning region exceeds. `ComponentsOperation` admits
-  only Byte and Float32 intensities.
+  only Byte and Float32 intensities. The catalog's segmenters measure every
+  type (`06-algorithm.md` 6.7); for an integer type the sums stay exact, and the
+  measurements bitwise identical, while they are below 2⁵³, which the tests'
+  objects are.
 
 Worker-count invariance (UR-QA-3) is exact for every type, because the
 canonical order does not depend on the schedule.

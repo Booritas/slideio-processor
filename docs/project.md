@@ -144,7 +144,11 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   and tissue detection, with per-object measurements in pixel and calibrated
   units; objects pass through their producer's finishing step, operations see
   the scene's pixel size, and the merger joins 8-connected objects at tile
-  corners. The catalog closes at twenty-one operations.
+  corners and along seams, and joins fragments only within one join key, so
+  regions touching across a seam stay apart. The segmenters measure at most
+  three channels besides the one they segment. The catalog closes at
+  twenty-one operations. **Implemented** on branch `feat/algorithm-c`,
+  awaiting review and merge.
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes
