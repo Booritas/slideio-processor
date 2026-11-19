@@ -1,13 +1,16 @@
-// Requirements: UR-EXE-2, UR-ALG-8, UR-SEG-2
+// Requirements: UR-EXE-2, UR-ALG-8, UR-SEG-2, UR-SEG-8
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 
+#include <algorithm/detail/sample_codec.hpp>
 #include <algorithm/support/working_set_check.hpp>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -247,5 +250,191 @@ TEST(WorkingSetSegment, ContoursPerCallCoversOneSmallObject) {
     const OperationPtr op = makeContourExtraction(ContourParameters());
     const int64_t peak = ts::measureWorkingSetPeakOn(*op, {DataType::Int32}, labelPlaneOf(square, 8, 8, false), 6, 6,
                                                      ts::WorkingSetCall::Apply);
+    EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
+}
+
+namespace {
+
+// Plane 0 of @p value as Float64, then @p intensityPlanes Float64 planes; 0
+// within @p margin pixels of the edge.
+std::vector<std::vector<uint8_t>> valuePlanesOf(const std::function<double(int64_t x, int64_t y)>& value,
+                                                int64_t width, int64_t height, int32_t intensityPlanes,
+                                                int64_t margin) {
+    std::vector<std::vector<uint8_t>> planes;
+    std::vector<uint8_t> plane0(static_cast<size_t>(width * height) * sizeof(double));
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            const bool inside = x >= margin && y >= margin && x < width - margin && y < height - margin;
+            const double v = inside ? value(x, y) : 0.0;
+            std::memcpy(&plane0[static_cast<size_t>(y * width + x) * sizeof(double)], &v, sizeof(double));
+        }
+    }
+    planes.push_back(std::move(plane0));
+    for (int32_t p = 0; p < intensityPlanes; ++p) {
+        std::vector<uint8_t> plane(static_cast<size_t>(width * height) * sizeof(double));
+        for (int64_t i = 0; i < width * height; ++i) {
+            const double v = static_cast<double>((i * 7 + p) % 101);
+            std::memcpy(&plane[static_cast<size_t>(i) * sizeof(double)], &v, sizeof(double));
+        }
+        planes.push_back(std::move(plane));
+    }
+    return planes;
+}
+
+// An Int64 anchor raster bound as "anchors": @p value, -1 for none.
+ts::WorkingSetAuxiliary anchorsOf(const std::function<int64_t(int64_t x, int64_t y)>& value, int64_t width,
+                                  int64_t height) {
+    ts::WorkingSetAuxiliary anchors;
+    anchors.name = "anchors";
+    anchors.type = DataType::Int64;
+    anchors.bytes.resize(static_cast<size_t>(width * height) * sizeof(int64_t));
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            const int64_t v = value(x, y);
+            std::memcpy(&anchors.bytes[static_cast<size_t>(y * width + x) * sizeof(int64_t)], &v, sizeof(int64_t));
+        }
+    }
+    return anchors;
+}
+
+// A spacing of 2 keeps the halo small beside the tile, so what scales with
+// the tile weighs most against the declaration.
+OperationPtr watershed(WatershedMarkers markers) {
+    return makeWatershed(WatershedParameters()
+                             .markers(markers)
+                             .auxiliaryName("anchors")
+                             .minimumMarkerDistancePx(1)
+                             .maximumMarkerSpacingPx(2));
+}
+
+} // namespace
+
+// The shared pattern's ramps run further than any spacing from their maxima,
+// so the operation refuses it; instead, every type, and four planes of mixed
+// types, hold cones of height 5 around peaks 8 pixels apart, at the default
+// parameters.
+TEST(WorkingSetSegment, WatershedBoundedOnCones) {
+    const auto cone = [](int64_t x, int64_t y) {
+        const int64_t d = std::max(std::abs((x + 4) % 8 - 4), std::abs((y + 4) % 8 - 4));
+        return int64_t{5} - d;
+    };
+    const std::vector<std::vector<DataType>> typeSets = {
+        {DataType::Float32, DataType::Float64, DataType::Byte, DataType::UInt16}, {DataType::Byte},
+        {DataType::Int8}, {DataType::UInt16}, {DataType::Int16}, {DataType::UInt32}, {DataType::Int32},
+        {DataType::Float16}, {DataType::Float32}, {DataType::Float64}, {DataType::Int64}, {DataType::UInt64}};
+    for (const int64_t tile : ts::kWorkingSetTileSizes) {
+        for (const std::vector<DataType>& types : typeSets) {
+            const OperationPtr op = makeWatershed(WatershedParameters());
+            const int64_t side = tile + op->halo().left + op->halo().right;
+            std::vector<std::vector<uint8_t>> planes;
+            for (const DataType type : types) {
+                const int64_t size = dataTypeSizeBytes(type);
+                std::vector<uint8_t> plane(static_cast<size_t>(side * side * size));
+                for (int64_t y = 0; y < side; ++y) {
+                    for (int64_t x = 0; x < side; ++x) {
+                        bool overflowed = false;
+                        detail::writeSample(&plane[static_cast<size_t>(y * side * size)], x, type,
+                                            detail::Sample{detail::Sample::Kind::Signed, cone(x, y), 0, 0.0},
+                                            RoundingMode::Nearest, OverflowMode::Saturate, overflowed);
+                    }
+                }
+                planes.push_back(std::move(plane));
+            }
+            const int64_t peak = ts::measureWorkingSetPeakOn(*op, types, planes, tile, tile, ts::WorkingSetCall::Apply);
+            EXPECT_LE(peak, ts::declaredWorkingSet(*op, tile, tile))
+                << dataTypeName(types.front()) << " and " << types.size() - 1 << " more, tile " << tile
+                << ": measured " << peak << ", declared " << ts::declaredWorkingSet(*op, tile, tile);
+        }
+    }
+}
+
+// The declaration covers the worst inputs with up to three measured planes,
+// each basin emitted as seam fragments (the input reaches the tile's edge) or
+// as finished objects (kept inside): with LocalMaxima markers, a maximum at
+// every other pixel of every other row, so that many basins of four pixels
+// flood; with AuxiliaryRaster markers, the label rasters of segment.contours
+// as anchors, every pixel its own basin at worst, and sparse anchors, so that
+// most pixels wait in the queue.
+TEST(WorkingSetSegment, WatershedBoundedOnAdversarialInputs) {
+    struct Input {
+        const char* name;
+        WatershedMarkers markers;
+        std::function<double(int64_t, int64_t)> value;
+        std::function<int64_t(int64_t, int64_t)> anchor;
+    };
+    const auto none = [](int64_t, int64_t) { return int64_t{-1}; };
+    std::vector<Input> inputs = {
+        {"maxima on a two-pixel grid", WatershedMarkers::LocalMaxima,
+         [](int64_t x, int64_t y) { return x % 2 == 0 && y % 2 == 0 ? 2.0 : 1.0; }, none},
+        {"maxima on a two-pixel grid, holes between", WatershedMarkers::LocalMaxima,
+         [](int64_t x, int64_t y) {
+             return x % 2 == 1 && y % 2 == 1 ? 0.0 : (x % 2 == 0 && y % 2 == 0 ? 2.0 : 1.0);
+         },
+         none},
+        // Falling away from each anchor, so each pixel floods from a near one.
+        {"sparse anchors", WatershedMarkers::AuxiliaryRaster,
+         [](int64_t x, int64_t y) {
+             return 4.0 - static_cast<double>(std::min(x % 3, 3 - x % 3) + std::min(y % 3, 3 - y % 3));
+         },
+         [](int64_t x, int64_t y) { return x % 3 == 0 && y % 3 == 0 ? x + 1000 * y : int64_t{-1}; }},
+    };
+    for (const LabelRaster& raster : adversarialLabelRasters()) {
+        // The raster's 0 is background in plane 0 too, so every foreground pixel
+        // is a marker.
+        inputs.push_back({raster.name, WatershedMarkers::AuxiliaryRaster,
+                          [&raster](int64_t x, int64_t y) { return raster.value(x, y) == 0 ? 0.0 : 1.0; },
+                          [&raster](int64_t x, int64_t y) {
+                              const int32_t v = raster.value(x, y);
+                              return v == 0 ? int64_t{-1} : int64_t{v};
+                          }});
+    }
+    for (const int64_t tile : ts::kWorkingSetTileSizes) {
+        for (const Input& input : inputs) {
+            const OperationPtr probe = watershed(input.markers);
+            const int64_t haloSide = tile + probe->halo().left + probe->halo().right;
+            const ts::WorkingSetAuxiliary anchors = anchorsOf(input.anchor, haloSide, haloSide);
+            for (const bool interior : {false, true}) {
+                const int64_t margin = interior ? probe->halo().left + 3 : 0;
+                for (const int32_t intensityPlanes : {0, 1, 3}) {
+                    const std::vector<DataType> types(1 + static_cast<size_t>(intensityPlanes), DataType::Float64);
+                    const std::vector<std::vector<uint8_t>> planes =
+                        valuePlanesOf(input.value, haloSide, haloSide, intensityPlanes, margin);
+                    const OperationPtr op = watershed(input.markers);
+                    int64_t peak = 0;
+                    try {
+                        peak = ts::measureWorkingSetPeakOn(*op, types, planes, tile, tile, ts::WorkingSetCall::Apply,
+                                                           &anchors);
+                    } catch (const std::exception& e) {
+                        ADD_FAILURE() << input.name << ", tile " << tile << ": " << e.what();
+                        continue;
+                    }
+                    const int64_t declared = ts::declaredWorkingSet(*op, tile, tile);
+                    EXPECT_LE(peak, declared) << input.name << (interior ? ", kept inside" : "") << ", tile "
+                                              << tile << ", " << intensityPlanes << " measured planes: measured "
+                                              << peak << ", declared " << declared;
+                }
+            }
+        }
+    }
+}
+
+TEST(WorkingSetSegment, CatalogMirrorsWatershed) {
+    const OperationPtr op = makeWatershed(WatershedParameters());
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    EXPECT_EQ(catalog.workingSetBytesPerLevelPixel("segment.watershed"), op->workingSetBytesPerLevelPixel());
+    EXPECT_EQ(catalog.workingSetBytesPerTile("segment.watershed"), op->workingSetBytesPerTile());
+}
+
+// One small object finished whole, with three measured planes and every
+// measurement in micrometres too: what does not scale with the tile is within
+// the per-call figure alone.
+TEST(WorkingSetSegment, WatershedPerCallCoversOneSmallObject) {
+    const OperationPtr op =
+        makeWatershed(WatershedParameters().minimumMarkerDistancePx(1).maximumMarkerSpacingPx(1));
+    const std::vector<DataType> types{DataType::Float64, DataType::Float64, DataType::Float64, DataType::Float64};
+    // The halo'd tile is 12 x 12 pixels: a 2 x 2 square inside the 6 x 6 tile.
+    const std::vector<std::vector<uint8_t>> planes = valuePlanesOf(
+        [](int64_t x, int64_t y) { return x >= 5 && x < 7 && y >= 5 && y < 7 ? 1.0 : 0.0; }, 12, 12, 3, 0);
+    const int64_t peak = ts::measureWorkingSetPeakOn(*op, types, planes, 6, 6, ts::WorkingSetCall::Apply);
     EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
 }

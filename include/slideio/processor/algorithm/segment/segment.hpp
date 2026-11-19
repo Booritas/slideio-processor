@@ -1,11 +1,11 @@
-// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7
+// Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-SEG-8
 #pragma once
 
 /**
  * @file segment.hpp
  * @brief Segmentation operations: Connectivity, the connected-components
- * labelling with its per-object measurements, and the contours of a label
- * raster.
+ * labelling with its per-object measurements, the contours of a label raster,
+ * and the marker-controlled watershed that separates touching objects.
  *
  * A segmentation operation writes objects to a layer of the run. Each object is
  * found on the tile it lies in; one cut by tile seams is emitted in fragments
@@ -29,6 +29,7 @@ namespace slideio::processor {
 namespace detail {
 struct ConnectedComponentsParametersAccess;
 struct ContourParametersAccess;
+struct WatershedParametersAccess;
 } // namespace detail
 
 /**
@@ -429,5 +430,296 @@ private:
  * UR-SEG-2, UR-SEG-3, UR-SEG-4
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeContourExtraction(const ContourParameters& parameters);
+
+/**
+ * @brief Where `segment.watershed` takes its markers, the seeds its basins
+ * grow from.
+ *
+ * Stored in the operation's parameters as its enumerator spelling,
+ * `"LocalMaxima"` or `"AuxiliaryRaster"`.
+ * @par Requirements
+ * UR-SEG-8
+ */
+enum class WatershedMarkers : int32_t {
+    /// Detected in plane 0: a foreground pixel greater than every other
+    /// foreground pixel within `minimumMarkerDistancePx`, a plateau giving its
+    /// topmost, then leftmost, pixel.
+    LocalMaxima,
+    /// One basin per distinct value other than -1 of an `Int64` raster bound
+    /// to the run under `auxiliaryName`, normally
+    /// LayerRasterContent::ObjectAnchor of a coarser stage's objects.
+    AuxiliaryRaster
+};
+
+/**
+ * @brief The parameters of `segment.watershed`, set one by one and passed to
+ * makeWatershed().
+ *
+ * Each setter stores what the operation's parameter bag records under the key
+ * of the same name, so the typed factory and the catalog build the same
+ * operation from the same bag:
+ * | Key | Type | Default | Range |
+ * |---|---|---|---|
+ * | `markers` | string | `"LocalMaxima"` | a WatershedMarkers spelling |
+ * | `auxiliaryName` | string | `""` | with `AuxiliaryRaster`, the name of a bound raster, not empty |
+ * | `minimumMarkerDistancePx` | int | 5 | 1 to `maximumMarkerSpacingPx` |
+ * | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823 |
+ * | `minimumAreaPx` | int | 0 | at least 0 |
+ * | `measurements` | string | every MeasurementKind | MeasurementKind spellings separated by commas, without spaces |
+ * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
+ *
+ * A moved-from object may only be assigned to or destroyed.
+ * @par Thread-safety
+ * ThreadCompatible.
+ * @par Requirements
+ * UR-SEG-2, UR-SEG-5, UR-SEG-7, UR-SEG-8
+ */
+class SLIDEIO_PROCESSOR_ENGINE_EXPORTS WatershedParameters {
+public:
+    /**
+     * @brief Creates the default parameters: markers at local maxima at least
+     * 5 pixels apart, a spacing of 32 pixels, no area bound, every
+     * measurement, the run's only bound layer.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Safe to call concurrently.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters();
+    /**
+     * @brief Copies parameters; the copy shares nothing with the original.
+     * @param other The parameters to copy; not moved-from.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Reads @p other; ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters(const WatershedParameters& other);
+    /**
+     * @brief Moves parameters. The moved-from object may only be assigned to
+     * or destroyed.
+     * @param other The parameters to move from.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters(WatershedParameters&& other) noexcept;
+    /**
+     * @brief Replaces these parameters with a copy of others.
+     * @param other The parameters to copy; not moved-from.
+     * @return These parameters.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& operator=(const WatershedParameters& other);
+    /**
+     * @brief Replaces these parameters by moving others. The moved-from object
+     * may only be assigned to or destroyed.
+     * @param other The parameters to move from.
+     * @return These parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& operator=(WatershedParameters&& other) noexcept;
+    /**
+     * @brief Destroys the parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    ~WatershedParameters();
+
+    /**
+     * @brief Sets where the markers come from; `LocalMaxima` by default.
+     * @param markers The source; checked by makeWatershed().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& markers(WatershedMarkers markers);
+    /**
+     * @brief Names the bound raster the markers are read from with
+     * `AuxiliaryRaster`; empty by default, and ignored with `LocalMaxima`.
+     * @param bindingName The binding's name, UTF-8; not null; copied.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p bindingName is null or these
+     * parameters are moved-from.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& auxiliaryName(const char* bindingName);
+    /**
+     * @brief Sets how far apart, in level pixels and Chebyshev distance, two
+     * local maxima must be to be two markers; 5 by default. Used with
+     * `LocalMaxima`.
+     * @param distancePx The distance; checked by makeWatershed().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& minimumMarkerDistancePx(int32_t distancePx);
+    /**
+     * @brief Sets the reach of a basin, in level pixels and Chebyshev
+     * distance; 32 by default.
+     *
+     * The bound that makes the operation tileable, and a hard one: every
+     * foreground pixel must lie within this distance of the marker pixel its
+     * basin reached it from. It derives the halo, 2 * spacing + 1. Exceeding
+     * it fails the run; it is never approximated.
+     * @param spacingPx The distance; checked by makeWatershed().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& maximumMarkerSpacingPx(int32_t spacingPx);
+    /**
+     * @brief Sets the smallest area an object may have to be kept, in square
+     * level-0 pixels, inclusive; 0 by default (no lower bound).
+     * @param areaPx The bound; checked by makeWatershed().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-7
+     */
+    WatershedParameters& minimumAreaPx(int64_t areaPx);
+    /**
+     * @brief Sets which measurements each object keeps; every kind by default.
+     * @param selection The kinds; may be empty, which keeps none.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-5
+     */
+    WatershedParameters& measurements(const MeasurementSelection& selection);
+    /**
+     * @brief Names the bound layer the objects go to.
+     *
+     * An empty name, the default, leaves the key out of the parameter bag, and
+     * the run then uses its only bound layer; a run binding several layers
+     * needs a name.
+     * @param layerName The layer's name, UTF-8; not null; copied.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p layerName is null or these
+     * parameters are moved-from.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    WatershedParameters& targetLayer(const char* layerName);
+
+private:
+    friend struct detail::WatershedParametersAccess;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Creates `segment.watershed`: Joint over one to four planes, halo
+ * 2 * `maximumMarkerSpacingPx` + 1, every input type, one `Int32` output
+ * plane, producing objects.
+ *
+ * Plane 0 is flooded: a pixel is foreground when its sample is neither 0 nor
+ * NaN, and only foreground is flooded. Basins grow from the markers downhill:
+ * pixels are taken in descending value, ties by level coordinates (row, then
+ * column), and each joins the basin of its highest already-flooded side
+ * neighbour (ties again by level coordinates), so the order never depends on
+ * where the tile lies. Samples are compared as doubles, exactly for every
+ * type but 64-bit integers beyond 2^53 in magnitude. Each basin's 4-connected
+ * parts are its objects, traced along pixel edges in level-0 coordinates
+ * (UR-SEG-4); basins touching each other share the edges between them and
+ * stay apart across tile seams.
+ *
+ * Markers with `LocalMaxima` are the foreground pixels greater than every
+ * other foreground pixel within `minimumMarkerDistancePx`, a pixel of equal
+ * value counting as greater when it lies above, or to the left on the same
+ * row; a plateau thus gives its topmost, then leftmost, pixel. With
+ * `AuxiliaryRaster`, each foreground pixel whose value in the bound `Int64`
+ * raster is not -1 is a marker, one basin per value; the raster covers the
+ * same pixels as plane 0.
+ *
+ * **The reach is enforced.** A basin's boundary may depend only on markers
+ * within `maximumMarkerSpacingPx`, which is what lets each tile decide it from
+ * its own halo and keeps the result identical at every tile size (UR-SEG-3).
+ * A foreground pixel no marker reaches, or reached from a marker pixel further
+ * than the spacing, fails the tile, and so the run, with InvalidArgumentError
+ * "segment.watershed: a region lies further than maximumMarkerSpacingPx from
+ * every marker"; nothing is ever segmented partially in its place.
+ *
+ * Planes 1 to 3 are measured, so the run selects at most four channels, the
+ * first of them flooded: validating a run that gives the operation more fails
+ * with InvalidArgumentError, and so does its outputPlaneCount() asked for more
+ * than four. The measurements are those of makeConnectedComponents(): `area`,
+ * `perimeter`, `centroid.x`, `centroid.y`, `boundingBox.x`, `.y`, `.width`,
+ * `.height` in level-0 pixels, each also in micrometres when the scene is
+ * calibrated, and `intensity.<c>.mean`, `.stddev`, `.min` and `.max` per
+ * measured channel c over the object's own pixels, NaN samples skipped and
+ * infinite ones counted; only the kinds selected are kept. An object whose
+ * final area is below `minimumAreaPx` is discarded before it is stored,
+ * however it was assembled (UR-SEG-7). Holes are kept.
+ *
+ * The output plane holds, for each pixel of an object, the object's 1-based
+ * index among the objects of its tile in the order their first pixel is met
+ * row by row, and 0 elsewhere. The index is local to the tile: it is a view
+ * for inspection, not an object's identity.
+ *
+ * The working memory is declared per pixel of the halo'd tile, which is large
+ * beside the tile when the spacing is: a spacing of 32 grows a 256-pixel tile
+ * to 386 pixels a side.
+ *
+ * By name, an unknown key, a value of the wrong type or a value out of range,
+ * an unknown measurement kind among them, throws InvalidArgumentError naming
+ * the key, never the value.
+ * @param parameters The parameters; not moved-from.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p parameters is moved-from, the markers
+ * are not an enumerator, `auxiliaryName` is empty with `AuxiliaryRaster`, a
+ * distance is out of its range (the minimum marker distance above the spacing
+ * included) or `minimumAreaPx` is negative; the message names the operation
+ * and the parameter, never the value. A tile throws it when no raster is bound
+ * under `auxiliaryName` or the bound one is not one `Int64` plane, naming the
+ * parameter and never the binding, and when the reach is exceeded.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() and finishObject() may
+ * run concurrently on different contexts and objects.
+ * @par Requirements
+ * UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-7, UR-SEG-8
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParameters& parameters);
 
 } // namespace slideio::processor

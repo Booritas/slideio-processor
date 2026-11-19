@@ -96,7 +96,7 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
 
 int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& types,
                                 const std::vector<std::vector<uint8_t>>& in, int64_t width, int64_t height,
-                                WorkingSetCall call) {
+                                WorkingSetCall call, const WorkingSetAuxiliary* auxiliary) {
     const Halo halo = op.halo();
     const int64_t inWidth = width + halo.left + halo.right;
     const int64_t inHeight = height + halo.top + halo.bottom;
@@ -139,6 +139,13 @@ int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& type
                               inPlanes.data(), static_cast<int32_t>(inPlanes.size()));
         BlockView output(width, height, Rect64{0, 0, width, height}, 0, outPlanes.data(),
                          static_cast<int32_t>(outPlanes.size()));
+        std::vector<BlockView> auxiliaryView;
+        if (auxiliary != nullptr) {
+            BlockPlane plane{const_cast<uint8_t*>(auxiliary->bytes.data()), auxiliary->type,
+                             inWidth * dataTypeSizeBytes(auxiliary->type), 0};
+            auxiliaryView.emplace_back(inWidth, inHeight, Rect64{-halo.left, -halo.top, inWidth, inHeight}, 0,
+                                       &plane, 1);
+        }
         detail::OperationContextState state;
         state.input = &input;
         state.output = call == WorkingSetCall::Apply ? &output : nullptr;
@@ -151,6 +158,9 @@ int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& type
             state.objectSink = &objects;
             state.targetLayer = LayerId(1);
             state.seamFragment = fragments;
+        }
+        if (auxiliary != nullptr) {
+            state.auxiliaries.emplace_back(auxiliary->name, &auxiliaryView.front());
         }
         const auto context = detail::OperationContextAccess::make(std::move(state));
         AllocationMeter meter;

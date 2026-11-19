@@ -81,6 +81,7 @@ void registerPixelOperations() {
 void registerSegmentationOperations() {
     registerOne("segment.connected_components", &detail::makeConnectedComponentsFactory);
     registerOne("segment.contours", &detail::makeContoursFactory);
+    registerOne("segment.watershed", &detail::makeWatershedFactory);
 }
 
 void registerMeasurementOperations() {}

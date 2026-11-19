@@ -65,4 +65,7 @@ OperationFactoryPtr makeConnectedComponentsFactory();
 /// segment.contours
 OperationFactoryPtr makeContoursFactory();
 
+/// segment.watershed
+OperationFactoryPtr makeWatershedFactory();
+
 } // namespace slideio::processor::detail
