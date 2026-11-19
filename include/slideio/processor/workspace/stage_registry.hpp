@@ -51,13 +51,19 @@ public:
      * record (stageRecordJson) becomes the stage's configuration, each written layer is
      * recorded against the stage, and every stage's dependency rows are brought up to
      * date. Declaring a name that already exists throws InvalidArgumentError.
+     * An explicit dependsOn naming the stage itself throws StageError.
+     *
+     * Every call to StageStateWriter is its own transaction, so a storage failure in the
+     * middle of a declare can leave the stage declared (and held in memory) with
+     * incomplete written-layer or dependency rows. The next declare rewrites every
+     * stage's dependency rows and so repairs the dependencies.
      * @param definition The stage; copied.
      * @return The new stage's id.
      * @throws InvalidArgumentError When the name is already declared, or a layer or
      * raster the definition names is unknown, or it writes the pixel layer.
      * @throws StageError When an explicit dependency names an unknown stage (the message
-     * names both stages), or the effective graph would contain a cycle (the message
-     * names the stages in it).
+     * names both stages) or the stage itself, or the effective graph would contain a
+     * cycle (the message names the stages in it).
      * @throws IoError When the workspace is read-only or closed.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety

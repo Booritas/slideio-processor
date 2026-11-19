@@ -114,13 +114,6 @@ void requireAcyclic(const Graph& graph, const std::vector<Entry>& entries) {
     }
 }
 
-bool sameDependencies(const std::vector<Edge>& a, const std::vector<Edge>& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i].dependency != b[i].dependency) return false;
-    }
-    return true;
-}
 
 } // namespace
 
@@ -168,17 +161,14 @@ public:
         for (int32_t i = 0; i < def.readRasterCount(); ++i) requireRaster(def.readRasterAt(i), "reads");
     }
 
-    // Derives the dependencies of every held stage and brings the stored rows up to
-    // date: a stage's rows are rewritten (clear, then add) when they differ from what
-    // was last persisted. One function, so redeclaring a stage can reuse it.
+    // Derives the dependencies of every held stage and rewrites every stage's stored
+    // rows (clear, then add), so a partial failure of an earlier declare is repaired by
+    // the next. The in-memory graph changes only after the whole rewrite succeeds. One
+    // function, so redeclaring a stage can reuse it.
     void deriveAndPersist() {
         Graph next = deriveGraph(entries());
         StageStateWriter& writer = store.stageStateWriter();
         for (const auto& stage : next) {
-            const auto previous = graph.find(stage.first);
-            const bool unchanged = previous != graph.end() ? sameDependencies(previous->second, stage.second)
-                                                           : stage.second.empty();
-            if (unchanged) continue;
             writer.clearDependencies(StageId(stage.first));
             for (const Edge& edge : stage.second) writer.addDependency(StageId(stage.first), StageId(edge.dependency));
         }
@@ -218,43 +208,53 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     candidate.push_back({std::numeric_limits<int32_t>::max(), &definition});
     requireAcyclic(deriveGraph(candidate), candidate);
 
+    // Everything that can run out of memory is allocated before the store is touched:
+    // the copy, and a map node parked under a placeholder key until the id is known.
+    auto copy = std::make_unique<StageDefinition>(definition);
+    const int32_t placeholder = std::numeric_limits<int32_t>::min();
+    impl_->definitions[placeholder] = std::move(copy);
+    auto node = impl_->definitions.extract(placeholder);
+
     StageStateWriter& writer = store.stageStateWriter();
     const StageId id = writer.declare(definition.name(), record.c_str());
-    impl_->definitions[id.value()] = std::make_unique<StageDefinition>(definition);
+    // The stage now exists in the store, so its definition is kept even if a later
+    // write throws; the next declare rewrites every dependency row.
+    node.key() = id.value();
+    impl_->definitions.insert(std::move(node));
     for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) writer.addWrittenLayer(id, definition.writtenLayerAt(i));
     impl_->deriveAndPersist();
     return id;
 }
 
-int32_t StageRegistry::count() const noexcept { return impl_->store.stageStates().count(); }
+// Every accessor takes the registry mutex, so a reader never observes a declaration
+// in progress through this registry.
+#define SLIDEIO_REGISTRY_READ(expr)                                   \
+    std::lock_guard<std::mutex> guard(impl_->mutex);                  \
+    return impl_->store.stageStates().expr
 
-StageId StageRegistry::at(int32_t index) const { return impl_->store.stageStates().at(index); }
+int32_t StageRegistry::count() const noexcept { SLIDEIO_REGISTRY_READ(count()); }
 
-bool StageRegistry::find(const char* name, StageId& out) const noexcept {
-    return impl_->store.stageStates().find(name, out);
-}
+StageId StageRegistry::at(int32_t index) const { SLIDEIO_REGISTRY_READ(at(index)); }
 
-const char* StageRegistry::name(StageId stage) const { return impl_->store.stageStates().name(stage); }
+bool StageRegistry::find(const char* name, StageId& out) const noexcept { SLIDEIO_REGISTRY_READ(find(name, out)); }
 
-StageStatus StageRegistry::status(StageId stage) const { return impl_->store.stageStates().status(stage); }
+const char* StageRegistry::name(StageId stage) const { SLIDEIO_REGISTRY_READ(name(stage)); }
 
-bool StageRegistry::isStale(StageId stage) const { return impl_->store.stageStates().isStale(stage); }
+StageStatus StageRegistry::status(StageId stage) const { SLIDEIO_REGISTRY_READ(status(stage)); }
 
-const char* StageRegistry::configuration(StageId stage) const {
-    return impl_->store.stageStates().configuration(stage);
-}
+bool StageRegistry::isStale(StageId stage) const { SLIDEIO_REGISTRY_READ(isStale(stage)); }
 
-int64_t StageRegistry::completedAtUnixMs(StageId stage) const {
-    return impl_->store.stageStates().completedAtUnixMs(stage);
-}
+const char* StageRegistry::configuration(StageId stage) const { SLIDEIO_REGISTRY_READ(configuration(stage)); }
 
-int32_t StageRegistry::dependencyCount(StageId stage) const {
-    return impl_->store.stageStates().dependencyCount(stage);
-}
+int64_t StageRegistry::completedAtUnixMs(StageId stage) const { SLIDEIO_REGISTRY_READ(completedAtUnixMs(stage)); }
+
+int32_t StageRegistry::dependencyCount(StageId stage) const { SLIDEIO_REGISTRY_READ(dependencyCount(stage)); }
 
 StageId StageRegistry::dependencyAt(StageId stage, int32_t index) const {
-    return impl_->store.stageStates().dependencyAt(stage, index);
+    SLIDEIO_REGISTRY_READ(dependencyAt(stage, index));
 }
+
+#undef SLIDEIO_REGISTRY_READ
 
 bool StageRegistry::isExplicitDependency(StageId stage, int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);

@@ -164,8 +164,8 @@ TEST(StageRegistry, UnknownExplicitDependencyIsStageError) {
     StageDefinition b("b");
     b.dependsOn("ghost");
     const std::string message = messageOf([&] { f.stages().declare(b); });
-    EXPECT_NE(message.find("b"), std::string::npos);
-    EXPECT_NE(message.find("ghost"), std::string::npos);
+    EXPECT_NE(message.find("\"b\""), std::string::npos);
+    EXPECT_NE(message.find("\"ghost\""), std::string::npos);
     EXPECT_THROW(f.stages().declare(b), StageError);
     EXPECT_EQ(f.stages().count(), 0);
 }
@@ -273,4 +273,14 @@ TEST(StageRegistry, ReadOnlyWorkspaceRefusesDeclare) {
     EXPECT_THROW(ro->stages().declare(StageDefinition("s")), IoError);
     EXPECT_EQ(ro->store()->stageStates().count(), 0);
     ro->close();
+}
+
+TEST(StageRegistry, ExplicitDependencyOnItselfIsStageError) {
+    Fixture f;
+    StageDefinition s("selfish");
+    s.dependsOn("selfish");
+    const std::string message = messageOf([&] { f.stages().declare(s); });
+    EXPECT_NE(message.find("\"selfish\""), std::string::npos);
+    EXPECT_THROW(f.stages().declare(s), StageError);
+    EXPECT_EQ(f.stages().count(), 0);
 }
