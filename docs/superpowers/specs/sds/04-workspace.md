@@ -126,6 +126,7 @@ class StageDefinition {
 public:
     explicit StageDefinition(const char* name);
     StageDefinition(const StageDefinition&);
+    StageDefinition& operator=(const StageDefinition&);
     ~StageDefinition();
 
     /// Declares a layer this stage reads — by spatial query, to assert edges
@@ -178,7 +179,6 @@ public:
     StageDefinition& restrictToLayer(LayerId);
 
     const char* name() const noexcept;
-    int32_t     configurationJson(char* buffer, int32_t capacity) const;
 
     const PipelineSpec& pipeline() const noexcept;
     int32_t readLayerCount() const noexcept;   // includes restriction and
@@ -304,26 +304,51 @@ parameters — `setString("targetLayer", "nuclei")`, or the typed
 the runner resolves it. Putting the layer in the parameter bag rather than in the
 operation's constructor is what makes these operations constructible through
 `OperationCatalog::create`, which is the only route a stage has. A `LayerId`
-could not travel that way, and could not survive `configurationJson` either,
+could not travel that way, and could not survive the record (below) either,
 since it is an opaque handle meaningful in one store only.
 
 The read accessors exist because `StageRunner` must walk the definition without
 re-parsing the JSON, and because a caller can inspect a declared stage before
 running it.
 
-`configurationJson` produces the record stored against the stage and recoverable
-from the store alone, without the code that produced it (UR-RES-11, UR-STG-4).
-It embeds `PipelineSpec::toJson` under a `pipeline` key and adds the
+**The record is made by the registry, not by the definition.** An earlier draft
+gave `StageDefinition` a `configurationJson`, but a definition holds `LayerId`s
+and `RasterId`s, which name nothing without a store, while the record must carry
+names. `StageRegistry::declare` therefore produces the record from the definition
+and the store's layer and raster registries, and `StageRegistry::configuration`
+reads it back. The record is stored against the stage and is recoverable from
+the store alone, without the code that produced it (UR-RES-11, UR-STG-4). It
+carries every declaration by name, so a definition is rebuilt from it alone. It
+embeds `PipelineSpec::toJson` under a `pipeline` key and adds the
 workspace-level fields around it:
 
 ```json
-{ "stage": "nuclei",
+{ "stageRecordVersion": 1,
+  "stage": "nuclei",
   "readsLayers": ["tissue"],
   "writesLayers": ["nuclei"],
+  "annotatesLayers": [],
   "restrictToLayer": "tissue",
+  "readsLayersAsRaster": [ { "binding": "coarse", "layer": "nests_coarse",
+                             "content": "ObjectAnchor" } ],
+  "writesRaster": null,
+  "readsRasters": [ { "binding": "prob", "raster": "probability" } ],
   "dependsOn": [],
   "pipeline": { "channels": …, "operations": [ … ] } }
 ```
+
+`restrictToLayer` and `writesRaster` are `null` when absent. `readsLayers` lists
+only the explicit `readsLayer` calls: the reads that `annotatesLayer`,
+`restrictToLayer` and `readsLayersAsRaster` imply are derived again when the
+record is loaded, so a restriction alone yields `"readsLayers": []`. A
+`stageRecordVersion` other than 1, a malformed record or a name the store does
+not hold is an `InvalidArgumentError` on load. Two definitions declare the same
+stage when their names, pipelines (`PipelineSpec::equals`) and every declaration
+list and optional are equal, each list compared without regard to order; that
+comparison, not the record's text, is what decides whether a redeclaration is a
+reconfiguration, so formatting and ordering never mark a stage stale.
+`StageDefinition` gains a copy assignment beside its copy constructor, since a
+definition is a value a caller builds, stores and replaces.
 
 Derived dependencies are deliberately absent from the record. They are a
 function of the other stages present, so storing them would freeze a snapshot
@@ -423,7 +448,7 @@ one it can check, which is the ordering.
 
 **It is sugar over `StageDefinition`, not a second path.** It declares two
 ordinary stages, and nothing downstream can tell: dependency derivation,
-staleness, re-run, discard and `configurationJson` all behave exactly as they
+staleness, re-run, discard and the stage record all behave exactly as they
 would for two stages declared by hand (4.3, 4.5), because that is what they
 are. In particular re-running the coarse stage marks the fine one stale by
 `LayerRead` and no other mechanism is involved.
