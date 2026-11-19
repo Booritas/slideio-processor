@@ -218,6 +218,19 @@ void checkNothingGrowsObjectTiles(const std::vector<OperationPtr>& operations) {
     }
 }
 
+// A per-channel operation runs once per plane: producing objects over several, it
+// would emit each object once per plane into its one layer, under one id.
+void checkPerChannelProducersGetOnePlane(const std::vector<OperationPtr>& operations,
+                                         const std::vector<std::vector<DataType>>& planeTypes) {
+    for (size_t k = 0; k < operations.size(); ++k) {
+        const Operation& op = *operations[k];
+        if (op.producesObjects() && op.arity() == ChannelArity::PerChannel && planeTypes[k].size() > 1) {
+            invalid(std::string("operation \"") + op.name() +
+                    "\" produces objects and runs per channel, so it must be given exactly one channel");
+        }
+    }
+}
+
 Halo sumHalos(const std::vector<OperationPtr>& operations) {
     int64_t left = 0, top = 0, right = 0, bottom = 0;
     for (const OperationPtr& op : operations) {
@@ -286,6 +299,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     // (h) Target layers.
     std::vector<LayerId> targetLayers = resolveTargetLayers(operations, spec, *inputs.layers);
     checkNothingGrowsObjectTiles(operations);
+    checkPerChannelProducersGetOnePlane(operations, planeTypes);
 
     // Bound auxiliary rasters: each declares at least one plane of a type with a size.
     for (const auto& auxiliary : *inputs.auxiliaries) {

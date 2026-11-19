@@ -4,6 +4,7 @@
 #include <slideio/processor/core/object_record.hpp>
 
 #include <algorithm>
+#include <cassert>
 
 namespace slideio::processor::detail {
 
@@ -44,7 +45,15 @@ const Operation* FinishingSink::producerOf(LayerId layer) const {
 }
 
 void FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& record) {
-    if (!producer.finishObject(record, context_)) {
+#ifndef NDEBUG
+    const LayerId layer = record.layer();
+    const Point64 anchor = record.geometry().anchor();
+#endif
+    const bool kept = producer.finishObject(record, context_);
+    // Finishing must not move an object: its layer and anchor make its id.
+    assert(record.layer() == layer);
+    assert(record.geometry().anchor() == anchor);
+    if (!kept) {
         if (droppedByFilter_ != nullptr) {
             ++*droppedByFilter_;
         }

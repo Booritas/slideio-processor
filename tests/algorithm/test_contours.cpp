@@ -461,6 +461,31 @@ TEST(Contours, RejectsBadParameters) {
     EXPECT_THROW(makeContourExtraction(moved), InvalidArgumentError);
 }
 
+TEST(Contours, NeedsExactlyOneChannel) {
+    // A label raster stored as identical channels would otherwise give every
+    // region once per channel, under one id.
+    const auto scene = ts::makeSyntheticScene(
+        {{16, 16, 0, 0}}, std::vector<slideio::DataType>{slideio::DataType::DT_Byte, slideio::DataType::DT_Byte},
+        [](int, int64_t x, int64_t) { return x < 4 ? 1.0 : 0.0; });
+    const Configuration config = ConfigurationBuilder().tileSize(16, 16).tileSizeFromSlide(false).workerCount(1).build();
+    Pipeline refused(scene, config, specOf(ContourParameters()));
+    refused.bindLayer("objects", ts::objectsLayer());
+    try {
+        refused.validate();
+        FAIL() << "validate() accepted segment.contours over two channels";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find("\"segment.contours\""), std::string::npos) << message;
+        EXPECT_NE(message.find("exactly one channel"), std::string::npos) << message;
+    }
+
+    PipelineSpec one = specOf(ContourParameters());
+    one.channels(ChannelSelection::single(0));
+    Pipeline accepted(scene, config, one);
+    accepted.bindLayer("objects", ts::objectsLayer());
+    EXPECT_NO_THROW(accepted.validate());
+}
+
 TEST(Contours, TargetLayerByName) {
     auto pixel = [](int, int64_t x, int64_t y) { return x >= 4 && x < 8 && y >= 4 && y < 8 ? 2.0 : 0.0; };
     const auto scene = sceneOf(16, 16, slideio::DataType::DT_Byte, pixel);

@@ -76,7 +76,8 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments, bool eightC
 std::vector<Point64> normaliseRing(const std::vector<Point64>& ring);
 
 /// Whether @p polygon is already as normaliseRings() leaves it, which it then
-/// leaves untouched. Allocates one buffer the size of the longest ring.
+/// leaves untouched. Reads each ring into one reused buffer, resized to the
+/// ring, so it ends the size of the longest ring read.
 bool ringsAreNormalised(const Polygon& polygon);
 
 /// Normalises every ring of @p polygon with normaliseRing and reorders the

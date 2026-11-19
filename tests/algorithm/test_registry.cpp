@@ -62,10 +62,15 @@ bool pipelineValidates(const char* name, DataType type) {
                                         [](int, int64_t, int64_t) { return 0.0; });
     PipelineSpec spec;
     spec.operation(name, OperationParameters());
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    // A per-channel object producer takes exactly one channel; the others take all three.
+    if (catalog.producesObjects(name) && catalog.arity(name) == ChannelArity::PerChannel) {
+        spec.channels(ChannelSelection::single(0));
+    }
     const Configuration config = ConfigurationBuilder().tileSize(16, 16).tileSizeFromSlide(false).workerCount(1).build();
     try {
         Pipeline pipeline(scene, config, spec);
-        if (OperationCatalog::instance().producesObjects(name)) {
+        if (catalog.producesObjects(name)) {
             pipeline.bindLayer("objects", LayerId(1));
         }
         pipeline.validate();
