@@ -279,29 +279,29 @@ bounded.
 Every declaration, these included, must be constant for the life of the
 operation; the framework reads them once, before the run.
 
-**Every object passes through its producer's `finishObject`.** An object
-found whole in one tile and the same object merged from seam fragments (5.7)
-reach the run's sink by different roads, so whatever the producer does to
-its objects — a selected set of measurements, calibrated units, an area
-filter, holes removed — must be done in one place both roads pass, or the two
-would disagree and UR-SEG-3 would fail. That place is `finishObject`. The
-framework calls it once per object after the rings are normalised (5.5) and
-the standard measurements applied (below), and after the object has passed
-the anchor tests that decide whether it is stored at all — tile ownership and
-the restriction for a tile object, the restriction for a merged one (5.5,
-5.7). The order cannot change a result, because finishing never moves the
-anchor; it only spares finishing the objects that are dropped anyway. It may add or remove measurements and
-remove hole rings; it must not change the outer ring, whose
-topmost-then-leftmost vertex is the object's identity, nor the layer.
-Returning false discards the object, counted in the run's `droppedByFilter`
-counter. `ObjectFinishContext` carries what the operation cannot know from
-the record alone: the level-0 pixel size and the analysis level. The default
-returns true and changes nothing, so an operation that emits finished
-measurements itself is unaffected. Because a merged object is finished by
-the operation producing its layer, **a layer has at most one producer in a
-run**, which `validate()` checks (5.5); the framework routes each record by
-its layer to that producer, through one wrapper of the run's sink
-(`detail::FinishingSink`) that the tile filter and the merger both emit into.
+**Every object passes through its producer's `finishObject`.** An object found
+whole in one tile and the same object merged from seam fragments (5.7) reach
+the run's sink by different roads, so whatever the producer does to its objects
+— a selected set of measurements, calibrated units, an area filter, holes
+removed — must be done in one place both roads pass, or the two would disagree
+and UR-SEG-3 would fail. That place is `finishObject`. The framework calls it
+once per object after the rings are normalised (5.5) and the standard
+measurements applied (below), and after the object has passed the anchor tests
+that decide whether it is stored at all — tile ownership and the restriction
+for a tile object, the restriction for a merged one (5.5, 5.7). The order
+cannot change a result, because finishing never moves the anchor; it only
+spares finishing the objects that are dropped anyway. It may add or remove
+measurements and remove hole rings; it must not change the outer ring, whose
+topmost-then-leftmost vertex is the object's identity, nor the layer. Returning
+false discards the object, counted in the run's `droppedByFilter` counter.
+`ObjectFinishContext` carries what the operation cannot know from the record
+alone: the level-0 pixel size and the analysis level. The default returns true
+and changes nothing, so an operation that emits finished measurements itself is
+unaffected. Because a merged object is finished by the operation producing its
+layer, **a layer has at most one producer in a run**, which `validate()` checks
+(5.5); the framework routes each record by its layer to that producer, through
+one wrapper of the run's sink (`detail::FinishingSink`) that the tile filter
+and the merger both emit into.
 
 **`pixelSizeMicrons()`** is the scene's level-0 pixel size in micrometres:
 the mean of SlideIO's x and y resolution × 10⁶ when both are finite, positive
@@ -348,24 +348,24 @@ authors rounding differently at a shared seam produce objects that never join
 
 `emitSeamFragment` is how an object-producing operation hands a
 boundary-touching region to `SeamMerger` (5.7) instead of emitting it as a
-finished object. A fragment brings its intensity partials with it, because
-the pixels are gone by the time its component closes (5.7), so the
-four-argument form carries one `IntensityPartial` per channel; the two-argument
-form passes none. The five-argument form adds a **join key**, the identity of
-the region the fragment belongs to: the merger joins two fragments only when
-their layers and their keys are both equal, so distinct regions touching
-across a seam — neighbouring labels of a label raster, neighbouring watershed
-basins — stay distinct objects. The key must name the region the same way in
-every tile, from its samples or from level coordinates, never from a
-tile-local index. An operation whose regions are separated by background
-uses 0, which is what the other two forms pass. `IntensityPartial` is declared here rather than in
+finished object. A fragment brings its intensity partials with it, because the
+pixels are gone by the time its component closes (5.7), so the four-argument
+form carries one `IntensityPartial` per channel; the two-argument form passes
+none. The five-argument form adds a **join key**, the identity of the region
+the fragment belongs to: the merger joins two fragments only when their layers
+and their keys are both equal, so distinct regions touching across a seam —
+neighbouring labels of a label raster, neighbouring watershed basins — stay
+distinct objects. The key must name the region the same way in every tile, from
+its samples or from level coordinates, never from a tile-local index. An
+operation whose regions are separated by background uses 0, which is what the
+other two forms pass. `IntensityPartial` is declared here rather than in
 `seam_merger.hpp` because the context, the merger and the measurement formula
 below all need it. A negative `partialCount`, or null `partials` with a
-positive count, throws `InvalidArgumentError`. A run with no seam merger
-throws `InternalError` from either form, so an operation emitting fragments
-into a run that cannot merge them fails rather than losing objects. Where no
-object is wanted by design, fragments are dropped silently instead: in a lazy
-read (`readBlock`, `asScene`), which calls no sink, and in a global-context
+positive count, throws `InvalidArgumentError`. A run with no seam merger throws
+`InternalError` from either form, so an operation emitting fragments into a run
+that cannot merge them fails rather than losing objects. Where no object is
+wanted by design, fragments are dropped silently instead: in a lazy read
+(`readBlock`, `asScene`), which calls no sink, and in a global-context
 accumulation pass, which writes none.
 
 **`mask()` is an optimisation, never a correctness obligation.** Making it

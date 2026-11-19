@@ -154,34 +154,34 @@ the operation and the parameter.
 | | `maximumAreaPx` | int | 0 (unbounded) | at least 0; when not 0, at least `minimumAreaPx` |
 | | `extractHoles` | bool | true | |
 | | `measurements` | string | every `MeasurementKind` | `MeasurementKind` spellings separated by commas, without spaces (`"Area,Perimeter"`); empty selects none |
-| | `targetLayer` | string | absent | the name of a bound layer |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 | `segment.contours` | `includeHoles` | bool | true | |
-| | `targetLayer` | string | absent | the name of a bound layer |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 | `segment.watershed` | `markers` | string | `"LocalMaxima"` | a `WatershedMarkers` spelling |
 | | `auxiliaryName` | string | `""` | with `"AuxiliaryRaster"`, not empty: the name of a bound raster |
 | | `minimumMarkerDistancePx` | int | 5 | 1 to `maximumMarkerSpacingPx` |
 | | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823, so the halo 2 · spacing + 1 fits an `int32_t` |
 | | `minimumAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `measurements` | string | every `MeasurementKind` | as `segment.connected_components` |
-| | `targetLayer` | string | absent | the name of a bound layer |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 | `segment.tissue_detect` | `saturationThreshold` | double | 0.07 | 0 to 1 |
 | | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
-| | `targetLayer` | string | absent | the name of a bound layer |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 
 `pixel.threshold_otsu`'s range is the one exception to completeness: the three
 range keys are present only when the operation was created with a range, since
 "no range" has no value to fill in (6.5). Its bag still round-trips, which is
 what the conformance test checks. An object producer's `targetLayer` is the
-other: the typed setter given `""`, the default, leaves the key out of the
-bag, and an absent key means the run's only bound layer (6.7, `05-pipeline.md`
-5.5), so a one-layer stage records no layer name at all. A `measurements` text
-naming an unknown kind is a value out of range and is refused naming the key;
-the bag records the selected kinds in enumerator order, so a selection
-round-trips whatever order it was given in. A morphology operation's `elementMask` is
-the same kind of key: a drawn shape is fully described by its name and size,
-so the mask is recorded only for `"Custom"`, and a bag that gives it with
-another shape, or omits it with `"Custom"`, is refused naming `elementMask`.
+other: the typed setter given `""`, the default, leaves the key out of the bag,
+and an absent key means the run's only bound layer (6.7, `05-pipeline.md` 5.5),
+so a one-layer stage records no layer name at all. A `measurements` text naming
+an unknown kind is a value out of range and is refused naming the key; the bag
+records the selected kinds in enumerator order, so a selection round-trips
+whatever order it was given in. A morphology operation's `elementMask` is the
+same kind of key: a drawn shape is fully described by its name and size, so the
+mask is recorded only for `"Custom"`, and a bag that gives it with another
+shape, or omits it with `"Custom"`, is refused naming `elementMask`.
 
 A range that couples two keys is reported against the key the caller set.
 `pixel.gaussian_blur` with `kernelSize` 0 and a `sigma` whose derived size
@@ -930,15 +930,15 @@ its bit pattern as an `int64_t` for `Float32`; `segment.watershed` uses its
 basin's identity (below).
 
 **Finishing.** Every object, whole or merged, passes through its operation's
-`finishObject` (`05-pipeline.md` 5.1), which applies one `detail::MeasurementPlan`:
-without holes kept it removes the hole rings and recomputes `area` and
-`perimeter` from the outer ring, intensity statistics staying over the
-object's own pixels; it discards an object whose final `area` lies outside
-the area bounds; it adds the centroid and bounding box when selected and the
-calibrated units when the pixel size is known (6.8); and it removes every
-measurement of a kind not selected. An operation that measures nothing beyond
-the geometry (`segment.contours`, `segment.tissue_detect`) keeps `area` and
-`perimeter` and their calibrated forms.
+`finishObject` (`05-pipeline.md` 5.1), which applies one
+`detail::MeasurementPlan`: without holes kept it removes the hole rings and
+recomputes `area` and `perimeter` from the outer ring, intensity statistics
+staying over the object's own pixels; it discards an object whose final `area`
+lies outside the area bounds; it adds the centroid and bounding box when
+selected and the calibrated units when the pixel size is known (6.8); and it
+removes every measurement of a kind not selected. An operation that measures
+nothing beyond the geometry (`segment.contours`, `segment.tissue_detect`) keeps
+`area` and `perimeter` and their calibrated forms.
 
 **Channels and measured intensity.** `segment.connected_components` and
 `segment.watershed` are **Joint** with no uniform-type requirement: plane 0 is
@@ -1044,10 +1044,11 @@ it is UR-SEG-8's declared reach. It derives the halo, and the operation
 marker its basin reached it from, or is reached by none, because such a
 pixel's basin could be decided by
 evidence the tile cannot see — which is the rejection UR-SEG-8 requires rather
-than permits. Failing
-is what keeps UR-QA-2 exact: for every input that runs, each boundary is
-determined entirely within the supplied context, so the result is identical
-across tile sizes by construction rather than by hoping clumps stay small.
+than permits. Failing is what keeps UR-QA-2 within reach: for every input
+that runs, each pixel's seed lies within the supplied context, so that much of
+the result is bounded by construction rather than by hoping clumps stay small.
+Where values tie at the meeting of basins, which basin wins can depend on how
+the flood reached the tie, and that case is tested, not proven (below).
 Degrading quietly instead — segmenting what fits, passing through what does not
 — would make the output depend on tile position, which 5.6 identifies as the
 worst failure available because the count comes out nearly right.
@@ -1063,8 +1064,15 @@ value, ties again by level coordinates. A pixel enters the frontier only when
 a neighbour has been flooded, so a lower pixel next to a basin may be flooded
 before a higher one no basin has reached yet. Within a halo'd context the
 order is that of level coordinates, so it never depends on where the tile
-lies. Samples are compared as doubles, exactly for every type but 64-bit
-integers beyond 2⁵³ in magnitude.
+lies. That the result is then the same at every tile size is what the tests
+assert, exactly (6.9), not a theorem: the reach check bounds each pixel's
+distance to its seed, but not the length of the flood paths that decide ties
+between basins, and there is no general proof that a halo of
+2 · `maximumMarkerSpacingPx` + 1 makes every input tile-invariant. As evidence,
+not proof, an exact model of the flood found no counter-example in about
+28,000 tie-heavy random inputs with tiles far smaller than the halo. Samples
+are compared as doubles, exactly for every type but 64-bit integers beyond 2⁵³
+in magnitude.
 
 **Markers.** With `LocalMaxima`, a marker is a foreground pixel that comes
 before every other foreground pixel within `minimumMarkerDistancePx`
@@ -1280,15 +1288,14 @@ each tile computed.
 Measurements with a physical dimension are available in both pixels and
 calibrated units. The pixel size comes from the scene through
 `OperationContext::pixelSizeMicrons()` (`05-pipeline.md` 5.1): the mean of
-SlideIO's x and y resolution when both are positive and agree within one part
-in a million. A scene lacking resolution metadata, or with anisotropic pixels,
-yields pixel units only — no `.um` names, and no measurement with
+SlideIO's x and y resolution when both are finite, positive and agree within
+one part in a million. A scene lacking resolution metadata, or with anisotropic
+pixels, yields pixel units only — no `.um` names, and no measurement with
 `Measurement::isCalibrated()` true — and `sceneIsCalibrated()` returns false
 for it: that is the documented indication UR-SEG-6 requires rather than a
-silent fallback. `sceneIsCalibrated` and `scenePixelSizeMicrons` apply the
-same rule as the run, so a caller can tell before running what the objects
-will carry; a null scene, or one whose resolution cannot be read, gives false
-and 0.
+silent fallback. `sceneIsCalibrated` and `scenePixelSizeMicrons` apply the same
+rule as the run, so a caller can tell before running what the objects will
+carry; a null scene, or one whose resolution cannot be read, gives false and 0.
 
 ## 6.9 Correctness references
 
