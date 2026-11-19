@@ -1805,22 +1805,25 @@ fragment larger than the whole ceiling goes straight to the file. Waiting is
 never right here: `addFragment` is called from inside a tile, whose own bytes
 are part of what is taken, and the memory still taken may be held by the very
 workers that would have to finish to free it, so a wait could never end. Union-
-find entries, contacts and per-component bookkeeping stay resident — they are
-small and fixed-size, so joining and closing decisions never require a read.
+find entries, contacts and per-component bookkeeping stay resident, so joining
+and closing decisions never require a read.
 Choosing oldest-first is deliberate: a long-open component is by definition one
 whose tiles are not finishing soon, so it is the cheapest to evict and the
 least likely to be wanted again this minute.
 
-Seam points of 8-connected layers are the exception to "small and
-fixed-size": a fragment waits at each of its seam vertices for each other
-tile touching it, so a jagged outline along a long seam leaves many. They stay
-in memory when their fragment is written out, so the budget holds their bytes
-separately, `detail::kSeamPointContactBytes` per waiting point, from arrival
-until both tiles of the pair complete. They are reserved the same way: while
-`tryReserve` fails, the oldest-opened components are written out. When nothing
-is left to write out, the points are kept without a reservation, since joining
-needs them, and the merger counts those bytes; this happens only when the
-workers' own tiles hold the whole budget.
+What waits on the seams is not small in total: a fragment waits on each seam
+it lies on with one edge contact per maximal interval, and on an 8-connected
+layer also at each of its seam vertices for each other tile touching it, so a
+jagged outline along a long seam leaves many. Edge contacts and seam points
+stay in memory when their fragment is written out, so the budget holds their
+bytes separately, with the tile pair they wait between:
+`detail::kSeamEdgeContactBytes` per waiting edge contact and
+`detail::kSeamPointContactBytes` per waiting point, from arrival until both
+tiles of the pair complete. They are reserved the same way: while `tryReserve`
+fails, the oldest-opened components are written out. When nothing is left to
+write out, they are kept without a reservation, since joining needs them, and
+the merger counts those bytes; this happens only when the workers' own tiles
+hold the whole budget.
 
 Spilled fragments are appended to one file per merger,
 `seam-<32 random lowercase hex digits>.bin` in the scratch directory, created on

@@ -174,9 +174,11 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     // memory, so a fragment written to the scratch file keeps it. Only the
     // other tile's contacts that begin before this one ends and less than
     // their side's longest interval before it begins can overlap it.
+    std::unordered_map<int64_t, int64_t> contactCounts; // Tile pair -> contacts added there.
     for (const detail::SeamContact& contact : contacts) {
         const int64_t across = neighbourAcross(tile, contact);
-        detail::SeamEdgesWaiting& waiting = edges_[edgeKey(tile, across)];
+        const int64_t pair = edgeKey(tile, across);
+        detail::SeamEdgesWaiting& waiting = edges_[pair];
         const int side = tile < across ? 0 : 1;
         const std::multimap<int64_t, detail::SeamEdgeContact>& others = waiting.bySide[1 - side];
         for (auto it = others.lower_bound(contact.begin - waiting.longest[1 - side] + 1);
@@ -189,6 +191,7 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
         }
         waiting.bySide[side].emplace(contact.begin, detail::SeamEdgeContact{id, tile, joinKey, contact});
         waiting.longest[side] = std::max(waiting.longest[side], contact.end - contact.begin);
+        ++contactCounts[pair];
     }
     // On an 8-connected layer, likewise at each point shared with another tile,
     // found through the tile pair's index of points.
@@ -213,22 +216,28 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
         largestComponentFragmentCount.store(1);
     }
 
+    // The contacts and points wait in memory even once their fragments are
+    // written out, so the budget holds their bytes with the tile pair.
     reserveFor(id, bytes);
+    for (const auto& entry : contactCounts) {
+        holdWaiting(edges_.at(entry.first).held, entry.second * detail::kSeamEdgeContactBytes);
+    }
     for (const auto& entry : pointCounts) {
-        holdPoints(points_.at(entry.first), entry.second * detail::kSeamPointContactBytes);
+        holdWaiting(points_.at(entry.first).held, entry.second * detail::kSeamPointContactBytes);
     }
 }
 
-void SeamMerger::Impl::holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes) {
+void SeamMerger::Impl::holdWaiting(detail::BudgetHold& held, int64_t bytes) {
     for (;;) {
         if (budget->tryReserve(bytes)) {
-            waiting.held.add(budget, bytes);
+            held.add(budget, bytes);
             return;
         }
         if (residentByOpening_.empty()) {
             // Everything is written out and the memory still taken belongs to the
-            // rest of the run: the points are kept, as joining needs them.
-            unreservedPointBytes += bytes;
+            // rest of the run: the contacts or points are kept, as joining needs
+            // them.
+            unreservedSeamBytes += bytes;
             return;
         }
         spillComponent(find(*residentByOpening_.begin()));
