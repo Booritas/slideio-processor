@@ -10,6 +10,7 @@
 #include <slideio/processor/storage/layer_registry.hpp>
 
 #include <cstdint>
+#include <memory>
 
 namespace slideio::processor {
 
@@ -118,7 +119,8 @@ public:
 private:
     friend class Workspace;
     explicit LayerLifecycle(LayerRegistry& registry) noexcept;
-    LayerRegistry& registry_;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace slideio::processor

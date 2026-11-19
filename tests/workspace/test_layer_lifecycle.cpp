@@ -143,3 +143,9 @@ TEST(LayerLifecycle, ReadOnlyWorkspaceCannotDeclare) {
     ASSERT_TRUE(ro->layers().find("superpixels", sp));
     EXPECT_THROW(life.drop(sp), IoError);
 }
+
+TEST(LayerLifecycle, DropUnknownLayerIsInvalidArgument) {
+    Prepared p;
+    WorkspacePtr ws = p.createWorkspace();
+    EXPECT_THROW(ws->layerLifecycle().drop(LayerId(9999)), InvalidArgumentError);
+}
