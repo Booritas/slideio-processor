@@ -51,7 +51,7 @@ namespace {
 constexpr const char* kName = "segment.contours";
 
 // What one apply() call allocates beyond the input and output blocks, per
-// pixel of the halo'd tile, objects emitted included: the run's tile filter
+// pixel of the tile, objects emitted included: the run's tile filter
 // and finishing sink handle each object inside apply(), so their copies count.
 // The labels are written straight into the Int32 output plane, so labelling
 // takes only the union-find parents (one int32 per provisional label, at most
@@ -160,7 +160,7 @@ public:
     ChannelArity arity() const override { return ChannelArity::PerChannel; }
     bool requiresUniformTypes() const override { return false; }
     DataTypeSet supportedTypes() const override { return contourTypes(); }
-    Halo halo() const override { return Halo::uniform(1); }
+    Halo halo() const override { return Halo::none(); }
     DataType outputType(DataType) const override { return DataType::Int32; }
     const OperationParameters& parameters() const override { return parameters_; }
     bool producesObjects() const override { return true; }

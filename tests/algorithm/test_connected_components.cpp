@@ -182,6 +182,7 @@ TEST(ConnectedComponents, KnownObjectsCountAndShape) {
     };
     for (const Connectivity connectivity : {Connectivity::FourConnected, Connectivity::EightConnected}) {
         const OperationPtr op = makeConnectedComponents(ConnectedComponentsParameters().connectivity(connectivity));
+        EXPECT_TRUE(op->halo().isEmpty());
         const ts::DirectObjects result = ts::applyDirectObjects(*op, {DataType::Byte}, {0}, 32, 24, pixel);
         ASSERT_EQ(result.objects.size(), 6u);
         EXPECT_TRUE(result.fragments.empty());

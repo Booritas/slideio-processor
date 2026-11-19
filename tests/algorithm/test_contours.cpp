@@ -165,8 +165,7 @@ TEST(Contours, LabelRegionsBecomeObjects) {
     const OperationPtr op = makeContourExtraction(ContourParameters());
     EXPECT_EQ(op->arity(), ChannelArity::PerChannel);
     EXPECT_FALSE(op->objectsAreEightConnected());
-    const Halo halo = op->halo();
-    EXPECT_TRUE(halo.left == 1 && halo.top == 1 && halo.right == 1 && halo.bottom == 1);
+    EXPECT_TRUE(op->halo().isEmpty());
     const ts::DirectObjects result = ts::applyDirectObjects(*op, {DataType::Int32}, {0}, 16, 14, pixel);
     EXPECT_TRUE(result.fragments.empty());
     ASSERT_EQ(result.objects.size(), 6u);

@@ -101,7 +101,7 @@ TEST(WorkingSetSegment, ConnectedComponentsBoundedOnThePattern) {
 // as a finished object (the masks kept inside).
 TEST(WorkingSetSegment, ConnectedComponentsBoundedOnAdversarialMasks) {
     for (const int64_t tile : ts::kWorkingSetTileSizes) {
-        const int64_t haloSide = tile + 2;
+        const int64_t haloSide = tile;
         for (const Mask& mask : adversarialMasks()) {
             for (const bool interior : {false, true}) {
                 for (const int32_t intensityPlanes : {0, 1, 3}) {
@@ -218,7 +218,7 @@ TEST(WorkingSetSegment, ContoursBoundedOnThePattern) {
 // rasters kept inside).
 TEST(WorkingSetSegment, ContoursBoundedOnAdversarialLabelRasters) {
     for (const int64_t tile : ts::kWorkingSetTileSizes) {
-        const int64_t haloSide = tile + 2;
+        const int64_t haloSide = tile;
         for (const LabelRaster& raster : adversarialLabelRasters()) {
             for (const bool interior : {false, true}) {
                 const std::vector<std::vector<uint8_t>> planes = labelPlaneOf(raster, haloSide, haloSide, interior);

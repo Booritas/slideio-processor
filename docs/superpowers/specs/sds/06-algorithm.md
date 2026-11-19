@@ -787,7 +787,7 @@ themselves without passing through a lossy intermediate (UR-IMG-10).
 ```cpp
 enum class Connectivity : int32_t { FourConnected, EightConnected };
 
-/// segment.connected_components — Joint, halo 1, every type, one Int32 plane,
+/// segment.connected_components — Joint, halo none, every type, one Int32 plane,
 /// writes objects. Plane 0 is segmented; planes 1 to 3 are measured.
 class ConnectedComponentsParameters {
 public:
@@ -801,7 +801,7 @@ public:
 };
 OperationPtr makeConnectedComponents(const ConnectedComponentsParameters&);
 
-/// segment.contours — PerChannel, halo 1, integers up to 32 bits and Float32,
+/// segment.contours — PerChannel, halo none, integers up to 32 bits and Float32,
 /// one Int32 plane per input plane, writes objects. Traces a label raster.
 class ContourParameters {
 public:
