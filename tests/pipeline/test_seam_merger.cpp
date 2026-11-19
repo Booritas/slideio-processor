@@ -527,6 +527,27 @@ TEST(SeamMerger, IndexedContactsJoinOnlyOverlaps) {
     EXPECT_EQ(merger->largestComponentFragmentCount(), 1);
 }
 
+// Tile 0's only contact, rows 2..6, overlaps tile 1's, rows 5..9, by one unit:
+// with tile 0's first, it begins exactly at the lower edge of the search
+// window (5 - 4 + 1). They join in either order.
+TEST(SeamMerger, IndexedContactsJoinAtTheWindowEdge) {
+    const TileGrid grid = gridOf(2, 1, 20, 20);
+    const Fragment left{0, rectangle(15, 2, 5, 4), {}};
+    const Fragment right{1, rectangle(20, 5, 3, 4), {}};
+    for (const bool leftFirst : {true, false}) {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        add(*merger, leftFirst ? left : right);
+        add(*merger, leftFirst ? right : left);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        merger->resolve(sink, nullptr, CancellationToken());
+
+        ASSERT_EQ(sink.emittedCount(), 1) << leftFirst;
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 20.0 + 12.0) << leftFirst;
+    }
+}
+
 // Contacts of two layers and two join keys overlap on both sides of the seam
 // x = 20: each fragment joins only the partner of its own layer and key.
 TEST(SeamMerger, IndexedContactsJoinAcrossLayersAndKeys) {
