@@ -181,6 +181,24 @@ public:
      */
     const BlockView& input() const noexcept;
     /**
+     * @brief Returns the tile's pixels as read from the scene, before any
+     * operation of the chain transformed them.
+     *
+     * Same geometry as input(): the halo rect at the analysis level, one
+     * plane per selected channel in selection order, whatever the operation's
+     * arity, each typed and labelled with its scene channel. An operation
+     * measuring the scene's samples under regions it finds in input() reads
+     * them here: input() holds what the earlier operations made of them.
+     * @return The view; input() itself when the run supplied none, as a call
+     * outside a chain does.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-SEG-5
+     */
+    const BlockView& sourceInput() const noexcept;
+    /**
      * @brief Returns the buffer the operation writes its raster result into.
      * @return The view over the tile rect at the analysis level, typed by
      * Operation::outputType(); a null view when the run supplied none.

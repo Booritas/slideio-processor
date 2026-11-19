@@ -187,9 +187,9 @@ public:
     /**
      * @brief Sets which measurements each object keeps; every kind by default.
      *
-     * The intensity kinds are taken over the operation's input planes 1 to 3,
-     * as the earlier operations of the chain leave them, not over the scene's
-     * raw samples (see the operation's factory).
+     * The intensity kinds are taken over the scene's samples of the channels
+     * the operation's input planes 1 to 3 carry, as read, whatever the earlier
+     * operations of the chain did to them (see the operation's factory).
      * @param selection The kinds; may be empty, which keeps none.
      * @return These parameters, so calls can be chained.
      * @throws InvalidArgumentError When these parameters are moved-from.
@@ -248,13 +248,15 @@ private:
  * selected are kept. An object whose final area lies outside the bounds is
  * discarded before it is stored, however it was assembled (UR-SEG-7).
  *
- * The measured planes are the operation's input planes, after every earlier
- * operation of the chain: a per-channel operation ahead of it transforms them
- * as well as plane 0, so a chain blurring and thresholding before labelling
- * measures the thresholded samples. They are still named after the source
- * channel each carries, `intensity.<c>.*`. To measure the scene's own samples,
- * place the operation first in its chain and give it a precomputed mask as its
- * first channel, or measure in a separate run.
+ * The measured samples are the scene's, as read: for each of input planes 1
+ * onward, the selected channel it carries, through
+ * OperationContext::sourceInput(), not the plane itself. A chain blurring and
+ * thresholding before labelling segments the thresholded plane 0 and measures
+ * the unblurred samples of the other channels, so `intensity.<c>.*` always
+ * describes channel c as it is in the scene.
+ * Derived planes (stain densities, HSV) are therefore never measured in the
+ * same chain; to measure them, derive them in an inner pipeline and run this
+ * operation over its Pipeline::asScene(), whose samples they then are.
  *
  * The output plane holds, for each pixel of an object, the object's 1-based
  * index among the objects of its tile in the order their first pixel is met
@@ -634,9 +636,9 @@ public:
     /**
      * @brief Sets which measurements each object keeps; every kind by default.
      *
-     * The intensity kinds are taken over the operation's input planes 1 to 3,
-     * as the earlier operations of the chain leave them, not over the scene's
-     * raw samples (see the operation's factory).
+     * The intensity kinds are taken over the scene's samples of the channels
+     * the operation's input planes 1 to 3 carry, as read, whatever the earlier
+     * operations of the chain did to them (see the operation's factory).
      * @param selection The kinds; may be empty, which keeps none.
      * @return These parameters, so calls can be chained.
      * @throws InvalidArgumentError When these parameters are moved-from.
@@ -726,13 +728,15 @@ private:
  * final area is below `minimumAreaPx` is discarded before it is stored,
  * however it was assembled (UR-SEG-7). Holes are kept.
  *
- * The measured planes are the operation's input planes, after every earlier
- * operation of the chain: a per-channel operation ahead of it transforms them
- * as well as plane 0, so a chain smoothing before flooding measures the
- * smoothed samples. They are still named after the source channel each
- * carries, `intensity.<c>.*`. To measure the scene's own samples, place the
- * operation first in its chain and give it a precomputed surface as its first
- * channel, or measure in a separate run.
+ * The measured samples are the scene's, as read: for each of input planes 1
+ * onward, the selected channel it carries, through
+ * OperationContext::sourceInput(), not the plane itself. A chain smoothing
+ * before flooding floods the smoothed plane 0 and measures the unsmoothed
+ * samples of the other channels, so `intensity.<c>.*` always describes
+ * channel c as it is in the scene.
+ * Derived planes (stain densities, HSV) are therefore never measured in the
+ * same chain; to measure them, derive them in an inner pipeline and run this
+ * operation over its Pipeline::asScene(), whose samples they then are.
  *
  * The output plane holds, for each pixel of an object, the object's 1-based
  * index among the objects of its tile in the order their first pixel is met

@@ -423,7 +423,8 @@ public:
             }
             keys[r] = keyOf(seedAt(first.x, first.y));
         }
-        detail::emitRegions(context, labels, stride, traced, in, 1, keys.data());
+        detail::emitRegions(context, labels, stride, traced, detail::measuredPlanes(context, 1, kName), 0,
+                            keys.data());
     }
 
 private:

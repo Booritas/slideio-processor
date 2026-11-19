@@ -192,9 +192,14 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         sourceRect = grow(sourceRect, operations[k]->halo());
     }
 
-    PlaneBuffers current(sourceRect.width, sourceRect.height, plan_.planeTypes[0], plan_.channels);
-    bytes += current.bytes();
-    reader_.read(plan_.level, sourceRect, plan_.channels, current);
+    // The samples as read stay alive for the whole chain: each operation sees them
+    // over its own input rect as sourceInput(). The reservation counts every step's
+    // buffers at once, so keeping them stays within it.
+    PlaneBuffers source(sourceRect.width, sourceRect.height, plan_.planeTypes[0], plan_.channels);
+    bytes += source.bytes();
+    reader_.read(plan_.level, sourceRect, plan_.channels, source);
+    std::optional<PlaneBuffers> transformed;
+    PlaneBuffers* current = &source;
     Rect64 currentRect = sourceRect;
 
     // Auxiliary rasters are filled once per tile over the first operation's halo rect,
@@ -225,14 +230,15 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         Operation& op = *operations[k];
         const bool accumulates = !finalPass && k + 1 == end;
         const Rect64& outputRect = outputRects[k];
-        const BlockView inputView = current.view(plan_.level, currentRect, plan_.levelScale);
+        const BlockView inputView = current->view(plan_.level, currentRect, plan_.levelScale);
+        const BlockView sourceView = subView(source, sourceRect, currentRect, plan_.level, plan_.levelScale);
         // An accumulating operation writes nothing, so it gets no output buffer.
         std::optional<PlaneBuffers> output;
         BlockView outputView;
         if (!accumulates) {
             const std::vector<DataType>& outputTypes = plan_.planeTypes[k + 1];
             output.emplace(outputRect.width, outputRect.height, outputTypes,
-                           outputChannels(current, outputTypes.size()));
+                           outputChannels(*current, outputTypes.size()));
             bytes += output->bytes();
             outputView = output->view(plan_.level, outputRect, plan_.levelScale);
         }
@@ -257,6 +263,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         for (size_t a = 0; a < bindings_.auxiliaries.size(); ++a) {
             state.auxiliaries.emplace_back(bindings_.auxiliaries[a].first, &auxiliaryViews[a]);
         }
+        state.sourceInput = &sourceView;
         state.targetLayer = plan_.targetLayers[k];
         state.level = plan_.level;
         state.tileRectAtLevel = outputRect;
@@ -307,12 +314,13 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         if (k + 1 < end) {
             zeroOutside(*output, outputRect, plan_.levelRect);
         }
-        current = std::move(*output);
+        transformed = std::move(output);
+        current = &*transformed;
         currentRect = outputRect;
     }
 
     if (bindings_.rasterSink != nullptr) {
-        const BlockView result = current.view(plan_.level, tile, plan_.levelScale);
+        const BlockView result = current->view(plan_.level, tile, plan_.levelScale);
         bindings_.rasterSink->writeTile(result);
     }
     return TileOutcome{false, bytes};

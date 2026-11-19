@@ -35,6 +35,10 @@ const BlockView& OperationContext::input() const noexcept {
     return impl_->state.input != nullptr ? *impl_->state.input : nullInput();
 }
 
+const BlockView& OperationContext::sourceInput() const noexcept {
+    return impl_->state.sourceInput != nullptr ? *impl_->state.sourceInput : input();
+}
+
 BlockView& OperationContext::output() noexcept {
     if (impl_->state.output != nullptr) {
         return *impl_->state.output;

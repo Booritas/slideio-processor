@@ -25,6 +25,9 @@ using SeamFragmentCallback =
 /// ChannelSelection::all(), a never-cancelled token, no mask.
 struct OperationContextState {
     const BlockView* input = nullptr;
+    /// The scene's samples over the same rect as `input`, every selected channel;
+    /// null reads as `input`.
+    const BlockView* sourceInput = nullptr;
     BlockView* output = nullptr;
     ObjectSink* objectSink = nullptr;
     EdgeSink* edgeSink = nullptr;

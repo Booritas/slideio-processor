@@ -3,6 +3,7 @@
 
 #include "detail/sample_codec.hpp"
 
+#include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/standard_measurements.hpp>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace slideio::processor::detail {
@@ -28,6 +30,33 @@ void addSample(IntensityPartial& partial, double v) {
 }
 
 } // namespace
+
+BlockView measuredPlanes(const OperationContext& context, int32_t first, const char* operation) {
+    const BlockView& input = context.input();
+    const BlockView& source = context.sourceInput();
+    if (first >= input.planeCount()) {
+        return BlockView();
+    }
+    if (source.width() != input.width() || source.height() != input.height()) {
+        throw InternalError((std::string(operation) + ": the scene's samples do not cover the input").c_str());
+    }
+    std::vector<BlockPlane> planes;
+    for (int32_t plane = std::max<int32_t>(first, 0); plane < input.planeCount(); ++plane) {
+        const int32_t channel = input.planeSourceChannel(plane);
+        int32_t found = 0;
+        while (found < source.planeCount() && source.planeSourceChannel(found) != channel) {
+            ++found;
+        }
+        if (found == source.planeCount()) {
+            throw InternalError(
+                (std::string(operation) + ": the scene's samples hold no plane of a measured channel").c_str());
+        }
+        planes.push_back(BlockPlane{source.planeData(found), source.planeType(found),
+                                    source.planeRowStrideBytes(found), channel});
+    }
+    return BlockView(source.width(), source.height(), source.slideRect(), source.level(), planes.data(),
+                     static_cast<int32_t>(planes.size()));
+}
 
 void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
                  const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys) {

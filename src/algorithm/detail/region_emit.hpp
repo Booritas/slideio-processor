@@ -39,4 +39,13 @@ namespace slideio::processor::detail {
 void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
                  const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys = nullptr);
 
+/// The scene's samples a segmenter measures for planes @p first onward of
+/// context.input(): for each, the first plane of context.sourceInput() with
+/// the same source channel, so `intensity.<c>.*` measures channel c as read,
+/// whatever the earlier operations of the chain did to it. Same geometry as
+/// context.input(); a null view when there is no plane from @p first on.
+/// Throws InternalError naming @p operation when sourceInput() differs from
+/// input() in size or holds no plane of one of the channels.
+BlockView measuredPlanes(const OperationContext& context, int32_t first, const char* operation);
+
 } // namespace slideio::processor::detail

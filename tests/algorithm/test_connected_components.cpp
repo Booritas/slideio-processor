@@ -1,5 +1,7 @@
 // Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/measure/measure.hpp>
+#include <slideio/processor/algorithm/pixel/filter.hpp>
+#include <slideio/processor/algorithm/pixel/threshold.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
@@ -582,6 +584,55 @@ TEST(ConnectedComponents, NaNIntensitySamplesAreSkipped) {
     // The samples are integers, so every sum is exact and the tilings agree bit for bit.
     for (const int32_t tile : {32, 50}) {
         expectSameObjects(reference, ts::runEagerObjects(scene, spec, tile, 4), std::to_string(tile) + "-pixel tiles");
+    }
+}
+
+TEST(ConnectedComponents, MeasuresTheScenesSamplesAfterEarlierOperations) {
+    // A disc of 200 in plane 0 and x + 100 y in plane 1; the chain blurs and
+    // thresholds both planes before labelling, so plane 1 reaches the operation
+    // as 0 and 255. The blur's halo makes the operation's input rect smaller
+    // than the rect read from the scene.
+    auto pixel = [](int channel, int64_t x, int64_t y) {
+        if (channel == 0) {
+            return (x - 100) * (x - 100) + (y - 100) * (y - 100) <= 40 * 40 ? 200.0 : 0.0;
+        }
+        return static_cast<double>(x + 100 * y);
+    };
+    const auto scene = sceneOf(200, 200, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32}, pixel);
+    PipelineSpec mask;
+    mask.then(makeGaussianBlur(2.0, 0)).then(makeFixedThreshold(100.0, ThresholdDirection::Above));
+    PipelineSpec spec;
+    spec.then(makeGaussianBlur(2.0, 0))
+        .then(makeFixedThreshold(100.0, ThresholdDirection::Above))
+        .then(makeConnectedComponents(ConnectedComponentsParameters()));
+
+    // The statistics of plane 1 as read, over the pixels the chain labels.
+    const ts::Image labelled = ts::runEager(scene, mask, 200, 1);
+    int64_t count = 0;
+    double sum = 0.0;
+    double minimum = std::numeric_limits<double>::infinity();
+    double maximum = -minimum;
+    for (int64_t y = 0; y < 200; ++y) {
+        for (int64_t x = 0; x < 200; ++x) {
+            if (labelled.at(0, x, y) != 255.0) {
+                continue;
+            }
+            const double v = pixel(1, x, y);
+            ++count;
+            sum += v;
+            minimum = std::min(minimum, v);
+            maximum = std::max(maximum, v);
+        }
+    }
+    ASSERT_GT(count, 4000);
+    // The samples are integers, so every sum is exact and the tilings agree bit for bit.
+    for (const int32_t tile : {200, 64}) {
+        const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, spec, tile, 4);
+        ASSERT_EQ(objects.size(), 1u) << tile;
+        EXPECT_EQ(measurement(objects[0], "area"), static_cast<double>(count)) << tile;
+        EXPECT_EQ(measurement(objects[0], "intensity.1.mean"), sum / static_cast<double>(count)) << tile;
+        EXPECT_EQ(measurement(objects[0], "intensity.1.min"), minimum) << tile;
+        EXPECT_EQ(measurement(objects[0], "intensity.1.max"), maximum) << tile;
     }
 }
 

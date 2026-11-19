@@ -1,5 +1,6 @@
 // Requirements: UR-SEG-8, UR-SEG-3, UR-SEG-5, UR-SEG-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/measure/measure.hpp>
+#include <slideio/processor/algorithm/pixel/filter.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/block_view.hpp>
@@ -610,6 +611,63 @@ TEST(Watershed, TypedAndNamedBagsAreEqual) {
     EXPECT_TRUE(defaults->parameters().getInt("maximumMarkerSpacingPx", value) && value == 32);
     EXPECT_TRUE(defaults->parameters().getInt("minimumAreaPx", value) && value == 0);
     EXPECT_STREQ(defaults->parameters().getString("targetLayer", "absent"), "absent");
+}
+
+TEST(Watershed, MeasuresTheScenesSamplesAfterEarlierOperations) {
+    // The touching discs, with (7 x + 13 y) mod 31 in plane 1; the chain blurs both
+    // planes before flooding, so plane 1 reaches the operation smoothed. The
+    // blur's halo makes the operation's input rect smaller than the rect read
+    // from the scene.
+    constexpr int64_t kWidth = 64;
+    constexpr int64_t kHeight = 48;
+    const std::vector<double> dt = distanceTransform(kWidth, kHeight, {{24, 24, 10}, {40, 24, 10}}, 12);
+    const auto pixel = [&dt](int channel, int64_t x, int64_t y) {
+        return channel == 0 ? dt[static_cast<size_t>(y * kWidth + x)] : static_cast<double>((7 * x + 13 * y) % 31);
+    };
+    const auto scene = sceneOf(kWidth, kHeight, {slideio::DataType::DT_Float32, slideio::DataType::DT_Float32}, pixel);
+    PipelineSpec spec;
+    spec.then(makeGaussianBlur(1.0, 0)).then(makeWatershed(WatershedParameters()));
+
+    // Whether the centre of pixel (x, y) lies inside @p polygon, by crossings
+    // of the ray to its right over every ring; vertices lie on pixel corners.
+    const auto covers = [](const Polygon& polygon, int64_t x, int64_t y) {
+        const double px = static_cast<double>(x) + 0.5;
+        const double py = static_cast<double>(y) + 0.5;
+        bool inside = false;
+        for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+            const std::vector<Point64> ring = ringOf(polygon, r);
+            for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
+                const double ay = static_cast<double>(ring[i].y);
+                const double by = static_cast<double>(ring[j].y);
+                if ((ay > py) != (by > py)) {
+                    const double cx = static_cast<double>(ring[i].x) +
+                                      (py - ay) * static_cast<double>(ring[j].x - ring[i].x) / (by - ay);
+                    inside = px < cx ? !inside : inside;
+                }
+            }
+        }
+        return inside;
+    };
+    for (const int32_t tile : {64, 32}) {
+        const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, spec, tile, 4);
+        ASSERT_EQ(objects.size(), 2u) << tile;
+        for (const ObjectRecord& object : objects) {
+            // The statistics of plane 1 as read, over the object's pixels.
+            int64_t count = 0;
+            double sum = 0.0;
+            for (int64_t y = 0; y < kHeight; ++y) {
+                for (int64_t x = 0; x < kWidth; ++x) {
+                    if (covers(object.geometry(), x, y)) {
+                        ++count;
+                        sum += pixel(1, x, y);
+                    }
+                }
+            }
+            // The samples are integers, so every sum is exact.
+            EXPECT_EQ(measurement(object, "area"), static_cast<double>(count)) << tile;
+            EXPECT_EQ(measurement(object, "intensity.1.mean"), sum / static_cast<double>(count)) << tile;
+        }
+    }
 }
 
 TEST(Watershed, AreaFilterAndMeasuredPlanes) {

@@ -60,6 +60,12 @@ public:
     OperationContext& operator=(const OperationContext&) = delete;
 
     const BlockView& input() const noexcept;
+    /// The tile's samples as read from the scene, before any operation of the
+    /// chain: the same halo rect as input(), one plane per selected channel
+    /// whatever the arity. input() itself when the run supplied none, as a
+    /// call outside a chain does. Segmenters measure intensities here
+    /// (`06-algorithm.md` 6.7).
+    const BlockView& sourceInput() const noexcept;
     BlockView&       output() noexcept;
 
     /// Where emitted objects go. Null for operations that produce only
@@ -1200,7 +1206,7 @@ A `PerChannel` operation is applied once per plane, on single-plane views. A
 `outputPlaneCount(n)` output planes. The evaluator allocates the output buffers
 from `outputType` before `apply`. For a `Joint` operation every output plane
 takes `outputType` of the type of its first input plane, and output plane *i*
-carries the source channel of input plane *i* (plane 0's when there are more
+carries the source channel of input plane *i* (the last input plane's when there are more
 outputs than inputs). The final output, exactly the tile rect, goes to
 `rasterSink` when one is bound.
 
@@ -1213,6 +1219,12 @@ level border too (UR-IMG-5, UR-SEG-3).
 
 **Auxiliary rasters** are filled once per tile over the first operation's input
 rect, and each operation sees a view over its own input (halo) rect.
+
+**The source read stays alive for the whole chain.** Each operation sees it as
+`sourceInput()`, a view over its own input rect, so a segmenter late in a chain
+measures the scene's samples rather than what earlier operations made of them
+(`06-algorithm.md` 6.7). This needs no larger reservation: the tile reserves
+the buffers of every step at once (5.5), the source's included.
 
 Only operations whose `producesObjects()` is true get a non-null `objectSink()`;
 every operation gets the edge and annotation sinks bound to the run.

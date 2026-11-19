@@ -182,7 +182,7 @@ public:
         label(in, labels, stride, tile.width, tile.height, tile.x - halo.x, tile.y - halo.y);
         const detail::TracedRegions traced =
             detail::traceRegions(labels, tile.width, tile.height, stride, eightConnected_);
-        detail::emitRegions(context, labels, stride, traced, in, 1);
+        detail::emitRegions(context, labels, stride, traced, detail::measuredPlanes(context, 1, kName), 0);
     }
 
 private:

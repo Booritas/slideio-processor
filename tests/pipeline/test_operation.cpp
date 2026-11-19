@@ -229,6 +229,8 @@ TEST(OperationContext, AccessorsReflectState) {
     const auto ctx = detail::makeOperationContext(std::move(state));
 
     EXPECT_EQ(&ctx->input(), &input);
+    // Without the scene's samples, sourceInput() is the input itself.
+    EXPECT_EQ(&ctx->sourceInput(), &input);
     EXPECT_EQ(&ctx->output(), &output);
     EXPECT_EQ(ctx->objectSink(), &sink);
     EXPECT_EQ(ctx->edgeSink(), nullptr);

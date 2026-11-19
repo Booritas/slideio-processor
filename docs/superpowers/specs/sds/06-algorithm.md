@@ -948,14 +948,21 @@ because their working set is declared for three (6.2); validating a run that
 gives them more fails with `InvalidArgumentError` "measures at most three
 channels besides the one it segments", from `outputPlaneCount`
 (`05-pipeline.md` 5.5). A NaN intensity sample is skipped, not counted; an
-infinite one is counted. The measured planes are the segmenter's **input**
-planes, after every earlier step of its chain, not the scene's raw samples: a
-PerChannel pixel operation ahead of it transforms planes 1 onward as well as
-plane 0, so blur → threshold → `segment.connected_components` measures the
-thresholded planes. They are still named `intensity.<c>.*` after the source
-channel c each plane carries. To measure raw intensities, put the segmenter
-first in its chain and give it a precomputed mask (or, for the watershed, a
-precomputed surface) as its first channel, or measure in a separate run.
+infinite one is counted. The measured samples are the **scene's**, as read,
+not the segmenter's input planes: for each input plane from 1 on, the
+segmenter measures the plane of `OperationContext::sourceInput()`
+(`05-pipeline.md` 5.1) with the same source channel. A PerChannel pixel
+operation ahead of it transforms planes 1 onward as well as plane 0, so in
+blur → threshold →
+`segment.connected_components` plane 0 is the thresholded mask while the
+measured samples are the unblurred channels; `intensity.<c>.*` therefore
+always describes channel c as it is in the scene. Keeping the samples as read
+for the whole chain costs no reservation: the tile already reserves every
+step's buffers at once (`05-pipeline.md` 5.5).
+Derived planes, such as stain densities or HSV, are therefore never measured
+in the chain that derives them: to measure them, derive them in an inner
+pipeline and run the segmenter over its `Pipeline::asScene()` (`05-pipeline.md` 5.5), whose
+samples they then are.
 `segment.contours` is **PerChannel** and measures nothing; it runs on exactly
 one channel, the label raster: per channel over several, every region would
 be stored once per channel under one id, so validation refuses a run giving
@@ -1246,10 +1253,8 @@ operation's tiles close, so no later operation ever sees them, and a merged
 object never passes through a later operation's `apply`. The intensity
 channels are the run's own (`PipelineSpec::channels`), from plane 1 of the
 segmenter's input onward, so the selection needs no `ChannelSelection` of its
-own. They are measured as the segmenter receives them, after every earlier
-step of the chain, and named after the source channel each carries (6.7);
-measuring raw intensities means putting the segmenter first, on a precomputed
-mask or surface, or measuring in a separate run.
+own. They are measured on the scene's samples of those channels, as read,
+whatever earlier steps of the chain did to the planes (6.7).
 
 `standard()`, `geometryOnly()` and `addAll()` are not `noexcept`: the
 selection is pimpl'd under C-2 and an empty one holds nothing, so filling one
