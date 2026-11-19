@@ -9,6 +9,7 @@
 #include "detail/builtin_operations.hpp"
 #include "detail/measurement_finish.hpp"
 #include "detail/region_emit.hpp"
+#include "detail/region_label.hpp"
 #include "detail/region_trace.hpp"
 #include "detail/sample_codec.hpp"
 
@@ -17,7 +18,6 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace slideio::processor {
 
@@ -109,115 +109,11 @@ void checkNotMovedFrom(const void* impl) {
     }
 }
 
-// Union-find over provisional labels 1..: the root of a set is its smallest
-// label, so it is the label its first pixel received in row-major order.
-class Parents {
-public:
-    explicit Parents(size_t capacity) : parent_(capacity + 1, 0) {}
-
-    int32_t make() {
-        const int32_t label = ++count_;
-        parent_[static_cast<size_t>(label)] = label;
-        return label;
-    }
-
-    int32_t find(int32_t label) {
-        while (parent_[static_cast<size_t>(label)] != label) {
-            const int32_t up = parent_[static_cast<size_t>(label)];
-            parent_[static_cast<size_t>(label)] = parent_[static_cast<size_t>(up)];
-            label = up;
-        }
-        return label;
-    }
-
-    // Joins the sets of a and b; returns the root of the joined set.
-    int32_t unite(int32_t a, int32_t b) {
-        const int32_t ra = find(a);
-        const int32_t rb = find(b);
-        if (ra == rb) {
-            return ra;
-        }
-        if (ra < rb) {
-            parent_[static_cast<size_t>(rb)] = ra;
-            return ra;
-        }
-        parent_[static_cast<size_t>(ra)] = rb;
-        return rb;
-    }
-
-    // Replaces every entry by its set's final label, numbered 1.. in the order
-    // of the roots. Every non-root entry points to a smaller label, so
-    // ascending order resolves a label after the one it points to; the final
-    // labels are held negated until then.
-    void resolve() {
-        int32_t next = 0;
-        for (int32_t label = 1; label <= count_; ++label) {
-            const int32_t up = parent_[static_cast<size_t>(label)];
-            parent_[static_cast<size_t>(label)] = up == label ? -(++next) : parent_[static_cast<size_t>(up)];
-        }
-        for (int32_t label = 1; label <= count_; ++label) {
-            parent_[static_cast<size_t>(label)] = -parent_[static_cast<size_t>(label)];
-        }
-    }
-
-    int32_t finalLabel(int32_t label) const { return parent_[static_cast<size_t>(label)]; }
-
-private:
-    std::vector<int32_t> parent_;
-    int32_t count_ = 0;
-};
-
 template <typename T>
 T load(const uint8_t* row, int64_t x) {
     T value;
     std::memcpy(&value, row + x * static_cast<int64_t>(sizeof(T)), sizeof(T));
     return value;
-}
-
-// Labels the foreground of plane 0 over the tile rect, two-pass union-find:
-// writes each pixel's final label (1.. in the order regions are first met row
-// by row, 0 for background) into labels, row y at labels + y * stride.
-template <typename Foreground>
-void labelTile(int32_t* labels, int64_t stride, int64_t width, int64_t height, bool eightConnected,
-               Foreground foreground) {
-    // A new label needs its left neighbour in the background, so a row starts
-    // at most (width + 1) / 2 of them.
-    const int64_t capacity = height * ((width + 1) / 2);
-    if (capacity >= std::numeric_limits<int32_t>::max()) {
-        fail("the tile has too many pixels to label");
-    }
-    Parents parents(static_cast<size_t>(capacity));
-    for (int64_t y = 0; y < height; ++y) {
-        int32_t* row = labels + y * stride;
-        const int32_t* above = y > 0 ? labels + (y - 1) * stride : nullptr;
-        for (int64_t x = 0; x < width; ++x) {
-            if (!foreground(x, y)) {
-                row[x] = 0;
-                continue;
-            }
-            int32_t label = x > 0 ? row[x - 1] : 0;
-            const auto join = [&](int32_t neighbour) {
-                if (neighbour > 0) {
-                    label = label == 0 ? parents.find(neighbour) : parents.unite(label, neighbour);
-                }
-            };
-            if (above != nullptr) {
-                join(above[x]);
-                if (eightConnected) {
-                    join(x > 0 ? above[x - 1] : 0);
-                    join(x + 1 < width ? above[x + 1] : 0);
-                }
-            }
-            row[x] = label == 0 ? parents.make() : label;
-        }
-    }
-    parents.resolve();
-    for (int64_t y = 0; y < height; ++y) {
-        int32_t* row = labels + y * stride;
-        for (int64_t x = 0; x < width; ++x) {
-            row[x] = row[x] == 0 ? 0 : parents.finalLabel(row[x]);
-        }
-    }
 }
 
 // A pixel is foreground when its sample is neither 0 nor NaN.
@@ -294,10 +190,14 @@ private:
                int64_t offsetX, int64_t offsetY) const {
         const auto* base = static_cast<const uint8_t*>(in.planeData(0));
         const int64_t inStride = in.planeRowStrideBytes(0);
+        // A new label needs its left neighbour in the background, so a row
+        // starts at most (width + 1) / 2 of them.
+        const int64_t maximumLabels = height * ((width + 1) / 2);
         const auto run = [&](auto sampleForeground) {
-            labelTile(labels, stride, width, height, eightConnected_, [&](int64_t x, int64_t y) {
-                return sampleForeground(base + (y + offsetY) * inStride, x + offsetX);
-            });
+            detail::labelRegions(
+                labels, stride, width, height, eightConnected_, maximumLabels, kName,
+                [&](int64_t x, int64_t y) { return sampleForeground(base + (y + offsetY) * inStride, x + offsetX); },
+                [](int64_t, int64_t, int64_t, int64_t) { return true; });
         };
         const auto typed = [&](auto zero) {
             using T = decltype(zero);

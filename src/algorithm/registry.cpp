@@ -80,6 +80,7 @@ void registerPixelOperations() {
 
 void registerSegmentationOperations() {
     registerOne("segment.connected_components", &detail::makeConnectedComponentsFactory);
+    registerOne("segment.contours", &detail::makeContoursFactory);
 }
 
 void registerMeasurementOperations() {}

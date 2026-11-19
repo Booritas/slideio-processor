@@ -62,4 +62,7 @@ OperationFactoryPtr makeCannyFactory();
 /// segment.connected_components
 OperationFactoryPtr makeConnectedComponentsFactory();
 
+/// segment.contours
+OperationFactoryPtr makeContoursFactory();
+
 } // namespace slideio::processor::detail

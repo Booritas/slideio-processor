@@ -23,6 +23,7 @@ add_executable(slideio_processor_algorithm_tests
     test_region_trace.cpp
     test_measurement_finish.cpp
     test_connected_components.cpp
+    test_contours.cpp
     support/harness.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp

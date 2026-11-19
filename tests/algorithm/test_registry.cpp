@@ -82,7 +82,7 @@ TEST(Registry, RegisteredAtLoad) {
           "pixel.threshold_otsu", "pixel.threshold_adaptive", "pixel.gaussian_blur", "pixel.median_blur",
           "pixel.sobel", "pixel.scharr", "pixel.laplacian", "pixel.canny", "pixel.bilateral_filter",
           "pixel.morph_erode", "pixel.morph_dilate", "pixel.morph_open", "pixel.morph_close",
-          "segment.connected_components"}) {
+          "segment.connected_components", "segment.contours"}) {
         EXPECT_TRUE(OperationCatalog::instance().isRegistered(name)) << name;
     }
 }

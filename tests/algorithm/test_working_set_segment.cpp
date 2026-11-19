@@ -148,3 +148,104 @@ TEST(WorkingSetSegment, ConnectedComponentsPerCallCoversOneSmallObject) {
         EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
     }
 }
+
+namespace {
+
+// Label rasters that maximise what contour tracing allocates: the most
+// regions and vertices (four values meeting at every pixel corner, or every
+// pixel its own value), the most rings in one region (a region with a hole,
+// or an island of another value, at every other pixel), the most vertices per
+// region (stripes, diagonals, a staircase) and the trivial ones.
+struct LabelRaster {
+    const char* name;
+    std::function<int32_t(int64_t x, int64_t y)> value;
+};
+
+const std::vector<LabelRaster>& adversarialLabelRasters() {
+    static const std::vector<LabelRaster> rasters = {
+        {"checkerboard of four values",
+         [](int64_t x, int64_t y) { return static_cast<int32_t>(1 + x % 2 + 2 * (y % 2)); }},
+        {"every pixel its own value", [](int64_t x, int64_t y) { return static_cast<int32_t>(1 + x + 1000 * y); }},
+        {"checkerboard of two values", [](int64_t x, int64_t y) { return static_cast<int32_t>(1 + (x + y) % 2); }},
+        {"checkerboard with zero", [](int64_t x, int64_t y) { return (x + y) % 2 == 0 ? 1 : 0; }},
+        {"diagonals of four values", [](int64_t x, int64_t y) { return static_cast<int32_t>(1 + (x + y) % 4); }},
+        {"one-pixel islands", [](int64_t x, int64_t y) {
+             return x % 2 == 1 && y % 2 == 1 ? static_cast<int32_t>(2 + (x + 3 * y) % 5) : 1;
+         }},
+        {"one-pixel holes", [](int64_t x, int64_t y) { return x % 2 == 1 && y % 2 == 1 ? 0 : 1; }},
+        {"rows of three values", [](int64_t, int64_t y) { return static_cast<int32_t>(1 + y % 3); }},
+        {"columns of three values", [](int64_t x, int64_t) { return static_cast<int32_t>(1 + x % 3); }},
+        {"comb", [](int64_t x, int64_t y) { return y % 2 == 0 || x == 1 ? 1 : 2; }},
+        {"staircase", [](int64_t x, int64_t y) { return static_cast<int32_t>(1 + (x / 2 + y) % 3); }},
+        {"solid", [](int64_t, int64_t) { return 7; }},
+        {"empty", [](int64_t, int64_t) { return 0; }},
+    };
+    return rasters;
+}
+
+// One Int32 plane of @p raster; with @p interior, 0 within 3 pixels of the
+// edge, so every region is a finished object rather than a seam fragment.
+std::vector<std::vector<uint8_t>> labelPlaneOf(const LabelRaster& raster, int64_t width, int64_t height,
+                                               bool interior) {
+    std::vector<uint8_t> plane(static_cast<size_t>(width * height) * sizeof(int32_t));
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            const bool inside = !interior || (x >= 3 && y >= 3 && x < width - 3 && y < height - 3);
+            const int32_t v = inside ? raster.value(x, y) : 0;
+            std::memcpy(&plane[static_cast<size_t>(y * width + x) * sizeof(int32_t)], &v, sizeof(int32_t));
+        }
+    }
+    return {plane};
+}
+
+} // namespace
+
+TEST(WorkingSetSegment, ContoursBoundedOnThePattern) {
+    for (const bool includeHoles : {true, false}) {
+        const auto make = [includeHoles] { return makeContourExtraction(ContourParameters().includeHoles(includeHoles)); };
+        for (const DataType type : {DataType::Byte, DataType::Int8, DataType::UInt16, DataType::Int16, DataType::UInt32,
+                                    DataType::Int32, DataType::Float32}) {
+            expectApplyBounded("segment.contours", make, {type});
+        }
+    }
+}
+
+// The declaration covers the worst label rasters, each region emitted as a seam
+// fragment (the rasters reach the tile's edge) or as a finished object (the
+// rasters kept inside).
+TEST(WorkingSetSegment, ContoursBoundedOnAdversarialLabelRasters) {
+    for (const int64_t tile : ts::kWorkingSetTileSizes) {
+        const int64_t haloSide = tile + 2;
+        for (const LabelRaster& raster : adversarialLabelRasters()) {
+            for (const bool interior : {false, true}) {
+                const std::vector<std::vector<uint8_t>> planes = labelPlaneOf(raster, haloSide, haloSide, interior);
+                for (const bool includeHoles : {true, false}) {
+                    const OperationPtr op = makeContourExtraction(ContourParameters().includeHoles(includeHoles));
+                    const int64_t peak = ts::measureWorkingSetPeakOn(*op, {DataType::Int32}, planes, tile, tile,
+                                                                     ts::WorkingSetCall::Apply);
+                    const int64_t declared = ts::declaredWorkingSet(*op, tile, tile);
+                    EXPECT_LE(peak, declared) << raster.name << (interior ? ", kept inside" : "") << ", tile "
+                                              << tile << ", " << (includeHoles ? "holes kept" : "holes removed")
+                                              << ": measured " << peak << ", declared " << declared;
+                }
+            }
+        }
+    }
+}
+
+TEST(WorkingSetSegment, CatalogMirrorsContours) {
+    const OperationPtr op = makeContourExtraction(ContourParameters());
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    EXPECT_EQ(catalog.workingSetBytesPerLevelPixel("segment.contours"), op->workingSetBytesPerLevelPixel());
+    EXPECT_EQ(catalog.workingSetBytesPerTile("segment.contours"), op->workingSetBytesPerTile());
+}
+
+// One small object finished whole, its measurements in micrometres too: what
+// does not scale with the tile is within the per-call figure alone.
+TEST(WorkingSetSegment, ContoursPerCallCoversOneSmallObject) {
+    const LabelRaster square{"square", [](int64_t x, int64_t y) { return x >= 3 && x < 5 && y >= 3 && y < 5 ? 3 : 0; }};
+    const OperationPtr op = makeContourExtraction(ContourParameters());
+    const int64_t peak = ts::measureWorkingSetPeakOn(*op, {DataType::Int32}, labelPlaneOf(square, 8, 8, false), 6, 6,
+                                                     ts::WorkingSetCall::Apply);
+    EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
+}

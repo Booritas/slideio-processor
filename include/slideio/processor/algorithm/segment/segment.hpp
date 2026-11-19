@@ -3,8 +3,9 @@
 
 /**
  * @file segment.hpp
- * @brief Segmentation operations: Connectivity and the connected-components
- * labelling with its per-object measurements.
+ * @brief Segmentation operations: Connectivity, the connected-components
+ * labelling with its per-object measurements, and the contours of a label
+ * raster.
  *
  * A segmentation operation writes objects to a layer of the run. Each object is
  * found on the tile it lies in; one cut by tile seams is emitted in fragments
@@ -27,6 +28,7 @@ namespace slideio::processor {
 
 namespace detail {
 struct ConnectedComponentsParametersAccess;
+struct ContourParametersAccess;
 } // namespace detail
 
 /**
@@ -261,5 +263,171 @@ private:
  * UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeConnectedComponents(const ConnectedComponentsParameters& parameters);
+
+/**
+ * @brief The parameters of `segment.contours`, set one by one and passed to
+ * makeContourExtraction().
+ *
+ * Each setter stores what the operation's parameter bag records under the key
+ * of the same name, so the typed factory and the catalog build the same
+ * operation from the same bag:
+ * | Key | Type | Default | Range |
+ * |---|---|---|---|
+ * | `includeHoles` | bool | true | |
+ * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
+ *
+ * A moved-from object may only be assigned to or destroyed.
+ * @par Thread-safety
+ * ThreadCompatible.
+ * @par Requirements
+ * UR-SEG-2, UR-SEG-4
+ */
+class SLIDEIO_PROCESSOR_ENGINE_EXPORTS ContourParameters {
+public:
+    /**
+     * @brief Creates the default parameters: holes kept, the run's only bound
+     * layer.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Safe to call concurrently.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters();
+    /**
+     * @brief Copies parameters; the copy shares nothing with the original.
+     * @param other The parameters to copy; not moved-from.
+     * @throws std::bad_alloc When allocation fails.
+     * @par Thread-safety
+     * Reads @p other; ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters(const ContourParameters& other);
+    /**
+     * @brief Moves parameters. The moved-from object may only be assigned to
+     * or destroyed.
+     * @param other The parameters to move from.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters(ContourParameters&& other) noexcept;
+    /**
+     * @brief Replaces these parameters with a copy of others.
+     * @param other The parameters to copy; not moved-from.
+     * @return These parameters.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters& operator=(const ContourParameters& other);
+    /**
+     * @brief Replaces these parameters by moving others. The moved-from object
+     * may only be assigned to or destroyed.
+     * @param other The parameters to move from.
+     * @return These parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters& operator=(ContourParameters&& other) noexcept;
+    /**
+     * @brief Destroys the parameters.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ~ContourParameters();
+
+    /**
+     * @brief Sets whether an object keeps its holes as separate rings; true by
+     * default. Without them, the object's area and perimeter are those of its
+     * outer ring.
+     * @param include True to keep the holes.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-4
+     */
+    ContourParameters& includeHoles(bool include);
+    /**
+     * @brief Names the bound layer the objects go to.
+     *
+     * An empty name, the default, leaves the key out of the parameter bag, and
+     * the run then uses its only bound layer; a run binding several layers
+     * needs a name.
+     * @param layerName The layer's name, UTF-8; not null; copied.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p layerName is null or these
+     * parameters are moved-from.
+     * @throws std::bad_alloc When allocation fails; these parameters are then
+     * unchanged.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-2
+     */
+    ContourParameters& targetLayer(const char* layerName);
+
+private:
+    friend struct detail::ContourParametersAccess;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Creates `segment.contours`: PerChannel, halo 1, integer inputs up to
+ * 32 bits and `Float32`, one `Int32` output plane per input plane, producing
+ * objects.
+ *
+ * The input is a label raster. Each maximal 4-connected set of pixels of one
+ * equal value, neither 0 nor NaN, is one object, its outline and holes traced
+ * along pixel edges in level-0 coordinates (UR-SEG-4); `Float32` values are
+ * compared exactly, so -0 is background as 0 is. Regions of different values
+ * may touch: their objects then share the edges between them. An object cut
+ * by tile seams is merged from its fragments, and only fragments of one value
+ * are joined, so neighbouring regions stay apart across seams too. Two regions
+ * of one value touching only at a corner are two objects.
+ *
+ * Nothing is measured but the geometry: each object has `area` and
+ * `perimeter` in level-0 pixels, also as `area.um2` and `perimeter.um` when
+ * the scene is calibrated. Without holes kept, they are those of the outer
+ * ring.
+ *
+ * The operation is meant to run on one channel, the label raster: every
+ * selected channel is traced into the same layer, so with several channels
+ * the objects of one channel overlap those of another.
+ *
+ * The output plane holds, for each pixel of an object, the object's 1-based
+ * index among the objects of its tile in the order their first pixel is met
+ * row by row, and 0 elsewhere. The index is local to the tile: it is a view
+ * for inspection, not an object's identity.
+ *
+ * By name, an unknown key or a value of the wrong type throws
+ * InvalidArgumentError naming the key, never the value.
+ * @param parameters The parameters; not moved-from.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p parameters is moved-from; the message
+ * names the operation and the parameter.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() and finishObject() may
+ * run concurrently on different contexts and objects.
+ * @par Requirements
+ * UR-SEG-2, UR-SEG-3, UR-SEG-4
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeContourExtraction(const ContourParameters& parameters);
 
 } // namespace slideio::processor
