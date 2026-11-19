@@ -51,8 +51,11 @@ that throws can leave `std::call_once` hung on some standard libraries, and
 idempotence per name makes a flag unnecessary.
 
 `registerSegmentationOperations()` and `registerMeasurementOperations()` exist
-so a build can ship a subset, but register nothing until the catalog has
-segmentation and measurement operations; their documentation says so.
+so a build can ship a subset. The first registers the four `segment.*`
+operations of 6.7. The second registers nothing: the segmentation operations
+measure their own objects (6.8), so the catalog has no measurement operation,
+and the function stays so that a later one has a place to go without a change
+to the API; its documentation says so.
 
 **Build.** The module is the OBJECT library `slideio-processor-algorithm`,
 linked into `slideio-processor-engine` (`05-pipeline.md` 5.11). Its include
@@ -61,8 +64,10 @@ own `detail/` headers, and deliberately not `src/`, so it cannot reach
 `pipeline`'s private headers and is compiled against the public API only, as
 a third-party operation would be (UR-EXT-2). It links `opencv_core` and
 `opencv_imgproc` privately: OpenCV is confined to the engine library, not to
-`pipeline`, because the catalog's median, morphology and Canny, its
-derivative coefficients, and labelling and watershed (6.4, 6.7) need it. No
+`pipeline`, because the catalog's median, morphology and Canny and its
+derivative coefficients (6.4) need it. The segmentation operations of 6.7 do
+not: their labelling, tracing, flooding and closing are the module's own,
+because each must give one answer however the level is tiled. No
 OpenCV type, header or macro appears in an `algorithm/` header, which the
 build's OpenCV-free header check compiles as it does `pipeline/`'s. Using OpenCV does not mean trusting it: each operation keeps
 its own correctness test (6.9).
@@ -144,14 +149,39 @@ the operation and the parameter.
 | | `elementWidth`, `elementHeight` | int | 3, 3 | odd, 1 to 255 |
 | | `elementMask` | double array | absent | present exactly when `shape` is `"Custom"`: `elementWidth` · `elementHeight` values, row by row from the top, each 0 or 1, at least one 1 |
 | | `iterations` | int | 1 | 1 to 64 |
+| `segment.connected_components` | `connectivity` | string | `"EightConnected"` | a `Connectivity` spelling |
+| | `minimumAreaPx` | int | 0 | at least 0; square level-0 pixels |
+| | `maximumAreaPx` | int | 0 (unbounded) | at least 0; when not 0, at least `minimumAreaPx` |
+| | `extractHoles` | bool | true | |
+| | `measurements` | string | every `MeasurementKind` | `MeasurementKind` spellings separated by commas, without spaces (`"Area,Perimeter"`); empty selects none |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
+| `segment.contours` | `includeHoles` | bool | true | |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
+| `segment.watershed` | `markers` | string | `"LocalMaxima"` | a `WatershedMarkers` spelling |
+| | `auxiliaryName` | string | `""` | with `"AuxiliaryRaster"`, not empty: the name of a bound raster |
+| | `minimumMarkerDistancePx` | int | 5 | 1 to `maximumMarkerSpacingPx` |
+| | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823, so the halo 2 · spacing + 1 fits an `int32_t` |
+| | `minimumAreaPx` | int | 0 | at least 0; square level-0 pixels |
+| | `measurements` | string | every `MeasurementKind` | as `segment.connected_components` |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
+| `segment.tissue_detect` | `saturationThreshold` | double | 0.07 | 0 to 1 |
+| | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
+| | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
+| | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 
 `pixel.threshold_otsu`'s range is the one exception to completeness: the three
 range keys are present only when the operation was created with a range, since
 "no range" has no value to fill in (6.5). Its bag still round-trips, which is
-what the conformance test checks. A morphology operation's `elementMask` is
-the same kind of key: a drawn shape is fully described by its name and size,
-so the mask is recorded only for `"Custom"`, and a bag that gives it with
-another shape, or omits it with `"Custom"`, is refused naming `elementMask`.
+what the conformance test checks. An object producer's `targetLayer` is the
+other: the typed setter given `""`, the default, leaves the key out of the bag,
+and an absent key means the run's only bound layer (6.7, `05-pipeline.md` 5.5),
+so a one-layer stage records no layer name at all. A `measurements` text naming
+an unknown kind is a value out of range and is refused naming the key; the bag
+records the selected kinds in enumerator order, so a selection round-trips
+whatever order it was given in. A morphology operation's `elementMask` is the
+same kind of key: a drawn shape is fully described by its name and size, so the
+mask is recorded only for `"Custom"`, and a bag that gives it with another
+shape, or omits it with `"Custom"`, is refused naming `elementMask`.
 
 A range that couples two keys is reported against the key the caller set.
 `pixel.gaussian_blur` with `kernelSize` 0 and a `sigma` whose derived size
@@ -195,6 +225,10 @@ beside it saying which buffers it counts:
 | `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
 | `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | the larger of the float path's two copies of the plane and the integer path's ring buffer, rows and the backend's destination | the larger of the float path's element offsets and the integer path's filter engine (grows with the element's size) |
+| `segment.connected_components` | 192: the union-find parents, the traced rings, the region table and the objects emitted inside the call (the tile filter's and the finisher's copies included), one intensity partial per object and measured plane for at most three measured planes | 16384: one object's record and its finished copy with every measurement, and the small arrays of a tile with few objects |
+| `segment.contours` | 264: as connected components, without partials, but regions of different values touch side by side, so the traced arrays and a join key per region can reach one per pixel | 4096 |
+| `segment.watershed` | 288 per pixel of the halo'd tile: plane 0 as doubles, each pixel's seed and the flood's queue, then the labelling, tracing and emission of contours with three measured planes | 16384 |
+| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions | 4096 |
 
 **The backend's share is bounded from its source.** OpenCV allocates part of
 its memory through its own allocator, which no test in this module can count.
@@ -221,7 +255,13 @@ calling thread alone, so the meter sees everything it takes through
 `operator new`. A further test bounds Canny's declaration from above as well:
 at a 1024-pixel tile with the default parameters, on an input dense with
 edges, it is at most three times the measured peak plus the OpenCV share.
-Further
+A segmentation operation's objects are filtered, normalised and finished
+inside its `apply()` call (`05-pipeline.md` 5.1, 5.5), so the copies the tile
+filter and the finisher make count toward its figures, and the meter, which
+for these operations also compiles in the core library, sees them. Its tests
+apply each segmenter to adversarial inputs — checkerboards, a hole at every
+other pixel, every pixel its own label or basin — as well as representative
+ones. Further
 tests refuse a run whose working set does not fit the ceiling (a bilateral
 filter on a large tile, Otsu with a very large bin count) and bound Otsu over
 many channels.
@@ -747,65 +787,77 @@ themselves without passing through a lossy intermediate (UR-IMG-10).
 ```cpp
 enum class Connectivity : int32_t { FourConnected, EightConnected };
 
-/// segment.tissue_detect — Joint, halo small, writes a semantic layer.
-class TissueDetectParameters {
-public:
-    TissueDetectParameters();
-    TissueDetectParameters& saturationThreshold(double);
-    TissueDetectParameters& minimumRegionAreaPx(int64_t);
-    TissueDetectParameters& closingRadiusPx(int32_t);
-    TissueDetectParameters& targetLayer(const char*); // "" = the stage's only layer
-};
-OperationPtr makeTissueDetect(const TissueDetectParameters&);
-
-/// segment.connected_components — PerChannel, halo 1, writes objects.
+/// segment.connected_components — Joint, halo 1, every type, one Int32 plane,
+/// writes objects. Plane 0 is segmented; planes 1 to 3 are measured.
 class ConnectedComponentsParameters {
 public:
     ConnectedComponentsParameters();
-    ConnectedComponentsParameters& connectivity(Connectivity);
-    ConnectedComponentsParameters& minimumAreaPx(int64_t);
-    ConnectedComponentsParameters& maximumAreaPx(int64_t);   // 0 = unbounded
-    ConnectedComponentsParameters& extractHoles(bool);
-    ConnectedComponentsParameters& targetLayer(const char*);
+    ConnectedComponentsParameters& connectivity(Connectivity);       // EightConnected
+    ConnectedComponentsParameters& minimumAreaPx(int64_t);           // 0
+    ConnectedComponentsParameters& maximumAreaPx(int64_t);           // 0 = unbounded
+    ConnectedComponentsParameters& extractHoles(bool);               // true
+    ConnectedComponentsParameters& measurements(const MeasurementSelection&); // standard()
+    ConnectedComponentsParameters& targetLayer(const char*);         // "" = the only bound layer
 };
 OperationPtr makeConnectedComponents(const ConnectedComponentsParameters&);
 
-/// segment.contours — extracts polygon contours including interior holes.
+/// segment.contours — PerChannel, halo 1, integers up to 32 bits and Float32,
+/// one Int32 plane per input plane, writes objects. Traces a label raster.
 class ContourParameters {
 public:
     ContourParameters();
-    ContourParameters& includeHoles(bool);
+    ContourParameters& includeHoles(bool);                           // true
     ContourParameters& targetLayer(const char*);
 };
 OperationPtr makeContourExtraction(const ContourParameters&);
 
 enum class WatershedMarkers : int32_t {
-    LocalMaxima,       // detected in the input plane
-    AuxiliaryRaster    // one basin per distinct value of a bound raster (5.1),
-                       // normally LayerRasterContent::ObjectAnchor
+    LocalMaxima,       // detected in plane 0
+    AuxiliaryRaster    // one basin per distinct value other than -1 of a bound
+                       // Int64 raster (5.1), normally LayerRasterContent::ObjectAnchor
 };
 
-/// segment.watershed — PerChannel, halo = maximumMarkerSpacingPx, writes objects.
+/// segment.watershed — Joint, halo 2 * maximumMarkerSpacingPx + 1, every
+/// type, one Int32 plane, writes objects. Plane 0 is flooded; planes 1 to 3
+/// are measured.
 class WatershedParameters {
 public:
     WatershedParameters();
-    WatershedParameters& markers(WatershedMarkers);
-    WatershedParameters& auxiliaryName(const char*);       // for AuxiliaryRaster
-    WatershedParameters& minimumMarkerDistancePx(int32_t); // suppression radius
+    WatershedParameters& markers(WatershedMarkers);                  // LocalMaxima
+    WatershedParameters& auxiliaryName(const char*);                 // for AuxiliaryRaster
+    WatershedParameters& minimumMarkerDistancePx(int32_t);           // 5
 
-    /// The bound that makes this operation tileable, and a hard one: no basin
-    /// boundary may depend on a marker further away than this. Derives the
-    /// halo. Exceeding it is an error, never a silent approximation.
-    WatershedParameters& maximumMarkerSpacingPx(int32_t);
+    /// The bound that makes this operation tileable, and a hard one: every
+    /// foreground pixel must lie within this distance of the marker pixel its
+    /// basin reached it from. Derives the halo. Exceeding it is an error,
+    /// never a silent approximation.
+    WatershedParameters& maximumMarkerSpacingPx(int32_t);            // 32
 
-    WatershedParameters& minimumAreaPx(int64_t);
+    WatershedParameters& minimumAreaPx(int64_t);                     // 0
+    WatershedParameters& measurements(const MeasurementSelection&);  // standard()
     WatershedParameters& targetLayer(const char*);
 };
 OperationPtr makeWatershed(const WatershedParameters&);
+
+/// segment.tissue_detect — Joint over three planes of one type, Byte or
+/// UInt16 (RGB), halo 2 * closingRadiusPx + 1, one Byte plane, writes objects.
+class TissueDetectParameters {
+public:
+    TissueDetectParameters();
+    TissueDetectParameters& saturationThreshold(double);             // 0.07
+    TissueDetectParameters& minimumRegionAreaPx(int64_t);            // 0
+    TissueDetectParameters& closingRadiusPx(int32_t);                // 2, 0 = none
+    TissueDetectParameters& targetLayer(const char*);
+};
+OperationPtr makeTissueDetect(const TissueDetectParameters&);
 ```
 
-**Requirements:** UR-SEG-1, UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-7, UR-SEG-8,
-UR-STG-4, UR-STG-10.
+Each parameters class is pimpl'd with the full copy and move set; a
+moved-from object may only be assigned to or destroyed, and a setter or
+factory given one throws `InvalidArgumentError`.
+
+**Requirements:** UR-SEG-1, UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6,
+UR-SEG-7, UR-SEG-8, UR-STG-4, UR-STG-10.
 
 **The target layer is named, never passed as a `LayerId`.** An earlier draft
 took `LayerId target` as a constructor argument on each of these factories,
@@ -829,15 +881,140 @@ framework resolves the name against the layer registry before the run starts and
 exposes the result as `OperationContext::targetLayer()` (5.1), so an operation
 author writes `ctx.targetLayer()` and never touches a registry. An empty name
 means *the single layer the stage declared* — the common case, and the reason a
-one-layer stage need not repeat itself. A stage declaring several layers must
+one-layer stage need not repeat itself. The typed setter given `""` leaves the
+key out of the bag rather than storing an empty string, so the empty name and
+the absent key are one case (6.2). A stage declaring several layers must
 name one per object-producing operation; omitting it there is an error, not a
-guess (4.4).
+guess (4.4). Two operations of one run may not target the same layer
+(`05-pipeline.md` 5.5).
 
-Every object-producing operation emits boundary-touching regions through
-`OperationContext::emitSeamFragment` rather than as finished objects, so
-`SeamMerger` joins them into single objects with geometry and measurements
-computed as if the slide had been processed as one image (UR-SEG-3). An
-operation author never writes merging logic.
+### One tracer, one finisher
+
+The four operations share their structure, and so the guarantees below hold
+for all of them alike.
+
+**Foreground.** A pixel of plane 0 is foreground when its sample is neither 0
+nor NaN; -0 is background, as 0 is, and an infinite sample is foreground. For
+`segment.contours` a region is a maximal 4-connected set of pixels of one
+**equal** foreground value, compared exactly (a `Float32` label and the next
+`Float32` are two labels); for the others, a maximal connected set of
+foreground pixels.
+
+**Labelling and tracing.** Each operation labels the regions of its tile rect
+at level coordinates — a two-pass union–find, regions numbered 1 to K in the
+order their first pixel is met row by row — and one shared tracer follows each
+region's boundary along pixel edges into rings: the outer ring positive
+(clockwise on screen, y down), holes negative. Where a region's outline meets
+itself diagonally at a point, the tracer takes the sharpest left turn for an
+8-connected region, so that one outer ring passes twice through the point,
+and the sharpest right turn otherwise — the rule the seam merger applies to
+merged objects (`05-pipeline.md` 5.7), so an object found in one tile and the
+same object merged agree point for point. The framework normalises the rings
+of every emitted object (`05-pipeline.md` 5.5), so an operation need not; the
+shared tracer already emits the normal form, which the framework recognises
+and passes on without copying the polygon, a saving the working sets of 6.2
+count on.
+
+**Emission.** A region touching the tile rect's edge is emitted with
+`emitSeamFragment` (`05-pipeline.md` 5.1) together with its intensity partials
+and its join key; the rest are emitted as finished objects with
+`applyStandardMeasurements` applied. Rings are mapped to level-0 coordinates
+through `toLevel0` (UR-SEG-4). An operation author never writes merging logic:
+`SeamMerger` joins the fragments into single objects with geometry and
+measurements computed as if the slide had been processed as one image
+(UR-SEG-3). The join keys, which agree across tiles, keep apart regions that
+touch: `segment.connected_components` and `segment.tissue_detect` use 0,
+since their regions are separated by background (or, for 8-connected
+components, joined anyway); `segment.contours` uses the region's sample value,
+its bit pattern as an `int64_t` for `Float32`; `segment.watershed` uses its
+basin's identity (below).
+
+**Finishing.** Every object, whole or merged, passes through its operation's
+`finishObject` (`05-pipeline.md` 5.1), which applies one
+`detail::MeasurementPlan`: without holes kept it removes the hole rings and
+recomputes `area` and `perimeter` from the outer ring, intensity statistics
+staying over the object's own pixels; it discards an object whose final `area`
+lies outside the area bounds; it adds the centroid and bounding box when
+selected and the calibrated units when the pixel size is known (6.8); and it
+removes every measurement of a kind not selected. An operation that measures
+nothing beyond the geometry (`segment.contours`, `segment.tissue_detect`) keeps
+`area` and `perimeter` and their calibrated forms.
+
+**Channels and measured intensity.** `segment.connected_components` and
+`segment.watershed` are **Joint** with no uniform-type requirement: plane 0 is
+segmented, and planes 1 onward are measured, each partial's channel being that
+plane's source channel. They measure **at most three planes** besides plane 0,
+because their working set is declared for three (6.2); validating a run that
+gives them more fails with `InvalidArgumentError` "measures at most three
+channels besides the one it segments", from `outputPlaneCount`
+(`05-pipeline.md` 5.5). A NaN intensity sample is skipped, not counted; an
+infinite one is counted. The measured samples are the **scene's**, as read,
+not the segmenter's input planes: for each input plane from 1 on, the
+segmenter measures the plane of `OperationContext::sourceInput()`
+(`05-pipeline.md` 5.1) with the same source channel. A PerChannel pixel
+operation ahead of it transforms planes 1 onward as well as plane 0, so in
+blur → threshold →
+`segment.connected_components` plane 0 is the thresholded mask while the
+measured samples are the unblurred channels; `intensity.<c>.*` therefore
+always describes channel c as it is in the scene, and a channel carried by
+several input planes (after a Joint operation that writes more planes than it
+reads, such as grey to RGB) is measured once. Keeping the samples as read
+for the whole chain costs no reservation: the tile already reserves every
+step's buffers at once (`05-pipeline.md` 5.5).
+Derived planes, such as stain densities or HSV, are therefore never measured
+in the chain that derives them: to measure them, derive them in an inner
+pipeline and run the segmenter over its `Pipeline::asScene()` (`05-pipeline.md` 5.5), whose
+samples they then are.
+`segment.contours` is **PerChannel** and measures nothing; it runs on exactly
+one channel, the label raster: per channel over several, every region would
+be stored once per channel under one id, so validation refuses a run giving
+it more than one plane (`05-pipeline.md` 5.5).
+`segment.tissue_detect` is **Joint** over exactly three planes of one type,
+`Byte` or `UInt16`; another count throws `ChannelArityError`, the error of the
+catalog's other RGB operations.
+
+**The raster output.** Every operation must write a raster, and for the
+segmenters it is a view for inspection: one `Int32` plane holding each region
+pixel's 1-based index among the regions of its tile, and 0 elsewhere — local
+to the tile, not an object's identity. `segment.tissue_detect` writes one
+`Byte` plane, 255 on closed tissue and 0 elsewhere.
+
+**Nothing may grow the tile after them.** Each operation finds its seams on
+its own tile rect, so a run in which an operation with a halo follows one of
+these is refused (`05-pipeline.md` 5.5).
+
+### The four operations
+
+**`segment.connected_components`** labels the foreground of plane 0 under
+`connectivity`, `EightConnected` by default because nuclei touch at corners
+(UR-SEG-8); `objectsAreEightConnected()` follows it, so the merger joins
+diagonal contacts across seams too. Halo 1. Holes are kept by default
+(`extractHoles`).
+
+**`segment.contours`** turns a label raster into objects: every region of one
+value becomes an object with its rings, and regions of different values may
+touch, sharing the edges between them. Its regions are 4-connected
+(`objectsAreEightConnected()` is false): two regions of one value touching
+only at a corner are two objects. Halo 1. It accepts every integer type up to
+32 bits and `Float32`, whose values it compares exactly. Holes are kept by
+default (`includeHoles`).
+
+**`segment.watershed`** separates touching objects (UR-SEG-8); the next
+subsection describes it.
+
+**`segment.tissue_detect`** marks a pixel as tissue when its HSV saturation,
+(max − min) / max over its three samples in any order, exceeds
+`saturationThreshold`; a pixel whose samples are all 0, as pixels beyond the
+level are, is background. The mask is then closed — dilated, then eroded —
+with a Euclidean disc of radius `closingRadiusPx` in pixels of the analysis
+level (the pixels within that distance of its centre; 0 for no closing). The
+closing is the module's own and exact under tiling: the halo,
+2 · `closingRadiusPx` + 1, holds every pixel a tile pixel's closed value
+depends on. Each maximal 4-connected set of closed tissue pixels is an object,
+traced as above; `minimumRegionAreaPx` filters in the finisher on level-0
+area. One tissue region may span the level, and the merger holds its
+fragments until it is complete (`05-pipeline.md` 5.7), so tissue detection
+should run at a coarse `analysisLevel`; its documentation says so.
 
 **The analysis level is set on the run, not here.** Tissue detection does not
 need full resolution, and UR-IMG-4 requires reading from the coarsest adequate
@@ -848,10 +1025,15 @@ laid out at one level for the whole run (5.6), so an operation asking for a
 different one had nowhere to be honoured. A chain that needs two levels is two
 stages.
 
-`minimumAreaPx` and `maximumAreaPx` filter **during extraction**, so discarded
-objects are never written to the store. UR-SEG-7's acceptance criterion is that
-a filtered run on a slide with many small artefacts yields a materially smaller
-store, and that the filtered objects appear in no query.
+`minimumAreaPx`, `maximumAreaPx` and `minimumRegionAreaPx` filter **during
+extraction**, in the finisher, so discarded objects are never written to the
+store. UR-SEG-7's acceptance criterion is that a filtered run on a slide with
+many small artefacts yields a materially smaller store, and that the filtered
+objects appear in no query. Because the finisher sees the final object, a
+bound applies identically however the object was assembled — whole in one
+tile or merged from fragments, each of which may be below the bound on its
+own. The bounds compare `area` in square **level-0** pixels, after any holes
+were removed, so a bound means the same at every analysis level.
 
 Contours are polygon rings in level-0 slide coordinates, with holes as separate
 rings (UR-SEG-4).
@@ -876,16 +1058,92 @@ still a local decision.
 
 `maximumMarkerSpacingPx` turns that from an observation into a contract, and
 it is UR-SEG-8's declared reach. It derives the halo, and the operation
-**throws** when a pixel of a segmented region lies further than that from any
-marker in its halo'd context, because such a pixel's basin could be decided by
+**throws** when a pixel of a segmented region lies further than that from the
+marker its basin reached it from, or is reached by none, because such a
+pixel's basin could be decided by
 evidence the tile cannot see — which is the rejection UR-SEG-8 requires rather
-than permits. Failing
-is what keeps UR-QA-2 exact: for every input that runs, each boundary is
-determined entirely within the supplied context, so the result is identical
-across tile sizes by construction rather than by hoping clumps stay small.
+than permits. Failing is what keeps UR-QA-2 within reach: for every input
+that runs, each pixel's seed lies within the supplied context, so that much of
+the result is bounded by construction rather than by hoping clumps stay small.
+Where values tie at the meeting of basins, which basin wins can depend on how
+the flood reached the tie, and that case is tested, not proven (below).
 Degrading quietly instead — segmenting what fits, passing through what does not
 — would make the output depend on tile position, which 5.6 identifies as the
 worst failure available because the count comes out nearly right.
+
+### Watershed, exactly
+
+**Flooding.** Plane 0 is flooded, foreground only, **from the markers
+downhill**, as a frontier flood rather than a global sort: the frontier holds
+the unflooded foreground pixels beside a flooded one, the frontier pixel of
+highest value is flooded next, ties broken by level coordinates (row, then
+column), and it joins the basin of its first flooded side neighbour — highest
+value, ties again by level coordinates. A pixel enters the frontier only when
+a neighbour has been flooded, so a lower pixel next to a basin may be flooded
+before a higher one no basin has reached yet. Within a halo'd context the
+order is that of level coordinates, so it never depends on where the tile
+lies. That the result is then the same at every tile size is what the tests
+assert, exactly (6.9), not a theorem: the reach check bounds each pixel's
+distance to its seed, but not the length of the flood paths that decide ties
+between basins, and there is no general proof that a halo of
+2 · `maximumMarkerSpacingPx` + 1 makes every input tile-invariant. As evidence,
+not proof, an exact model of the flood found no counter-example in about
+28,000 tie-heavy random inputs with tiles far smaller than the halo. Samples
+are compared as doubles, exactly for every type but 64-bit integers beyond 2⁵³
+in magnitude.
+
+**Markers.** With `LocalMaxima`, a marker is a foreground pixel that comes
+before every other foreground pixel within `minimumMarkerDistancePx`
+(Chebyshev) — greater, or equal and above it, or to its left on the same row
+— so a plateau gives its topmost, then leftmost, pixel. A pixel whose window
+reaches beyond the halo'd context is not decided there, which the halo makes
+irrelevant to the tile's own pixels. With `AuxiliaryRaster`, every foreground
+pixel whose value in the bound `Int64` raster is not -1 is a marker, and one
+basin is one value. A tile whose run binds no raster under `auxiliaryName`, or
+one that is not a single `Int64` plane, throws `InvalidArgumentError` naming
+the parameter `auxiliaryName`, never the binding's name, since messages carry
+no parameter values. `minimumMarkerDistancePx` must not exceed
+`maximumMarkerSpacingPx`.
+
+**Halo, 2 · `maximumMarkerSpacingPx` + 1.** A tile pixel's basin depends on the
+markers within the spacing, and their detection on pixels a further
+`minimumMarkerDistancePx` away, at most the spacing; the one more keeps the
+pixels just beyond in view. The working set is declared per pixel of that
+halo'd tile, which is large beside the tile when the spacing is: a spacing of
+32 grows a 256-pixel tile to 386 pixels a side.
+
+**The reach check.** After flooding the halo'd context, and before anything
+is emitted, every foreground pixel of the tile rect must have been flooded
+from a marker pixel within `maximumMarkerSpacingPx` (Chebyshev). The distance
+is measured to **the seed pixel its flood path started from** — each flooded
+pixel carries its seed's position — not to its basin's marker region as a
+whole: an auxiliary marker region may be large, and a distance to its corner
+would refuse inputs that flood correctly. A pixel no marker reached, or
+reached from a seed further away, fails the tile with `InvalidArgumentError`
+"segment.watershed: a region lies further than maximumMarkerSpacingPx from
+every marker", and the run with it; nothing is ever segmented partially in
+its place. UR-SEG-8 asks the diagnostic to name the operation and the
+distance: it names the distance by its parameter, not its value, because no
+message carries a parameter value. The executor wraps the failure of a tile as
+it wraps any `apply()` failure (5.9); the inner message is the one above.
+
+**Objects.** Within the tile rect, a basin's pixels are labelled into
+4-connected parts — a basin restricted to the tile may split — and each part
+is an object, traced as 6.7 describes; basins touching each other share the
+edges between them. `objectsAreEightConnected()` is false. A basin's join key
+is its identity, the same in every tile: the marker's pixel packed from level
+coordinates as `(y << 31) | x`, or with `AuxiliaryRaster` the raster's value.
+Holes are kept; `minimumAreaPx` filters in the finisher.
+
+**Flood a surface that peaks inside each object.** On a plateau the markers
+are only the topmost-leftmost pixels within each window, and the flood
+reaches the rest of a flat region from them, so a flat or binary input — a
+thresholded mask flooded as it is — gives few markers far apart and usually
+fails the reach check rather than separating anything. The input to flood is a
+distance transform of the mask, whose maxima sit at the objects' centres (the
+test of 6.9 floods exactly that), or a smoothed intensity; v1's catalog has no
+distance transform, so it comes from the caller's own operation or an earlier
+stage.
 
 ### Coarse-to-fine, as a supported pattern
 
@@ -961,26 +1219,22 @@ enum class MeasurementKind : int32_t {
     IntensityMean, IntensityStdDev, IntensityMin, IntensityMax
 };
 
-class MeasurementSelection {
+class MeasurementSelection {                     // pimpl'd; empty until a kind is added
 public:
-    MeasurementSelection();
-    static MeasurementSelection standard() noexcept;   // all of the above
-    static MeasurementSelection geometryOnly() noexcept;
+    MeasurementSelection();                      // empty; does not allocate
+    static MeasurementSelection standard();      // all of the above
+    static MeasurementSelection geometryOnly();  // Area, Perimeter, Centroid, BoundingBox
 
     MeasurementSelection& add(MeasurementKind);
-    MeasurementSelection& addAll() noexcept;
+    MeasurementSelection& addAll();
     bool    contains(MeasurementKind) const noexcept;
     int32_t count() const noexcept;
 };
 
-/// measure.object_measurements — computed per object as it is emitted.
-OperationPtr makeObjectMeasurements(const MeasurementSelection&,
-                                    const ChannelSelection& intensityChannels);
-
 /// Calibration is applied automatically from the scene's resolution metadata.
-/// Reports whether it was available.
-bool sceneIsCalibrated(slideio::ScenePtr) noexcept;
-double scenePixelSizeMicrons(slideio::ScenePtr) noexcept;   // 0 if unavailable
+/// Reports whether it is available, by the rule of OperationContext::pixelSizeMicrons.
+bool sceneIsCalibrated(std::shared_ptr<slideio::Scene>) noexcept;
+double scenePixelSizeMicrons(std::shared_ptr<slideio::Scene>) noexcept;  // 0 if unavailable
 ```
 
 **Requirements:** UR-SEG-5, UR-SEG-6, UR-IMG-2.
@@ -989,33 +1243,78 @@ Measurements live in `algorithm` rather than in their own module: they are
 computed per object during extraction, share the catalog's declaration
 machinery, and have no consumer that does not also use the catalog.
 
+**The segmenters measure; there is no measurement operation.** A selection is
+a parameter of the operations that produce objects with intensity —
+`segment.connected_components` and `segment.watershed`, bag key
+`measurements` (6.2), `standard()` by default — and their objects are measured
+as they are finished (6.7). An earlier draft had a separate
+`measure.object_measurements` operation over the run's intensity channels. It
+could not have worked as a chain step: the objects it would measure are
+emitted by an earlier operation and merged by the framework after that
+operation's tiles close, so no later operation ever sees them, and a merged
+object never passes through a later operation's `apply`. The intensity
+channels are the run's own (`PipelineSpec::channels`), from plane 1 of the
+segmenter's input onward, so the selection needs no `ChannelSelection` of its
+own. They are measured on the scene's samples of those channels, as read,
+whatever earlier steps of the chain did to the planes (6.7).
+
+`standard()`, `geometryOnly()` and `addAll()` are not `noexcept`: the
+selection is pimpl'd under C-2 and an empty one holds nothing, so filling one
+allocates and may throw `std::bad_alloc`. `add` refuses a value that is not an
+enumerator with `InvalidArgumentError`. A moved-from selection is empty.
+
+**Names and units.** Every geometric measurement is in level-0 pixels,
+whatever the analysis level:
+
+| Kind | Names | Unit |
+|---|---|---|
+| `Area` | `area` | `SquarePixels` |
+| `Perimeter` | `perimeter`, the length of every ring | `Pixels` |
+| `Centroid` | `centroid.x`, `centroid.y` | `Pixels` |
+| `BoundingBox` | `boundingBox.x`, `.y`, `.width`, `.height` | `Pixels` |
+| `IntensityMean`, `IntensityStdDev`, `IntensityMin`, `IntensityMax` | `intensity.<c>.mean`, `.stddev` (population), `.min`, `.max`, for each measured channel c | `Intensity` |
+
+`area` and `perimeter` come from `applyStandardMeasurements`, as do the
+intensity statistics. The centroid is area-weighted, holes weighing
+negatively, as `Polygon::centroid()` is, but **unrounded**: the finisher
+computes it by the shoelace formula in `double`. When the run's pixel size s
+is positive, each selected geometric measurement also gets a calibrated twin,
+`<name>.um` in `Micrometres` (the pixel value × s) or `area.um2` in
+`SquareMicrometres` (× s²). A kind not selected leaves no name behind, its
+calibrated twin included.
+
 Every accumulator is 64-bit. An intensity sum over a whole-slide tissue region
 exceeds 2³¹ trivially, and UR-IMG-2's static check covers this path.
 
 **Across a tile seam the operation emits partials, not measurements.** For a
-region touching a boundary it calls the four-argument
-`emitSeamFragment(fragment, layer, partials, partialCount)` with one
-`IntensityPartial` per channel (`05-pipeline.md` 5.1, 5.7) instead of finishing
-the measurement, because the rest of the object is in another tile. The
-two-argument form carries no partials and suits an operation that measures no
-intensity. `SeamMerger` merges the fragments into one polygon, combines the
-partials per channel in canonical fragment order (ascending fragment anchor,
-ties by tile index), and measures the result with `applyStandardMeasurements`
+region touching a boundary it calls `emitSeamFragment` with one
+`IntensityPartial` per measured channel (`05-pipeline.md` 5.1, 5.7) instead of
+finishing the measurement, because the rest of the object is in another tile.
+`SeamMerger` merges the fragments into one polygon, combines the partials per
+channel in canonical fragment order (ascending fragment anchor, ties by tile
+index), and measures the result with `applyStandardMeasurements`
 (`05-pipeline.md` 5.1). An object finished inside one tile is measured by the
-same function, from its polygon and partials built the same way, so the two
-paths share one formula rather than two that must agree. Area, perimeter,
-centroid and intensity statistics are then identical to single-tile
-processing — bitwise for Byte intensities, to a relative 10⁻¹² for Float32,
-whose sums regroup with the tile size (`05-pipeline.md` 5.7) — which is what
-UR-SEG-3's acceptance criterion measures across three tile sizes, and the
-reason this operation cannot simply average or sum what each tile computed.
-`applyStandardMeasurements` sets the pixel-unit measurements; the calibrated
-units below are added here.
+same function, from its polygon and partials built the same way, and both then
+pass through the operation's `finishObject`, so the two paths share one
+formula rather than two that must agree. Area, perimeter, centroid, bounding
+box and intensity statistics are then identical to single-tile processing —
+bitwise for integer intensities whose sums stay below 2⁵³, to a relative
+10⁻¹² for `Float32`, whose sums regroup with the tile size (`05-pipeline.md`
+5.7) — which is what UR-SEG-3's acceptance criterion measures across three
+tile sizes, and the reason the operation cannot simply average or sum what
+each tile computed.
 
 Measurements with a physical dimension are available in both pixels and
-calibrated units. A scene lacking resolution metadata yields pixel units with
-`Measurement::isCalibrated() == false`, which is the documented indication
-UR-SEG-6 requires rather than a silent fallback.
+calibrated units. The pixel size comes from the scene through
+`OperationContext::pixelSizeMicrons()` (`05-pipeline.md` 5.1): the mean of
+SlideIO's x and y resolution when both are finite, positive and agree within
+one part in a million. A scene lacking resolution metadata, or with anisotropic
+pixels, yields pixel units only — no `.um` names, and no measurement with
+`Measurement::isCalibrated()` true — and `sceneIsCalibrated()` returns false
+for it: that is the documented indication UR-SEG-6 requires rather than a
+silent fallback. `sceneIsCalibrated` and `scenePixelSizeMicrons` apply the same
+rule as the run, so a caller can tell before running what the objects will
+carry; a null scene, or one whose resolution cannot be read, gives false and 0.
 
 ## 6.9 Correctness references
 
@@ -1036,9 +1335,10 @@ that the result is right.
 | Morphology | Analytic on synthetic binary shapes |
 | Otsu | Full in-memory histogram of the same slide |
 | Connected components | Synthetic objects of known count and shape |
+| Contours | Synthetic label rasters of known regions, touching and nested |
 | Measurements | Analytic values for synthetic objects of known dimensions |
-| Tissue detect | Labelled test corpus, area within documented tolerance |
-| Watershed | Synthetic touching discs of known centres and radii; recovered count and boundary within tolerance |
+| Tissue detect | Labelled test corpus, area within documented tolerance; in v1 analytic on synthetic tissue and glass (below) |
+| Watershed | Synthetic touching discs of known centres and radii; recovered count, area and centroid within tolerance |
 
 The operations that exist state their reference through
 `OperationCatalog::correctnessReference` and are tested to these tolerances:
@@ -1057,17 +1357,34 @@ The operations that exist state their reference through
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
+| `segment.connected_components` | Analytic: known rectangles, rings with holes and diagonal chains | Exact counts, rings, areas, perimeters, centroids, bounding boxes, calibrated twins and intensity statistics; diagonal neighbours one object 8-connected and two 4-connected; NaN and 0 background in every type; NaN intensity samples skipped, the mean, minimum and maximum exact and the standard deviation within 10⁻⁹ relative of a direct computation; objects identical to one tile at tile sizes 64, 100 and 257, both connectivities — geometry and integer intensities exact, `Float32` intensities within 10⁻¹² relative; an object across four tiles with a hole cut by both seams, and an 8-connected chain across a tile corner, each one object equal to one tile; an area bound applied to merged objects; a filtered run storing fewer objects |
+| `segment.contours` | Analytic: label rasters of touching regions, holes filled by other labels or by background, `Float32` labels one ulp apart | Exact counts, shared rings, areas and perimeters; `Float32` labels compared exactly, -0 and NaN background; fragments keyed by their value; objects identical to one tile at tile sizes 64, 100 and 257 with regions of different values touching across seams, and at 25, 50 and 64 on a checkerboard of two adjacent `Float32` labels |
+| `segment.watershed` | Analytic: two touching discs of radius 10, centres 16 apart, whose distance transform is flooded | Two objects, each with an area within 5% of the disc less half the shared lens and a centroid within 1 pixel of the analytic one, their areas summing exactly to the union; plateau markers at their topmost-leftmost pixel; anchor-raster markers; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 over thirty pairs of touching discs; a region beyond the spacing fails with the reach error at every tile size, never a partial segmentation |
+| `segment.tissue_detect` | Analytic: pink ellipses with one-pixel holes on grey-noise glass with dust | Detected area within 1% of the ellipses' analytic area at level 0, the holes closed; a 2-pixel gap bridged at radius 2 and left open at 0; at analysis level 2 areas in level-0 pixels (16 per level-2 pixel) within the staircase bound 16 · 4 · (a + b + 1) of the analytic area; calibrated area and perimeter exact; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 and closing radii 0, 2 and 5, across bars and gaps on seams at every phase; `UInt16` samples (the `Byte` slide × 257) giving the same objects as `Byte` |
+| Measurement finishing | Analytic: rectangles and rectangles with holes, finished directly | Exact: calibrated twins at 0.5 µm per pixel and none without a pixel size; centroid unrounded and holes weighing negatively; unselected names removed; area bounds inclusive and applied after holes are dropped; `sceneIsCalibrated` and `scenePixelSizeMicrons` following the run's rule, the mean of two agreeing resolutions within 10⁻¹² |
 
 Exact agreement is asserted wherever the computation is defined in a fixed
 order, and a tolerance only where the reference is a published constant, the
 input is quantised, or the expected value is an analytic one computed by
 another route.
 
+**Open: the tissue corpus.** UR-SEG-1's acceptance asks for detected tissue
+area within a documented tolerance of ground truth on a labelled test corpus,
+and the reference table above names that corpus. No such corpus is in the
+repository, so `segment.tissue_detect`'s test is analytic on synthetic
+tissue and glass, which proves the operation computes what it is specified to
+compute but not that a saturation threshold of 0.07 separates tissue from
+glass on real slides. Its correctness reference says so. Agreeing on a corpus,
+its location and the tolerance, and running the operation against it, is an
+open item; until it is done UR-SEG-1 is covered only analytically.
+
 ## 6.10 Scope of v1 — the catalog, closed
 
-**The v1 catalog is twenty-two operations.** This resolves open question 7 in
+**The v1 catalog is twenty-one operations.** This resolves open question 7 in
 `requirements.md`, which the requirements call the choice that decides the size
-of v1 more than any other.
+of v1 more than any other. It was closed at twenty-two; the twenty-second,
+`measure.object_measurements`, left it when the segmentation operations took
+over measuring (below).
 
 | Name | Section | Arity | Halo |
 |---|---|---|---|
@@ -1088,11 +1405,21 @@ of v1 more than any other.
 | `pixel.threshold_otsu` | 6.5 | PerChannel, global context | none |
 | `pixel.threshold_adaptive` | 6.5 | PerChannel | blockSize/2 |
 | `pixel.convert_type` | 6.6 | PerChannel | none |
-| `segment.tissue_detect` | 6.7 | Joint | small |
-| `segment.connected_components` | 6.7 | PerChannel | 1 |
-| `segment.watershed` | 6.7 | PerChannel | max marker spacing |
+| `segment.tissue_detect` | 6.7 | Joint, three planes of one type (RGB) | 2 · `closingRadiusPx` + 1 |
+| `segment.connected_components` | 6.7 | Joint: plane 0 segmented, up to three planes measured | 1 |
+| `segment.watershed` | 6.7 | Joint: plane 0 flooded, up to three planes measured | 2 · `maximumMarkerSpacingPx` + 1 |
 | `segment.contours` | 6.7 | PerChannel | 1 |
-| `measure.object_measurements` | 6.8 | PerChannel over intensity channels | none |
+
+**`measure.object_measurements` left the catalog.** It was to measure, per
+object as it was emitted, the objects an earlier operation produced. A chain
+step cannot do that: steps pass rasters to each other, not objects, and an
+object cut by seams is merged by the framework only after its producer's tiles
+close, so no later operation ever sees it — and a measurement that only some
+objects received would break UR-SEG-3. Measuring belongs where every object,
+whole or merged, passes once: its producer's finishing step (`05-pipeline.md`
+5.1). So the segmenters that see intensity, `segment.connected_components` and
+`segment.watershed`, take a `MeasurementSelection` and measure their own
+input planes besides the one they segment (6.7), and the requirement it answered now maps to them (6.8).
 
 Ten of those names are assigned here for the first time — the filter and
 morphology entries of 6.4, which the earlier drafts gave typed factories but no
@@ -1120,7 +1447,7 @@ a framework mechanism, and nothing here exists without such a mandate:
 | UR-SEG-2 connected components | `segment.connected_components` |
 | UR-SEG-3 seam merging | `SeamMerger`, not an operation |
 | UR-SEG-4 contours with holes | `segment.contours` |
-| UR-SEG-5 per-object measurements | `measure.object_measurements` |
+| UR-SEG-5 per-object measurements | the `measurements` selection of `segment.connected_components` and `segment.watershed`, finished per object (6.8) |
 | UR-SEG-6 calibrated units | `sceneIsCalibrated`, `scenePixelSizeMicrons` |
 | UR-SEG-7 filtering during extraction | `minimumAreaPx` / `maximumAreaPx` on 6.7 |
 | UR-SEG-8 separation of touching objects | `segment.watershed` |
@@ -1133,9 +1460,10 @@ already implemented every one.
 
 **One row no longer holds, and it is the last one.** UR-SEG-9 was added to
 `requirements.md` in version 0.11, after this section was written and after
-question 7 was closed. The catalog is unchanged at twenty-two operations, so
-the mapping is now sixteen requirements against twenty-two entries with one
-requirement unanswered. The closure of question 7 survives as a *decision*
+question 7 was closed. The catalog did not grow for it — it is twenty-one
+operations, after `measure.object_measurements` left — so the mapping is now
+sixteen requirements against twenty-one entries with one requirement
+unanswered. The closure of question 7 survives as a *decision*
 rather than as a derivation from the requirements, which is a weaker thing and
 is recorded here as such.
 
@@ -1190,7 +1518,7 @@ UR-QA-3, and the relationship between seed scale and scale parameter is
 unresolved and is the main thing blocking an API.
 
 Three ways out, and the choice belongs to whoever sets v1's scope: ship
-`segment.multiresolution` and make the catalog twenty-three; downgrade UR-SEG-9
+`segment.multiresolution` and make the catalog twenty-two; downgrade UR-SEG-9
 to a *May*; or leave it a *Should* against a later release and say so in the
 release notes. Leaving it unstated is the only wrong answer, because a Should
 with nothing behind it reads as an oversight rather than a plan.

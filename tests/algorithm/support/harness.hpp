@@ -5,6 +5,9 @@
 // memory, or run it through the pipeline over a scene and assemble the level.
 
 #include <slideio/processor/core/data_type.hpp>
+#include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/ids.hpp>
+#include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
@@ -38,10 +41,12 @@ struct Image {
 /// pixels beyond the level do in a run. Plane p has type
 /// inputTypes[p] and source channel sourceChannels[p]; its samples are
 /// pixel(p, x, y), cast to the type with saturation (NaN is 0 in an integer
-/// type). Float16 is refused (std::invalid_argument): use applyDirectRaw.
+/// type). Float16 is refused (std::invalid_argument): use applyDirectRaw. The
+/// context reports @p pixelSizeMicrons (0: unknown) as the level-0 pixel size.
 Image applyDirect(Operation& op, const std::vector<DataType>& inputTypes,
                   const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel);
+                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                  double pixelSizeMicrons = 0.0);
 
 /// One apply() call of a direct application, on a context already complete.
 using ApplyCall = std::function<void()>;
@@ -51,18 +56,49 @@ using ApplyCall = std::function<void()>;
 Image applyDirectAround(Operation& op, const std::vector<DataType>& inputTypes,
                         const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                         const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
-                        const std::function<void(const ApplyCall& apply)>& around);
+                        const std::function<void(const ApplyCall& apply)>& around,
+                        double pixelSizeMicrons = 0.0);
 
 /// As applyDirect, but each plane is given as raw, tightly packed sample bytes
 /// (width * height * dataTypeSizeBytes(type)), for inputs a double cannot carry
 /// exactly: 64-bit integers beyond 2^53 and Float16.
 Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
                      const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                     const std::vector<std::vector<uint8_t>>& rawPlanes);
+                     const std::vector<std::vector<uint8_t>>& rawPlanes, double pixelSizeMicrons = 0.0);
 
 /// Runs Pipeline::run over @p scene with tile size tileSize x tileSize and
 /// @p workers workers, and assembles the analysis level from the raster tiles.
 Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
                int32_t workers);
+
+/// The layer applyDirectObjects() emits into and runEagerObjects() binds as
+/// "objects".
+LayerId objectsLayer();
+
+/// What one direct application of an object-producing operation emitted.
+struct DirectObjects {
+    /// Finished objects, as the run would store them: rings normalised, then
+    /// passed through the operation's finishObject() (those it refuses are
+    /// left out), in emission order.
+    std::vector<ObjectRecord> objects;
+    /// Seam fragments, level-0 polygons as emitted, in emission order.
+    std::vector<Polygon> fragments;
+    /// Each seam fragment's join key, parallel to fragments.
+    std::vector<int64_t> fragmentKeys;
+};
+
+/// As applyDirect, for an operation producing objects: the context has an
+/// object sink, objectsLayer() as its target layer and a collector of seam
+/// fragments. The finish context reports @p pixelSizeMicrons and level 0.
+DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inputTypes,
+                                 const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
+                                 const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                                 double pixelSizeMicrons = 0.0);
+
+/// Runs Pipeline::runInto over @p scene with tile size tileSize x tileSize and
+/// @p workers workers, with objectsLayer() bound as "objects", and returns the
+/// stored objects sorted by id.
+std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
+                                          int32_t tileSize, int32_t workers);
 
 } // namespace slideio::processor::testing_support

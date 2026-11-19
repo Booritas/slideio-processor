@@ -10,6 +10,7 @@
 #include <slideio/processor/pipeline/seam_merger.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
+#include <pipeline/detail/seam_merger_access.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
 
@@ -494,4 +495,96 @@ TEST(SeamSpill, FullyHeldBudgetSpillsInsteadOfWaiting) {
     merger.resolve(sink, nullptr, CancellationToken());
     EXPECT_EQ(sink.emittedCount(), 2);
     EXPECT_EQ(budget->reservedBytes(), 0);
+}
+
+// Every fragment goes to the scratch file before the one across its seam
+// arrives; each still joins only the fragments of its own key: the region of key
+// 11 in tile 0 lies along both regions of tile 1 on the seam x = 10.
+TEST(SeamSpill, KeySurvivesSpill) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    ScratchDirectory scratch;
+    const MemoryBudgetPtr budget = makeMemoryBudget(1000);
+    ASSERT_TRUE(budget->tryReserve(1000));
+    ts::CollectingObjectSink sink;
+    {
+        SeamMerger merger(grid, budget, scratch.utf8().c_str());
+        const IntensityPartial tall = partial(40, 40.0, 40.0, 1.0, 1.0);
+        const IntensityPartial lower = partial(20, 20.0, 20.0, 1.0, 1.0);
+        const IntensityPartial upper = partial(20, 40.0, 80.0, 2.0, 2.0);
+        merger.addFragment(0, rectangle(5, 1, 5, 8), kLayer, &tall, 1, 11);
+        merger.notifyTileComplete(0, sink);
+        EXPECT_EQ(merger.spilledFragmentCount(), 1);
+        merger.addFragment(1, rectangle(10, 1, 5, 4), kLayer, &upper, 1, 12);
+        merger.addFragment(1, rectangle(10, 5, 5, 4), kLayer, &lower, 1, 11);
+        merger.notifyTileComplete(1, sink);
+        EXPECT_EQ(merger.spilledFragmentCount(), 3);
+        merger.resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(merger.mergedObjectCount(), 2);
+    }
+    budget->release(1000);
+    EXPECT_EQ(budget->reservedBytes(), 0);
+
+    const std::vector<Emitted> emitted = summarise(sink.records());
+    ASSERT_EQ(emitted.size(), 2u);
+    const std::vector<std::vector<Point64>> joined = {{{5, 1}, {10, 1}, {10, 5}, {15, 5}, {15, 9}, {5, 9}}};
+    const std::vector<std::vector<Point64>> alone = {{{10, 1}, {15, 1}, {15, 5}, {10, 5}}};
+    EXPECT_TRUE(emitted[0].rings == joined);
+    EXPECT_TRUE(emitted[1].rings == alone);
+    for (size_t i = 0; i < emitted.size(); ++i) {
+        const auto mean = std::find_if(emitted[i].measurements.begin(), emitted[i].measurements.end(),
+                                       [](const std::pair<std::string, double>& m) {
+                                           return m.first == "intensity.0.mean";
+                                       });
+        ASSERT_NE(mean, emitted[i].measurements.end());
+        EXPECT_EQ(mean->second, i == 0 ? 1.0 : 2.0) << "object " << i;
+    }
+}
+
+// On an 8-connected layer a fragment also waits at its seam points, in memory
+// even once the fragment is written out; the budget holds their bytes until
+// both tiles of each point complete. Two squares meeting at the corner (5, 5)
+// of a 2x2 grid of 5x5 tiles join there.
+TEST(SeamSpill, SeamPointsAreChargedUntilTheirTilesComplete) {
+    const TileGrid grid = gridOf(2, 2, 5, 5);
+    const Fragment a{0, rectangle(3, 3, 2, 2), {}};
+    const Fragment b{3, rectangle(5, 5, 2, 2), {}};
+    const auto mergeBoth = [&](const MemoryBudgetPtr& budget, int64_t& pointBytes, int64_t& spilled) {
+        ScratchDirectory scratch;
+        ts::CollectingObjectSink sink;
+        SeamMerger merger(grid, budget, scratch.utf8().c_str());
+        detail::SeamMergerAccess::setEightConnected(merger, kLayer);
+        add(merger, a);
+        pointBytes = budget->reservedBytes() - residentBytes(a);
+        add(merger, b);
+        for (int64_t tile = 0; tile < grid.tileCount(); ++tile) {
+            merger.notifyTileComplete(tile, sink);
+        }
+        merger.resolve(sink, nullptr, CancellationToken());
+        spilled = merger.spilledFragmentCount();
+        return sink.records();
+    };
+
+    // Memory to spare: the points are held beside the fragment, then given back.
+    const MemoryBudgetPtr ample = makeMemoryBudget(int64_t{1} << 30);
+    int64_t pointBytes = 0;
+    int64_t spilled = -1;
+    std::vector<ObjectRecord> objects = mergeBoth(ample, pointBytes, spilled);
+    EXPECT_GT(pointBytes, 0);
+    EXPECT_EQ(pointBytes % detail::kSeamPointContactBytes, 0);
+    EXPECT_EQ(spilled, 0);
+    ASSERT_EQ(objects.size(), 1u);
+    Measurement area;
+    ASSERT_TRUE(objects[0].measurements().find("area", area));
+    EXPECT_EQ(area.value(), 8.0);
+    EXPECT_EQ(ample->reservedBytes(), 0);
+
+    // Room for one fragment only: the points spill the fragments, are then kept
+    // without a reservation, and the object still merges.
+    const MemoryBudgetPtr tight = makeMemoryBudget(residentBytes(a));
+    objects = mergeBoth(tight, pointBytes, spilled);
+    EXPECT_EQ(spilled, 2);
+    ASSERT_EQ(objects.size(), 1u);
+    ASSERT_TRUE(objects[0].measurements().find("area", area));
+    EXPECT_EQ(area.value(), 8.0);
+    EXPECT_EQ(tight->reservedBytes(), 0);
 }

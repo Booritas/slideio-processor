@@ -2,10 +2,14 @@
 #include <algorithm/support/working_set_check.hpp>
 
 #include <slideio/processor/core/block_view.hpp>
+#include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <algorithm/support/allocation_meter.hpp>
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
+#include <pipeline/detail/tile_evaluator.hpp>
 
 #include <gtest/gtest.h>
 
@@ -57,6 +61,19 @@ std::vector<uint8_t> patternBytes(DataType type, int64_t width, int64_t height) 
     return bytes;
 }
 
+// The run's object store, as far as an operation's apply() is concerned: the
+// records are dropped, as storing them is the store's memory, not the
+// operation's.
+class DiscardSink : public ObjectSink {
+public:
+    void emit(const ObjectRecord&) override { ++emitted_; }
+    void flush() override {}
+    int64_t emittedCount() const override { return emitted_; }
+
+private:
+    int64_t emitted_ = 0;
+};
+
 std::string typeNames(const std::vector<DataType>& types) {
     std::string names;
     for (DataType type : types) {
@@ -70,12 +87,19 @@ std::string typeNames(const std::vector<DataType>& types) {
 int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types, int64_t width, int64_t height,
                               WorkingSetCall call) {
     const Halo halo = op.halo();
-    const int64_t inWidth = width + halo.left + halo.right;
-    const int64_t inHeight = height + halo.top + halo.bottom;
     std::vector<std::vector<uint8_t>> in;
     for (DataType type : types) {
-        in.push_back(patternBytes(type, inWidth, inHeight));
+        in.push_back(patternBytes(type, width + halo.left + halo.right, height + halo.top + halo.bottom));
     }
+    return measureWorkingSetPeakOn(op, types, in, width, height, call);
+}
+
+int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& types,
+                                const std::vector<std::vector<uint8_t>>& in, int64_t width, int64_t height,
+                                WorkingSetCall call, const WorkingSetAuxiliary* auxiliary) {
+    const Halo halo = op.halo();
+    const int64_t inWidth = width + halo.left + halo.right;
+    const int64_t inHeight = height + halo.top + halo.bottom;
     const bool joint = op.arity() == ChannelArity::Joint;
     std::vector<DataType> outTypes;
     if (joint) {
@@ -90,11 +114,20 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
     for (DataType type : outTypes) {
         out.emplace_back(static_cast<size_t>(width * height * dataTypeSizeBytes(type)), uint8_t{0});
     }
+    // An operation producing objects emits them, and its seam fragments, as it
+    // would in a run: each object through the run's own tile filter and
+    // finishing sink, inside apply(); neither objects nor fragments are kept.
+    DiscardSink store;
+    detail::RunCounters counters;
+    detail::FinishingSink finishing(store, {{LayerId(1), &op}}, 0.5, 0, &counters.droppedByFilter);
+    detail::TileObjectFilter objects(&finishing, Rect64{0, 0, width, height}, nullptr, counters);
+    detail::SeamFragmentCallback fragments = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t,
+                                                int64_t) {};
     int64_t peak = 0;
     const auto once = [&](size_t firstIn, size_t inCount, size_t firstOut, size_t outCount) {
         std::vector<BlockPlane> inPlanes;
         for (size_t p = firstIn; p < firstIn + inCount; ++p) {
-            inPlanes.push_back(BlockPlane{in[p].data(), types[p], inWidth * dataTypeSizeBytes(types[p]),
+            inPlanes.push_back(BlockPlane{const_cast<uint8_t*>(in[p].data()), types[p], inWidth * dataTypeSizeBytes(types[p]),
                                           static_cast<int32_t>(p)});
         }
         std::vector<BlockPlane> outPlanes;
@@ -106,6 +139,13 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
                               inPlanes.data(), static_cast<int32_t>(inPlanes.size()));
         BlockView output(width, height, Rect64{0, 0, width, height}, 0, outPlanes.data(),
                          static_cast<int32_t>(outPlanes.size()));
+        std::vector<BlockView> auxiliaryView;
+        if (auxiliary != nullptr) {
+            BlockPlane plane{const_cast<uint8_t*>(auxiliary->bytes.data()), auxiliary->type,
+                             inWidth * dataTypeSizeBytes(auxiliary->type), 0};
+            auxiliaryView.emplace_back(inWidth, inHeight, Rect64{-halo.left, -halo.top, inWidth, inHeight}, 0,
+                                       &plane, 1);
+        }
         detail::OperationContextState state;
         state.input = &input;
         state.output = call == WorkingSetCall::Apply ? &output : nullptr;
@@ -114,6 +154,14 @@ int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types,
         state.haloRectAtLevel = state.haloRect = Rect64{-halo.left, -halo.top, inWidth, inHeight};
         state.levelScale = 1.0;
         state.tileIndex = 0;
+        if (op.producesObjects()) {
+            state.objectSink = &objects;
+            state.targetLayer = LayerId(1);
+            state.seamFragment = fragments;
+        }
+        if (auxiliary != nullptr) {
+            state.auxiliaries.emplace_back(auxiliary->name, &auxiliaryView.front());
+        }
         const auto context = detail::OperationContextAccess::make(std::move(state));
         AllocationMeter meter;
         if (call == WorkingSetCall::Apply) {

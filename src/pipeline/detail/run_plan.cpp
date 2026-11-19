@@ -1,4 +1,4 @@
-// Requirements: UR-IMG-11, UR-ALG-3, UR-ALG-4, UR-EXE-1, UR-IMG-5, UR-STG-3
+// Requirements: UR-IMG-11, UR-ALG-3, UR-ALG-4, UR-EXE-1, UR-IMG-5, UR-STG-3, UR-SEG-3
 #include <pipeline/detail/run_plan.hpp>
 
 #include <pipeline/detail/type_contract.hpp>
@@ -153,7 +153,8 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
     return steps;
 }
 
-// (h) The layer each operation writes.
+// (h) The layer each operation writes. A layer has at most one producer, which
+// finishes every object stored in it.
 std::vector<LayerId> resolveTargetLayers(const std::vector<OperationPtr>& operations, const PipelineSpec& spec,
                                          const std::vector<std::pair<std::string, LayerId>>& layers) {
     std::vector<LayerId> targets;
@@ -168,27 +169,66 @@ std::vector<LayerId> resolveTargetLayers(const std::vector<OperationPtr>& operat
         for (int32_t i = 0; i < parameters.count(); ++i) {
             present = present || std::strcmp(parameters.keyAt(i), "targetLayer") == 0;
         }
+        const std::pair<std::string, LayerId>* bound = nullptr;
         if (present) {
             const char* name = parameters.getString("targetLayer", nullptr);
             if (name == nullptr) {
                 invalid(std::string("the \"targetLayer\" parameter of ") + op.name() + " is not a string");
             }
-            const auto bound = std::find_if(layers.begin(), layers.end(),
+            const auto found = std::find_if(layers.begin(), layers.end(),
                                             [name](const std::pair<std::string, LayerId>& l) { return l.first == name; });
-            if (bound == layers.end()) {
+            if (found == layers.end()) {
                 invalid(std::string(op.name()) + " targets layer \"" + name + "\", which is not bound");
             }
-            targets.push_back(bound->second);
+            bound = &*found;
         } else if (layers.size() == 1) {
-            targets.push_back(layers.front().second);
+            bound = &layers.front();
         } else if (layers.empty()) {
             invalid(std::string(op.name()) + " has no target layer: no layer is bound");
         } else {
             invalid(std::string(op.name()) + " has no target layer and " + std::to_string(layers.size()) +
                     " layers are bound; name one with its \"targetLayer\" parameter");
         }
+        for (size_t earlier = 0; earlier < k; ++earlier) {
+            if (operations[earlier]->producesObjects() && targets[earlier] == bound->second) {
+                invalid(std::string("operations ") + operations[earlier]->name() + " and " + op.name() +
+                        " both target layer \"" + bound->first + "\"");
+            }
+        }
+        targets.push_back(bound->second);
     }
     return targets;
+}
+
+// An operation producing objects finds its seams on its own tile rect, which a
+// later operation's halo would grow: no operation with a halo may follow it.
+void checkNothingGrowsObjectTiles(const std::vector<OperationPtr>& operations) {
+    for (size_t k = 0; k < operations.size(); ++k) {
+        if (!operations[k]->producesObjects()) {
+            continue;
+        }
+        for (size_t later = k + 1; later < operations.size(); ++later) {
+            // A negative halo is refused on its own, by sumHalos.
+            const Halo h = operations[later]->halo();
+            if (h.left > 0 || h.top > 0 || h.right > 0 || h.bottom > 0) {
+                invalid(std::string("operation ") + operations[k]->name() +
+                        " produces objects and must not be followed by a halo");
+            }
+        }
+    }
+}
+
+// A per-channel operation runs once per plane: producing objects over several, it
+// would emit each object once per plane into its one layer, under one id.
+void checkPerChannelProducersGetOnePlane(const std::vector<OperationPtr>& operations,
+                                         const std::vector<std::vector<DataType>>& planeTypes) {
+    for (size_t k = 0; k < operations.size(); ++k) {
+        const Operation& op = *operations[k];
+        if (op.producesObjects() && op.arity() == ChannelArity::PerChannel && planeTypes[k].size() > 1) {
+            invalid(std::string("operation \"") + op.name() +
+                    "\" produces objects and runs per channel, so it must be given exactly one channel");
+        }
+    }
 }
 
 Halo sumHalos(const std::vector<OperationPtr>& operations) {
@@ -258,6 +298,8 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
 
     // (h) Target layers.
     std::vector<LayerId> targetLayers = resolveTargetLayers(operations, spec, *inputs.layers);
+    checkNothingGrowsObjectTiles(operations);
+    checkPerChannelProducersGetOnePlane(operations, planeTypes);
 
     // Bound auxiliary rasters: each declares at least one plane of a type with a size.
     for (const auto& auxiliary : *inputs.auxiliaries) {

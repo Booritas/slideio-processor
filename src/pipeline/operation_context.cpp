@@ -35,6 +35,10 @@ const BlockView& OperationContext::input() const noexcept {
     return impl_->state.input != nullptr ? *impl_->state.input : nullInput();
 }
 
+const BlockView& OperationContext::sourceInput() const noexcept {
+    return impl_->state.sourceInput != nullptr ? *impl_->state.sourceInput : input();
+}
+
 BlockView& OperationContext::output() noexcept {
     if (impl_->state.output != nullptr) {
         return *impl_->state.output;
@@ -98,6 +102,10 @@ double OperationContext::levelScale() const noexcept {
     return impl_->state.levelScale;
 }
 
+double OperationContext::pixelSizeMicrons() const noexcept {
+    return impl_->state.pixelSizeMicrons;
+}
+
 Point64 OperationContext::toLevel0(Point64 levelPoint) const noexcept {
     return Point64{detail::levelToLevel0(levelPoint.x, impl_->state.levelScale),
                    detail::levelToLevel0(levelPoint.y, impl_->state.levelScale)};
@@ -135,6 +143,11 @@ void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer) 
 
 void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
                                         const IntensityPartial* partials, int32_t partialCount) {
+    emitSeamFragment(fragment, layer, partials, partialCount, 0);
+}
+
+void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
+                                        const IntensityPartial* partials, int32_t partialCount, int64_t joinKey) {
     if (partialCount < 0) {
         throw InvalidArgumentError("emitSeamFragment: partialCount must not be negative");
     }
@@ -144,7 +157,7 @@ void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer,
     if (!impl_->state.seamFragment) {
         throw InternalError("emitSeamFragment: this run has no seam merger");
     }
-    impl_->state.seamFragment(fragment, layer, partials, partialCount, impl_->state.tileIndex);
+    impl_->state.seamFragment(fragment, layer, partials, partialCount, joinKey, impl_->state.tileIndex);
 }
 
 } // namespace slideio::processor

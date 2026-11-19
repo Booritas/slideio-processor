@@ -66,6 +66,10 @@ public:
     /// Makes every later read throw std::runtime_error(what), before it is counted.
     void failReadsWith(const std::string& what);
 
+    /// The resolution, in metres per pixel, the scene made from metadata() reports
+    /// at level 0; (0, 0), unknown, by default. Set it before the scene is made.
+    void setResolution(double x, double y);
+
 private:
     void fill(int level, const slideio::Rect& levelRect, const slideio::Size& blockSize,
               const std::vector<int>& channelIndices, void* buffer, size_t bufferSize);
@@ -77,6 +81,8 @@ private:
     mutable std::mutex mutex_;
     std::vector<int> readLevels_;
     std::string failure_;
+    double resolutionX_ = 0.0;
+    double resolutionY_ = 0.0;
 };
 
 /// Wraps a source in a genuine slideio::Scene through slideio::makeScene.

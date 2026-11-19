@@ -106,6 +106,24 @@ private:
 /// in the whole input (the halo rect) instead of the tile rect, and every one is
 /// emitted, wherever its anchor lies: the framework's anchor-ownership rule keeps
 /// each object once.
+/// When bool parameter "rotateRings" is true (default false), the outer ring of
+/// every object (not of a seam fragment) is emitted starting one pixel along its
+/// first edge instead, past its topmost-leftmost vertex, which the framework
+/// must normalise back.
+/// Its finishObject() discards an object whose "area" is below double parameter
+/// "finishMinArea" (default 0) and, when bool parameter "finishTag" is true
+/// (default false), sets the Dimensionless measurement "finished" = 1.
+/// When bool parameter "finishContext" is true (default false), it also records the
+/// ObjectFinishContext it was given: "finishPixelSize" (Micrometres) and
+/// "finishLevel" (Dimensionless).
+/// When bool parameter "eightConnected" is true (default false), components are
+/// 8-connected instead: labelled with diagonal neighbours, traced turning left
+/// where a component touches itself diagonally (one outer ring through that
+/// point, the seam merger's rule), and objectsAreEightConnected() is true.
+/// When bool parameter "keyByValue" is true (default false), components are
+/// maximal connected sets of equal non-zero mask value (a label raster) instead,
+/// and each seam fragment carries that value as its join key, so regions of
+/// different values touching across a seam stay apart; otherwise the key is 0.
 class ComponentsOperation : public Operation {
 public:
     explicit ComponentsOperation(const OperationParameters& parameters);
@@ -120,12 +138,46 @@ public:
     bool producesObjects() const override;
     /// 1 for either form: the mask copy.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
+    bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const override;
+    bool objectsAreEightConnected() const override;
 
 private:
     OperationParameters parameters_;
     bool seams_;
     bool haloScan_;
     int32_t halo_;
+    bool rotateRings_;
+    double finishMinArea_;
+    bool finishTag_;
+    bool finishContext_;
+    bool eightConnected_;
+    bool keyByValue_;
+};
+
+/// "test.pixelSizeProbe": PerChannel, Byte and Float32, halo 0, output Float32: a copy of
+/// the tile as Float32. Every apply() records the context's pixelSizeMicrons() and
+/// level(), for a test to read after the run.
+class PixelSizeProbeOperation : public Operation {
+public:
+    explicit PixelSizeProbeOperation(const OperationParameters& parameters);
+    const char* name() const override;
+    ChannelArity arity() const override;
+    bool requiresUniformTypes() const override;
+    DataTypeSet supportedTypes() const override;
+    Halo halo() const override;
+    DataType outputType(DataType inputType) const override;
+    const OperationParameters& parameters() const override;
+    void apply(OperationContext& context) override;
+
+    /// Forgets what apply() recorded.
+    static void reset();
+    /// The pixel sizes apply() saw since reset(), one per call.
+    static std::vector<double> seenPixelSizes();
+    /// The levels apply() saw since reset(), one per call.
+    static std::vector<int32_t> seenLevels();
+
+private:
+    OperationParameters parameters_;
 };
 
 /// "test.wholeLevel": PerChannel, Byte and Float32, halo 0, output Float32, a

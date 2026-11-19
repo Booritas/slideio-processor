@@ -437,6 +437,37 @@ TEST(Bindings, EdgeAndAnnotationSinksReachOperations) {
     EXPECT_EQ(static_cast<int64_t>(edges.parents().size()), 2 * tiles);
 }
 
+TEST(Bindings, PerChannelObjectProducerNeedsExactlyOneChannel) {
+    // One plane per channel would emit each object once per channel into one layer.
+    registerProbes();
+    const auto scene = ts::makeSyntheticScene({{200, 100, 0, 0}},
+                                              {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte}, texture);
+    PipelineSpec both;
+    both.operation("test.B6.objects", probeParams(0, 1));
+    Pipeline refused(scene, config(100), both);
+    refused.bindLayer("cells", LayerId(1));
+    try {
+        refused.validate();
+        FAIL() << "validate() accepted a per-channel object producer over two channels";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find("\"test.B6.objects\""), std::string::npos) << message;
+        EXPECT_NE(message.find("exactly one channel"), std::string::npos) << message;
+    }
+
+    PipelineSpec one = both;
+    one.channels(ChannelSelection::single(1));
+    Pipeline accepted(scene, config(100), one);
+    accepted.bindLayer("cells", LayerId(1));
+    EXPECT_NO_THROW(accepted.validate());
+
+    // A per-channel operation producing no objects still takes every channel.
+    PipelineSpec raster;
+    raster.operation("test.B6.probe", probeParams(0, 1));
+    Pipeline plain(scene, config(100), raster);
+    EXPECT_NO_THROW(plain.validate());
+}
+
 TEST(Bindings, OnlyObjectProducersGetAnObjectSink) {
     registerProbes();
     auto scene = pyramidScene();

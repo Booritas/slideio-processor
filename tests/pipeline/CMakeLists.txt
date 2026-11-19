@@ -40,6 +40,8 @@ add_executable(slideio_processor_pipeline_tests
     test_fragment_merge.cpp
     test_global_context.cpp
     test_lazy_scene.cpp
+    test_object_finishing.cpp
+    test_pixel_size.cpp
     test_operation.cpp
     test_operation_catalog.cpp
     test_operation_parameters.cpp
@@ -60,10 +62,12 @@ add_executable(slideio_processor_pipeline_tests
     # Not exported from the library, so compiled into the test directly
     # (fragment_merge.cpp and parameters_json.cpp come with the test-support library).
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/finishing_sink.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/half.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/pixel_size.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/plane_buffers.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/restriction.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/scene_reader.cpp
@@ -115,11 +119,13 @@ gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
 # paths but no OpenCV include path: a header that reaches OpenCV fails
 # the normal build. One source per public header, of pipeline and algorithm.
 add_library(pipeline_headers_are_opencv_free OBJECT
+    header_check/check_algorithm_measure_measure.cpp
     header_check/check_algorithm_pixel_colour.cpp
     header_check/check_algorithm_pixel_convert.cpp
     header_check/check_algorithm_pixel_filter.cpp
     header_check/check_algorithm_pixel_threshold.cpp
     header_check/check_algorithm_registry.cpp
+    header_check/check_algorithm_segment_segment.cpp
     header_check/check_backend.cpp
     header_check/check_executor.cpp
     header_check/check_export.cpp

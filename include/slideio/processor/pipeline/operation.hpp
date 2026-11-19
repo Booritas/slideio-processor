@@ -1,10 +1,10 @@
-// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11
+// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4, UR-ALG-3, UR-ALG-4, UR-IMG-11, UR-SEG-3, UR-SEG-5, UR-SEG-7
 #pragma once
 
 /**
  * @file operation.hpp
  * @brief The operation contract: ChannelArity, TileRequirement, Halo,
- * IntensityPartial, OperationContext and Operation.
+ * IntensityPartial, ObjectFinishContext, OperationContext and Operation.
  */
 
 #include <slideio/processor/core/block_view.hpp>
@@ -22,6 +22,8 @@
 #include <memory>
 
 namespace slideio::processor {
+
+class ObjectRecord;
 
 namespace detail {
 struct OperationContextAccess;
@@ -130,6 +132,21 @@ struct SLIDEIO_PROCESSOR_ENGINE_EXPORTS IntensityPartial {
 };
 
 /**
+ * @brief What the framework tells an operation about the run when it finishes
+ * one of the operation's objects.
+ *
+ * A plain data structure, exempt from pimpl per C-2.
+ * @par Thread-safety
+ * ThreadCompatible.
+ * @par Requirements
+ * UR-SEG-5, UR-SEG-7
+ */
+struct SLIDEIO_PROCESSOR_ENGINE_EXPORTS ObjectFinishContext {
+    double  pixelSizeMicrons; ///< The level-0 pixel size in micrometres; 0 when unknown.
+    int32_t level;            ///< The run's analysis level.
+};
+
+/**
  * @brief Everything an operation sees of one tile: its pixels, its place on
  * the slide, the sinks it emits into and the run's controls.
  *
@@ -163,6 +180,24 @@ public:
      * UR-EXT-1, UR-EXT-3
      */
     const BlockView& input() const noexcept;
+    /**
+     * @brief Returns the tile's pixels as read from the scene, before any
+     * operation of the chain transformed them.
+     *
+     * Same geometry as input(): the halo rect at the analysis level, one
+     * plane per selected channel in selection order, whatever the operation's
+     * arity, each typed and labelled with its scene channel. An operation
+     * measuring the scene's samples under regions it finds in input() reads
+     * them here: input() holds what the earlier operations made of them.
+     * @return The view; input() itself when the run supplied none, as a call
+     * outside a chain does.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-SEG-5
+     */
+    const BlockView& sourceInput() const noexcept;
     /**
      * @brief Returns the buffer the operation writes its raster result into.
      * @return The view over the tile rect at the analysis level, typed by
@@ -305,6 +340,17 @@ public:
     /// @par Requirements
     /// UR-SEG-4
     double  levelScale() const noexcept;
+    /// The pixel size of the slide at level 0, in micrometres: the mean of the
+    /// scene's x and y resolution when both are positive and agree to within one
+    /// part in a million, else 0 (unknown or anisotropic). It is the same at every
+    /// analysis level; multiply by levelScale() for the size of a level pixel.
+    /// @return The level-0 pixel size in micrometres; 0 when unknown.
+    /// @throws Nothing.
+    /// @par Thread-safety
+    /// ThreadConfined.
+    /// @par Requirements
+    /// UR-SEG-5
+    double pixelSizeMicrons() const noexcept;
     /**
      * @brief Maps a point from the analysis level to level 0.
      * @param levelPoint The point in level coordinates.
@@ -391,7 +437,7 @@ public:
     /**
      * @brief Records a fragment touching a tile seam together with its
      * per-channel intensity partials, which the merger combines when the
-     * object closes.
+     * object closes. Equivalent to the five-argument form with join key 0.
      * @param fragment The fragment, in level-0 coordinates.
      * @param layer The layer the merged object belongs to.
      * @param partials One partial per channel, read during this call only;
@@ -411,6 +457,37 @@ public:
      */
     void emitSeamFragment(const Polygon& fragment, LayerId layer,
                           const IntensityPartial* partials, int32_t partialCount);
+    /**
+     * @brief Records a fragment touching a tile seam with its intensity
+     * partials and the identity of the region it belongs to.
+     *
+     * The merger joins two fragments touching across a seam only when their
+     * layer and their join key are both equal, so distinct regions that touch
+     * across a seam (neighbouring labels of a label raster, neighbouring
+     * watershed basins) stay distinct objects. The key must therefore name the
+     * region the same way in every tile: a value derived from the region's
+     * samples or from level coordinates, never from a tile-local index.
+     * Operations whose regions are separated by background use 0, as the
+     * other overloads do.
+     * @param fragment The fragment, in level-0 coordinates.
+     * @param layer The layer the merged object belongs to.
+     * @param partials One partial per channel, read during this call only;
+     * may be null when @p partialCount is 0.
+     * @param partialCount Number of partials; not negative.
+     * @param joinKey The region's identity; any value.
+     * @throws InvalidArgumentError When @p partialCount is negative, or
+     * @p partials is null while @p partialCount is positive.
+     * @throws InternalError When the run has no seam merger, as for the
+     * four-argument form; fragments are dropped silently where they have
+     * nowhere to go by design (a lazy read, a global-context accumulation
+     * pass).
+     * @par Thread-safety
+     * ThreadConfined; the merger behind it is ThreadSafe.
+     * @par Requirements
+     * UR-SEG-3, UR-SEG-4, UR-SEG-8
+     */
+    void emitSeamFragment(const Polygon& fragment, LayerId layer,
+                          const IntensityPartial* partials, int32_t partialCount, int64_t joinKey);
 
 private:
     friend struct detail::OperationContextAccess;
@@ -634,7 +711,9 @@ public:
      * operations, which yield one plane per input plane.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.
-     * @throws Nothing.
+     * @throws InvalidArgumentError When the operation cannot take
+     * @p inputPlaneCount planes, naming the operation; validating a run then
+     * fails with it. Nothing by default.
      * @par Thread-safety
      * Must be safe to call concurrently.
      * @par Requirements
@@ -686,6 +765,46 @@ public:
      * UR-EXE-2, UR-EXT-4
      */
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;
+    /**
+     * @brief Finishes one of the operation's objects before it reaches the
+     * run's object sink.
+     *
+     * Called once for every object the operation produces, whether it was
+     * found whole in one tile or merged from seam fragments, after its rings
+     * are normalised and its standard measurements applied, so one rule treats
+     * both. It may add or remove measurements and remove hole rings; it must
+     * not change the outer ring, whose topmost-leftmost vertex is the object's
+     * identity, nor the layer.
+     * @param record The object, in level-0 coordinates; finished in place.
+     * @param context The run's pixel size and analysis level.
+     * @return True to keep the object, false to discard it, which the run
+     * counts; true by default, leaving the record unchanged.
+     * @throws Whatever the implementation throws; the run fails with it.
+     * @par Thread-safety
+     * Must be reentrant: called concurrently from the threads evaluating
+     * tiles and merging fragments.
+     * @par Requirements
+     * UR-SEG-3, UR-SEG-5, UR-SEG-7
+     */
+    virtual bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const;
+    /**
+     * @brief Tells whether the operation's objects are 8-connected, so that
+     * two of its fragments whose pixels meet only diagonally across a seam, at
+     * a tile corner or along a seam, belong to one object.
+     *
+     * The seam merger then links the merged outline taking the sharpest left
+     * turn where it touches itself at a point, so an object whose pixels touch
+     * diagonally has one outer ring passing twice through that point; the
+     * operation's own tracing should do the same, so that objects found in one
+     * tile and merged ones agree. Constant for the life of the operation.
+     * @return False by default.
+     * @throws Nothing.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-SEG-3
+     */
+    virtual bool objectsAreEightConnected() const;
 };
 /** @brief Shared ownership of an operation, as the catalog and pipeline hold it. */
 using OperationPtr = std::shared_ptr<Operation>;

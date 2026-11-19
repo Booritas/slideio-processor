@@ -70,6 +70,17 @@ bool turnsSharperRight(Point64 back, Point64 d1, Point64 d2) {
     return cross(d1, d2) < 0;
 }
 
+// True when d1 is the preferred turn over d2 after arriving along `-back`: the
+// sharper right turn, or with `left` the sharper left one. A left turn is a
+// right turn of the mirror image (y negated).
+bool preferredTurn(Point64 back, Point64 d1, Point64 d2, bool left) {
+    if (!left) {
+        return turnsSharperRight(back, d1, d2);
+    }
+    const auto mirror = [](Point64 p) { return Point64{p.x, -p.y}; };
+    return turnsSharperRight(mirror(back), mirror(d1), mirror(d2));
+}
+
 // Errors carry counts only: an object's coordinates could carry clinical data.
 [[noreturn]] void fail(const std::string& what, const std::vector<const Polygon*>& fragments) {
     int64_t rings = 0;
@@ -164,7 +175,35 @@ bool contactsJoin(const SeamContact& a, const SeamContact& b) {
     return a.vertical == b.vertical && a.line == b.line && std::min(a.end, b.end) > std::max(a.begin, b.begin);
 }
 
-Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
+std::vector<Point64> seamPoints(const Polygon& polygon, const TileGrid& grid, int64_t tileIndex) {
+    const Rect64 tile = grid.tileRect(tileIndex);
+    const int64_t column = tileIndex % grid.columns();
+    const int64_t row = tileIndex / grid.columns();
+    const auto onSeam = [&](Point64 p) {
+        const bool alongX = p.x >= tile.x && p.x <= tile.right();
+        const bool alongY = p.y >= tile.y && p.y <= tile.bottom();
+        return (alongY && ((p.x == tile.x && column > 0) || (p.x == tile.right() && column + 1 < grid.columns()))) ||
+               (alongX && ((p.y == tile.y && row > 0) || (p.y == tile.bottom() && row + 1 < grid.rows())));
+    };
+    std::vector<VertexKey> keys;
+    for (int32_t ring = 0; ring < polygon.ringCount(); ++ring) {
+        for (const Point64& p : pointsOf(polygon, ring)) {
+            if (onSeam(p)) {
+                keys.push_back(keyOf(p));
+            }
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    std::vector<Point64> points;
+    points.reserve(keys.size());
+    for (const VertexKey& key : keys) {
+        points.push_back(pointOf(key));
+    }
+    return points;
+}
+
+Polygon mergeFragments(const std::vector<const Polygon*>& fragments, bool eightConnected) {
     // Every ring, oriented so the object lies on the right of each edge.
     std::vector<std::vector<Point64>> rings;
     for (const Polygon* fragment : fragments) {
@@ -240,8 +279,8 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
     }
 
     // Link the surviving edges into rings, starting each at the topmost-then-
-    // leftmost remaining vertex. A ring closes when, back at its start, the
-    // sharpest right turn is its first edge again.
+    // leftmost remaining vertex and taking the preferred turn at each vertex.
+    // A ring closes when, back at its start, its first edge is the preferred turn.
     std::vector<std::vector<Point64>> outer;
     std::vector<std::vector<Point64>> holes;
     while (!outgoing.empty()) {
@@ -268,14 +307,14 @@ Polygon mergeFragments(const std::vector<const Polygon*>& fragments) {
             if (here != outgoing.end()) {
                 for (size_t i = 0; i < here->second.size(); ++i) {
                     const Point64 d{here->second[i].x - v.x, here->second[i].y - v.y};
-                    if (!chosen || turnsSharperRight(back, d, bestDirection)) {
+                    if (!chosen || preferredTurn(back, d, bestDirection, eightConnected)) {
                         chosen = true;
                         best = i;
                         bestDirection = d;
                     }
                 }
             }
-            if (canClose && (!chosen || turnsSharperRight(back, firstDirection, bestDirection))) {
+            if (canClose && (!chosen || preferredTurn(back, firstDirection, bestDirection, eightConnected))) {
                 break;
             }
             if (!chosen) {
@@ -329,23 +368,103 @@ std::vector<Point64> normaliseRing(const std::vector<Point64>& ring) {
     return kept;
 }
 
-void normaliseRings(Polygon& polygon) {
-    std::vector<std::vector<Point64>> outer;
-    std::vector<std::vector<Point64>> holes;
-    for (int32_t ring = 0; ring < polygon.ringCount(); ++ring) {
-        (polygon.ringIsHole(ring) ? holes : outer).push_back(normaliseRing(pointsOf(polygon, ring)));
+namespace {
+
+bool vertexBefore(const Point64& a, const Point64& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; }
+
+int64_t turnAt(const Point64& prev, const Point64& cur, const Point64& next) {
+    return (cur.x - prev.x) * (next.y - cur.y) - (cur.y - prev.y) * (next.x - cur.x);
+}
+
+// Whether a ring is as normaliseRing() leaves it: a turn at every vertex and
+// its first vertex the first topmost-then-leftmost one.
+bool ringIsNormal(const Point64* ring, size_t n) {
+    if (n < 3) {
+        return false;
     }
-    std::stable_sort(holes.begin(), holes.end(), [](const std::vector<Point64>& a, const std::vector<Point64>& b) {
-        const Point64 pa = a.empty() ? Point64{0, 0} : a.front();
-        const Point64 pb = b.empty() ? Point64{0, 0} : b.front();
-        return pa.y != pb.y ? pa.y < pb.y : pa.x < pb.x;
+    for (size_t i = 0; i < n; ++i) {
+        if (turnAt(ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]) == 0) {
+            return false;
+        }
+        if (i > 0 && vertexBefore(ring[i], ring[0])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool ringsAreNormalised(const Polygon& polygon) {
+    std::vector<Point64> ring;
+    bool sawHole = false;
+    Point64 lastHole{0, 0};
+    for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+        ring.resize(static_cast<size_t>(polygon.ringPointCount(r)));
+        polygon.ringPoints(r, ring.data(), static_cast<int64_t>(ring.size()));
+        if (!ringIsNormal(ring.data(), ring.size())) {
+            return false;
+        }
+        if (!polygon.ringIsHole(r)) {
+            if (sawHole) {
+                return false;
+            }
+            continue;
+        }
+        if (sawHole && vertexBefore(ring.front(), lastHole)) {
+            return false;
+        }
+        sawHole = true;
+        lastHole = ring.front();
+    }
+    return true;
+}
+
+void normaliseRings(Polygon& polygon) {
+    if (ringsAreNormalised(polygon)) {
+        return;
+    }
+    // Every ring normalised into one buffer, then added outer rings first and
+    // holes ordered by first vertex, as normaliseRing() and a stable sort would.
+    struct Span {
+        size_t first;
+        size_t count;
+        bool isHole;
+    };
+    int64_t total = 0;
+    for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+        total += polygon.ringPointCount(r);
+    }
+    std::vector<Point64> points;
+    points.reserve(static_cast<size_t>(total));
+    std::vector<Span> spans;
+    spans.reserve(static_cast<size_t>(polygon.ringCount()));
+    std::vector<Point64> ring;
+    for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+        ring.resize(static_cast<size_t>(polygon.ringPointCount(r)));
+        polygon.ringPoints(r, ring.data(), static_cast<int64_t>(ring.size()));
+        const size_t first = points.size();
+        const size_t n = ring.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (turnAt(ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]) != 0) {
+                points.push_back(ring[i]);
+            }
+        }
+        const auto begin = points.begin() + static_cast<std::ptrdiff_t>(first);
+        std::rotate(begin, std::min_element(begin, points.end(), vertexBefore), points.end());
+        spans.push_back(Span{first, points.size() - first, polygon.ringIsHole(r)});
+    }
+    std::vector<Point64>().swap(ring);
+    std::stable_partition(spans.begin(), spans.end(), [](const Span& s) { return !s.isHole; });
+    const auto holes = std::find_if(spans.begin(), spans.end(), [](const Span& s) { return s.isHole; });
+    std::stable_sort(holes, spans.end(), [&points](const Span& a, const Span& b) {
+        const Point64 pa = a.count == 0 ? Point64{0, 0} : points[a.first];
+        const Point64 pb = b.count == 0 ? Point64{0, 0} : points[b.first];
+        return vertexBefore(pa, pb);
     });
     Polygon normalised;
-    for (const std::vector<Point64>& ring : outer) {
-        normalised.addRing(ring.data(), static_cast<int64_t>(ring.size()), false);
-    }
-    for (const std::vector<Point64>& ring : holes) {
-        normalised.addRing(ring.data(), static_cast<int64_t>(ring.size()), true);
+    for (const Span& s : spans) {
+        normalised.addRing(points.data() + s.first, static_cast<int64_t>(s.count), s.isHole);
     }
     polygon = std::move(normalised);
 }

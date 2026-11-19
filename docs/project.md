@@ -138,7 +138,38 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   run reserves and each accumulation pass bounds, and runs the engine's OpenCV
   single-threaded, so Canny's and morphology's working sets no longer depend on
   the host's core count.
-  **Implemented** on branch `feat/working-set`, awaiting review and merge.
+  **Delivered** as PR #14 (merged 2026-11-18).
+- [Algorithm implementation plan C](superpowers/plans/2026-11-18-algorithm-c.md) —
+  plan C of three: connected components, contours, marker-controlled watershed
+  and tissue detection, with per-object measurements in pixel and calibrated
+  units; objects pass through their producer's finishing step, operations see
+  the scene's pixel size, and the merger joins 8-connected objects at tile
+  corners and along seams, and joins fragments only within one join key, so
+  regions touching across a seam stay apart. The segmenters measure at most
+  three channels besides the one they segment. The catalog closes at
+  twenty-one operations. Segmenters measure the scene's samples
+  (`OperationContext::sourceInput()`), not planes earlier steps transformed.
+  **Implemented** as PR #15, awaiting review and merge.
+- **Plan C review follow-up** — the PR #15 review findings deferred to one PR
+  after #15 merges, each a spec or public-API change rather than a defect:
+  1. `segment.connected_components` and `segment.contours` declare a halo of
+     1 they never read; drop it, amending SDS 06 and re-checking the working
+     sets and tiling tests.
+  2. The level-0 pixel-size rule exists twice (`detail::levelZeroPixelSizeMicrons`
+     and `scenePixelSizeMicrons` in `measure.cpp`); move it to one helper in
+     core.
+  3. The tile filter avoids a copy only when its target is the run's
+     `FinishingSink`, found by `dynamic_cast`; give `ObjectSink` an
+     ownership-taking emit instead.
+  4. `FinishingSink` copies every record even when the producer keeps the
+     default `finishObject()`; let an operation declare that it has no
+     finishing step, so the copy is skipped.
+  5. Seam edge contacts (`SeamEdgeContact`) stay in memory after their
+     fragment is spilled but are not charged to the budget, as seam points now
+     are.
+  6. Joining scans every waiting edge contact of a tile pair under the
+     merger's lock; index them by seam line and position.
+  **Not started.**
 - [Whole-level operations](superpowers/specs/2026-10-11-whole-level-operations.md)
   — an operation cannot declare that it needs the analysis level in one block,
   and §6.7's coarse watershed already depends on getting it. Proposes

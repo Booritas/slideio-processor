@@ -48,8 +48,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS void registerPixelOperations();
  * @brief Registers the segmentation operations (`segment.*`) only, for a build
  * that ships a subset.
  *
- * Idempotent, as registerBuiltinOperations(). The library has no segmentation
- * operation yet, so this registers nothing.
+ * Idempotent, as registerBuiltinOperations(). Registers
+ * `segment.connected_components`, `segment.contours`, `segment.watershed` and
+ * `segment.tissue_detect`.
  * @throws InvalidArgumentError As registerBuiltinOperations().
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
@@ -63,8 +64,9 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS void registerSegmentationOperations();
  * @brief Registers the measurement operations (`measure.*`) only, for a build
  * that ships a subset.
  *
- * Idempotent, as registerBuiltinOperations(). The library has no measurement
- * operation yet, so this registers nothing.
+ * Idempotent, as registerBuiltinOperations(). The catalog has no measurement
+ * operation: the segmentation operations measure their own objects
+ * (measure.hpp), so this registers nothing.
  * @throws InvalidArgumentError As registerBuiltinOperations().
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety

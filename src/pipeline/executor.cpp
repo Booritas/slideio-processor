@@ -1,10 +1,12 @@
 // Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
 #include <slideio/processor/pipeline/executor.hpp>
 
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/fragment_spill.hpp>
 #include <pipeline/detail/instance_slots.hpp>
 #include <pipeline/detail/ordered_fold.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/pixel_size.hpp>
 #include <pipeline/detail/restriction.hpp>
 #include <pipeline/detail/seam_merge_failure.hpp>
 #include <pipeline/detail/seam_merger_access.hpp>
@@ -476,10 +478,27 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     if (producesObjects) {
         scratch = std::make_unique<RunScratchDirectory>(impl_->config.scratchDirectory());
         merger = std::make_unique<SeamMerger>(impl_->grid, pool.budget, scratch->path());
+        // Fragments of an 8-connected producer also join diagonally across seams.
+        for (size_t k = 0; k < operations.size(); ++k) {
+            if (operations[k]->producesObjects() && operations[k]->objectsAreEightConnected()) {
+                detail::SeamMergerAccess::setEightConnected(*merger, plan.targetLayers[k]);
+            }
+        }
     }
 
+    // Every object, from a tile or merged, reaches the sink through its
+    // producer's finishObject(). A layer has one producer (validate() checks).
+    const double pixelSizeMicrons = detail::levelZeroPixelSizeMicrons(*state.scene);
+    std::vector<std::pair<LayerId, const Operation*>> producers;
+    for (size_t k = 0; k < operations.size(); ++k) {
+        if (operations[k]->producesObjects()) {
+            producers.emplace_back(plan.targetLayers[k], operations[k].get());
+        }
+    }
+    detail::FinishingSink finishing(sink, std::move(producers), pixelSizeMicrons, plan.level, &state.counters.droppedByFilter);
+
     detail::Bindings bindings;
-    bindings.objectSink = &sink;
+    bindings.objectSink = &finishing;
     bindings.edgeSink = state.edgeSink;
     bindings.annotationSink = state.annotationSink;
     bindings.rasterSink = state.rasterSink;
@@ -488,14 +507,15 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     bindings.spec = &state.spec;
     bindings.selector = state.selector.get();
     bindings.counters = &state.counters;
+    bindings.pixelSizeMicrons = pixelSizeMicrons;
     bindings.memoryBudget = &budget;
     if (merger) {
         // Fragments are partial by definition, so they bypass the tile-ownership
         // and restriction filters; the merged object's anchor is tested instead.
         bindings.seamFragment = [target = merger.get()](const Polygon& fragment, LayerId layer,
                                                         const IntensityPartial* partials, int32_t count,
-                                                        int64_t tileIndex) {
-            target->addFragment(tileIndex, fragment, layer, partials, count);
+                                                        int64_t joinKey, int64_t tileIndex) {
+            target->addFragment(tileIndex, fragment, layer, partials, count, joinKey);
         };
     }
     const detail::TileEvaluator evaluator(plan, operations, *state.reader, std::move(bindings));
@@ -708,7 +728,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         [&](int64_t tile, const char** operation, SlotHold&) {
             evaluator.evaluate(tile, token, operation);
             if (merger) {
-                merger->notifyTileComplete(tile, sink);
+                merger->notifyTileComplete(tile, finishing);
                 if (maskRelease) {
                     maskRelease->tileCompleted(tile);
                 }
@@ -717,7 +737,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
         nullptr);
     if (merger) {
         try {
-            merger->resolve(sink, progress, token);
+            merger->resolve(finishing, progress, token);
         } catch (...) {
             detail::rethrowSeamMergeFailure(std::current_exception(), stageName);
         }

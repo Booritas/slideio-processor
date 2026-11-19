@@ -32,8 +32,27 @@ enum class WorkingSetCall { Apply, Accumulate };
 /// every type's range, and returns the largest peak any one call allocates
 /// through operator new. Everything the call is given is built before the
 /// meter starts.
+/// An operation producing objects emits each object through the run's own tile
+/// filter and finishing sink, as within apply() in a run, into a sink that drops
+/// it, and each seam fragment to a callback that drops it.
 int64_t measureWorkingSetPeak(Operation& op, const std::vector<DataType>& types, int64_t width, int64_t height,
                               WorkingSetCall call);
+
+/// A raster bound to the run under a name, as OperationContext::auxiliary()
+/// gives it: one plane of tightly packed samples over the tile grown by the
+/// operation's halo.
+struct WorkingSetAuxiliary {
+    std::string name;
+    DataType type = DataType::Unknown;
+    std::vector<uint8_t> bytes;
+};
+
+/// As measureWorkingSetPeak, on the given input: one plane per type, tightly
+/// packed samples of the tile grown by the operation's halo; with
+/// @p auxiliary, that raster is bound too.
+int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& types,
+                                const std::vector<std::vector<uint8_t>>& planes, int64_t width, int64_t height,
+                                WorkingSetCall call, const WorkingSetAuxiliary* auxiliary = nullptr);
 
 /// What @p op declares for one call on a width x height tile: the halo'd area
 /// times its per-pixel figure, plus its per-call figure.

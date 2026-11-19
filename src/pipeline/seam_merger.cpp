@@ -63,6 +63,28 @@ int64_t SeamMerger::Impl::neighbourAcross(int64_t tileIndex, const detail::SeamC
     return grid.tileIndex(column, contact.line == rect.y ? row - 1 : row + 1);
 }
 
+std::vector<int64_t> SeamMerger::Impl::neighboursAt(int64_t tileIndex, Point64 point) const {
+    const int64_t column = tileIndex % grid.columns();
+    const int64_t row = tileIndex / grid.columns();
+    std::vector<int64_t> tiles;
+    for (int64_t r = std::max<int64_t>(row - 1, 0); r <= std::min(row + 1, grid.rows() - 1); ++r) {
+        for (int64_t c = std::max<int64_t>(column - 1, 0); c <= std::min(column + 1, grid.columns() - 1); ++c) {
+            const int64_t other = grid.tileIndex(c, r);
+            const Rect64 rect = grid.tileRect(other);
+            if (other != tileIndex && point.x >= rect.x && point.x <= rect.right() && point.y >= rect.y &&
+                point.y <= rect.bottom()) {
+                tiles.push_back(other);
+            }
+        }
+    }
+    return tiles;
+}
+
+bool SeamMerger::Impl::isEightConnected(LayerId layer) const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return eightConnected.count(layer) != 0;
+}
+
 int64_t SeamMerger::Impl::edgeKey(int64_t a, int64_t b) const {
     return std::min(a, b) * grid.tileCount() + std::max(a, b);
 }
@@ -113,8 +135,9 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
     }
 }
 
-void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
+void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer, int64_t joinKey,
                            const std::vector<detail::SeamContact>& contacts,
+                           const std::vector<detail::SeamPointNeighbour>& points,
                            const std::vector<int64_t>& neighbours, int64_t bytes) {
     std::lock_guard<std::mutex> lock(mutex);
     const int64_t id = static_cast<int64_t>(fragments_.size());
@@ -145,18 +168,36 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     fragments_.push_back(std::move(slot));
     parent_.push_back(id);
 
-    // Join with the fragments across each contact's seam, then wait there for
-    // the ones still to come.
+    // Join with the fragments of the same key across each contact's seam, then
+    // wait there for the ones still to come. The key waits with the contact, in
+    // memory, so a fragment written to the scratch file keeps it.
     for (size_t i = 0; i < contacts.size(); ++i) {
         std::vector<detail::SeamEdgeContact>& waiting = edges_[edgeKey(tile, neighbourAcross(tile, contacts[i]))];
         for (const detail::SeamEdgeContact& other : waiting) {
-            if (other.tile != tile && !fragments_[static_cast<size_t>(other.fragment)].taken &&
+            if (other.tile != tile && other.joinKey == joinKey &&
+                !fragments_[static_cast<size_t>(other.fragment)].taken &&
                 components_.at(find(other.fragment)).layer == layer &&
                 detail::contactsJoin(other.contact, contacts[i])) {
                 unite(id, other.fragment);
             }
         }
-        waiting.push_back(detail::SeamEdgeContact{id, tile, contacts[i]});
+        waiting.push_back(detail::SeamEdgeContact{id, tile, joinKey, contacts[i]});
+    }
+    // On an 8-connected layer, likewise at each point shared with another tile,
+    // found through the tile pair's index of points.
+    std::unordered_map<int64_t, int64_t> pointCounts; // Tile pair -> points added there.
+    for (const detail::SeamPointNeighbour& point : points) {
+        const int64_t pair = edgeKey(tile, point.tile);
+        std::vector<detail::SeamPointContact>& waiting = points_[pair].byPoint[point.at];
+        for (const detail::SeamPointContact& other : waiting) {
+            if (other.tile != tile && other.joinKey == joinKey &&
+                !fragments_[static_cast<size_t>(other.fragment)].taken &&
+                components_.at(find(other.fragment)).layer == layer) {
+                unite(id, other.fragment);
+            }
+        }
+        waiting.push_back(detail::SeamPointContact{id, tile, joinKey, point.at});
+        ++pointCounts[pair];
     }
 
     ++fragmentCount;
@@ -166,6 +207,25 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     }
 
     reserveFor(id, bytes);
+    for (const auto& entry : pointCounts) {
+        holdPoints(points_.at(entry.first), entry.second * detail::kSeamPointContactBytes);
+    }
+}
+
+void SeamMerger::Impl::holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes) {
+    for (;;) {
+        if (budget->tryReserve(bytes)) {
+            waiting.held.add(budget, bytes);
+            return;
+        }
+        if (residentByOpening_.empty()) {
+            // Everything is written out and the memory still taken belongs to the
+            // rest of the run: the points are kept, as joining needs them.
+            unreservedPointBytes += bytes;
+            return;
+        }
+        spillComponent(find(*residentByOpening_.begin()));
+    }
 }
 
 void SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {
@@ -271,17 +331,17 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileInde
     }
     completed_[static_cast<size_t>(tileIndex)] = 1;
 
-    // No fragment arrives any more on an edge whose two tiles have completed.
+    // No fragment arrives any more on an edge or at a corner whose tiles have
+    // both completed.
     const int64_t column = tileIndex % grid.columns();
     const int64_t row = tileIndex / grid.columns();
-    const int64_t around[4][2] = {{column - 1, row}, {column + 1, row}, {column, row - 1}, {column, row + 1}};
-    for (const auto& at : around) {
-        if (at[0] < 0 || at[0] >= grid.columns() || at[1] < 0 || at[1] >= grid.rows()) {
-            continue;
-        }
-        const int64_t neighbour = grid.tileIndex(at[0], at[1]);
-        if (completed_[static_cast<size_t>(neighbour)] != 0) {
-            edges_.erase(edgeKey(tileIndex, neighbour));
+    for (int64_t r = std::max<int64_t>(row - 1, 0); r <= std::min(row + 1, grid.rows() - 1); ++r) {
+        for (int64_t c = std::max<int64_t>(column - 1, 0); c <= std::min(column + 1, grid.columns() - 1); ++c) {
+            const int64_t neighbour = grid.tileIndex(c, r);
+            if (neighbour != tileIndex && completed_[static_cast<size_t>(neighbour)] != 0) {
+                edges_.erase(edgeKey(tileIndex, neighbour));
+                points_.erase(edgeKey(tileIndex, neighbour));
+            }
         }
     }
 
@@ -330,6 +390,7 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::takeRemaining() {
     }
     touching_.clear();
     edges_.clear();
+    points_.clear();
     return closed;
 }
 
@@ -367,7 +428,7 @@ void SeamMerger::Impl::emit(detail::ClosedComponent& component, ObjectSink& sink
     }
     Polygon merged;
     try {
-        merged = detail::mergeFragments(polygons);
+        merged = detail::mergeFragments(polygons, isEightConnected(component.layer));
     } catch (const InternalError& e) {
         throw InternalError((layerText(component.layer) + ": " + e.what()).c_str());
     }
@@ -435,7 +496,7 @@ SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char*
 SeamMerger::~SeamMerger() = default;
 
 void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId layer,
-                             const IntensityPartial* partials, int32_t partialCount) {
+                             const IntensityPartial* partials, int32_t partialCount, int64_t joinKey) {
     checkTile(impl_->grid, tileIndex, "addFragment");
     if (fragment.isEmpty()) {
         throw InvalidArgumentError("SeamMerger::addFragment: the fragment is empty");
@@ -469,6 +530,18 @@ void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId
     for (const detail::SeamContact& contact : contacts) {
         neighbours.push_back(impl_->neighbourAcross(tileIndex, contact));
     }
+    // On an 8-connected layer the fragment also waits at each of its seam
+    // points for every other tile touching the point: across a corner, that is
+    // the diagonal tile.
+    std::vector<detail::SeamPointNeighbour> pointNeighbours;
+    if (impl_->isEightConnected(layer)) {
+        for (const Point64& point : detail::seamPoints(fragment, impl_->grid, tileIndex)) {
+            for (int64_t tile : impl_->neighboursAt(tileIndex, point)) {
+                pointNeighbours.push_back(detail::SeamPointNeighbour{point, tile});
+                neighbours.push_back(tile);
+            }
+        }
+    }
     std::sort(neighbours.begin(), neighbours.end());
     neighbours.erase(std::unique(neighbours.begin(), neighbours.end()), neighbours.end());
 
@@ -481,7 +554,7 @@ void SeamMerger::addFragment(int64_t tileIndex, const Polygon& fragment, LayerId
     const int64_t bytes =
         points * 16 + static_cast<int64_t>(partialCount) * static_cast<int64_t>(sizeof(IntensityPartial)) + 64;
 
-    impl_->add(std::move(held), layer, contacts, neighbours, bytes);
+    impl_->add(std::move(held), layer, joinKey, contacts, pointNeighbours, neighbours, bytes);
 }
 
 void SeamMerger::notifyTileComplete(int64_t tileIndex, ObjectSink& sink) {

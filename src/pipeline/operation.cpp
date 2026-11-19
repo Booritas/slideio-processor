@@ -1,4 +1,4 @@
-// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4
+// Requirements: UR-EXT-1, UR-EXT-2, UR-EXT-3, UR-EXT-4, UR-SEG-3, UR-SEG-5, UR-SEG-7
 #include <slideio/processor/pipeline/operation.hpp>
 
 #include <slideio/processor/core/error.hpp>
@@ -57,6 +57,14 @@ int64_t Operation::workingSetBytesPerTile() const {
 
 int64_t Operation::accumulatedStateBytes(int32_t) const {
     return 0;
+}
+
+bool Operation::finishObject(ObjectRecord&, const ObjectFinishContext&) const {
+    return true;
+}
+
+bool Operation::objectsAreEightConnected() const {
+    return false;
 }
 
 } // namespace slideio::processor

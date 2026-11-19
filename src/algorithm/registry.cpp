@@ -78,7 +78,12 @@ void registerPixelOperations() {
     registerOne("pixel.canny", &detail::makeCannyFactory);
 }
 
-void registerSegmentationOperations() {}
+void registerSegmentationOperations() {
+    registerOne("segment.connected_components", &detail::makeConnectedComponentsFactory);
+    registerOne("segment.contours", &detail::makeContoursFactory);
+    registerOne("segment.watershed", &detail::makeWatershedFactory);
+    registerOne("segment.tissue_detect", &detail::makeTissueDetectFactory);
+}
 
 void registerMeasurementOperations() {}
 

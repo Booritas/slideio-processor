@@ -9,6 +9,7 @@
 #include <slideio/slideio/scene.hpp>
 
 #include <algorithm/detail/sample_codec.hpp>
+#include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 
 #include <algorithm>
@@ -74,16 +75,28 @@ BlockView viewOf(int64_t width, int64_t height, std::vector<std::vector<uint8_t>
 
 using Around = std::function<void(const ApplyCall& apply)>;
 
+// Where an object-producing operation's output goes in a direct application.
+struct ObjectPlumbing {
+    ObjectSink* sink = nullptr;
+    detail::SeamFragmentCallback fragments;
+};
+
 void applyOnce(Operation& op, const BlockView& input, BlockView& output, int64_t width, int64_t height,
-               const Halo& halo, const Around& around) {
+               const Halo& halo, const Around& around, double pixelSizeMicrons, const ObjectPlumbing* objects) {
     detail::OperationContextState state;
     state.input = &input;
     state.output = &output;
+    if (objects != nullptr) {
+        state.objectSink = objects->sink;
+        state.targetLayer = objectsLayer();
+        state.seamFragment = objects->fragments;
+    }
     state.level = 0;
     state.tileRectAtLevel = state.tileRect = Rect64{0, 0, width, height};
     state.haloRectAtLevel = state.haloRect =
         Rect64{-halo.left, -halo.top, width + halo.left + halo.right, height + halo.top + halo.bottom};
     state.levelScale = 1.0;
+    state.pixelSizeMicrons = pixelSizeMicrons;
     state.tileIndex = 0;
     // The context is complete before the call is made, so a caller measuring
     // the call sees apply() alone.
@@ -112,7 +125,7 @@ std::vector<std::vector<uint8_t>> encodePlanes(const std::vector<DataType>& inpu
 
 Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
                int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
-               const Around& around);
+               const Around& around, double pixelSizeMicrons, const ObjectPlumbing* objects = nullptr);
 
 } // namespace
 
@@ -130,31 +143,34 @@ double Image::at(int32_t plane, int64_t x, int64_t y) const {
 
 Image applyDirect(Operation& op, const std::vector<DataType>& inputTypes,
                   const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel) {
+                  const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                  double pixelSizeMicrons) {
     return applyDirectRaw(op, inputTypes, sourceChannels, width, height,
-                          encodePlanes(inputTypes, width, height, pixel));
+                          encodePlanes(inputTypes, width, height, pixel),
+                          pixelSizeMicrons);
 }
 
 Image applyDirectAround(Operation& op, const std::vector<DataType>& inputTypes,
                         const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
                         const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
-                        const std::function<void(const ApplyCall& apply)>& around) {
+                        const std::function<void(const ApplyCall& apply)>& around,
+                        double pixelSizeMicrons) {
     return applyRaw(op, inputTypes, sourceChannels, width, height, encodePlanes(inputTypes, width, height, pixel),
-                    around);
+                    around, pixelSizeMicrons);
 }
 
 Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
                      const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
-                     const std::vector<std::vector<uint8_t>>& rawPlanes) {
+                     const std::vector<std::vector<uint8_t>>& rawPlanes, double pixelSizeMicrons) {
     return applyRaw(op, inputTypes, sourceChannels, width, height, rawPlanes,
-                    [](const ApplyCall& apply) { apply(); });
+                    [](const ApplyCall& apply) { apply(); }, pixelSizeMicrons);
 }
 
 namespace {
 
 Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std::vector<int32_t>& sourceChannels,
                int64_t width, int64_t height, const std::vector<std::vector<uint8_t>>& rawPlanes,
-               const Around& around) {
+               const Around& around, double pixelSizeMicrons, const ObjectPlumbing* objects) {
     if (inputTypes.empty() || inputTypes.size() != sourceChannels.size() || inputTypes.size() != rawPlanes.size()) {
         throw std::invalid_argument("applyDirectRaw: one type, channel and plane per input plane");
     }
@@ -201,12 +217,12 @@ Image applyRaw(Operation& op, const std::vector<DataType>& inputTypes, const std
     if (op.arity() == ChannelArity::Joint) {
         const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, 0, in.size());
         BlockView output = viewOf(width, height, out.planes, out.types, outChannels, 0, out.planes.size());
-        applyOnce(op, input, output, width, height, halo, around);
+        applyOnce(op, input, output, width, height, halo, around, pixelSizeMicrons, objects);
     } else {
         for (size_t p = 0; p < in.size(); ++p) {
             const BlockView input = viewOf(inWidth, inHeight, in, inputTypes, sourceChannels, p, 1);
             BlockView output = viewOf(width, height, out.planes, out.types, outChannels, p, 1);
-            applyOnce(op, input, output, width, height, halo, around);
+            applyOnce(op, input, output, width, height, halo, around, pixelSizeMicrons, objects);
         }
     }
     return out;
@@ -297,6 +313,95 @@ Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, 
     pipeline.rasterSink(&sink);
     pipeline.run(nullptr, CancellationToken());
     return sink.image();
+}
+
+LayerId objectsLayer() { return LayerId(1); }
+
+namespace {
+
+// The object sink of a direct application: what the run's tile filter and
+// finishing sink do to an object found whole in one tile.
+class DirectObjectSink : public ObjectSink {
+public:
+    DirectObjectSink(const Operation& op, double pixelSizeMicrons, std::vector<ObjectRecord>& out)
+        : op_(op), context_{pixelSizeMicrons, 0}, out_(out) {}
+
+    void emit(const ObjectRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ObjectRecord finished(record);
+        Polygon geometry = record.geometry();
+        detail::normaliseRings(geometry);
+        finished.setGeometry(geometry);
+        if (op_.finishObject(finished, context_)) {
+            out_.push_back(std::move(finished));
+        }
+    }
+    void flush() override {}
+    int64_t emittedCount() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<int64_t>(out_.size());
+    }
+
+private:
+    const Operation& op_;
+    ObjectFinishContext context_;
+    std::vector<ObjectRecord>& out_;
+    mutable std::mutex mutex_;
+};
+
+class CollectingSink : public ObjectSink {
+public:
+    void emit(const ObjectRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        records_.push_back(record);
+    }
+    void flush() override {}
+    int64_t emittedCount() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<int64_t>(records_.size());
+    }
+    std::vector<ObjectRecord> take() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return std::move(records_);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<ObjectRecord> records_;
+};
+
+} // namespace
+
+DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inputTypes,
+                                 const std::vector<int32_t>& sourceChannels, int64_t width, int64_t height,
+                                 const std::function<double(int32_t plane, int64_t x, int64_t y)>& pixel,
+                                 double pixelSizeMicrons) {
+    DirectObjects result;
+    DirectObjectSink sink(op, pixelSizeMicrons, result.objects);
+    ObjectPlumbing plumbing;
+    plumbing.sink = &sink;
+    plumbing.fragments = [&result](const Polygon& fragment, LayerId, const IntensityPartial*, int32_t,
+                                   int64_t joinKey, int64_t) {
+        result.fragments.push_back(fragment);
+        result.fragmentKeys.push_back(joinKey);
+    };
+    applyRaw(op, inputTypes, sourceChannels, width, height, encodePlanes(inputTypes, width, height, pixel),
+             [](const ApplyCall& apply) { apply(); }, pixelSizeMicrons, &plumbing);
+    return result;
+}
+
+std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
+                                          int32_t tileSize, int32_t workers) {
+    const Configuration config =
+        ConfigurationBuilder().tileSize(tileSize, tileSize).tileSizeFromSlide(false).workerCount(workers).build();
+    Pipeline pipeline(scene, config, spec);
+    pipeline.bindLayer("objects", objectsLayer());
+    CollectingSink sink;
+    pipeline.runInto(sink, nullptr, CancellationToken());
+    std::vector<ObjectRecord> records = sink.take();
+    std::sort(records.begin(), records.end(),
+              [](const ObjectRecord& a, const ObjectRecord& b) { return a.id() < b.id(); });
+    return records;
 }
 
 } // namespace slideio::processor::testing_support

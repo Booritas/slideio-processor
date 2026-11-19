@@ -229,6 +229,8 @@ TEST(OperationContext, AccessorsReflectState) {
     const auto ctx = detail::makeOperationContext(std::move(state));
 
     EXPECT_EQ(&ctx->input(), &input);
+    // Without the scene's samples, sourceInput() is the input itself.
+    EXPECT_EQ(&ctx->sourceInput(), &input);
     EXPECT_EQ(&ctx->output(), &output);
     EXPECT_EQ(ctx->objectSink(), &sink);
     EXPECT_EQ(ctx->edgeSink(), nullptr);
@@ -318,15 +320,16 @@ TEST(OperationContext, SeamFragmentReachesCallback) {
         Rect64 box;
         LayerId layer;
         std::vector<IntensityPartial> partials;
+        int64_t joinKey;
         int64_t tileIndex;
     };
     std::vector<Call> calls;
     detail::OperationContextState state;
     state.tileIndex = 17;
     state.seamFragment = [&calls](const Polygon& p, LayerId layer, const IntensityPartial* partials,
-                                  int32_t count, int64_t tileIndex) {
+                                  int32_t count, int64_t joinKey, int64_t tileIndex) {
         calls.push_back(
-            {p.boundingBox(), layer, std::vector<IntensityPartial>(partials, partials + count), tileIndex});
+            {p.boundingBox(), layer, std::vector<IntensityPartial>(partials, partials + count), joinKey, tileIndex});
     };
     const auto ctx = detail::makeOperationContext(std::move(state));
 
@@ -345,11 +348,18 @@ TEST(OperationContext, SeamFragmentReachesCallback) {
     EXPECT_EQ(calls[1].partials[1].sumOfSquares, 29.0);
     EXPECT_EQ(calls[0].tileIndex, 17) << "the emitting tile reaches the callback";
     EXPECT_EQ(calls[1].tileIndex, 17);
+    EXPECT_EQ(calls[0].joinKey, 0) << "the overloads without a key mean key 0";
+    EXPECT_EQ(calls[1].joinKey, 0);
+    ctx->emitSeamFragment(square(2, 3, 4), LayerId(8), partials, 2, -42);
+    ASSERT_EQ(calls.size(), 3u);
+    EXPECT_EQ(calls[2].joinKey, -42);
+    EXPECT_EQ(calls[2].partials.size(), 2u);
+    EXPECT_EQ(calls[2].tileIndex, 17);
 
     EXPECT_THROW(ctx->emitSeamFragment(square(0, 0, 1), LayerId(1), partials, -1), InvalidArgumentError);
     EXPECT_THROW(ctx->emitSeamFragment(square(0, 0, 1), LayerId(1), nullptr, 1), InvalidArgumentError);
     ctx->emitSeamFragment(square(0, 0, 1), LayerId(1), nullptr, 0);
-    EXPECT_EQ(calls.size(), 3u);
+    EXPECT_EQ(calls.size(), 4u);
 }
 
 // --- Standard measurements ----------------------------------------------------------
@@ -510,7 +520,7 @@ TEST(TestSupport, ComponentsTwoPlaneFormMeasuresAFloatIntensityPlane) {
     state.objectSink = &sink;
     state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 4, 3};
     state.seamFragment = [&fragments](const Polygon&, LayerId, const IntensityPartial* partials, int32_t count,
-                                      int64_t) {
+                                      int64_t, int64_t) {
         ASSERT_EQ(count, 1);
         fragments.push_back(partials[0]);
     };
@@ -648,7 +658,7 @@ TEST(TestSupport, ComponentsSendsEdgeTouchingComponentsToSeamsWhenAsked) {
     state.objectSink = &sink;
     state.tileRectAtLevel = state.haloRectAtLevel = Rect64{0, 0, 5, 4};
     state.seamFragment = [&fragments](const Polygon& p, LayerId, const IntensityPartial* partials,
-                                      int32_t count, int64_t) {
+                                      int32_t count, int64_t, int64_t) {
         EXPECT_EQ(p.boundingBox(), (Rect64{0, 0, 1, 1}));
         ASSERT_EQ(count, 1);
         fragments.push_back(partials[0]);
@@ -694,7 +704,7 @@ TEST(TestSupport, ComponentsIgnoreTheHaloAndClipToTheTile) {
     state.haloRectAtLevel = Rect64{8, 19, 8, 5};
     state.tileRectAtLevel = Rect64{10, 20, 4, 3};
     state.seamFragment = [&fragments](const Polygon& p, LayerId, const IntensityPartial* partials, int32_t,
-                                      int64_t) {
+                                      int64_t, int64_t) {
         fragments.emplace_back(p.boundingBox(), partials[0].count);
     };
     ts::ComponentsOperation seams{OperationParameters().setBool("seams", true)};
@@ -832,7 +842,7 @@ TEST(OperationContext, EvaluatorPassesTheEmittingTileIndex) {
     detail::Bindings bindings;
     bindings.objectSink = &sink;
     bindings.seamFragment = [&fragments](const Polygon& polygon, LayerId, const IntensityPartial*, int32_t,
-                                         int64_t tileIndex) {
+                                         int64_t, int64_t tileIndex) {
         fragments.emplace_back(tileIndex, polygon.boundingBox());
     };
     bindings.spec = &impl.spec;

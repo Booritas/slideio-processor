@@ -35,11 +35,22 @@ struct SeamMergerAccess;
  * fragment, in level-0 coordinates, with one IntensityPartial per channel. A
  * fragment's seam contacts are the stretches of its boundary lying on a seam
  * line; two fragments in the tiles on either side of a seam, of the same
- * layer, belong to one object when their contacts on that seam overlap with
- * positive length. Touching at a single point (a corner) does not join:
- * objects are 4-connected. Joining is exact, in integers, with no tolerance.
+ * layer and the same join key, belong to one object when their contacts on
+ * that seam overlap with positive length. Touching at a single point (a
+ * corner) does not join: objects are 4-connected. On a layer whose producer
+ * declares its objects 8-connected (Operation::objectsAreEightConnected(),
+ * which the executor passes on), two fragments of different tiles, of the
+ * same join key, that share a boundary vertex on a seam line, at a tile
+ * corner or along a seam, also join: their pixels meet diagonally there.
+ * Joining is exact, in integers, with no tolerance. The join key names the
+ * region a fragment belongs to (OperationContext::emitSeamFragment()), so
+ * distinct regions touching across a seam, such as neighbouring labels, stay
+ * distinct objects; fragments of a different key never join, however they
+ * touch.
  *
- * A fragment expects the tile on the other side of each of its contacts. An
+ * A fragment expects the tile on the other side of each of its contacts, and
+ * on an 8-connected layer every other tile touching one of its seam vertices
+ * (at a tile corner, the diagonal tile too). An
  * object (a connected set of fragments) closes when every tile holding one of
  * its fragments and every tile one of them expects has been reported complete
  * through notifyTileComplete(); it does not wait for the rest of the grid. A
@@ -118,15 +129,18 @@ public:
     /// threads, in any order.
     ///
     /// The fragment is joined at once with the fragments already held that
-    /// it touches across a seam; nothing is emitted until its tile and the
-    /// tiles it expects complete. A fragment arriving for a tile already
-    /// reported complete is held until resolve(). The polygon, in level-0
-    /// coordinates, is copied; the layer is the merged object's and must be
-    /// valid.
+    /// it touches across a seam and that have its layer and join key; nothing
+    /// is emitted until its tile and the tiles it expects complete. A
+    /// fragment arriving for a tile already reported complete is held until
+    /// resolve(). The polygon, in level-0 coordinates, is copied; the layer is
+    /// the merged object's and must be valid. A fragment written to the
+    /// scratch file keeps its key: it still joins only fragments of that key.
     /// @param tileIndex The index in the grid of the tile that emitted it.
     /// @param partials One partial per channel, read during this call only;
     /// may be null when @p partialCount is 0.
     /// @param partialCount Number of partials; not negative.
+    /// @param joinKey The identity of the region the fragment belongs to, the
+    /// same in every tile; any value, 0 by default.
     /// @throws InvalidArgumentError When @p tileIndex is outside the grid,
     /// the fragment is empty, the layer is invalid, @p partialCount is
     /// negative, or @p partials is null while @p partialCount is positive;
@@ -142,7 +156,7 @@ public:
     /// @par Requirements
     /// UR-SEG-3, UR-EXE-2
     void addFragment(int64_t tileIndex, const Polygon&, LayerId,
-                     const IntensityPartial* partials, int32_t partialCount);
+                     const IntensityPartial* partials, int32_t partialCount, int64_t joinKey = 0);
 
     /// Reports that a tile is finished. Components all of whose bordering
     /// tiles have completed are merged and emitted to `sink` immediately,

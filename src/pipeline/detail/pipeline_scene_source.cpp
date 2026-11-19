@@ -2,6 +2,7 @@
 #include <pipeline/detail/pipeline_scene_source.hpp>
 
 #include <pipeline/detail/plane_buffers.hpp>
+#include <pipeline/detail/pixel_size.hpp>
 #include <pipeline/detail/tile_evaluator.hpp>
 #include <pipeline/detail/tile_reservation.hpp>
 
@@ -270,10 +271,11 @@ void PipelineSceneSource::readBlock(int32_t level, const Rect64& region, BlockVi
     bindings.rasterSink = &copy;
     bindings.auxiliaries = snapshot_.auxiliaries;
     bindings.maskSource = snapshot_.maskSource;
-    bindings.seamFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t) {};
+    bindings.seamFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t, int64_t) {};
     bindings.spec = &snapshot_.spec;
     bindings.selector = snapshot_.selector.get();
     bindings.counters = &counters;
+    bindings.pixelSizeMicrons = levelZeroPixelSizeMicrons(*snapshot_.scene);
     const TileEvaluator evaluator(plan, plan.operations, *snapshot_.reader, std::move(bindings));
     copy.setRestriction(&evaluator.restriction());
 

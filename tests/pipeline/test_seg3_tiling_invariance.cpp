@@ -66,17 +66,21 @@ Configuration config(const RunSetup& run, const std::string& scratch) {
         .build();
 }
 
-PipelineSpec components(int32_t level) {
+PipelineSpec components(int32_t level, bool eightConnected = false) {
     PipelineSpec spec;
     OperationParameters seams;
     seams.setBool("seams", true);
+    if (eightConnected) {
+        seams.setBool("eightConnected", true);
+    }
     spec.operation("test.components", seams);
     spec.analysisLevel(level);
     return spec;
 }
 
-std::vector<ObjectRecord> objectsOf(const std::shared_ptr<slideio::Scene>& scene, const RunSetup& run) {
-    Pipeline p(scene, config(run, std::string()), components(run.level));
+std::vector<ObjectRecord> objectsOf(const std::shared_ptr<slideio::Scene>& scene, const RunSetup& run,
+                                    bool eightConnected = false) {
+    Pipeline p(scene, config(run, std::string()), components(run.level, eightConnected));
     p.bindLayer("objects", kLayer);
     ts::CollectingObjectSink sink;
     p.runInto(sink, nullptr, CancellationToken());
@@ -441,5 +445,80 @@ TEST(Seg3, CornerTouchingObjectsStaySeparate) {
         if (tile != kWidth) {
             EXPECT_TRUE(identicalObjects(reference, objects, IntensityMatch::Exact)) << tile << "-pixel tiles";
         }
+    }
+}
+
+// 8-connected, each corner-touching pair is one object whose outline touches
+// itself at the corner, joined across the seams at every tile size, and every
+// other object is the single-tile one.
+TEST(Seg3, EightConnectedBlobsInvariantAcrossTileSizes) {
+    const auto scene = dyadicScene(ts::BlobChannels::Mask);
+    const std::vector<ObjectRecord> reference = objectsOf(scene, {kWidth, kHeight, 4}, true);
+    const int64_t s = ts::kCornerSquareSide;
+    for (const ts::CornerTouchingPair& pair : ts::cornerTouchingPairs()) {
+        const Rect64 both{pair.x - s, pair.y - s, 2 * s, 2 * s};
+        const auto joined = std::count_if(reference.begin(), reference.end(), [&](const ObjectRecord& r) {
+            return r.boundingBox() == both && r.geometry().ringCount() == 1 &&
+                   r.geometry().area() == static_cast<double>(2 * s * s);
+        });
+        EXPECT_EQ(joined, 1) << "pair at the " << pair.tileSide << "-pixel corner";
+    }
+    for (const int32_t tile : {64, 100, 257}) {
+        ASSERT_GE(cutBySeams(reference, tile), 5) << tile << "-pixel seams should cut many objects";
+        EXPECT_TRUE(identicalObjects(reference, objectsOf(scene, {tile, tile, 4}, true), IntensityMatch::Exact))
+            << tile << "-pixel tiles";
+    }
+}
+
+// A label raster: regions of equal non-zero value, each its own object, many of
+// them touching regions of another value across the seams, with zero stripes
+// for concave outlines and discs of another value for holes. Each fragment's key
+// is its value, so neighbouring labels never join; every tile size gives the
+// single-tile objects.
+TEST(Seg3, AdjacentLabelsInvariantAcrossTileSizes) {
+    ts::registerTestOperations();
+    const auto label = [](int, int64_t x, int64_t y) -> double {
+        if ((x + 2 * y) % 97 < 5) {
+            return 0.0;
+        }
+        // A disc of value 5 in every third cell, a hole in the region around it.
+        const int64_t dx = x % 45 - 22;
+        const int64_t dy = y % 38 - 19;
+        if ((x / 45 + y / 38) % 3 == 0 && dx * dx + dy * dy < 7 * 7) {
+            return 5.0;
+        }
+        return static_cast<double>(1 + ((x / 45) * 7 + (y / 38) * 3) % 4);
+    };
+    const auto scene = ts::makeSyntheticScene({{kWidth, kHeight, 0, 0}},
+                                              std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, label);
+    const auto labelObjects = [&scene](int32_t tileWidth, int32_t tileHeight) {
+        PipelineSpec spec;
+        OperationParameters parameters;
+        parameters.setBool("seams", true);
+        parameters.setBool("keyByValue", true);
+        spec.operation("test.components", parameters);
+        Pipeline p(scene, config({tileWidth, tileHeight, 4}, std::string()), spec);
+        p.bindLayer("objects", kLayer);
+        ts::CollectingObjectSink sink;
+        p.runInto(sink, nullptr, CancellationToken());
+        return sink.records();
+    };
+    const std::vector<ObjectRecord> reference = labelObjects(static_cast<int32_t>(kWidth), static_cast<int32_t>(kHeight));
+    ASSERT_GT(reference.size(), 100u);
+    // One value per object, and some objects with holes.
+    int64_t holed = 0;
+    for (const ObjectRecord& r : reference) {
+        Measurement minimum;
+        Measurement maximum;
+        ASSERT_TRUE(r.measurements().find("intensity.0.min", minimum));
+        ASSERT_TRUE(r.measurements().find("intensity.0.max", maximum));
+        ASSERT_EQ(minimum.value(), maximum.value());
+        holed += r.geometry().ringCount() > 1 ? 1 : 0;
+    }
+    EXPECT_GT(holed, 5);
+    for (const int32_t tile : {64, 100, 257}) {
+        ASSERT_GE(cutBySeams(reference, tile), 20) << tile << "-pixel seams should cut many objects";
+        EXPECT_TRUE(identicalObjects(reference, labelObjects(tile, tile), IntensityMatch::Exact))
+            << tile << "-pixel tiles";
     }
 }

@@ -59,4 +59,16 @@ OperationFactoryPtr makeBilateralFilterFactory();
 /// pixel.canny
 OperationFactoryPtr makeCannyFactory();
 
+/// segment.connected_components
+OperationFactoryPtr makeConnectedComponentsFactory();
+
+/// segment.contours
+OperationFactoryPtr makeContoursFactory();
+
+/// segment.watershed
+OperationFactoryPtr makeWatershedFactory();
+
+/// segment.tissue_detect
+OperationFactoryPtr makeTissueDetectFactory();
+
 } // namespace slideio::processor::detail

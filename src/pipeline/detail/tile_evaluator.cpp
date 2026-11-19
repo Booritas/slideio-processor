@@ -1,6 +1,8 @@
-// Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3
+// Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3, UR-SEG-3
 #include <pipeline/detail/tile_evaluator.hpp>
 
+#include <pipeline/detail/finishing_sink.hpp>
+#include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
@@ -28,39 +30,50 @@ bool holds(const Rect64& r, Point64 p) {
     return p.x >= r.x && p.y >= r.y && p.x - r.x < r.width && p.y - r.y < r.height;
 }
 
-// The object sink an operation sees on one tile: an object is kept only when its
-// anchor lies in the tile's level-0 rect, then only when the tile's mask is
-// set there. Flushing is the run's business, so flush() does nothing. One
-// filter serves one tile, but an operation may emit from threads of its own, so
-// the count is atomic.
-class TileObjectFilter : public ObjectSink {
-public:
-    TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters)
-        : target_(target), tileRect_(tileRect), mask_(mask), counters_(counters) {}
+} // namespace
 
-    void emit(const ObjectRecord& record) override {
-        const Point64 anchor = record.geometry().anchor();
-        if (!holds(tileRect_, anchor)) {
-            ++counters_.droppedOutsideTile;
-            return;
+TileObjectFilter::TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask,
+                                   RunCounters& counters)
+    : target_(target), finishing_(dynamic_cast<FinishingSink*>(target)), tileRect_(tileRect), mask_(mask),
+      counters_(counters) {}
+
+void TileObjectFilter::emit(const ObjectRecord& record) {
+    const Point64 anchor = record.geometry().anchor();
+    if (!holds(tileRect_, anchor)) {
+        ++counters_.droppedOutsideTile;
+        return;
+    }
+    if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
+        ++counters_.droppedByRestriction;
+        return;
+    }
+    // Counted only when passed on: the finishing step may discard it.
+    bool kept = true;
+    if (ringsAreNormalised(record.geometry())) {
+        if (finishing_ != nullptr) {
+            kept = finishing_->emitKept(record);
+        } else {
+            target_->emit(record);
         }
-        if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
-            ++counters_.droppedByRestriction;
-            return;
+    } else {
+        ObjectRecord normalised(record);
+        {
+            Polygon geometry = record.geometry();
+            normaliseRings(geometry);
+            normalised.setGeometry(geometry);
         }
-        target_->emit(record);
+        if (finishing_ != nullptr) {
+            kept = finishing_->emitOwned(normalised);
+        } else {
+            target_->emit(normalised);
+        }
+    }
+    if (kept) {
         ++emitted_;
     }
-    void flush() override {}
-    int64_t emittedCount() const override { return emitted_.load(); }
+}
 
-private:
-    ObjectSink* target_;
-    Rect64 tileRect_;
-    const RasterMask* mask_;
-    RunCounters& counters_;
-    std::atomic<int64_t> emitted_{0};
-};
+namespace {
 
 // Plane `plane` of `view` as a view of its own.
 BlockView singlePlane(const BlockView& view, int32_t plane) {
@@ -187,9 +200,14 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         sourceRect = grow(sourceRect, operations[k]->halo());
     }
 
-    PlaneBuffers current(sourceRect.width, sourceRect.height, plan_.planeTypes[0], plan_.channels);
-    bytes += current.bytes();
-    reader_.read(plan_.level, sourceRect, plan_.channels, current);
+    // The samples as read stay alive for the whole chain: each operation sees them
+    // over its own input rect as sourceInput(). The reservation counts every step's
+    // buffers at once, so keeping them stays within it.
+    PlaneBuffers source(sourceRect.width, sourceRect.height, plan_.planeTypes[0], plan_.channels);
+    bytes += source.bytes();
+    reader_.read(plan_.level, sourceRect, plan_.channels, source);
+    std::optional<PlaneBuffers> transformed;
+    PlaneBuffers* current = &source;
     Rect64 currentRect = sourceRect;
 
     // Auxiliary rasters are filled once per tile over the first operation's halo rect,
@@ -213,21 +231,22 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     // An accumulation pass writes no sink: what the operations before the
     // accumulating one emit is dropped, seam fragments included.
     const SeamFragmentCallback dropFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t,
-                                                 int64_t) {};
+                                                 int64_t, int64_t) {};
 
     for (size_t k = 0; k < end; ++k) {
         token.throwIfCancelled();
         Operation& op = *operations[k];
         const bool accumulates = !finalPass && k + 1 == end;
         const Rect64& outputRect = outputRects[k];
-        const BlockView inputView = current.view(plan_.level, currentRect, plan_.levelScale);
+        const BlockView inputView = current->view(plan_.level, currentRect, plan_.levelScale);
+        const BlockView sourceView = subView(source, sourceRect, currentRect, plan_.level, plan_.levelScale);
         // An accumulating operation writes nothing, so it gets no output buffer.
         std::optional<PlaneBuffers> output;
         BlockView outputView;
         if (!accumulates) {
             const std::vector<DataType>& outputTypes = plan_.planeTypes[k + 1];
             output.emplace(outputRect.width, outputRect.height, outputTypes,
-                           outputChannels(current, outputTypes.size()));
+                           outputChannels(*current, outputTypes.size()));
             bytes += output->bytes();
             outputView = output->view(plan_.level, outputRect, plan_.levelScale);
         }
@@ -252,6 +271,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         for (size_t a = 0; a < bindings_.auxiliaries.size(); ++a) {
             state.auxiliaries.emplace_back(bindings_.auxiliaries[a].first, &auxiliaryViews[a]);
         }
+        state.sourceInput = &sourceView;
         state.targetLayer = plan_.targetLayers[k];
         state.level = plan_.level;
         state.tileRectAtLevel = outputRect;
@@ -259,6 +279,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.tileRect = rectToLevel0(outputRect, plan_.levelScale);
         state.haloRect = rectToLevel0(currentRect, plan_.levelScale);
         state.levelScale = plan_.levelScale;
+        state.pixelSizeMicrons = bindings_.pixelSizeMicrons;
         state.channels = &bindings_.spec->channels();
         state.cancellation = &token;
         state.mask = tileMask;
@@ -301,12 +322,13 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         if (k + 1 < end) {
             zeroOutside(*output, outputRect, plan_.levelRect);
         }
-        current = std::move(*output);
+        transformed = std::move(output);
+        current = &*transformed;
         currentRect = outputRect;
     }
 
     if (bindings_.rasterSink != nullptr) {
-        const BlockView result = current.view(plan_.level, tile, plan_.levelScale);
+        const BlockView result = current->view(plan_.level, tile, plan_.levelScale);
         bindings_.rasterSink->writeTile(result);
     }
     return TileOutcome{false, bytes};

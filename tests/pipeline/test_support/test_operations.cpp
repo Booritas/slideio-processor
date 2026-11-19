@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -73,13 +74,19 @@ int64_t twiceSignedArea(const std::vector<Point64>& ring) {
 // right is +1.
 constexpr std::array<Point64, 4> kStep = {Point64{1, 0}, Point64{0, 1}, Point64{-1, 0}, Point64{0, -1}};
 
+// The 4-neighbours, then the diagonal ones.
+constexpr std::array<Point64, 8> kNeighbours = {Point64{1, 0}, Point64{0, 1},   Point64{-1, 0},  Point64{0, -1},
+                                                Point64{1, 1}, Point64{-1, 1}, Point64{-1, -1}, Point64{1, -1}};
+
 // Traces the pixel-edge rings of the pixels for which inside(x, y) holds. Every
 // boundary edge keeps the component on its right, so outer rings run clockwise on
 // screen and holes anticlockwise. At a vertex where the component touches itself
 // diagonally the walk turns right, hugging the pixel it follows: 4-connected
-// pixels, 8-connected background.
+// pixels, 8-connected background. With `eightConnected` it turns left there,
+// crossing to the diagonal pixel: 8-connected pixels, 4-connected background,
+// one outer ring touching itself at the point, as the seam merger links it.
 template <typename Inside>
-std::vector<std::vector<Point64>> traceRings(const std::vector<Point64>& pixels, Inside inside) {
+std::vector<std::vector<Point64>> traceRings(const std::vector<Point64>& pixels, Inside inside, bool eightConnected) {
     // Keyed (y, x) so the first entry is the topmost-then-leftmost vertex.
     std::map<std::pair<int64_t, int64_t>, std::array<bool, 4>> outgoing;
     auto add = [&outgoing](int64_t x, int64_t y, int dir) { outgoing[{y, x}][static_cast<size_t>(dir)] = true; };
@@ -111,7 +118,8 @@ std::vector<std::vector<Point64>> traceRings(const std::vector<Point64>& pixels,
                 break;
             }
             const std::array<bool, 4>& next = outgoing.at({v.y, v.x});
-            for (int turn : {1, 0, 3}) {
+            const std::array<int, 3> turns = eightConnected ? std::array<int, 3>{3, 0, 1} : std::array<int, 3>{1, 0, 3};
+            for (int turn : turns) {
                 const int candidate = (dir + turn) % 4;
                 if (next[static_cast<size_t>(candidate)]) {
                     dir = candidate;
@@ -243,9 +251,24 @@ void BoxMeanOperation::apply(OperationContext& context) {
 // --- ComponentsOperation ----------------------------------------------------------
 
 ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
-    : parameters_(parameters), seams_(false), haloScan_(false), halo_(0) {
+    : parameters_(parameters),
+      seams_(false),
+      haloScan_(false),
+      halo_(0),
+      rotateRings_(false),
+      finishMinArea_(0.0),
+      finishTag_(false),
+      finishContext_(false),
+      eightConnected_(false),
+      keyByValue_(false) {
     parameters_.getBool("seams", seams_);
     parameters_.getBool("haloScan", haloScan_);
+    parameters_.getBool("rotateRings", rotateRings_);
+    parameters_.getDouble("finishMinArea", finishMinArea_);
+    parameters_.getBool("finishTag", finishTag_);
+    parameters_.getBool("finishContext", finishContext_);
+    parameters_.getBool("eightConnected", eightConnected_);
+    parameters_.getBool("keyByValue", keyByValue_);
     int64_t halo = 0;
     parameters_.getInt("halo", halo);
     if (halo < 0 || halo > 1024) {
@@ -264,7 +287,23 @@ Halo ComponentsOperation::halo() const { return Halo::uniform(halo_); }
 DataType ComponentsOperation::outputType(DataType) const { return DataType::Byte; }
 const OperationParameters& ComponentsOperation::parameters() const { return parameters_; }
 bool ComponentsOperation::producesObjects() const { return true; }
+bool ComponentsOperation::objectsAreEightConnected() const { return eightConnected_; }
 int32_t ComponentsOperation::outputPlaneCount(int32_t) const { return 1; }
+
+bool ComponentsOperation::finishObject(ObjectRecord& record, const ObjectFinishContext& context) const {
+    Measurement area;
+    if (record.measurements().find("area", area) && area.value() < finishMinArea_) {
+        return false;
+    }
+    if (finishContext_) {
+        record.measurements().set("finishPixelSize", context.pixelSizeMicrons, MeasurementUnit::Micrometres);
+        record.measurements().set("finishLevel", static_cast<double>(context.level), MeasurementUnit::Dimensionless);
+    }
+    if (finishTag_) {
+        record.measurements().set("finished", 1.0, MeasurementUnit::Dimensionless);
+    }
+    return true;
+}
 
 void ComponentsOperation::apply(OperationContext& context) {
     const BlockView& in = context.input();
@@ -318,6 +357,7 @@ void ComponentsOperation::apply(OperationContext& context) {
                 continue;
             }
             const int32_t label = ++nextLabel;
+            const unsigned char value = sample(sx, sy);
             std::vector<Point64> pixels;
             std::vector<Point64> stack = {Point64{sx, sy}};
             labels[at(sx, sy)] = label;
@@ -334,11 +374,14 @@ void ComponentsOperation::apply(OperationContext& context) {
                 partial.sum += v;
                 partial.sumOfSquares += v * v;
                 touchesEdge = touchesEdge || p.x == 0 || p.y == 0 || p.x == width - 1 || p.y == height - 1;
-                for (const Point64& step : kStep) {
+                for (const Point64& step : kNeighbours) {
+                    if (!eightConnected_ && step.x != 0 && step.y != 0) {
+                        continue;
+                    }
                     const int64_t nx = p.x + step.x;
                     const int64_t ny = p.y + step.y;
                     if (nx >= 0 && ny >= 0 && nx < width && ny < height && labels[at(nx, ny)] == 0 &&
-                        sample(nx, ny) != 0) {
+                        sample(nx, ny) != 0 && (!keyByValue_ || sample(nx, ny) == value)) {
                         labels[at(nx, ny)] = label;
                         stack.push_back(Point64{nx, ny});
                     }
@@ -350,7 +393,7 @@ void ComponentsOperation::apply(OperationContext& context) {
             };
             std::vector<std::vector<Point64>> outer;
             std::vector<std::vector<Point64>> holes;
-            for (std::vector<Point64>& ring : traceRings(pixels, inside)) {
+            for (std::vector<Point64>& ring : traceRings(pixels, inside, eightConnected_)) {
                 for (Point64& p : ring) {
                     p = context.toLevel0(Point64{p.x + origin.x, p.y + origin.y});
                 }
@@ -358,7 +401,7 @@ void ComponentsOperation::apply(OperationContext& context) {
                 (twiceSignedArea(normalised) > 0 ? outer : holes).push_back(std::move(normalised));
             }
             if (outer.size() != 1) {
-                throw InternalError("test.components: a 4-connected component must have one outer ring");
+                throw InternalError("test.components: a component must have one outer ring");
             }
             std::sort(holes.begin(), holes.end(), [](const std::vector<Point64>& a, const std::vector<Point64>& b) {
                 return a.front().y != b.front().y ? a.front().y < b.front().y : a.front().x < b.front().x;
@@ -370,12 +413,31 @@ void ComponentsOperation::apply(OperationContext& context) {
             }
 
             if (seams_ && touchesEdge) {
-                context.emitSeamFragment(polygon, context.targetLayer(), &partial, 1);
+                context.emitSeamFragment(polygon, context.targetLayer(), &partial, 1, keyByValue_ ? value : 0);
                 continue;
             }
             ObjectSink* sink = context.objectSink();
             if (sink == nullptr) {
                 throw InternalError("test.components: the run supplied no object sink");
+            }
+            if (rotateRings_) {
+                // Start one pixel along the first edge: a vertex the normal form drops.
+                const std::vector<Point64>& ring = outer.front();
+                const Point64 a = ring[0];
+                const Point64 b = ring[1];
+                const Point64 step{(b.x > a.x) - (b.x < a.x), (b.y > a.y) - (b.y < a.y)};
+                std::vector<Point64> rotated{Point64{a.x + step.x, a.y + step.y}};
+                rotated.insert(rotated.end(), ring.begin() + 1, ring.end());
+                rotated.push_back(a);
+                if (rotated[0].x == b.x && rotated[0].y == b.y) {
+                    rotated.erase(rotated.begin() + 1);
+                }
+                Polygon moved;
+                moved.addRing(rotated.data(), static_cast<int64_t>(rotated.size()), false);
+                for (const std::vector<Point64>& hole : holes) {
+                    moved.addRing(hole.data(), static_cast<int64_t>(hole.size()), true);
+                }
+                polygon = std::move(moved);
             }
             ObjectRecord record;
             record.setGeometry(polygon);
@@ -477,6 +539,53 @@ const OperationParameters& FloatOnlyOperation::parameters() const { return param
 void FloatOnlyOperation::apply(OperationContext& context) {
     for (int32_t plane = 0; plane < context.input().planeCount(); ++plane) {
         requireType(name(), context.input().planeType(plane), supportedTypes());
+    }
+    copyTileAsFloat(context, context.input().planeCount());
+}
+
+// --- PixelSizeProbeOperation ------------------------------------------------------
+
+namespace {
+
+std::mutex probeMutex;
+std::vector<double> probePixelSizes;
+std::vector<int32_t> probeLevels;
+
+} // namespace
+
+PixelSizeProbeOperation::PixelSizeProbeOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+
+const char* PixelSizeProbeOperation::name() const { return "test.pixelSizeProbe"; }
+ChannelArity PixelSizeProbeOperation::arity() const { return ChannelArity::PerChannel; }
+bool PixelSizeProbeOperation::requiresUniformTypes() const { return false; }
+DataTypeSet PixelSizeProbeOperation::supportedTypes() const {
+    return DataTypeSet().add(DataType::Byte).add(DataType::Float32);
+}
+Halo PixelSizeProbeOperation::halo() const { return Halo::none(); }
+DataType PixelSizeProbeOperation::outputType(DataType) const { return DataType::Float32; }
+const OperationParameters& PixelSizeProbeOperation::parameters() const { return parameters_; }
+
+void PixelSizeProbeOperation::reset() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    probePixelSizes.clear();
+    probeLevels.clear();
+}
+
+std::vector<double> PixelSizeProbeOperation::seenPixelSizes() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    return probePixelSizes;
+}
+
+std::vector<int32_t> PixelSizeProbeOperation::seenLevels() {
+    std::lock_guard<std::mutex> lock(probeMutex);
+    return probeLevels;
+}
+
+void PixelSizeProbeOperation::apply(OperationContext& context) {
+    {
+        std::lock_guard<std::mutex> lock(probeMutex);
+        probePixelSizes.push_back(context.pixelSizeMicrons());
+        probeLevels.push_back(context.level());
     }
     copyTileAsFloat(context, context.input().planeCount());
 }
@@ -591,6 +700,12 @@ OperationFactoryPtr makeFloatOnlyFactory() {
         "Analytic: out = in", "O(n) in the number of samples");
 }
 
+OperationFactoryPtr makePixelSizeProbeFactory() {
+    return std::make_shared<PrototypeFactory>(
+        [](const OperationParameters& p) -> OperationPtr { return std::make_shared<PixelSizeProbeOperation>(p); },
+        "Analytic: out = in, as Float32", "O(n) in the number of samples");
+}
+
 OperationFactoryPtr makeWorkingSetFactory() {
     return std::make_shared<PrototypeFactory>(
         [](const OperationParameters& p) -> OperationPtr { return std::make_shared<WorkingSetOperation>(p); },
@@ -601,7 +716,7 @@ void registerTestOperations() {
     OperationCatalog& catalog = OperationCatalog::instance();
     for (const OperationFactoryPtr& factory :
          {makeThresholdFactory(), makeBoxMeanFactory(), makeComponentsFactory(), makeWholeLevelFactory(),
-          makeJointUniformFactory(), makeFloatOnlyFactory(), makeWorkingSetFactory()}) {
+          makeJointUniformFactory(), makeFloatOnlyFactory(), makeWorkingSetFactory(), makePixelSizeProbeFactory()}) {
         if (!catalog.isRegistered(factory->name())) {
             catalog.registerFactory(factory);
         }

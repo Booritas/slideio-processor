@@ -54,15 +54,26 @@ std::vector<std::string> splitCsv(const std::string& line) {
     return cells;
 }
 
-// Whether a one-operation pipeline over a 1-channel synthetic scene of @p type validates.
+// Whether a one-operation pipeline over a 3-channel synthetic scene of @p type
+// validates; an operation producing objects gets one bound layer to write to.
 bool pipelineValidates(const char* name, DataType type) {
     const auto slideioType = static_cast<slideio::DataType>(dataTypeToSlideio(type));
-    auto scene = ts::makeSyntheticScene({{16, 16, 0, 0}}, {slideioType}, [](int, int64_t, int64_t) { return 0.0; });
+    auto scene = ts::makeSyntheticScene({{16, 16, 0, 0}}, {slideioType, slideioType, slideioType},
+                                        [](int, int64_t, int64_t) { return 0.0; });
     PipelineSpec spec;
     spec.operation(name, OperationParameters());
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    // A per-channel object producer takes exactly one channel; the others take all three.
+    if (catalog.producesObjects(name) && catalog.arity(name) == ChannelArity::PerChannel) {
+        spec.channels(ChannelSelection::single(0));
+    }
     const Configuration config = ConfigurationBuilder().tileSize(16, 16).tileSizeFromSlide(false).workerCount(1).build();
     try {
-        Pipeline(scene, config, spec).validate();
+        Pipeline pipeline(scene, config, spec);
+        if (catalog.producesObjects(name)) {
+            pipeline.bindLayer("objects", LayerId(1));
+        }
+        pipeline.validate();
         return true;
     } catch (const ProcessorError&) {
         return false;
@@ -76,7 +87,8 @@ TEST(Registry, RegisteredAtLoad) {
          {"pixel.threshold_fixed", "pixel.convert_type", "pixel.colour_convert", "pixel.stain_deconvolution",
           "pixel.threshold_otsu", "pixel.threshold_adaptive", "pixel.gaussian_blur", "pixel.median_blur",
           "pixel.sobel", "pixel.scharr", "pixel.laplacian", "pixel.canny", "pixel.bilateral_filter",
-          "pixel.morph_erode", "pixel.morph_dilate", "pixel.morph_open", "pixel.morph_close"}) {
+          "pixel.morph_erode", "pixel.morph_dilate", "pixel.morph_open", "pixel.morph_close",
+          "segment.connected_components", "segment.contours", "segment.watershed", "segment.tissue_detect"}) {
         EXPECT_TRUE(OperationCatalog::instance().isRegistered(name)) << name;
     }
 }

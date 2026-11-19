@@ -13,9 +13,11 @@
 namespace slideio::processor::detail {
 
 /// The seam merger's entry point: a fragment, its layer, its intensity partials
-/// (`count` of them, null when none) and the index of the tile that emitted it.
+/// (`count` of them, null when none), its join key (fragments join only with
+/// fragments of an equal key) and the index of the tile that emitted it.
 using SeamFragmentCallback =
-    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t count, int64_t tileIndex)>;
+    std::function<void(const Polygon&, LayerId, const IntensityPartial*, int32_t count, int64_t joinKey,
+                       int64_t tileIndex)>;
 
 /// Everything an OperationContext reports, as plain members. Every
 /// pointer is borrowed from the run and must outlive the context built from it.
@@ -23,6 +25,9 @@ using SeamFragmentCallback =
 /// ChannelSelection::all(), a never-cancelled token, no mask.
 struct OperationContextState {
     const BlockView* input = nullptr;
+    /// The scene's samples over the same rect as `input`, every selected channel;
+    /// null reads as `input`.
+    const BlockView* sourceInput = nullptr;
     BlockView* output = nullptr;
     ObjectSink* objectSink = nullptr;
     EdgeSink* edgeSink = nullptr;
@@ -33,6 +38,8 @@ struct OperationContextState {
     Rect64 tileRectAtLevel{0, 0, 0, 0}, haloRectAtLevel{0, 0, 0, 0}, tileRect{0, 0, 0, 0},
         haloRect{0, 0, 0, 0};
     double levelScale = 1.0;
+    /// The scene's level-0 pixel size in micrometres; 0 when unknown.
+    double pixelSizeMicrons = 0.0;
     const ChannelSelection* channels = nullptr;
     const CancellationToken* cancellation = nullptr;
     const RasterMask* mask = nullptr;

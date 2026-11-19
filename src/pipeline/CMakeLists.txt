@@ -13,6 +13,7 @@ add_library(slideio-processor-pipeline OBJECT
     tile_grid.cpp
     executor.cpp
     detail/combine_partials.cpp
+    detail/finishing_sink.cpp
     detail/fragment_merge.cpp
     detail/fragment_spill.cpp
     detail/half.cpp
@@ -21,6 +22,7 @@ add_library(slideio-processor-pipeline OBJECT
     detail/operation_context_state.cpp
     detail/parameters_json.cpp
     detail/pipeline_scene_source.cpp
+    detail/pixel_size.cpp
     detail/plane_buffers.cpp
     detail/run_plan.cpp
     detail/restriction.cpp

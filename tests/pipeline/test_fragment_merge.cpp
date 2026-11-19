@@ -1,14 +1,21 @@
 // Requirements: UR-SEG-3
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/ids.hpp>
+#include <slideio/processor/core/memory_budget.hpp>
+#include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/pipeline/seam_merger.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
 #include <pipeline/detail/fragment_merge.hpp>
+#include <pipeline/detail/seam_merger_access.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
+#include <pipeline/test_support/test_operations.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +59,32 @@ void expectRing(const Polygon& polygon, int32_t ring, const std::vector<Point64>
         EXPECT_EQ(actual[i].y, expected[i].y) << "ring " << ring << " vertex " << i;
     }
 }
+
+Polygon mergeEight(const std::vector<const Polygon*>& fragments) {
+    return detail::mergeFragments(fragments, true);
+}
+
+const LayerId kLayer{5};
+
+// A merger over a 2x2 grid of 5x5 tiles, its layer 8-connected or not.
+struct CornerMerger {
+    explicit CornerMerger(bool eightConnected)
+        : grid(Rect64{0, 0, 10, 10}, 0, 5, 5, LevelSelector(sceneOf({{10, 10, 0, 0}}))),
+          merger(grid, makeMemoryBudget(int64_t{1} << 30),
+                 std::filesystem::temp_directory_path().u8string().c_str()) {
+        if (eightConnected) {
+            detail::SeamMergerAccess::setEightConnected(merger, kLayer);
+        }
+    }
+    void add(int64_t tile, const Polygon& fragment, int64_t joinKey = 0) {
+        merger.addFragment(tile, fragment, kLayer, nullptr, 0, joinKey);
+    }
+    void complete(int64_t tile) { merger.notifyTileComplete(tile, sink); }
+
+    TileGrid grid;
+    SeamMerger merger;
+    ts::CollectingObjectSink sink;
+};
 
 } // namespace
 
@@ -265,4 +298,144 @@ TEST(FragmentMerge, NonDyadicSeamsCoincideExactly) {
     const Polygon whole = selector.mapToLevel0(levelRect(290, 10, 22, 10), 1);
     ASSERT_EQ(merged.ringCount(), 1);
     expectRing(merged, 0, ringOf(whole, 0));
+}
+
+TEST(FragmentMerge, DiagonalAcrossCornerJoins) {
+    // Pixels (4,4) in tile 0 and (5,5) in tile 3 meet only at the tile corner (5,5).
+    CornerMerger m(true);
+    m.add(0, rectangle(4, 4, 1, 1));
+    m.complete(0);
+    m.complete(1);
+    m.complete(2);
+    // The diagonal tile may still hold the other half: the object waits for it.
+    EXPECT_EQ(m.sink.emittedCount(), 0);
+    m.add(3, rectangle(5, 5, 1, 1));
+    m.complete(3);
+    ASSERT_EQ(m.sink.emittedCount(), 1);
+    const ObjectRecord record = m.sink.records().front();
+    EXPECT_EQ(record.id(), ObjectId::fromAnchor(kLayer, Point64{4, 4}));
+    ASSERT_EQ(record.geometry().ringCount(), 1);
+    // One ring of 8 vertices touching itself once, at the corner.
+    expectRing(record.geometry(), 0, {{4, 4}, {5, 4}, {5, 5}, {6, 5}, {6, 6}, {5, 6}, {5, 5}, {4, 5}});
+    EXPECT_EQ(record.geometry().area(), 2.0);
+}
+
+TEST(FragmentMerge, DiagonalAcrossCornerJoinsOnTheAntiDiagonal) {
+    // Pixels (5,4) in tile 1 and (4,5) in tile 2.
+    CornerMerger m(true);
+    m.add(2, rectangle(4, 5, 1, 1));
+    m.add(1, rectangle(5, 4, 1, 1));
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        m.complete(tile);
+    }
+    ASSERT_EQ(m.sink.emittedCount(), 1);
+    ASSERT_EQ(m.sink.records().front().geometry().ringCount(), 1);
+    expectRing(m.sink.records().front().geometry(), 0,
+               {{5, 4}, {6, 4}, {6, 5}, {5, 5}, {5, 6}, {4, 6}, {4, 5}, {5, 5}});
+}
+
+TEST(FragmentMerge, DiagonalAcrossCornerStaysSplitOn4Connected) {
+    CornerMerger m(false);
+    m.add(0, rectangle(4, 4, 1, 1));
+    m.add(3, rectangle(5, 5, 1, 1));
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        m.complete(tile);
+    }
+    ASSERT_EQ(m.sink.emittedCount(), 2);
+    for (const ObjectRecord& record : m.sink.records()) {
+        ASSERT_EQ(record.geometry().ringCount(), 1);
+        EXPECT_EQ(record.geometry().ringPointCount(0), 4);
+    }
+}
+
+// Pixels (4,4) in tile 0 and (5,5) in tile 3 meet at the tile corner, and (3..4,
+// 0..1) in tile 0 and (5..6, 2..3) in tile 1 diagonally along the seam x = 5:
+// with different keys they stay apart on an 8-connected layer.
+TEST(FragmentMerge, DifferentKeysAtDiagonalPointStaySeparate) {
+    CornerMerger corner(true);
+    corner.add(0, rectangle(4, 4, 1, 1), 1);
+    corner.add(3, rectangle(5, 5, 1, 1), 2);
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        corner.complete(tile);
+    }
+    ASSERT_EQ(corner.sink.emittedCount(), 2);
+    for (const ObjectRecord& record : corner.sink.records()) {
+        ASSERT_EQ(record.geometry().ringCount(), 1);
+        EXPECT_EQ(record.geometry().ringPointCount(0), 4);
+    }
+
+    CornerMerger along(true);
+    along.add(0, rectangle(3, 0, 2, 2), 3);
+    along.add(1, rectangle(5, 2, 2, 2), 4);
+    along.complete(0);
+    along.complete(1);
+    EXPECT_EQ(along.sink.emittedCount(), 2);
+
+    // The corner pair under one key joins, as with key 0 in DiagonalAcrossCornerJoins.
+    CornerMerger same(true);
+    same.add(0, rectangle(4, 4, 1, 1), 9);
+    same.add(3, rectangle(5, 5, 1, 1), 9);
+    for (int64_t tile = 0; tile < 4; ++tile) {
+        same.complete(tile);
+    }
+    ASSERT_EQ(same.sink.emittedCount(), 1);
+    ASSERT_EQ(same.sink.records().front().geometry().ringCount(), 1);
+    EXPECT_EQ(same.sink.records().front().geometry().ringPointCount(0), 8);
+}
+
+TEST(FragmentMerge, DiagonalAlongSeamJoins) {
+    // Pixels (3..4, 0..1) in tile 0 and (5..6, 2..3) in tile 1: pixels (4,1) and
+    // (5,2) are diagonal neighbours across the seam x = 5, meeting at (5,2), away
+    // from any tile corner.
+    for (const bool eightConnected : {true, false}) {
+        CornerMerger m(eightConnected);
+        m.add(0, rectangle(3, 0, 2, 2));
+        m.add(1, rectangle(5, 2, 2, 2));
+        m.complete(0);
+        m.complete(1);
+        if (!eightConnected) {
+            EXPECT_EQ(m.sink.emittedCount(), 2);
+            continue;
+        }
+        ASSERT_EQ(m.sink.emittedCount(), 1);
+        const ObjectRecord record = m.sink.records().front();
+        ASSERT_EQ(record.geometry().ringCount(), 1);
+        expectRing(record.geometry(), 0, {{3, 0}, {5, 0}, {5, 2}, {7, 2}, {7, 4}, {5, 4}, {5, 2}, {3, 2}});
+    }
+    // The other diagonal, the object waiting for the tile across the seam.
+    CornerMerger m(true);
+    m.add(1, rectangle(5, 0, 2, 2));
+    m.complete(1);
+    EXPECT_EQ(m.sink.emittedCount(), 0);
+    m.add(0, rectangle(3, 2, 2, 2));
+    m.complete(0);
+    ASSERT_EQ(m.sink.emittedCount(), 1);
+    ASSERT_EQ(m.sink.records().front().geometry().ringCount(), 1);
+    expectRing(m.sink.records().front().geometry(), 0,
+               {{5, 0}, {7, 0}, {7, 2}, {5, 2}, {5, 4}, {3, 4}, {3, 2}, {5, 2}});
+}
+
+TEST(FragmentMerge, PinchMergesToOneOuterRing) {
+    // Two squares meeting at (5,5): two outer rings when 4-connected, one ring
+    // touching itself when 8-connected.
+    const Polygon a = rectangle(0, 0, 5, 5);
+    const Polygon d = rectangle(5, 5, 5, 5);
+    EXPECT_THROW(merge({&a, &d}), InternalError);
+    const Polygon merged = mergeEight({&d, &a});
+    ASSERT_EQ(merged.ringCount(), 1);
+    expectRing(merged, 0, {{0, 0}, {5, 0}, {5, 5}, {10, 5}, {10, 10}, {5, 10}, {5, 5}, {0, 5}});
+    EXPECT_EQ(merged.area(), 50.0);
+
+    // The block of SelfTouchingObjectKeepsItsPinch, 8-connected: the missing
+    // pixel (1,1) is a hole touching the outer ring at (1,1).
+    const Polygon nub = rectangle(1, 0, 1, 1);
+    const Polygon ell = polygonOf({{{0, 1}, {1, 1}, {1, 2}, {2, 2}, {2, 4}, {0, 4}}});
+    const Polygon right = rectangle(2, 0, 2, 4);
+    const Polygon holed = mergeEight({&right, &ell, &nub});
+    ASSERT_EQ(holed.ringCount(), 2);
+    EXPECT_FALSE(holed.ringIsHole(0));
+    EXPECT_TRUE(holed.ringIsHole(1));
+    expectRing(holed, 0, {{1, 0}, {4, 0}, {4, 4}, {0, 4}, {0, 1}, {1, 1}});
+    expectRing(holed, 1, {{1, 1}, {1, 2}, {2, 2}, {2, 1}});
+    EXPECT_EQ(holed.area(), 14.0);
 }

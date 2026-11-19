@@ -436,6 +436,49 @@ TEST(SeamMerger, MergeFailureNamesTheLayerNotTheGeometry) {
     }
 }
 
+// Two regions of one layer sharing the seam x = 10, emitted with different keys
+// (adjacent labels, say): two objects, each its own fragment.
+TEST(SeamMerger, DifferentKeysTouchingAcrossSeamStaySeparate) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0, 1);
+    merger->addFragment(1, rectangle(10, 2, 5, 4), kLayer, nullptr, 0, 2);
+    merger->notifyTileComplete(0, sink);
+    merger->notifyTileComplete(1, sink);
+    merger->resolve(sink, nullptr, CancellationToken());
+
+    ASSERT_EQ(sink.emittedCount(), 2);
+    EXPECT_EQ(merger->mergedObjectCount(), 2);
+    EXPECT_EQ(merger->largestComponentFragmentCount(), 1);
+    for (const ObjectRecord& record : sink.records()) {
+        ASSERT_EQ(record.geometry().ringCount(), 1);
+        EXPECT_EQ(measurement(record, "area"), 20.0);
+    }
+}
+
+TEST(SeamMerger, SameKeyJoins) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    for (const int64_t key : {int64_t{0}, int64_t{5}, int64_t{-7}, INT64_MAX}) {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0, key);
+        // A third fragment on the same seam with another key stays out of it.
+        merger->addFragment(0, rectangle(5, 6, 5, 1), kLayer, nullptr, 0, key - 1);
+        merger->addFragment(1, rectangle(10, 2, 5, 5), kLayer, nullptr, 0, key);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        merger->resolve(sink, nullptr, CancellationToken());
+
+        ASSERT_EQ(sink.emittedCount(), 2) << key;
+        std::vector<Emitted> emitted = summarise(sink.records());
+        // Anchors (5,2) and (5,6): the joined object first.
+        EXPECT_TRUE(samePoints(emitted[0].rings, {{{5, 2}, {15, 2}, {15, 7}, {10, 7}, {10, 6}, {5, 6}}}))
+            << key;
+        EXPECT_TRUE(samePoints(emitted[1].rings, {{{5, 6}, {10, 6}, {10, 7}, {5, 7}}})) << key;
+    }
+}
+
 TEST(SeamMerger, ConstructionValidatesItsArguments) {
     const TileGrid grid = gridOf(3, 3, 10, 10);
     EXPECT_THROW(SeamMerger(grid, nullptr, scratch().c_str()), InvalidArgumentError);

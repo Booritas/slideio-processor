@@ -59,7 +59,23 @@ struct SeamComponent {
 struct SeamEdgeContact {
     int64_t fragment; ///< The fragment id.
     int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
     SeamContact contact;
+};
+
+/// A seam point of a fragment of an 8-connected layer, waiting between its
+/// tile and another tile touching the point for a fragment sharing it.
+struct SeamPointContact {
+    int64_t fragment; ///< The fragment id.
+    int64_t tile;     ///< The tile that emitted it.
+    int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
+    Point64 at;       ///< The point, in level-0 coordinates.
+};
+
+/// A seam point of a new fragment and one other tile touching it.
+struct SeamPointNeighbour {
+    Point64 at;   ///< The point, in level-0 coordinates.
+    int64_t tile; ///< A tile other than the fragment's whose rect touches the point.
 };
 
 /// Bytes held in a memory budget, given back when the holder is destroyed.
@@ -106,6 +122,27 @@ private:
     int64_t bytes_ = 0;
 };
 
+/// Hashes a level-0 point, for the merger's index of seam points.
+struct PointHash {
+    size_t operator()(const Point64& p) const noexcept {
+        return std::hash<int64_t>()(p.x) ^ (std::hash<int64_t>()(p.y) * size_t{0x9E3779B97F4A7C15ull});
+    }
+};
+
+/// The seam points waiting between two tiles until both complete, indexed by
+/// point so a new fragment finds the ones it shares without a scan, and the
+/// budget bytes held for them. They stay in memory when their fragments are
+/// written to the scratch file, so their bytes are held here, not with the
+/// fragments.
+struct SeamPointsWaiting {
+    std::unordered_map<Point64, std::vector<SeamPointContact>, PointHash> byPoint;
+    BudgetHold held;
+};
+
+/// The bytes one waiting seam point is allowed: the contact, twice for the
+/// vector's growth, and one index node (key, vector, link and bucket).
+constexpr int64_t kSeamPointContactBytes = 2 * static_cast<int64_t>(sizeof(SeamPointContact)) + 64;
+
 /// A fragment of a closed component that is still in the scratch file.
 struct SpilledFragment {
     int64_t tile;   ///< The tile that emitted it.
@@ -129,6 +166,11 @@ struct SeamMergerAccess {
     /// arrives; the filter is called from the threads that close objects, so
     /// it must be thread-safe.
     static void setFilter(SeamMerger& merger, std::function<bool(Point64)> filter);
+    /// Declares the objects of @p layer 8-connected: its fragments also join
+    /// at a point they share on a seam (seamPoints), and its objects are merged
+    /// with mergeFragments(..., true). Called before the first fragment of the
+    /// layer arrives; layers not declared stay 4-connected.
+    static void setEightConnected(SeamMerger& merger, LayerId layer);
 };
 
 } // namespace slideio::processor::detail
@@ -148,8 +190,12 @@ public:
     // Records a validated fragment whose seam contacts and expected neighbours
     // are already computed, and reserves `bytes` for it, writing older objects
     // to the scratch file while the budget is short.
-    void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer,
-             const std::vector<detail::SeamContact>& contacts, const std::vector<int64_t>& neighbours,
+    // `points` are the fragment's seam points, each with a tile touching it, on
+    // an 8-connected layer, and empty otherwise.
+    // The fragment joins only fragments of its layer and `joinKey`.
+    void add(std::unique_ptr<detail::SeamFragment> fragment, LayerId layer, int64_t joinKey,
+             const std::vector<detail::SeamContact>& contacts,
+             const std::vector<detail::SeamPointNeighbour>& points, const std::vector<int64_t>& neighbours,
              int64_t bytes);
     // Marks a tile complete and takes out the components that close with it.
     std::vector<detail::ClosedComponent> complete(int64_t tileIndex);
@@ -159,9 +205,14 @@ public:
     void emit(detail::ClosedComponent& component, ObjectSink& sink);
     // The filter in force, copied under the lock.
     std::function<bool(Point64)> currentFilter() const;
+    // Whether `layer` was declared 8-connected, read under the lock.
+    bool isEightConnected(LayerId layer) const;
 
     // The tile across `contact` from `tileIndex`.
     int64_t neighbourAcross(int64_t tileIndex, const detail::SeamContact& contact) const;
+    // The tiles other than `tileIndex` whose rects touch `point`, a point on
+    // the boundary of tileIndex's rect: one across a seam, three at a corner.
+    std::vector<int64_t> neighboursAt(int64_t tileIndex, Point64 point) const;
 
     const TileGrid grid;
     const MemoryBudgetPtr budget;
@@ -169,6 +220,7 @@ public:
 
     mutable std::mutex mutex;
     std::function<bool(Point64)> filter;
+    std::set<LayerId> eightConnected;
 
     std::atomic<int64_t> fragmentCount{0};
     std::atomic<int64_t> mergedObjectCount{0};
@@ -176,6 +228,8 @@ public:
     std::atomic<int64_t> largestComponentFragmentCount{0};
     std::atomic<int64_t> spilledFragmentCount{0};
     std::atomic<int64_t> spilledBytes{0};
+    // Bytes of seam points kept while the budget could not hold them.
+    std::atomic<int64_t> unreservedPointBytes{0};
 
 private:
     int64_t find(int64_t fragment);
@@ -190,6 +244,11 @@ private:
     // other components while the budget is short, then the fragment itself when
     // nothing else is left to spill. Never waits for memory.
     void reserveFor(int64_t id, int64_t bytes);
+    // Holds `bytes` for seam points waiting in `waiting`, spilling the
+    // oldest-opened components while the budget is short. Never waits: when
+    // nothing is left to spill, the points are kept without a reservation and
+    // counted in unreservedPointBytes.
+    void holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes);
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
     std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
@@ -198,6 +257,7 @@ private:
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.
+    std::unordered_map<int64_t, detail::SeamPointsWaiting> points_; // Tile pair -> seam points.
     std::vector<char> completed_;                                  // Per tile.
 };
 
@@ -208,6 +268,11 @@ namespace slideio::processor::detail {
 inline void SeamMergerAccess::setFilter(SeamMerger& merger, std::function<bool(Point64)> filter) {
     std::lock_guard<std::mutex> lock(merger.impl_->mutex);
     merger.impl_->filter = std::move(filter);
+}
+
+inline void SeamMergerAccess::setEightConnected(SeamMerger& merger, LayerId layer) {
+    std::lock_guard<std::mutex> lock(merger.impl_->mutex);
+    merger.impl_->eightConnected.insert(layer);
 }
 
 } // namespace slideio::processor::detail
