@@ -1,6 +1,8 @@
 // Requirements: UR-STG-1, UR-STG-9, UR-EXE-2
 #include <slideio/processor/workspace/workspace.hpp>
 
+#include <workspace/detail/create_fault.hpp>
+
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
 #include <slideio/processor/core/provenance.hpp>
@@ -9,6 +11,7 @@
 #include <slideio/slideio/slide.hpp>
 #include <slideio/slideio/slideio.hpp>
 
+#include <atomic>
 #include <exception>
 #include <filesystem>
 #include <mutex>
@@ -88,7 +91,48 @@ void resetScratch(const fs::path& scratch, const char* operation) {
     }
 }
 
+// The slide path as the binding stores it: absolute and lexically normalised, so the
+// workspace reopens the slide whatever the working directory of a later process.
+std::string absoluteSlidePath(const char* slidePath, const char* operation) {
+    std::error_code error;
+    const fs::path absolute = fs::absolute(fs::u8path(slidePath), error);
+    if (error) {
+        throwIo(std::string(operation) + ": cannot make the slide path '" + slidePath + "' absolute",
+                error.message());
+    }
+    return absolute.lexically_normal().u8string();
+}
+
+// Undoes a create that failed after its occupancy check: removes the directory when
+// the create made it, or empties it again when it existed empty. A failure here is
+// logged, never thrown, so the create's own error reaches the caller.
+void undoCreate(const fs::path& directory, bool existed, const char* operation) noexcept {
+    try {
+        std::error_code error;
+        if (!existed) {
+            fs::remove_all(directory, error);
+        } else {
+            for (fs::directory_iterator entry(directory, error), end; !error && entry != end;
+                 entry.increment(error)) {
+                std::error_code removeError;
+                fs::remove_all(entry->path(), removeError);
+                if (removeError) error = removeError;
+            }
+        }
+        if (error) {
+            logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left in '%s': %s", operation,
+                       directory.u8string().c_str(), error.message().c_str());
+        }
+    } catch (const std::exception& e) {
+        logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation, e.what());
+    }
+}
+
+std::atomic<bool> gFailNextCreate{false};
+
 } // namespace
+
+void detail::failNextWorkspaceCreateForTesting() noexcept { gFailNextCreate.store(true); }
 
 class Workspace::Impl {
 public:
@@ -133,7 +177,7 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     requirePath(workspacePath, kOperation, "workspace");
     requirePath(slidePath, kOperation, "slide");
     const fs::path directory = fs::u8path(workspacePath);
-    const std::string slideText(slidePath);
+    const std::string slideText = absoluteSlidePath(slidePath, kOperation);
 
     // Refuse an occupied path before anything else, so a mistyped path never touches
     // another directory's files.
@@ -142,7 +186,8 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     if (error && status.type() != fs::file_type::not_found) {
         throwIo(std::string(kOperation) + ": cannot inspect '" + directory.u8string() + "'", error.message());
     }
-    if (fs::exists(status)) {
+    const bool existed = fs::exists(status);
+    if (existed) {
         const bool emptyDirectory = fs::is_directory(status) && fs::is_empty(directory, error) && !error;
         if (!emptyDirectory) {
             throwIo(std::string(kOperation) + ": '" + directory.u8string() + "' exists and is not an empty directory",
@@ -161,20 +206,34 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     }
     std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
 
-    fs::create_directories(directory, error);
-    if (error) {
-        throwIo(std::string(kOperation) + ": cannot create the workspace directory '" + directory.u8string() + "'",
-                error.message());
+    // From here a failure removes what this call made, and only that, so the path is
+    // as it was and a retry can succeed: the directory when it did not exist, or its
+    // contents when it existed empty.
+    StorePtr store;
+    try {
+        fs::create_directories(directory, error);
+        if (error) {
+            throwIo(std::string(kOperation) + ": cannot create the workspace directory '" + directory.u8string() + "'",
+                    error.message());
+        }
+        store = Store::open((directory / kStoreName).u8string().c_str(), OpenMode::CreateNew, configuration);
+        Provenance provenance = store->provenance();
+        provenance.setSlideId(slideText.c_str());
+        provenance.setSceneIndex(sceneIndex);
+        store->setProvenance(provenance);
+        if (gFailNextCreate.exchange(false)) {
+            throwIo(std::string(kOperation) + ": injected failure for '" + directory.u8string() + "'", "");
+        }
+        resetScratch(directory / kScratchName, kOperation);
+        return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, slideText, sceneIndex, false,
+                                                                 configuration, std::move(store), std::move(slide),
+                                                                 std::move(scene))));
+    } catch (...) {
+        // The store's files are held open until it is released.
+        store.reset();
+        undoCreate(directory, existed, kOperation);
+        throw;
     }
-    StorePtr store = Store::open((directory / kStoreName).u8string().c_str(), OpenMode::CreateNew, configuration);
-    Provenance provenance = store->provenance();
-    provenance.setSlideId(slideText.c_str());
-    provenance.setSceneIndex(sceneIndex);
-    store->setProvenance(provenance);
-    resetScratch(directory / kScratchName, kOperation);
-
-    return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, slideText, sceneIndex, false, configuration,
-                                                             std::move(store), std::move(slide), std::move(scene))));
 }
 
 namespace {

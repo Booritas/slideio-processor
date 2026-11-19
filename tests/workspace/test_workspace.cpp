@@ -2,6 +2,8 @@
 #include "common/temp_path.hpp"
 #include "workspace/support/test_slide.hpp"
 
+#include <workspace/detail/create_fault.hpp>
+
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/memory_budget.hpp>
@@ -244,4 +246,65 @@ TEST(Workspace, CloseIsIdempotent) {
     EXPECT_THROW(ws->store()->provenance(), IoError);
     // The writer lock is released, so the workspace opens again.
     EXPECT_NO_THROW(Workspace::open(t.workspaceUtf8().c_str(), t.config)->close());
+}
+
+// Store creation cannot be failed by any argument, since every argument is checked
+// before the directory is made, so the engine's test seam fails create once its
+// store exists: the latest point, with the most to undo.
+TEST(Workspace, FailedCreateLeavesNoDirectory) {
+    const Prepared t;
+    // The path did not exist: it does not exist afterwards.
+    detail::failNextWorkspaceCreateForTesting();
+    EXPECT_THROW(t.createWorkspace(), IoError);
+    EXPECT_FALSE(fs::exists(t.workspace));
+    EXPECT_NO_THROW(t.createWorkspace()->close());
+
+    // The path was an empty directory: it is an empty directory afterwards.
+    const fs::path empty = t.dir.path() / "empty";
+    fs::create_directories(empty);
+    detail::failNextWorkspaceCreateForTesting();
+    EXPECT_THROW(Workspace::create(empty.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config), IoError);
+    EXPECT_TRUE(fs::is_directory(empty));
+    EXPECT_TRUE(fs::is_empty(empty));
+    WorkspacePtr ws = Workspace::create(empty.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config);
+    EXPECT_TRUE(fs::is_regular_file(empty / "workspace.store"));
+}
+
+namespace {
+
+// Changes the working directory for one scope.
+class CurrentDirectory {
+public:
+    explicit CurrentDirectory(const fs::path& to) : previous_(fs::current_path()) { fs::current_path(to); }
+    ~CurrentDirectory() {
+        std::error_code ec;
+        fs::current_path(previous_, ec);
+    }
+    CurrentDirectory(const CurrentDirectory&) = delete;
+    CurrentDirectory& operator=(const CurrentDirectory&) = delete;
+
+private:
+    fs::path previous_;
+};
+
+} // namespace
+
+TEST(Workspace, RelativeSlidePathIsStoredAbsolute) {
+    const Prepared t;
+    const fs::path sub = t.dir.path() / "sub";
+    fs::create_directories(sub);
+    const std::string expected = fs::absolute(t.slide).lexically_normal().u8string();
+    {
+        const CurrentDirectory cd(sub);
+        WorkspacePtr ws = Workspace::create(t.workspaceUtf8().c_str(), "../slide.tif", 0, t.config);
+        EXPECT_EQ(std::string(ws->slidePath()), expected);
+        EXPECT_TRUE(fs::u8path(ws->slidePath()).is_absolute());
+        EXPECT_EQ(std::string(ws->store()->provenance().slideId()), expected);
+        ws->close();
+    }
+    // Reopened from another working directory, the binding still names the slide.
+    WorkspacePtr ws = Workspace::open(t.workspaceUtf8().c_str(), t.config);
+    EXPECT_EQ(std::string(ws->slidePath()), expected);
+    ASSERT_TRUE(ws->scene());
+    EXPECT_EQ(sceneWidth(ws), 300);
 }

@@ -67,10 +67,15 @@ recorded state of every stage, and the binding to the slide and scene.
 `workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
 `<workspace>/scratch/`. `create` makes the directory, and throws `IoError` when
 the path exists and is not an empty directory; it opens the slide and checks the
-scene index (`InvalidArgumentError` when out of range) before making anything.
+scene index (`InvalidArgumentError` when out of range) before making anything. A
+`create` that fails later removes what it made, and only that: the directory when
+it did not exist, its contents when it existed empty, so a retry can succeed.
 
 **Slide binding.** The binding is the store's `Provenance`: `slideId` holds the
-slide path as given (UTF-8) and `sceneIndex` the scene. `open` and
+slide path (UTF-8) and `sceneIndex` the scene. The path is stored absolute and
+lexically normalised (`std::filesystem::absolute(u8path(slidePath)).lexically_normal()`),
+so a relative path given to `create` still reopens from any later working
+directory; `slidePath()` returns the stored form. `open` and
 `openReadOnly` reopen the slide from it with `slideio::openSlide(path, "")`; a
 slide that no longer opens, or no longer has the scene, is an `IoError` naming
 the path. The workspace keeps the slide object alive as long as its scene, and

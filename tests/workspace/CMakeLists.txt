@@ -1,7 +1,8 @@
 include(GoogleTest)
 
 # The workspace tests write their slides with libtiff (support/test_slide.cpp), so
-# SlideIO opens a real file through its own driver lookup.
+# SlideIO opens a real file through its own driver lookup. src/ is on the include
+# path for the create-failure test seam (src/workspace/detail/create_fault.hpp).
 add_executable(slideio_processor_workspace_tests
     support/test_slide.cpp
     test_workspace.cpp
@@ -9,6 +10,7 @@ add_executable(slideio_processor_workspace_tests
 target_link_libraries(slideio_processor_workspace_tests PRIVATE
     slideio-processor-engine TIFF::TIFF GTest::gtest_main)
 target_include_directories(slideio_processor_workspace_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
 
 # The tests load SlideIO's DLLs, which live in SlideIO's install tree rather than

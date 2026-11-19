@@ -34,8 +34,9 @@ using WorkspacePtr = std::shared_ptr<Workspace>;
  * files and its "workspace.store-rasters" directory beside it, and scratch is
  * "<workspace>/scratch". Everything lives under the one path, so a complete analysis
  * copies or archives as one unit (UR-STG-9). The slide binding is the store's
- * Provenance: its slideId holds the slide path as given and its sceneIndex the scene,
- * and open() reopens the slide from it. A workspace holds exactly one slide.
+ * Provenance: its slideId holds the slide path, made absolute and normalised, and its
+ * sceneIndex the scene; open() reopens the slide from it. A workspace holds exactly
+ * one slide.
  *
  * A writable workspace (create(), open()) holds the store's exclusive writer lock
  * until close(); a second writer, in this process or another, is refused.
@@ -59,11 +60,14 @@ public:
      *
      * The slide is opened and the scene checked before anything is made. Then the
      * directory is made, the store created in it with the slide path and scene index
-     * as its provenance, and the scratch directory made.
+     * as its provenance, and the scratch directory made. A failure after the directory
+     * check removes what the call made, and only that: the directory when it did not
+     * exist, its contents when it existed empty. The path is then as it was.
      * @param workspacePath UTF-8 path of the workspace directory; copied. It must not
      * exist, or be an empty directory.
-     * @param slidePath UTF-8 path of the slide, opened with SlideIO's driver lookup;
-     * copied and stored as given.
+     * @param slidePath UTF-8 path of the slide, opened with SlideIO's driver lookup. A
+     * relative path is resolved against the current directory; the absolute,
+     * lexically normalised form is what slidePath() returns and the store records.
      * @param sceneIndex The scene of the slide, from 0 below its scene count.
      * @param configuration The settings; copied.
      * @return The open, writable workspace.
@@ -143,7 +147,8 @@ public:
     const char* path() const noexcept;
     /**
      * @brief Returns the bound slide's path.
-     * @return A null-terminated UTF-8 string as stored in the provenance, never null,
+     * @return A null-terminated UTF-8 string, the absolute path stored in the
+     * provenance, never null,
      * valid while this object lives. Answers after close().
      * @throws Nothing.
      * @par Thread-safety
