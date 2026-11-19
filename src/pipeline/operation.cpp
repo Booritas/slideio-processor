@@ -63,6 +63,10 @@ bool Operation::finishObject(ObjectRecord&, const ObjectFinishContext&) const {
     return true;
 }
 
+bool Operation::finishesObjects() const {
+    return true;
+}
+
 bool Operation::objectsAreEightConnected() const {
     return false;
 }

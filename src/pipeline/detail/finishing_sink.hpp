@@ -17,7 +17,9 @@ namespace slideio::processor::detail {
 /// target unless that discards it. The tile filter and the seam merger both
 /// emit into it, so an object found whole in one tile and one merged from seam
 /// fragments are finished by one rule. A record on a layer no producer is
-/// listed for passes unchanged, and flush() is passed on to the target.
+/// listed for passes unchanged, as does one whose producer's finishesObjects()
+/// is false (read once, when the sink is built), and flush() is passed on to
+/// the target.
 /// A record is passed on with the target's emitOwned(), so it is copied at most
 /// once here. emit() may be called concurrently, as far as the target and the
 /// producers allow.

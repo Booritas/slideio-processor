@@ -113,6 +113,8 @@ private:
 /// Its finishObject() discards an object whose "area" is below double parameter
 /// "finishMinArea" (default 0) and, when bool parameter "finishTag" is true
 /// (default false), sets the Dimensionless measurement "finished" = 1.
+/// When bool parameter "noFinishing" is true (default false), finishesObjects()
+/// is false, so the run never calls finishObject().
 /// When bool parameter "finishContext" is true (default false), it also records the
 /// ObjectFinishContext it was given: "finishPixelSize" (Micrometres) and
 /// "finishLevel" (Dimensionless).
@@ -139,6 +141,7 @@ public:
     /// 1 for either form: the mask copy.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override;
     bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const override;
+    bool finishesObjects() const override;
     bool objectsAreEightConnected() const override;
 
 private:
@@ -149,6 +152,7 @@ private:
     bool rotateRings_;
     double finishMinArea_;
     bool finishTag_;
+    bool noFinishing_;
     bool finishContext_;
     bool eightConnected_;
     bool keyByValue_;

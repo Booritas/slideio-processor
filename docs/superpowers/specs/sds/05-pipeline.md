@@ -184,6 +184,9 @@ public:
     // the object unchanged.
     virtual bool finishObject(ObjectRecord& record,
                               const ObjectFinishContext& context) const;  // true
+    // Whether finishObject may change or discard an object; when false the
+    // run passes the operation's objects on without calling it.
+    virtual bool finishesObjects() const;                             // true
 };
 using OperationPtr = std::shared_ptr<Operation>;
 ```
@@ -303,7 +306,13 @@ false discards the object, counted in the run's `droppedByFilter` counter.
 `ObjectFinishContext` carries what the operation cannot know from the record
 alone: the level-0 pixel size and the analysis level. The default returns true
 and changes nothing, so an operation that emits finished measurements itself is
-unaffected. Because a merged object is finished by the operation producing its
+unaffected. An operation whose `finishesObjects()` returns false declares that
+it has no finishing step: the framework reads it once per producer, when it
+builds the finishing wrapper, and passes that operation's objects on as it
+passes those of a layer with no producer — without calling `finishObject`,
+without copying the record, and without counting anything in
+`droppedByFilter`. It is true by default, so an operation that overrides
+`finishObject` alone is still finished. Because a merged object is finished by the operation producing its
 layer, **a layer has at most one producer in a run**, which `validate()` checks
 (5.5); the framework routes each record by its layer to that producer, through
 one wrapper of the run's sink (`detail::FinishingSink`) that the tile filter

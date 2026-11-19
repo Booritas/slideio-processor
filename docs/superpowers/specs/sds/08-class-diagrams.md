@@ -1233,6 +1233,7 @@ classDiagram
         +accumulatedStateBytes(int32_t planeCount) int64_t
         +objectsAreEightConnected() bool
         +finishObject(ObjectRecord, ObjectFinishContext) bool
+        +finishesObjects() bool
     }
 
     class ObjectFinishContext {
@@ -1460,7 +1461,9 @@ different roads, and both pass through their producer's `finishObject`, with
 the run's pixel size and level in an `ObjectFinishContext`, so selected
 measurements, calibrated units, area filters and hole removal are one rule for
 both (`05-pipeline.md` 5.1). It is why a layer has at most one producer in a
-run. `objectsAreEightConnected` tells the merger, per layer, to join fragments
+run. An operation whose `finishesObjects` is false has no finishing step, and
+its objects pass on uncopied, as a layer with no producer's do.
+`objectsAreEightConnected` tells the merger, per layer, to join fragments
 whose pixels meet diagonally across a seam, and `emitSeamFragment`'s join key
 keeps apart regions that touch across one: fragments join only within one
 layer and one key (`05-pipeline.md` 5.7). `pixelSizeMicrons` is the scene's

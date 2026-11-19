@@ -258,6 +258,7 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
       rotateRings_(false),
       finishMinArea_(0.0),
       finishTag_(false),
+      noFinishing_(false),
       finishContext_(false),
       eightConnected_(false),
       keyByValue_(false) {
@@ -266,6 +267,7 @@ ComponentsOperation::ComponentsOperation(const OperationParameters& parameters)
     parameters_.getBool("rotateRings", rotateRings_);
     parameters_.getDouble("finishMinArea", finishMinArea_);
     parameters_.getBool("finishTag", finishTag_);
+    parameters_.getBool("noFinishing", noFinishing_);
     parameters_.getBool("finishContext", finishContext_);
     parameters_.getBool("eightConnected", eightConnected_);
     parameters_.getBool("keyByValue", keyByValue_);
@@ -288,6 +290,7 @@ DataType ComponentsOperation::outputType(DataType) const { return DataType::Byte
 const OperationParameters& ComponentsOperation::parameters() const { return parameters_; }
 bool ComponentsOperation::producesObjects() const { return true; }
 bool ComponentsOperation::objectsAreEightConnected() const { return eightConnected_; }
+bool ComponentsOperation::finishesObjects() const { return !noFinishing_; }
 int32_t ComponentsOperation::outputPlaneCount(int32_t) const { return 1; }
 
 bool ComponentsOperation::finishObject(ObjectRecord& record, const ObjectFinishContext& context) const {

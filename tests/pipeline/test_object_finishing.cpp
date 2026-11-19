@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -272,6 +273,66 @@ TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
     EXPECT_TRUE(outer.front() == target.records.back().geometry().anchor());
     EXPECT_EQ(filter.emittedCount(), 3);
     EXPECT_EQ(finishing.emittedCount(), 3);
+}
+
+TEST(ObjectFinishing, OperationWithoutFinishingIsPassedThrough) {
+    const std::shared_ptr<slideio::Scene> scene = blobScene();
+    OperationParameters finishing = componentParameters(false);
+    finishing.setDouble("finishMinArea", 50.0);
+    PipelineSpec finished;
+    finished.operation("test.components", finishing);
+    OperationParameters passing = finishing;
+    passing.setBool("noFinishing", true);
+    PipelineSpec passed;
+    passed.operation("test.components", passing);
+
+    // With finishing, some tile-clipped pieces fall below the minimum area.
+    int64_t droppedFinishing = -1;
+    run(scene, 100, finished, &droppedFinishing);
+    ASSERT_GT(droppedFinishing, 0);
+
+    int64_t dropped = -1;
+    const std::vector<ObjectRecord> records = run(scene, 100, passed, &dropped);
+    ASSERT_FALSE(records.empty());
+    for (size_t i = 0; i < records.size(); ++i) {
+        Measurement tag;
+        EXPECT_FALSE(records[i].measurements().find("finished", tag)) << "object " << i << " is finished";
+    }
+    EXPECT_EQ(dropped, 0);
+}
+
+namespace {
+
+// An operation overriding finishObject() alone.
+class FinishOnlyOperation : public Operation {
+public:
+    const char* name() const override { return "test.finishOnly"; }
+    ChannelArity arity() const override { return ChannelArity::Joint; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte); }
+    Halo halo() const override { return Halo::uniform(0); }
+    DataType outputType(DataType) const override { return DataType::Byte; }
+    const OperationParameters& parameters() const override { return parameters_; }
+    void apply(OperationContext&) override {}
+    bool finishObject(ObjectRecord&, const ObjectFinishContext&) const override { return false; }
+
+private:
+    OperationParameters parameters_;
+};
+
+} // namespace
+
+TEST(ObjectFinishing, FinishingIsTheDefault) {
+    const FinishOnlyOperation operation;
+    EXPECT_TRUE(operation.finishesObjects());
+
+    // So the sink calls its finishObject(), which discards the record.
+    ts::CollectingObjectSink target;
+    std::atomic<int64_t> dropped{0};
+    detail::FinishingSink finishing(target, {{kLayer, &operation}}, 0.0, 0, &dropped);
+    EXPECT_FALSE(finishing.emitKept(squareRecord(true)));
+    EXPECT_EQ(target.emittedCount(), 0);
+    EXPECT_EQ(dropped.load(), 1);
 }
 
 TEST(ObjectFinishing, TileObjectRingsAreNormalised) {

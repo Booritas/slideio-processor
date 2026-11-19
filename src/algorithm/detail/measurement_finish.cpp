@@ -243,4 +243,10 @@ bool MeasurementPlan::finish(ObjectRecord& record, const ObjectFinishContext& co
     return true;
 }
 
+bool MeasurementPlan::changesObjects() const noexcept {
+    // No plan is a no-op on every record: `area` is set when selected and
+    // removed when not (see the declaration).
+    return true;
+}
+
 } // namespace slideio::processor::detail

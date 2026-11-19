@@ -165,6 +165,7 @@ public:
     bool finishObject(ObjectRecord& record, const ObjectFinishContext& context) const override {
         return plan_.finish(record, context);
     }
+    bool finishesObjects() const override { return plan_.changesObjects(); }
     int64_t workingSetBytesPerLevelPixel() const override { return kBytesPerPixel; }
     int64_t workingSetBytesPerTile() const override { return kBytesPerTile; }
 

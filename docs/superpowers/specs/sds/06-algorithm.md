@@ -938,7 +938,12 @@ lies outside the area bounds; it adds the centroid and bounding box when
 selected and the calibrated units when the pixel size is known (6.8); and it
 removes every measurement of a kind not selected. An operation that measures
 nothing beyond the geometry (`segment.contours`, `segment.tissue_detect`) keeps
-`area` and `perimeter` and their calibrated forms.
+`area` and `perimeter` and their calibrated forms. Each segmenter's
+`finishesObjects()` (`05-pipeline.md` 5.1) is the plan's `changesObjects()`,
+false only when `finish()` keeps every record and leaves it unchanged. As the
+plan stands that is never certain — `area` is set when selected and removed
+when not, so even an empty selection with no area bounds and holes kept strips
+the standard measurements — and `changesObjects()` is always true.
 
 **Channels and measured intensity.** `segment.connected_components` and
 `segment.watershed` are **Joint** with no uniform-type requirement: plane 0 is

@@ -13,7 +13,15 @@ FinishingSink::FinishingSink(ObjectSink& target, std::vector<std::pair<LayerId, 
     : target_(target),
       producers_(std::move(producers)),
       context_{pixelSizeMicrons, level},
-      droppedByFilter_(droppedByFilter) {}
+      droppedByFilter_(droppedByFilter) {
+    // A producer without a finishing step is treated as no producer: its
+    // records pass on unchanged, uncopied and uncounted.
+    for (std::pair<LayerId, const Operation*>& producer : producers_) {
+        if (producer.second != nullptr && !producer.second->finishesObjects()) {
+            producer.second = nullptr;
+        }
+    }
+}
 
 void FinishingSink::emit(const ObjectRecord& record) { emitKept(record); }
 
