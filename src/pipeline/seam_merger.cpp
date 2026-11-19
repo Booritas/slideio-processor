@@ -17,6 +17,7 @@
 #include <string>
 #include <system_error>
 #include <tuple>
+#include <utility>
 
 namespace slideio::processor {
 
@@ -462,7 +463,7 @@ void SeamMerger::Impl::emit(detail::ClosedComponent& component, ObjectSink& sink
     if (admits && !admits(merged.anchor())) {
         return;
     }
-    sink.emit(record);
+    sink.emitOwned(std::move(record));
 }
 
 SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char* scratchDirectory) {

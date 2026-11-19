@@ -307,7 +307,11 @@ unaffected. Because a merged object is finished by the operation producing its
 layer, **a layer has at most one producer in a run**, which `validate()` checks
 (5.5); the framework routes each record by its layer to that producer, through
 one wrapper of the run's sink (`detail::FinishingSink`) that the tile filter
-and the merger both emit into.
+and the merger both emit into. The merger hands each merged record over with
+`ObjectSink::emitOwned` (`01-core.md` 1.9), so the finishing step finishes that
+record in place; the tile filter does the same with any record it owns (5.5),
+and counts an object only when the finishing step's `emitKept` or `emitOwned`
+returns true, that is, when the object was not discarded.
 
 **`pixelSizeMicrons()`** is the scene's level-0 pixel size in micrometres:
 the mean of SlideIO's x and y resolution × 10⁶ when both are finite, positive
@@ -1239,11 +1243,15 @@ filter. An object that passes both has its rings normalised by the framework
 (`detail::normaliseRings`, as a merged object's are, 5.7), so operations emit
 rings in any rotation — the outer ring positive (clockwise on screen, y down),
 holes negative — and a polygon already in normal form is passed on without
-being copied again. It then goes to its producer's `finishObject` (5.1) and,
-unless that discards it, to the run's sink. Every object a tile keeps is
-normalised this way, in a lazy read (below) as in a run, so a degenerate ring
-— all its vertices collinear, or a spike of zero area — fails the run, or the
-read, with `InvalidArgumentError` instead of being stored.
+being copied again. An operation that emits with `emitOwned()` hands its record
+over: the filter normalises that record in place and the finishing step
+finishes it, so it is not copied at all; one emitted with `emit()` is copied
+once, to be normalised or else to be finished. It then goes to its producer's
+`finishObject` (5.1) and, unless that discards it, to the run's sink. Every
+object a tile keeps is normalised this way, in a lazy read (below) as in
+a run, so a degenerate ring — all its vertices collinear, or a spike of zero
+area — fails the run, or the read, with `InvalidArgumentError` instead of
+being stored.
 
 ### The tile mask
 

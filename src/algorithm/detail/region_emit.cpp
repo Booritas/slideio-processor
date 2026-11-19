@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace slideio::processor::detail {
@@ -143,7 +144,7 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
         }
         record.setLayer(context.targetLayer());
         applyStandardMeasurements(record.geometry(), own, planes, record.measurements());
-        sink->emit(record);
+        sink->emitOwned(std::move(record));
     }
 }
 

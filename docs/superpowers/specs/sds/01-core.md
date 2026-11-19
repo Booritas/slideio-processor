@@ -708,6 +708,12 @@ class ObjectSink {
 public:
     virtual ~ObjectSink();
     virtual void emit(const ObjectRecord& record) = 0;
+    /// Emits one object and tells whether the sink kept it (false: discarded).
+    /// Default: emit(record); return true.
+    virtual bool emitKept(const ObjectRecord& record);
+    /// As emitKept(), for a record the caller gives up: the sink may move from
+    /// it or finish it in place. Default: return emitKept(record).
+    virtual bool emitOwned(ObjectRecord&& record);
     virtual void flush() = 0;
     virtual int64_t emittedCount() const = 0;
 };
@@ -962,6 +968,18 @@ An operation emits into an `ObjectSink` and knows nothing about transactions,
 batching or SQLite; the batching and journal atomicity of decision 6 exist in
 exactly one implementation, which an algorithm author cannot bypass because
 they never see a database.
+
+`emit()` is all a sink must implement; `emitKept()` and `emitOwned()` exist
+for the sinks the framework chains in front of the run's own
+(`05-pipeline.md` 5.4). A filter or a finishing step may discard an object,
+so `emitKept()` tells the caller whether it was kept, which is what lets the
+tile filter count only objects that reached the store. An operation that
+built a record and has no further use for it hands it over with
+`emitOwned()`, and every link of the chain may then normalise, finish and
+pass on that one record instead of copying it at each step; a sink that
+overrides neither still receives the record through `emit()`, once copied
+at most. A sink overriding one of the three by name and calling another
+through its own type adds `using ObjectSink::...;` against name hiding.
 
 `EdgeSink` is the same arrangement for containment. UR-RES-5 and UR-STG-3
 require a stage to assert parent edges — a `cells` stage attaching

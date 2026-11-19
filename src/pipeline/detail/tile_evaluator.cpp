@@ -1,7 +1,6 @@
 // Requirements: UR-EXT-3, UR-IMG-5, UR-ALG-5, UR-EXE-1, UR-STG-3, UR-SEG-3
 #include <pipeline/detail/tile_evaluator.hpp>
 
-#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
@@ -34,43 +33,57 @@ bool holds(const Rect64& r, Point64 p) {
 
 TileObjectFilter::TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask,
                                    RunCounters& counters)
-    : target_(target), finishing_(dynamic_cast<FinishingSink*>(target)), tileRect_(tileRect), mask_(mask),
-      counters_(counters) {}
+    : target_(target), tileRect_(tileRect), mask_(mask), counters_(counters) {}
 
-void TileObjectFilter::emit(const ObjectRecord& record) {
+void TileObjectFilter::emit(const ObjectRecord& record) { emitKept(record); }
+
+bool TileObjectFilter::emitKept(const ObjectRecord& record) {
+    if (!admits(record)) {
+        return false;
+    }
+    if (ringsAreNormalised(record.geometry())) {
+        return passed(target_->emitKept(record));
+    }
+    ObjectRecord normalised(record);
+    normalise(normalised);
+    return passed(target_->emitOwned(std::move(normalised)));
+}
+
+bool TileObjectFilter::emitOwned(ObjectRecord&& record) {
+    if (!admits(record)) {
+        return false;
+    }
+    if (!ringsAreNormalised(record.geometry())) {
+        normalise(record);
+    }
+    return passed(target_->emitOwned(std::move(record)));
+}
+
+bool TileObjectFilter::admits(const ObjectRecord& record) {
     const Point64 anchor = record.geometry().anchor();
     if (!holds(tileRect_, anchor)) {
         ++counters_.droppedOutsideTile;
-        return;
+        return false;
     }
     if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
         ++counters_.droppedByRestriction;
-        return;
+        return false;
     }
-    // Counted only when passed on: the finishing step may discard it.
-    bool kept = true;
-    if (ringsAreNormalised(record.geometry())) {
-        if (finishing_ != nullptr) {
-            kept = finishing_->emitKept(record);
-        } else {
-            target_->emit(record);
-        }
-    } else {
-        ObjectRecord normalised(record);
-        {
-            Polygon geometry = record.geometry();
-            normaliseRings(geometry);
-            normalised.setGeometry(geometry);
-        }
-        if (finishing_ != nullptr) {
-            kept = finishing_->emitOwned(normalised);
-        } else {
-            target_->emit(normalised);
-        }
-    }
+    return true;
+}
+
+void TileObjectFilter::normalise(ObjectRecord& record) {
+    Polygon geometry = record.geometry();
+    normaliseRings(geometry);
+    record.setGeometry(geometry);
+}
+
+bool TileObjectFilter::passed(bool kept) {
+    // Counted only when kept: the target's finishing step may discard it.
     if (kept) {
         ++emitted_;
     }
+    return kept;
 }
 
 namespace {

@@ -41,6 +41,27 @@ public:
      */
     virtual void emit(const ObjectRecord& record) = 0;
     /**
+     * @brief Emits one object and tells whether the sink kept it.
+     *
+     * A sink that may discard an object (a filter, a finishing step) overrides
+     * this to say so; the default calls emit() and returns true.
+     * @param record The object; copied if retained.
+     * @return True when the sink kept the object, false when it discarded it.
+     * @throws ProcessorError Implementation-defined.
+     */
+    virtual bool emitKept(const ObjectRecord& record);
+    /**
+     * @brief As emitKept(), for a record the caller gives up.
+     *
+     * The sink may move from @p record or finish it in place, so passing a
+     * record on costs no copy; the caller must not rely on its state afterwards.
+     * The default returns emitKept(record).
+     * @param record The object, handed over.
+     * @return True when the sink kept the object, false when it discarded it.
+     * @throws ProcessorError Implementation-defined.
+     */
+    virtual bool emitOwned(ObjectRecord&& record);
+    /**
      * @brief Makes everything emitted so far durable or visible.
      * @throws ProcessorError Implementation-defined.
      */

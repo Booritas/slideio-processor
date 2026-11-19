@@ -208,6 +208,47 @@ TEST(ObjectFinishing, TileFilterCountsOnlyWhatFinishingKeeps) {
     EXPECT_EQ(finishing.emittedCount(), 2);
 }
 
+// A sink noting, for each record, whether it arrived through emitOwned().
+class OwnershipSink : public ObjectSink {
+public:
+    void emit(const ObjectRecord&) override { owned.push_back(false); }
+    bool emitOwned(ObjectRecord&&) override {
+        owned.push_back(true);
+        return true;
+    }
+    void flush() override {}
+    int64_t emittedCount() const override { return static_cast<int64_t>(owned.size()); }
+
+    std::vector<bool> owned;
+};
+
+TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
+    ts::registerTestOperations();
+    OperationParameters parameters = componentParameters(false);
+    parameters.setDouble("finishMinArea", 50.0);
+    const OperationPtr producer = OperationCatalog::instance().create("test.components", parameters);
+    OwnershipSink target;
+    detail::FinishingSink finishing(target, {{kLayer, producer.get()}}, 0.0, 0);
+    detail::RunCounters counters;
+    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
+
+    for (const bool normalised : {false, true}) {
+        const std::vector<Point64> fromAnchor = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+        const std::vector<Point64> rotated = {{20, 10}, {20, 20}, {10, 20}, {10, 10}};
+        const std::vector<Point64>& ring = normalised ? fromAnchor : rotated;
+        Polygon polygon;
+        polygon.addRing(ring.data(), static_cast<int32_t>(ring.size()), false);
+        ObjectRecord r;
+        r.setGeometry(polygon);
+        r.setLayer(kLayer);
+        r.measurements().set("area", 100.0, MeasurementUnit::Dimensionless);
+        filter.emit(r);
+    }
+    EXPECT_EQ(target.owned, (std::vector<bool>{true, true}));
+    EXPECT_EQ(filter.emittedCount(), 2);
+    EXPECT_EQ(finishing.emittedCount(), 2);
+}
+
 TEST(ObjectFinishing, TileObjectRingsAreNormalised) {
     const std::shared_ptr<slideio::Scene> scene = blobScene();
     PipelineSpec plain;

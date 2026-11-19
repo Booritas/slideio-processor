@@ -348,6 +348,8 @@ classDiagram
     class ObjectSink {
         <<interface>>
         +emit(ObjectRecord) void
+        +emitKept(ObjectRecord) bool
+        +emitOwned(ObjectRecord) bool
         +flush() void
         +emittedCount() int64_t
     }

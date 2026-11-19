@@ -18,7 +18,8 @@ namespace slideio::processor::detail {
 /// emit into it, so an object found whole in one tile and one merged from seam
 /// fragments are finished by one rule. A record on a layer no producer is
 /// listed for passes unchanged, and flush() is passed on to the target.
-/// emit() may be called concurrently, as far as the target and the
+/// A record is passed on with the target's emitOwned(), so it is copied at most
+/// once here. emit() may be called concurrently, as far as the target and the
 /// producers allow.
 class FinishingSink : public ObjectSink {
 public:
@@ -28,23 +29,23 @@ public:
     FinishingSink(ObjectSink& target, std::vector<std::pair<LayerId, const Operation*>> producers,
                   double pixelSizeMicrons, int32_t level, std::atomic<int64_t>* droppedByFilter = nullptr);
 
-    /// Finishes `record` (a copy of it) and passes it on unless discarded.
-    /// Throws what the producer's finishObject() or the target throws.
+    /// As emitKept().
     void emit(const ObjectRecord& record) override;
-    /// As emit(), telling whether the record was passed on rather than discarded.
-    bool emitKept(const ObjectRecord& record);
-    /// As emitKept(), finishing @p record itself rather than a copy of it, for a
-    /// caller that owns the record and no longer needs it as it was.
-    bool emitOwned(ObjectRecord& record);
+    /// Finishes a copy of `record` and passes the copy on, with the target's
+    /// emitOwned(), unless discarded; true when the target kept it.
+    /// Throws what the producer's finishObject() or the target throws.
+    bool emitKept(const ObjectRecord& record) override;
+    /// As emitKept(), finishing @p record itself rather than a copy of it.
+    bool emitOwned(ObjectRecord&& record) override;
     void flush() override;
-    /// The records passed on to the target.
+    /// The records the target kept.
     int64_t emittedCount() const override;
 
 private:
     // The operation producing @p layer, or null when none is listed.
     const Operation* producerOf(LayerId layer) const;
-    // Finishes @p record with @p producer and passes it on unless discarded;
-    // true when passed on.
+    // Finishes @p record with @p producer and hands it to the target unless
+    // discarded; true when the target kept it.
     bool finishAndPass(const Operation& producer, ObjectRecord& record);
 
     ObjectSink& target_;
