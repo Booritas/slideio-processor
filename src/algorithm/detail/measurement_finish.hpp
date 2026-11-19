@@ -58,14 +58,6 @@ public:
     /// - removes every measurement of a kind not selected.
     bool finish(ObjectRecord& record, const ObjectFinishContext& context) const;
 
-    /// False only when finish() keeps every record and leaves it unchanged,
-    /// whatever the record and context; true when that is not certain. Always
-    /// true as finish() stands: it sets `area` when Area is selected (adding it
-    /// to a record without it) and removes it when not, so no plan leaves every
-    /// record unchanged; an empty selection still strips the standard
-    /// measurements.
-    bool changesObjects() const noexcept;
-
 private:
     bool area_;
     bool perimeter_;
