@@ -171,18 +171,24 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
 
     // Join with the fragments of the same key across each contact's seam, then
     // wait there for the ones still to come. The key waits with the contact, in
-    // memory, so a fragment written to the scratch file keeps it.
-    for (size_t i = 0; i < contacts.size(); ++i) {
-        std::vector<detail::SeamEdgeContact>& waiting = edges_[edgeKey(tile, neighbourAcross(tile, contacts[i]))];
-        for (const detail::SeamEdgeContact& other : waiting) {
-            if (other.tile != tile && other.joinKey == joinKey &&
-                !fragments_[static_cast<size_t>(other.fragment)].taken &&
-                components_.at(find(other.fragment)).layer == layer &&
-                detail::contactsJoin(other.contact, contacts[i])) {
+    // memory, so a fragment written to the scratch file keeps it. Only the
+    // other tile's contacts that begin before this one ends and less than
+    // their side's longest interval before it begins can overlap it.
+    for (const detail::SeamContact& contact : contacts) {
+        const int64_t across = neighbourAcross(tile, contact);
+        detail::SeamEdgesWaiting& waiting = edges_[edgeKey(tile, across)];
+        const int side = tile < across ? 0 : 1;
+        const std::multimap<int64_t, detail::SeamEdgeContact>& others = waiting.bySide[1 - side];
+        for (auto it = others.lower_bound(contact.begin - waiting.longest[1 - side] + 1);
+             it != others.end() && it->first < contact.end; ++it) {
+            const detail::SeamEdgeContact& other = it->second;
+            if (other.joinKey == joinKey && !fragments_[static_cast<size_t>(other.fragment)].taken &&
+                components_.at(find(other.fragment)).layer == layer && detail::contactsJoin(other.contact, contact)) {
                 unite(id, other.fragment);
             }
         }
-        waiting.push_back(detail::SeamEdgeContact{id, tile, joinKey, contacts[i]});
+        waiting.bySide[side].emplace(contact.begin, detail::SeamEdgeContact{id, tile, joinKey, contact});
+        waiting.longest[side] = std::max(waiting.longest[side], contact.end - contact.begin);
     }
     // On an 8-connected layer, likewise at each point shared with another tile,
     // found through the tile pair's index of points.

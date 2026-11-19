@@ -1660,6 +1660,13 @@ the tiles on either side of one seam line, join when they have contacts on
 that line whose intervals **overlap with positive length**. Touching at a
 single point does not join them on an ordinary layer: objects are
 4-connected.
+The contacts wait per pair of side-adjacent tiles, until both have completed,
+on two sides — the lower tile index's and the higher's — each ordered by the
+interval's begin and keeping its longest interval. A new contact looks only
+at the other side, from the contacts beginning less than that longest
+interval before its own begin up to the last beginning before its end: those
+are the only ones its interval can overlap, so it does not scan every contact
+waiting on the seam.
 
 **8-connected layers.** On a layer whose producer declares
 `objectsAreEightConnected()` (5.1), which the executor passes to the merger

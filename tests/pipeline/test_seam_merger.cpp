@@ -479,6 +479,83 @@ TEST(SeamMerger, SameKeyJoins) {
     }
 }
 
+// One fragment in tile 0 along the seam x = 20 over rows 2..18 and four in tile
+// 1 over rows 2..4, 6..8, 10..12 and 14..18: each of tile 1's contacts finds the
+// long one, and the long one finds all four, whichever side arrives first.
+TEST(SeamMerger, IndexedContactsJoinInAnyOrder) {
+    const TileGrid grid = gridOf(2, 1, 20, 20);
+    const Fragment left{0, rectangle(15, 2, 5, 16), {}};
+    const std::vector<Fragment> right = {{1, rectangle(20, 2, 3, 2), {}},
+                                         {1, rectangle(20, 6, 3, 2), {}},
+                                         {1, rectangle(20, 10, 3, 2), {}},
+                                         {1, rectangle(20, 14, 3, 4), {}}};
+    for (const bool leftFirst : {true, false}) {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        if (leftFirst) {
+            add(*merger, left);
+        }
+        for (const Fragment& f : right) {
+            add(*merger, f);
+        }
+        if (!leftFirst) {
+            add(*merger, left);
+        }
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        merger->resolve(sink, nullptr, CancellationToken());
+
+        ASSERT_EQ(sink.emittedCount(), 1) << leftFirst;
+        EXPECT_EQ(merger->largestComponentFragmentCount(), 5) << leftFirst;
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 80.0 + 3 * 6.0 + 12.0) << leftFirst;
+    }
+}
+
+// Contacts over rows 2..5 and 5..8 meet at one point only: a 4-connected layer
+// keeps them two objects.
+TEST(SeamMerger, IndexedContactsJoinOnlyOverlaps) {
+    const TileGrid grid = gridOf(2, 1, 20, 20);
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    add(*merger, {0, rectangle(15, 2, 5, 3), {}});
+    add(*merger, {1, rectangle(20, 5, 3, 3), {}});
+    merger->notifyTileComplete(0, sink);
+    merger->notifyTileComplete(1, sink);
+    merger->resolve(sink, nullptr, CancellationToken());
+
+    ASSERT_EQ(sink.emittedCount(), 2);
+    EXPECT_EQ(merger->largestComponentFragmentCount(), 1);
+}
+
+// Contacts of two layers and two join keys overlap on both sides of the seam
+// x = 20: each fragment joins only the partner of its own layer and key.
+TEST(SeamMerger, IndexedContactsJoinAcrossLayersAndKeys) {
+    const TileGrid grid = gridOf(2, 1, 20, 20);
+    const LayerId other{8};
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    merger->addFragment(0, rectangle(15, 2, 5, 6), kLayer, nullptr, 0, 0); // Rows 2..8.
+    merger->addFragment(0, rectangle(15, 4, 5, 6), other, nullptr, 0, 0);  // Rows 4..10.
+    merger->addFragment(0, rectangle(15, 10, 5, 4), kLayer, nullptr, 0, 1); // Rows 10..14.
+    merger->addFragment(1, rectangle(20, 4, 3, 2), kLayer, nullptr, 0, 0); // Rows 4..6.
+    merger->addFragment(1, rectangle(20, 6, 3, 2), other, nullptr, 0, 0);  // Rows 6..8.
+    merger->addFragment(1, rectangle(20, 7, 3, 6), kLayer, nullptr, 0, 1); // Rows 7..13.
+    merger->notifyTileComplete(0, sink);
+    merger->notifyTileComplete(1, sink);
+    merger->resolve(sink, nullptr, CancellationToken());
+
+    ASSERT_EQ(sink.emittedCount(), 3);
+    EXPECT_EQ(merger->largestComponentFragmentCount(), 2);
+    std::vector<std::tuple<int64_t, int64_t, double>> objects; // Layer, anchor y, area.
+    for (const ObjectRecord& record : sink.records()) {
+        objects.emplace_back(record.layer().value(), record.geometry().anchor().y, measurement(record, "area"));
+    }
+    std::sort(objects.begin(), objects.end());
+    const std::vector<std::tuple<int64_t, int64_t, double>> expected = {
+        {kLayer.value(), 2, 36.0}, {kLayer.value(), 7, 38.0}, {other.value(), 4, 36.0}};
+    EXPECT_EQ(objects, expected);
+}
+
 TEST(SeamMerger, ConstructionValidatesItsArguments) {
     const TileGrid grid = gridOf(3, 3, 10, 10);
     EXPECT_THROW(SeamMerger(grid, nullptr, scratch().c_str()), InvalidArgumentError);

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -61,6 +62,16 @@ struct SeamEdgeContact {
     int64_t tile;     ///< The tile that emitted it.
     int64_t joinKey;  ///< The fragment's join key: it joins only an equal key.
     SeamContact contact;
+};
+
+/// The edge contacts waiting between two side-adjacent tiles until both
+/// complete. Side 0 holds the contacts of the lower tile index of the pair,
+/// side 1 those of the higher, each keyed by the contact's begin; longest is
+/// the longest interval (end - begin) on that side, which bounds the search.
+/// Intervals on one side may overlap (several layers or join keys).
+struct SeamEdgesWaiting {
+    std::multimap<int64_t, SeamEdgeContact> bySide[2];
+    int64_t longest[2] = {0, 0};
 };
 
 /// A seam point of a fragment of an 8-connected layer, waiting between its
@@ -256,7 +267,7 @@ private:
     std::unique_ptr<detail::FragmentSpill> spill_;                 // Created at the first spill; never reset.
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
-    std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.
+    std::unordered_map<int64_t, detail::SeamEdgesWaiting> edges_;  // Tile pair -> contacts.
     std::unordered_map<int64_t, detail::SeamPointsWaiting> points_; // Tile pair -> seam points.
     std::vector<char> completed_;                                  // Per tile.
 };
