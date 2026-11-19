@@ -43,6 +43,12 @@ BlockView measuredPlanes(const OperationContext& context, int32_t first, const c
     std::vector<BlockPlane> planes;
     for (int32_t plane = std::max<int32_t>(first, 0); plane < input.planeCount(); ++plane) {
         const int32_t channel = input.planeSourceChannel(plane);
+        // Several planes can carry one channel (an earlier Joint operation that
+        // writes more planes than it reads); the channel is measured once.
+        if (std::any_of(planes.begin(), planes.end(),
+                        [channel](const BlockPlane& p) { return p.sourceChannel == channel; })) {
+            continue;
+        }
         int32_t found = 0;
         while (found < source.planeCount() && source.planeSourceChannel(found) != channel) {
             ++found;

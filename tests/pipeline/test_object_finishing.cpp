@@ -6,9 +6,12 @@
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/measurement.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 
+#include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
+#include <pipeline/detail/tile_evaluator.hpp>
 #include <pipeline/test_support/blob_scene.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
@@ -171,6 +174,38 @@ TEST(ObjectFinishing, FinisherDiscardsMergedObject) {
         EXPECT_TRUE(sameObjects(run(scene, 600, spec, &droppedWhole), records));
         EXPECT_EQ(droppedWhole, 1);
     }
+}
+
+TEST(ObjectFinishing, TileFilterCountsOnlyWhatFinishingKeeps) {
+    ts::registerTestOperations();
+    OperationParameters parameters = componentParameters(false);
+    parameters.setDouble("finishMinArea", 50.0);
+    const OperationPtr producer = OperationCatalog::instance().create("test.components", parameters);
+    ts::CollectingObjectSink target;
+    detail::FinishingSink finishing(target, {{kLayer, producer.get()}}, 0.0, 0);
+    detail::RunCounters counters;
+    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
+
+    // A record of `area` whose ring starts at its anchor (normalised) or not.
+    const auto record = [](double area, bool normalised) {
+        const std::vector<Point64> fromAnchor = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+        const std::vector<Point64> rotated = {{20, 10}, {20, 20}, {10, 20}, {10, 10}};
+        const std::vector<Point64>& ring = normalised ? fromAnchor : rotated;
+        Polygon polygon;
+        polygon.addRing(ring.data(), static_cast<int32_t>(ring.size()), false);
+        ObjectRecord r;
+        r.setGeometry(polygon);
+        r.setLayer(kLayer);
+        r.measurements().set("area", area, MeasurementUnit::Dimensionless);
+        return r;
+    };
+    for (const bool normalised : {true, false}) {
+        filter.emit(record(10.0, normalised));
+        filter.emit(record(100.0, normalised));
+    }
+    EXPECT_EQ(target.emittedCount(), 2);
+    EXPECT_EQ(filter.emittedCount(), 2);
+    EXPECT_EQ(finishing.emittedCount(), 2);
 }
 
 TEST(ObjectFinishing, TileObjectRingsAreNormalised) {

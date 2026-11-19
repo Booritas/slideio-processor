@@ -122,6 +122,27 @@ private:
     int64_t bytes_ = 0;
 };
 
+/// Hashes a level-0 point, for the merger's index of seam points.
+struct PointHash {
+    size_t operator()(const Point64& p) const noexcept {
+        return std::hash<int64_t>()(p.x) ^ (std::hash<int64_t>()(p.y) * size_t{0x9E3779B97F4A7C15ull});
+    }
+};
+
+/// The seam points waiting between two tiles until both complete, indexed by
+/// point so a new fragment finds the ones it shares without a scan, and the
+/// budget bytes held for them. They stay in memory when their fragments are
+/// written to the scratch file, so their bytes are held here, not with the
+/// fragments.
+struct SeamPointsWaiting {
+    std::unordered_map<Point64, std::vector<SeamPointContact>, PointHash> byPoint;
+    BudgetHold held;
+};
+
+/// The bytes one waiting seam point is allowed: the contact, twice for the
+/// vector's growth, and one index node (key, vector, link and bucket).
+constexpr int64_t kSeamPointContactBytes = 2 * static_cast<int64_t>(sizeof(SeamPointContact)) + 64;
+
 /// A fragment of a closed component that is still in the scratch file.
 struct SpilledFragment {
     int64_t tile;   ///< The tile that emitted it.
@@ -207,6 +228,8 @@ public:
     std::atomic<int64_t> largestComponentFragmentCount{0};
     std::atomic<int64_t> spilledFragmentCount{0};
     std::atomic<int64_t> spilledBytes{0};
+    // Bytes of seam points kept while the budget could not hold them.
+    std::atomic<int64_t> unreservedPointBytes{0};
 
 private:
     int64_t find(int64_t fragment);
@@ -221,6 +244,11 @@ private:
     // other components while the budget is short, then the fragment itself when
     // nothing else is left to spill. Never waits for memory.
     void reserveFor(int64_t id, int64_t bytes);
+    // Holds `bytes` for seam points waiting in `waiting`, spilling the
+    // oldest-opened components while the budget is short. Never waits: when
+    // nothing is left to spill, the points are kept without a reservation and
+    // counted in unreservedPointBytes.
+    void holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes);
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
     std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
@@ -229,7 +257,7 @@ private:
     std::unordered_map<int64_t, detail::SeamComponent> components_; // Keyed by root.
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, std::vector<detail::SeamEdgeContact>> edges_; // Tile pair -> contacts.
-    std::unordered_map<int64_t, std::vector<detail::SeamPointContact>> points_; // Tile pair -> seam points.
+    std::unordered_map<int64_t, detail::SeamPointsWaiting> points_; // Tile pair -> seam points.
     std::vector<char> completed_;                                  // Per tile.
 };
 

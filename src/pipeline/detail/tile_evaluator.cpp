@@ -47,8 +47,14 @@ void TileObjectFilter::emit(const ObjectRecord& record) {
         ++counters_.droppedByRestriction;
         return;
     }
+    // Counted only when passed on: the finishing step may discard it.
+    bool kept = true;
     if (ringsAreNormalised(record.geometry())) {
-        target_->emit(record);
+        if (finishing_ != nullptr) {
+            kept = finishing_->emitKept(record);
+        } else {
+            target_->emit(record);
+        }
     } else {
         ObjectRecord normalised(record);
         {
@@ -57,12 +63,14 @@ void TileObjectFilter::emit(const ObjectRecord& record) {
             normalised.setGeometry(geometry);
         }
         if (finishing_ != nullptr) {
-            finishing_->emitOwned(normalised);
+            kept = finishing_->emitOwned(normalised);
         } else {
             target_->emit(normalised);
         }
     }
-    ++emitted_;
+    if (kept) {
+        ++emitted_;
+    }
 }
 
 namespace {

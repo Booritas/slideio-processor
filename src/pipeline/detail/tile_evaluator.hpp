@@ -56,6 +56,7 @@ public:
 
     void emit(const ObjectRecord& record) override;
     void flush() override {}
+    /// The objects passed on to the target, not those its finishing step discarded.
     int64_t emittedCount() const override { return emitted_.load(); }
 
 private:

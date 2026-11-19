@@ -1655,6 +1655,9 @@ with 8-neighbouring pixels across a seam: a diagonal pair whose point is not a
 vertex of one of the fragments has a 4-neighbour pair beside it. On such a
 layer a fragment also expects every other tile touching one of its seam
 vertices — three at a corner.
+The points wait per pair of tiles, indexed by point, so a new fragment finds
+the ones it shares without scanning the others, and they are dropped when
+both tiles have completed.
 
 **Join keys.** Without them the merger would join any two same-layer
 fragments touching across a seam, so two regions that touch — neighbouring
@@ -1782,6 +1785,17 @@ small and fixed-size, so joining and closing decisions never require a read.
 Choosing oldest-first is deliberate: a long-open component is by definition one
 whose tiles are not finishing soon, so it is the cheapest to evict and the
 least likely to be wanted again this minute.
+
+Seam points of 8-connected layers are the exception to "small and
+fixed-size": a fragment waits at each of its seam vertices for each other
+tile touching it, so a jagged outline along a long seam leaves many. They stay
+in memory when their fragment is written out, so the budget holds their bytes
+separately, `detail::kSeamPointContactBytes` per waiting point, from arrival
+until both tiles of the pair complete. They are reserved the same way: while
+`tryReserve` fails, the oldest-opened components are written out. When nothing
+is left to write out, the points are kept without a reservation, since joining
+needs them, and the merger counts those bytes; this happens only when the
+workers' own tiles hold the whole budget.
 
 Spilled fragments are appended to one file per merger,
 `seam-<32 random lowercase hex digits>.bin` in the scratch directory, created on

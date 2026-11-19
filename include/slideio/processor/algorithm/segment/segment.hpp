@@ -253,7 +253,8 @@ private:
  * OperationContext::sourceInput(), not the plane itself. A chain blurring and
  * thresholding before labelling segments the thresholded plane 0 and measures
  * the unblurred samples of the other channels, so `intensity.<c>.*` always
- * describes channel c as it is in the scene.
+ * describes channel c as it is in the scene. A channel carried by several
+ * input planes is measured once.
  * Derived planes (stain densities, HSV) are therefore never measured in the
  * same chain; to measure them, derive them in an inner pipeline and run this
  * operation over its Pipeline::asScene(), whose samples they then are.
@@ -733,7 +734,8 @@ private:
  * OperationContext::sourceInput(), not the plane itself. A chain smoothing
  * before flooding floods the smoothed plane 0 and measures the unsmoothed
  * samples of the other channels, so `intensity.<c>.*` always describes
- * channel c as it is in the scene.
+ * channel c as it is in the scene. A channel carried by several input planes
+ * is measured once.
  * Derived planes (stain densities, HSV) are therefore never measured in the
  * same chain; to measure them, derive them in an inner pipeline and run this
  * operation over its Pipeline::asScene(), whose samples they then are.

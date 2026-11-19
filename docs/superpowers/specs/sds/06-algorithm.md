@@ -956,7 +956,9 @@ operation ahead of it transforms planes 1 onward as well as plane 0, so in
 blur → threshold →
 `segment.connected_components` plane 0 is the thresholded mask while the
 measured samples are the unblurred channels; `intensity.<c>.*` therefore
-always describes channel c as it is in the scene. Keeping the samples as read
+always describes channel c as it is in the scene, and a channel carried by
+several input planes (after a Joint operation that writes more planes than it
+reads, such as grey to RGB) is measured once. Keeping the samples as read
 for the whole chain costs no reservation: the tile already reserves every
 step's buffers at once (`05-pipeline.md` 5.5).
 Derived planes, such as stain densities or HSV, are therefore never measured

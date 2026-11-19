@@ -1,5 +1,6 @@
 // Requirements: UR-SEG-2, UR-SEG-3, UR-SEG-4, UR-SEG-5, UR-SEG-6, UR-SEG-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/measure/measure.hpp>
+#include <slideio/processor/algorithm/pixel/colour.hpp>
 #include <slideio/processor/algorithm/pixel/filter.hpp>
 #include <slideio/processor/algorithm/pixel/threshold.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>
@@ -633,6 +634,23 @@ TEST(ConnectedComponents, MeasuresTheScenesSamplesAfterEarlierOperations) {
         EXPECT_EQ(measurement(objects[0], "intensity.1.mean"), sum / static_cast<double>(count)) << tile;
         EXPECT_EQ(measurement(objects[0], "intensity.1.min"), minimum) << tile;
         EXPECT_EQ(measurement(objects[0], "intensity.1.max"), maximum) << tile;
+    }
+}
+
+TEST(ConnectedComponents, ChannelCarriedBySeveralPlanesIsMeasuredOnce) {
+    // Grey to RGB writes three planes from one channel, so planes 1 and 2 of
+    // the labelling both carry channel 0: it is measured once, in a tile and
+    // across seams alike.
+    auto pixel = [](int, int64_t x, int64_t y) { return x >= 20 && x < 80 && y >= 20 && y < 80 ? 200.0 : 0.0; };
+    const auto scene = sceneOf(100, 100, {slideio::DataType::DT_Byte}, pixel);
+    PipelineSpec spec;
+    spec.then(makeColourConvert(ColourSpace::Grey, ColourSpace::Rgb))
+        .then(makeConnectedComponents(ConnectedComponentsParameters()));
+    for (const int32_t tile : {100, 64}) {
+        const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, spec, tile, 4);
+        ASSERT_EQ(objects.size(), 1u) << tile;
+        EXPECT_EQ(measurement(objects[0], "intensity.0.mean"), 200.0) << tile;
+        EXPECT_FALSE(has(objects[0], "intensity.1.mean")) << tile;
     }
 }
 

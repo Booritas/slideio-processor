@@ -31,9 +31,11 @@ public:
     /// Finishes `record` (a copy of it) and passes it on unless discarded.
     /// Throws what the producer's finishObject() or the target throws.
     void emit(const ObjectRecord& record) override;
-    /// As emit(), finishing @p record itself rather than a copy of it, for a
+    /// As emit(), telling whether the record was passed on rather than discarded.
+    bool emitKept(const ObjectRecord& record);
+    /// As emitKept(), finishing @p record itself rather than a copy of it, for a
     /// caller that owns the record and no longer needs it as it was.
-    void emitOwned(ObjectRecord& record);
+    bool emitOwned(ObjectRecord& record);
     void flush() override;
     /// The records passed on to the target.
     int64_t emittedCount() const override;
@@ -41,8 +43,9 @@ public:
 private:
     // The operation producing @p layer, or null when none is listed.
     const Operation* producerOf(LayerId layer) const;
-    // Finishes @p record with @p producer and passes it on unless discarded.
-    void finishAndPass(const Operation& producer, ObjectRecord& record);
+    // Finishes @p record with @p producer and passes it on unless discarded;
+    // true when passed on.
+    bool finishAndPass(const Operation& producer, ObjectRecord& record);
 
     ObjectSink& target_;
     std::vector<std::pair<LayerId, const Operation*>> producers_;

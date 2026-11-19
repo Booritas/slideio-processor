@@ -41,8 +41,9 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
 
 /// The scene's samples a segmenter measures for planes @p first onward of
 /// context.input(): for each, the first plane of context.sourceInput() with
-/// the same source channel, so `intensity.<c>.*` measures channel c as read,
-/// whatever the earlier operations of the chain did to it. Same geometry as
+/// the same source channel, each channel once, so `intensity.<c>.*` measures
+/// channel c as read, whatever the earlier operations of the chain did to it,
+/// and planes carrying a channel already measured add nothing. Same geometry as
 /// context.input(); a null view when there is no plane from @p first on.
 /// Throws InternalError naming @p operation when sourceInput() differs from
 /// input() in size or holds no plane of one of the channels.

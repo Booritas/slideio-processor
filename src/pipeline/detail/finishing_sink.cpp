@@ -15,25 +15,27 @@ FinishingSink::FinishingSink(ObjectSink& target, std::vector<std::pair<LayerId, 
       context_{pixelSizeMicrons, level},
       droppedByFilter_(droppedByFilter) {}
 
-void FinishingSink::emit(const ObjectRecord& record) {
+void FinishingSink::emit(const ObjectRecord& record) { emitKept(record); }
+
+bool FinishingSink::emitKept(const ObjectRecord& record) {
     const Operation* producer = producerOf(record.layer());
     if (producer == nullptr) {
         target_.emit(record);
         ++emitted_;
-        return;
+        return true;
     }
     ObjectRecord finished(record);
-    finishAndPass(*producer, finished);
+    return finishAndPass(*producer, finished);
 }
 
-void FinishingSink::emitOwned(ObjectRecord& record) {
+bool FinishingSink::emitOwned(ObjectRecord& record) {
     const Operation* producer = producerOf(record.layer());
     if (producer == nullptr) {
         target_.emit(record);
         ++emitted_;
-        return;
+        return true;
     }
-    finishAndPass(*producer, record);
+    return finishAndPass(*producer, record);
 }
 
 const Operation* FinishingSink::producerOf(LayerId layer) const {
@@ -44,7 +46,7 @@ const Operation* FinishingSink::producerOf(LayerId layer) const {
     return producer == producers_.end() ? nullptr : producer->second;
 }
 
-void FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& record) {
+bool FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& record) {
 #ifndef NDEBUG
     const LayerId layer = record.layer();
     const Point64 anchor = record.geometry().anchor();
@@ -57,10 +59,11 @@ void FinishingSink::finishAndPass(const Operation& producer, ObjectRecord& recor
         if (droppedByFilter_ != nullptr) {
             ++*droppedByFilter_;
         }
-        return;
+        return false;
     }
     target_.emit(record);
     ++emitted_;
+    return true;
 }
 
 void FinishingSink::flush() { target_.flush(); }

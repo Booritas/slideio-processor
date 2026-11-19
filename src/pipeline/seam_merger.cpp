@@ -183,17 +183,21 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
         }
         waiting.push_back(detail::SeamEdgeContact{id, tile, joinKey, contacts[i]});
     }
-    // On an 8-connected layer, likewise at each point shared with another tile.
+    // On an 8-connected layer, likewise at each point shared with another tile,
+    // found through the tile pair's index of points.
+    std::unordered_map<int64_t, int64_t> pointCounts; // Tile pair -> points added there.
     for (const detail::SeamPointNeighbour& point : points) {
-        std::vector<detail::SeamPointContact>& waiting = points_[edgeKey(tile, point.tile)];
+        const int64_t pair = edgeKey(tile, point.tile);
+        std::vector<detail::SeamPointContact>& waiting = points_[pair].byPoint[point.at];
         for (const detail::SeamPointContact& other : waiting) {
-            if (other.tile != tile && other.at == point.at && other.joinKey == joinKey &&
+            if (other.tile != tile && other.joinKey == joinKey &&
                 !fragments_[static_cast<size_t>(other.fragment)].taken &&
                 components_.at(find(other.fragment)).layer == layer) {
                 unite(id, other.fragment);
             }
         }
         waiting.push_back(detail::SeamPointContact{id, tile, joinKey, point.at});
+        ++pointCounts[pair];
     }
 
     ++fragmentCount;
@@ -203,6 +207,25 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     }
 
     reserveFor(id, bytes);
+    for (const auto& entry : pointCounts) {
+        holdPoints(points_.at(entry.first), entry.second * detail::kSeamPointContactBytes);
+    }
+}
+
+void SeamMerger::Impl::holdPoints(detail::SeamPointsWaiting& waiting, int64_t bytes) {
+    for (;;) {
+        if (budget->tryReserve(bytes)) {
+            waiting.held.add(budget, bytes);
+            return;
+        }
+        if (residentByOpening_.empty()) {
+            // Everything is written out and the memory still taken belongs to the
+            // rest of the run: the points are kept, as joining needs them.
+            unreservedPointBytes += bytes;
+            return;
+        }
+        spillComponent(find(*residentByOpening_.begin()));
+    }
 }
 
 void SeamMerger::Impl::reserveFor(int64_t id, int64_t bytes) {

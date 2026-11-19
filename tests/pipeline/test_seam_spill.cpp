@@ -10,6 +10,7 @@
 #include <slideio/processor/pipeline/seam_merger.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
+#include <pipeline/detail/seam_merger_access.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>
 
@@ -537,4 +538,53 @@ TEST(SeamSpill, KeySurvivesSpill) {
         ASSERT_NE(mean, emitted[i].measurements.end());
         EXPECT_EQ(mean->second, i == 0 ? 1.0 : 2.0) << "object " << i;
     }
+}
+
+// On an 8-connected layer a fragment also waits at its seam points, in memory
+// even once the fragment is written out; the budget holds their bytes until
+// both tiles of each point complete. Two squares meeting at the corner (5, 5)
+// of a 2x2 grid of 5x5 tiles join there.
+TEST(SeamSpill, SeamPointsAreChargedUntilTheirTilesComplete) {
+    const TileGrid grid = gridOf(2, 2, 5, 5);
+    const Fragment a{0, rectangle(3, 3, 2, 2), {}};
+    const Fragment b{3, rectangle(5, 5, 2, 2), {}};
+    const auto mergeBoth = [&](const MemoryBudgetPtr& budget, int64_t& pointBytes, int64_t& spilled) {
+        ScratchDirectory scratch;
+        ts::CollectingObjectSink sink;
+        SeamMerger merger(grid, budget, scratch.utf8().c_str());
+        detail::SeamMergerAccess::setEightConnected(merger, kLayer);
+        add(merger, a);
+        pointBytes = budget->reservedBytes() - residentBytes(a);
+        add(merger, b);
+        for (int64_t tile = 0; tile < grid.tileCount(); ++tile) {
+            merger.notifyTileComplete(tile, sink);
+        }
+        merger.resolve(sink, nullptr, CancellationToken());
+        spilled = merger.spilledFragmentCount();
+        return sink.records();
+    };
+
+    // Memory to spare: the points are held beside the fragment, then given back.
+    const MemoryBudgetPtr ample = makeMemoryBudget(int64_t{1} << 30);
+    int64_t pointBytes = 0;
+    int64_t spilled = -1;
+    std::vector<ObjectRecord> objects = mergeBoth(ample, pointBytes, spilled);
+    EXPECT_GT(pointBytes, 0);
+    EXPECT_EQ(pointBytes % detail::kSeamPointContactBytes, 0);
+    EXPECT_EQ(spilled, 0);
+    ASSERT_EQ(objects.size(), 1u);
+    Measurement area;
+    ASSERT_TRUE(objects[0].measurements().find("area", area));
+    EXPECT_EQ(area.value(), 8.0);
+    EXPECT_EQ(ample->reservedBytes(), 0);
+
+    // Room for one fragment only: the points spill the fragments, are then kept
+    // without a reservation, and the object still merges.
+    const MemoryBudgetPtr tight = makeMemoryBudget(residentBytes(a));
+    objects = mergeBoth(tight, pointBytes, spilled);
+    EXPECT_EQ(spilled, 2);
+    ASSERT_EQ(objects.size(), 1u);
+    ASSERT_TRUE(objects[0].measurements().find("area", area));
+    EXPECT_EQ(area.value(), 8.0);
+    EXPECT_EQ(tight->reservedBytes(), 0);
 }
