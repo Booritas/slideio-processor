@@ -58,6 +58,21 @@ public:
     // Adds to the union of everything read, which keeps first-declaration order.
     void noteRead(LayerId layer) { addOnce(allReads, layer); }
 
+    // A binding name names one input across both raster lists, since a runner resolves
+    // bindings by name. Repeating an entry exactly is a no-op; reusing its name for
+    // another target throws, naming the stage and the binding.
+    template <typename T>
+    void addBinding(std::vector<T>& list, const T& entry) {
+        const bool rasterTaken = std::any_of(rasterReads.begin(), rasterReads.end(),
+                                             [&](const RasterRead& r) { return r.binding == entry.binding; });
+        const bool layerTaken = std::any_of(layerRasters.begin(), layerRasters.end(),
+                                            [&](const LayerRaster& r) { return r.binding == entry.binding; });
+        if ((rasterTaken || layerTaken) && std::find(list.begin(), list.end(), entry) == list.end()) {
+            fail("stage '" + name + "' already binds '" + entry.binding + "' to another input");
+        }
+        addOnce(list, entry);
+    }
+
     std::string name;
     PipelineSpec spec;
     std::vector<LayerId> explicitReads;
@@ -129,14 +144,14 @@ StageDefinition& StageDefinition::writesRaster(RasterId raster) {
 
 StageDefinition& StageDefinition::readsRaster(const char* bindingName, RasterId raster) {
     requireText(bindingName, "a raster binding name");
-    addOnce(impl_->rasterReads, Impl::RasterRead{bindingName, raster});
+    impl_->addBinding(impl_->rasterReads, Impl::RasterRead{bindingName, raster});
     return *this;
 }
 
 StageDefinition& StageDefinition::readsLayerAsRaster(const char* bindingName, LayerId layer,
                                                      LayerRasterContent content) {
     requireText(bindingName, "a layer-raster binding name");
-    addOnce(impl_->layerRasters, Impl::LayerRaster{bindingName, layer, content});
+    impl_->addBinding(impl_->layerRasters, Impl::LayerRaster{bindingName, layer, content});
     impl_->noteRead(layer);
     return *this;
 }

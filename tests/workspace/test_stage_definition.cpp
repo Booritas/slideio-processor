@@ -158,6 +158,28 @@ TEST(StageDefinition, SecondWrittenRasterRefused) {
     EXPECT_EQ(def.writtenRaster(), f.outMap);
 }
 
+TEST(StageDefinition, BindingNameNamesOneInput) {
+    Fixture f;
+    StageDefinition def("s");
+    def.readsRaster("prob", f.probability).readsLayerAsRaster("coarse", f.nests, LayerRasterContent::Label);
+    // An exact repeat is a no-op.
+    def.readsRaster("prob", f.probability).readsLayerAsRaster("coarse", f.nests, LayerRasterContent::Label);
+    EXPECT_EQ(def.readRasterCount(), 1);
+    EXPECT_EQ(def.rasterLayerCount(), 1);
+
+    // The same name for another target, in either list, is refused and names both.
+    const std::string message = messageOf([&] { def.readsRaster("prob", f.outMap); });
+    EXPECT_NE(message.find("'s'"), std::string::npos);
+    EXPECT_NE(message.find("'prob'"), std::string::npos);
+    EXPECT_THROW(def.readsLayerAsRaster("coarse", f.nests, LayerRasterContent::Membership), InvalidArgumentError);
+    EXPECT_THROW(def.readsLayerAsRaster("coarse", f.tissue, LayerRasterContent::Label), InvalidArgumentError);
+    EXPECT_THROW(def.readsLayerAsRaster("prob", f.nests, LayerRasterContent::Label), InvalidArgumentError);
+    EXPECT_THROW(def.readsRaster("coarse", f.probability), InvalidArgumentError);
+    EXPECT_EQ(def.readRasterCount(), 1);
+    EXPECT_EQ(def.rasterLayerCount(), 1);
+    EXPECT_EQ(def.readLayerCount(), 1);
+}
+
 TEST(StageDefinition, NullOrEmptyNamesRefused) {
     EXPECT_THROW(StageDefinition(nullptr), InvalidArgumentError);
     EXPECT_THROW(StageDefinition(""), InvalidArgumentError);
@@ -330,7 +352,7 @@ TEST(StageRecord, SameDeclarationComparesEveryField) {
     EXPECT_FALSE(same([&](StageDefinition& d) { d.dependsOn("z"); }));
     EXPECT_FALSE(same([&](StageDefinition& d) { d.readsRaster("other", f.probability); }));
     EXPECT_FALSE(same([&](StageDefinition& d) {
-        d.readsLayerAsRaster("coarse", f.nests, LayerRasterContent::Label);
+        d.readsLayerAsRaster("fine", f.nests, LayerRasterContent::Label);
     }));
     EXPECT_FALSE(same([&](StageDefinition& d) { d.pipeline(PipelineSpec()); }));
     EXPECT_FALSE(detail::sameDeclaration(StageDefinition("a"), StageDefinition("b")));

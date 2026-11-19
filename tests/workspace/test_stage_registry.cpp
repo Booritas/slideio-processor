@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-OBS-1
 #include "workspace/support/test_slide.hpp"
 
 #include <workspace/detail/stage_record.hpp>
@@ -401,7 +401,11 @@ TEST(StageRegistry, ReconfiguredStageAndDependentsGoStale) {
 
 TEST(StageRegistry, EquivalentRedeclarationMarksNothingStale) {
     Fixture f;
-    // The created operation holds every parameter (defaults included), so the by-name spec names both.
+    // The created operation holds every parameter, defaults included, so the by-name spec
+    // spells out the defaulted kernelSize. A by-name spec giving only some parameters
+    // compares unequal to a then()-built one, because the created operation carries its
+    // defaults: the comparison errs toward recomputation (a redeclaration marks stale).
+    // Normalising defaults is a PipelineSpec follow-up.
     const OperationParameters params = OperationParameters().setDouble("sigma", 1.5).setInt("kernelSize", 0);
     PipelineSpec viaThen;
     viaThen.then(OperationCatalog::instance().create("pixel.gaussian_blur", params));
@@ -604,12 +608,16 @@ TEST(StageRegistry, RestoreFallsBackToPersistedDependenciesWhenRederivationFails
     StageDefinition rd("r");
     rd.readsLayer(f.x).writesLayer(f.y);
     const StageId r = f.stages().declare(rd);
-    // A record whose explicit dependency names a stage that does not exist.
+    // A record whose explicit dependency names a stage that does not exist, with a stored
+    // dependency row on w.
     StageDefinition ghost("orphan");
-    ghost.dependsOn("ghost");
+    ghost.readsLayer(f.x).dependsOn("ghost");
     const std::string ghostRecord =
         detail::stageRecordJson(ghost, f.workspace->layers(), f.workspace->store()->rasters());
-    const StageId orphan = f.workspace->store()->stageStateWriter().declare("orphan", ghostRecord.c_str());
+    StageStateWriter& raw = f.workspace->store()->stageStateWriter();
+    const StageId orphan = raw.declare("orphan", ghostRecord.c_str());
+    raw.addDependency(orphan, w);
+    raw.setStatus(w, StageStatus::Complete);
     f.workspace->close();
 
     const LogCapture log;
@@ -618,11 +626,149 @@ TEST(StageRegistry, RestoreFallsBackToPersistedDependenciesWhenRederivationFails
     ASSERT_EQ(s.count(), 3);
     ASSERT_EQ(s.dependencyCount(r), 1);
     EXPECT_EQ(s.dependencyAt(r, 0), w);
-    EXPECT_EQ(s.dependencyCount(orphan), 0);
+    EXPECT_TRUE(s.isRunnable(r));
+    // The damaged stage is kept by name only, never runnable, its stored edge pinned.
+    ASSERT_EQ(s.dependencyCount(orphan), 1);
+    EXPECT_EQ(s.dependencyAt(orphan, 0), w);
+    EXPECT_FALSE(s.isExplicitDependency(orphan, 0));
+    EXPECT_FALSE(s.isRunnable(orphan));
+    EXPECT_EQ(s.definition(orphan).explicitDependencyCount(), 0);
     bool warned = false;
     for (const auto& m : log.messages()) {
-        if (m.first == LogLevel::Warning && m.second.find("persisted dependencies") != std::string::npos) warned = true;
+        if (m.first == LogLevel::Warning && m.second.find("\"orphan\"") != std::string::npos) warned = true;
+        EXPECT_EQ(m.second.find("\"r\""), std::string::npos);
     }
     EXPECT_TRUE(warned);
+
+    // Any declare carries the pin into the stored rows.
+    s.declare(writer("other", f.tissue));
+    ASSERT_EQ(ws->store()->stageStates().dependencyCount(orphan), 1);
+    EXPECT_EQ(ws->store()->stageStates().dependencyAt(orphan, 0), w);
     ws->close();
+}
+
+TEST(StageRegistry, ExplicitDependencyCycleIsStageError) {
+    Fixture f;
+    f.stages().declare(writer("a", f.x));
+    StageDefinition b("b");
+    b.readsLayer(f.x).writesLayer(f.y);
+    f.stages().declare(b);
+    StageDefinition loop("a");
+    loop.writesLayer(f.x).dependsOn("b");
+    const std::string message = messageOf([&] { f.stages().declare(loop); });
+    EXPECT_NE(message.find("\"a\""), std::string::npos);
+    EXPECT_NE(message.find("\"b\""), std::string::npos);
+    EXPECT_THROW(f.stages().declare(loop), StageError);
+    StageId a;
+    ASSERT_TRUE(f.stages().find("a", a));
+    EXPECT_EQ(f.stages().dependencyCount(a), 0);
+    EXPECT_EQ(f.stages().definition(a).explicitDependencyCount(), 0);
+}
+
+TEST(StageRegistry, ClosedWorkspaceRefusesDeclareWithIoError) {
+    Fixture f;
+    const Chain c(f);
+    f.workspace->close();
+    StageDefinition late("late");
+    late.readsLayer(f.x).writesLayer(f.tissue);
+    const std::string message = messageOf([&] { f.stages().declare(late); });
+    EXPECT_EQ(message.find("not declared"), std::string::npos);
+    EXPECT_NE(message.find("StageRegistry::declare"), std::string::npos);
+    EXPECT_THROW(f.stages().declare(late), IoError);
+    EXPECT_THROW(f.stages().declare(writer("background", f.background)), IoError);
+    EXPECT_THROW(f.stages().markStale(c.background), IoError);
+    EXPECT_THROW(f.stages().clearStale(c.background), IoError);
+    // The graph answers from memory.
+    ASSERT_EQ(f.stages().dependencyCount(c.cells), 1);
+    EXPECT_EQ(f.stages().dependencyAt(c.cells, 0), c.nuclei);
+}
+
+TEST(StageRegistry, IdenticalRedeclarationRepairsRows) {
+    Fixture f;
+    const StageId w = f.stages().declare(writer("w", f.x));
+    // A stage whose declare stored the record and failed before its other rows.
+    StageDefinition rd("r");
+    rd.readsLayer(f.x).writesLayer(f.y);
+    const std::string record = detail::stageRecordJson(rd, f.workspace->layers(), f.workspace->store()->rasters());
+    const StageId r = f.workspace->store()->stageStateWriter().declare("r", record.c_str());
+    f.workspace->close();
+
+    // Read-only: the same declaration returns the id and writes nothing.
+    {
+        WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+        EXPECT_EQ(ro->stages().declare(rd), r);
+        EXPECT_EQ(ro->layers().writerStageCount(f.y), 0);
+        EXPECT_EQ(ro->store()->stageStates().dependencyCount(r), 0);
+        ro->close();
+    }
+
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    EXPECT_EQ(ws->layers().writerStageCount(f.y), 0);
+    EXPECT_EQ(ws->stages().declare(rd), r);
+    ASSERT_EQ(ws->layers().writerStageCount(f.y), 1);
+    EXPECT_EQ(ws->layers().writerStageAt(f.y, 0), r);
+    StageStateReader& states = ws->store()->stageStates();
+    ASSERT_EQ(states.dependencyCount(r), 1);
+    EXPECT_EQ(states.dependencyAt(r, 0), w);
+    EXPECT_FALSE(ws->stages().isStale(r));
+    EXPECT_FALSE(ws->stages().isStale(w));
+    ws->close();
+}
+
+TEST(StageRegistry, ReadOnlyRegistryFollowsLiveWriter) {
+    Fixture f;
+    StageDefinition bg("background");
+    bg.writesLayer(f.background);
+    const StageId background = f.stages().declare(bg);
+    const StageId other = f.stages().declare(writer("other", f.y));
+    StageDefinition n("nuclei");
+    n.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blurSpec(1.0));
+    const StageId nuclei = f.stages().declare(n);
+    f.workspace->store()->stageStateWriter().setStatus(background, StageStatus::Complete);
+
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    ASSERT_EQ(r.dependencyCount(nuclei), 1);
+    const StageDefinition& before = r.definition(nuclei);
+
+    // The writer declares a reader of an existing stage's layer, and redeclares nuclei
+    // with a changed pipeline and an explicit dependency.
+    StageDefinition c("cells");
+    c.readsLayer(f.nuclei).writesLayer(f.x);
+    const StageId cells = f.stages().declare(c);
+    StageDefinition changed("nuclei");
+    changed.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blurSpec(2.0)).dependsOn("other");
+    EXPECT_EQ(f.stages().declare(changed), nuclei);
+
+    ASSERT_EQ(r.count(), 4);
+    const StageStateReader& states = ro->store()->stageStates();
+    for (int32_t i = 0; i < r.count(); ++i) {
+        const StageId id = r.at(i);
+        SCOPED_TRACE(r.name(id));
+        ASSERT_EQ(r.dependencyCount(id), states.dependencyCount(id));
+        ASSERT_EQ(r.dependencyCount(id), f.stages().dependencyCount(id));
+        for (int32_t d = 0; d < r.dependencyCount(id); ++d) {
+            EXPECT_EQ(r.dependencyAt(id, d), states.dependencyAt(id, d));
+            EXPECT_EQ(r.dependencyAt(id, d), f.stages().dependencyAt(id, d));
+            EXPECT_EQ(r.isExplicitDependency(id, d), f.stages().isExplicitDependency(id, d));
+        }
+        EXPECT_EQ(r.isRunnable(id), f.stages().isRunnable(id));
+        EXPECT_TRUE(detail::sameDeclaration(r.definition(id), f.stages().definition(id)));
+        EXPECT_EQ(std::string(r.configuration(id)),
+                  detail::stageRecordJson(r.definition(id), ro->layers(), ro->store()->rasters()));
+    }
+    ASSERT_EQ(r.dependencyCount(cells), 1);
+    EXPECT_EQ(r.dependencyAt(cells, 0), nuclei);
+    ASSERT_EQ(r.dependencyCount(nuclei), 2);
+    EXPECT_EQ(r.dependencyAt(nuclei, 1), other);
+    EXPECT_TRUE(r.isExplicitDependency(nuclei, 1));
+    // A reference taken before the change still names the old declaration.
+    EXPECT_TRUE(detail::sameDeclaration(before, n));
+    // The declaration the writer made is no change to the reader, which writes nothing.
+    EXPECT_EQ(r.declare(changed), nuclei);
+
+    // A closed reader answers from what it last read.
+    ro->close();
+    EXPECT_EQ(r.dependencyCount(nuclei), 2);
+    EXPECT_TRUE(detail::sameDeclaration(r.definition(nuclei), changed));
 }

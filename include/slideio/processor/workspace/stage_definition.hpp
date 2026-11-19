@@ -155,11 +155,14 @@ public:
 
     /**
      * @brief Binds a persisted raster as an auxiliary input under a name. The
-     * dependency on its writer is derived (SDS 04 4.3).
+     * dependency on its writer is derived (SDS 04 4.3). A binding name is unique across
+     * readsRaster() and readsLayerAsRaster(); repeating the same binding exactly is a
+     * no-op.
      * @param bindingName UTF-8 binding name; copied.
      * @param raster The raster.
      * @return This definition.
-     * @throws InvalidArgumentError When the binding name is null or empty.
+     * @throws InvalidArgumentError When the binding name is null or empty, or already
+     * binds another input of this stage (the message names the stage and the binding).
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadConfined.
@@ -170,12 +173,15 @@ public:
 
     /**
      * @brief Binds an earlier stage's layer as an auxiliary raster input under a name.
-     * Implies readsLayer(). Callable more than once with different names.
+     * Implies readsLayer(). Callable more than once with different names; a binding name
+     * is unique across readsRaster() and readsLayerAsRaster(), and repeating the same
+     * binding exactly (layer and content included) is a no-op.
      * @param bindingName UTF-8 binding name; copied.
      * @param layer The layer.
      * @param content What the raster holds.
      * @return This definition.
-     * @throws InvalidArgumentError When the binding name is null or empty.
+     * @throws InvalidArgumentError When the binding name is null or empty, or already
+     * binds another input of this stage (the message names the stage and the binding).
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadConfined.
