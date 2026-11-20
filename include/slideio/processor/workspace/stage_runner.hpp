@@ -19,23 +19,28 @@ namespace slideio::processor {
 /**
  * @brief Runs one stage of a workspace: checks it may run, builds its Pipeline from the
  * stored definition, wires the stage's writers as the sinks, executes across the tile
- * grid, flushes the writers (objects, then edges, then annotations) and records the
- * outcome in the store.
+ * grid, flushes the writers (objects, then edges, then annotations, then the raster,
+ * last) and records the outcome in the store.
  *
  * run() refuses, before changing anything, a read-only workspace (IoError) and then,
- * with a StageError naming the stage, a stage whose record could not be read, a stage
- * with a dependency that is not Complete or is stale (the message names the first such
- * dependency, in StageRegistry::dependencyAt() order), and a workspace in which another
- * StageRunner is inside run(). A stale stage whose dependencies are current is
+ * with a StageError naming the stage, a workspace in which another StageRunner is inside
+ * run(), a stage whose record could not be read, a stage with a dependency that is not
+ * Complete or is stale (the message names the first such dependency, in
+ * StageRegistry::dependencyAt() order), and a stage whose definition has an operation
+ * producing objects that names no layer the stage writes (or none, with the stage
+ * writing other than one layer). A stale stage whose dependencies are current is
  * runnable: running it is how it becomes current.
  *
- * Once running, the stage is set Running. On success every written layer records the
- * run's analysis level, the stage is set Complete and its stale flag is cleared, in
- * that order, after the flushes. An exception raised after the stage was set Running
- * leaves it Failed and propagates.
+ * Once past those refusals, a re-run first marks every direct dependent stale; then the
+ * stage is set Running; then a re-run discards the stage's prior objects, edges,
+ * annotations and raster. On success every written layer records the run's analysis
+ * level, the stage is set Complete and its stale flag is cleared, in that order, after
+ * the flushes. Any failure from the re-run preparation on leaves the stage Failed, best
+ * effort, and propagates.
  *
  * Errors the runner raises itself carry the stage name in ErrorContext::stageName and
- * name the stage in the message. Messages never carry the slide path.
+ * name the stage in the message. The runner adds no slide path to any message; a
+ * wrapped error's ErrorContext::cause carries the original error's text unchanged.
  * @par Thread-safety
  * ThreadConfined; one runner at a time per workspace.
  * @par Requirements
@@ -93,17 +98,20 @@ public:
 
     /**
      * @brief Runs the stage to completion.
-     * @throws IoError When the workspace is read-only, or as the pipeline and the store
-     * raise it.
-     * @throws StageError When the stage's record is unreadable, a dependency is not
-     * Complete or is stale, another runner of the workspace is inside run(), or an operation
-     * that produces objects names no layer the stage writes (or none, with the stage
-     * writing other than one layer); it names the stage in its context and message, and
-     * for the last case the operation too.
-     * @throws InvalidArgumentError, UnsupportedDataTypeError, ChannelArityError,
-     * TileError, CancelledError, InternalError As Pipeline::validate() and
-     * Pipeline::runInto() raise them; the stage is left Failed.
-     * @throws std::bad_alloc When allocation fails.
+     * @throws IoError When the workspace is read-only; nothing is changed.
+     * @throws StageError When another runner of the workspace is inside run(), the
+     * stage's record is unreadable, a dependency is not Complete or is stale, or an
+     * operation that produces objects names no layer the stage writes (or none, with the
+     * stage writing other than one layer); nothing is changed, and for the last case the
+     * error names the operation too. Also for every failure of the run itself, from the
+     * re-run preparation to the final status write: the stage is left Failed (best
+     * effort) and the error names the stage, carries the original error's text as its
+     * cause, and copies the operation and tile when the original names them. A
+     * StageError raised inside the run (a nested runner's refusal) propagates unchanged.
+     * @throws CancelledError When the run's token is cancelled; it names the stage and
+     * the stage is left Failed.
+     * @throws std::bad_alloc When allocation fails, unchanged; once the run has started
+     * the stage is left Failed.
      * @par Thread-safety
      * ThreadConfined.
      * @par Requirements

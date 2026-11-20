@@ -16,6 +16,7 @@
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
@@ -134,6 +135,16 @@ std::string messageOf(StageRunner& runner, std::string* stageName = nullptr) {
         return e.what();
     }
     return std::string();
+}
+
+// The StageDiscarded events the journal holds for a stage.
+int64_t discardEventsOf(Fixture& f, StageId stage) {
+    int64_t count = 0;
+    const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
+    while (cursor->next(0)) {
+        if (cursor->current().kind() == EventKind::StageDiscarded && cursor->current().stage() == stage) ++count;
+    }
+    return count;
 }
 
 class RecordingObserver : public ProgressObserver {
@@ -319,9 +330,11 @@ TEST(StageRunner, TargetLayerNotDeclaredIsStageError) {
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
     EXPECT_NE(message.find("cells"), std::string::npos) << message;
     EXPECT_EQ(stageName, "nuclei");
-    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    // Refused at the gate: nothing was written, not even Running.
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
     EXPECT_EQ(f.objectsOf(f.nuclei), 0);
     EXPECT_EQ(f.objectsOf(f.cells), 0);
+    EXPECT_EQ(discardEventsOf(f, id), 0);
 }
 
 TEST(StageRunner, MissingTargetWithTwoLayersIsStageError) {
@@ -335,8 +348,9 @@ TEST(StageRunner, MissingTargetWithTwoLayersIsStageError) {
     EXPECT_NE(message.find("both"), std::string::npos) << message;
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
     EXPECT_EQ(stageName, "both");
-    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
     EXPECT_EQ(f.objectsOf(f.nuclei) + f.objectsOf(f.cells), 0);
+    EXPECT_EQ(discardEventsOf(f, id), 0);
 }
 
 TEST(StageRunner, MissingTargetWithNoLayerIsStageError) {
@@ -350,7 +364,8 @@ TEST(StageRunner, MissingTargetWithNoLayerIsStageError) {
     EXPECT_NE(message.find("nowhere"), std::string::npos) << message;
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
     EXPECT_EQ(stageName, "nowhere");
-    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
+    EXPECT_EQ(discardEventsOf(f, id), 0);
 }
 
 TEST(StageRunner, EmptyTargetLayerCountsAsAbsent) {
@@ -363,7 +378,8 @@ TEST(StageRunner, EmptyTargetLayerCountsAsAbsent) {
     // The runner's refusal, not the pipeline's: it names the stage.
     EXPECT_NE(message.find("stage \"both\""), std::string::npos) << message;
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
-    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
+    EXPECT_EQ(discardEventsOf(f, id), 0);
 
     // With one written layer the empty name resolves to it.
     StageDefinition one("one");
@@ -754,15 +770,6 @@ std::vector<ObjectId> idsOf(Fixture& f, LayerId layer) {
     return ids;
 }
 
-int64_t discardEventsOf(Fixture& f, StageId stage) {
-    int64_t count = 0;
-    const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
-    while (cursor->next(0)) {
-        if (cursor->current().kind() == EventKind::StageDiscarded && cursor->current().stage() == stage) ++count;
-    }
-    return count;
-}
-
 StageId declareProbed(Fixture& f, int64_t failKind) {
     StageDefinition def("nuclei");
     def.writesLayer(f.nuclei).pipeline(probedChain(failKind));
@@ -778,6 +785,9 @@ TEST(StageRunner, TileFaultFailsStageAndLeavesPriorStateIntact) {
     StageRunner(*f.workspace, background).run();
     const int64_t backgroundObjects = f.objectsOf(f.background);
     ASSERT_EQ(backgroundObjects, 9);
+    const AnnotationStore& annotations = f.workspace->store()->annotations();
+    const int64_t labelsBefore = annotations.labelAnnotationCount();
+    const int64_t measurementsBefore = annotations.measurementAnnotationCount();
     const StageId nuclei = declareProbed(f, 0);
 
     StageRunner runner(*f.workspace, nuclei);
@@ -795,6 +805,8 @@ TEST(StageRunner, TileFaultFailsStageAndLeavesPriorStateIntact) {
     EXPECT_EQ(f.objectsOf(f.nuclei), 0);
     EXPECT_EQ(f.workspace->store()->edges().parentEdgeCount(), 0);
     EXPECT_EQ(f.workspace->store()->edges().derivedFromEdgeCount(), 0);
+    EXPECT_EQ(annotations.labelAnnotationCount(), labelsBefore) << "the failed stage left no labels";
+    EXPECT_EQ(annotations.measurementAnnotationCount(), measurementsBefore) << "nor measurements";
     EXPECT_GE(discardEventsOf(f, nuclei), 3) << "objects, edges and annotations were each discarded";
     EXPECT_EQ(f.stages().status(background), StageStatus::Complete);
     EXPECT_EQ(f.objectsOf(f.background), backgroundObjects);
@@ -991,7 +1003,7 @@ TEST(StageRunner, RunnerStageErrorPassesThroughUnchanged) {
         EXPECT_STREQ(e.operationName(), "segment.connected_components");
         EXPECT_STREQ(e.cause(), "") << "the runner's own error is not wrapped";
     }
-    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending) << "refused at the gate";
 }
 
 TEST(StageRunner, FailureAfterObjectsReachedTheStoreDiscardsThem) {
@@ -1047,6 +1059,56 @@ TEST(StageRunner, FailedRecordingIsLoggedAndTheOriginalPropagates) {
     }
     EXPECT_GE(named, 1);
     EXPECT_EQ(f.stages().status(id), StageStatus::Running) << "the recording of Failed was the step that failed";
+}
+
+TEST(StageRunner, RerunIsRunningBeforeItsOutputIsDiscarded) {
+    Fixture f;
+    const StageId background = f.stages().declare(blobStage("background", f.background));
+    StageDefinition def("nuclei");
+    def.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blobChain());
+    const StageId nuclei = f.stages().declare(def);
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    ASSERT_FALSE(f.stages().isStale(nuclei));
+    ASSERT_EQ(f.objectsOf(f.background), 9);
+
+    // The first discard fails and so does the failure recording: what is left is what a
+    // crash at that point leaves. The dependent is already stale and the stage Running,
+    // with its prior output still there; it is not Complete.
+    detail::failNextRerunDiscardForTesting();
+    detail::failNextStageFailureRecordingForTesting();
+    {
+        CaptureLog log;
+        EXPECT_THROW(StageRunner(*f.workspace, background).run(), StageError);
+    }
+    EXPECT_EQ(f.stages().status(background), StageStatus::Running);
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+    // Hidden from the default view while the stage is not Complete, but still stored.
+    const ObjectQuery inFlight = ObjectQuery().layer(f.background).visibility(StageVisibility::IncludeInFlight);
+    EXPECT_EQ(f.objectsOf(f.background), 0) << "a Running stage's objects are not visible to later stages";
+    EXPECT_EQ(f.workspace->store()->objects().count(inFlight), 9) << "the discard that failed was the first";
+
+    // With the recording working, the same failure leaves the stage Failed and empty.
+    f.workspace->store()->stageStateWriter().setStatus(background, StageStatus::Complete);
+    f.stages().clearStale(nuclei);
+    detail::failNextRerunDiscardForTesting();
+    StageRunner failing(*f.workspace, background);
+    try {
+        failing.run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "background");
+        EXPECT_NE(std::string(e.cause()).find("injected re-run discard fault"), std::string::npos) << e.what();
+    }
+    EXPECT_TRUE(failing.isRerun());
+    EXPECT_EQ(f.stages().status(background), StageStatus::Failed);
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+    EXPECT_EQ(f.workspace->store()->objects().count(inFlight), 0) << "the failure recording discarded them";
+
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Complete);
+    EXPECT_FALSE(f.stages().isStale(nuclei));
 }
 
 TEST(StageRunner, FailedRunLeavesTheAnalysisLevelUnrecorded) {

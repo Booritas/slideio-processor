@@ -1,4 +1,4 @@
-// Requirements: UR-STG-3, UR-STG-10, UR-EXE-1, UR-EXE-4
+// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
 #include <slideio/processor/workspace/stage_runner.hpp>
 
 #include <workspace/detail/run_fault.hpp>
@@ -58,10 +58,13 @@ namespace {
 }
 
 std::atomic<bool> gFailNextRecording{false};
+std::atomic<bool> gFailNextRerunDiscard{false};
 
 } // namespace
 
 void detail::failNextStageFailureRecordingForTesting() noexcept { gFailNextRecording.store(true); }
+
+void detail::failNextRerunDiscardForTesting() noexcept { gFailNextRerunDiscard.store(true); }
 
 class StageRunner::Impl {
 public:
@@ -72,12 +75,16 @@ public:
         rerun = registry.status(stage) != StageStatus::Pending;
     }
 
-    // The refusals that leave the stage as it was, in §4.4's order. The run slot is the
-    // last of them and is taken by the caller.
-    void gate() const {
+    // The first refusal; it needs no run slot.
+    void checkWritable() const {
         if (workspace.isReadOnly()) {
             throw IoError(("stage \"" + name + "\" cannot run: the workspace is read-only").c_str());
         }
+    }
+
+    // The refusals made while the caller holds the run slot, in §4.4's order. Each leaves
+    // the stage as it was: nothing has been written yet.
+    void gate() const {
         const StageRegistry& registry = workspace.stages();
         if (registry.isUnreadable(stage)) {
             throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
@@ -92,17 +99,21 @@ public:
                                      (complete ? "\" is stale" : "\" is not complete"));
             }
         }
+        checkLayerBinding(registry.definition(stage));
     }
 
     // Decision 6: every operation that produces objects names one of the stage's written
     // layers, or leaves it out when the stage writes exactly one. Raster-only operations are
-    // not consulted. Run before Pipeline::validate(), so the refusal names the stage.
+    // not consulted. Part of gate(): it needs only the definition, so a bad definition is
+    // refused before anything is written, and the refusal names the stage.
     void checkLayerBinding(const StageDefinition& definition) const {
         const PipelineSpec spec = definition.pipeline();
         const LayerRegistry& layers = workspace.layers();
         for (int32_t i = 0; i < spec.operationCount(); ++i) {
             const char* operation = spec.operationName(i);
-            if (!OperationCatalog::instance().producesObjects(operation)) continue;
+            // An unknown operation is Pipeline::validate()'s refusal, inside the run.
+            const OperationCatalog& catalog = OperationCatalog::instance();
+            if (!catalog.isRegistered(operation) || !catalog.producesObjects(operation)) continue;
             const OperationParameters& parameters = spec.operationParameters(i);
             bool present = false;
             for (int32_t k = 0; k < parameters.count(); ++k) {
@@ -132,13 +143,9 @@ public:
         throw StageError(("stage \"" + name + "\": operation " + operation + " " + what).c_str(), context);
     }
 
-    // Decision 3, before the stage is set Running: the prior output goes, and every stage
-    // that depends directly on this one is marked stale, whatever this run's outcome.
-    void prepareRerun(StageRegistry& registry, Store& store) {
-        store.objects().discardStage(stage);
-        store.edges().discardEdgesOfStage(stage);
-        store.annotations().discardAnnotationsOfStage(stage);
-        store.rasters().discardRasterOfStage(stage);
+    // Decision 3, first step of a re-run: every stage that depends directly on this one is
+    // marked stale, whatever this run's outcome, before anything of this stage changes.
+    void markDependentsStale(StageRegistry& registry) {
         for (int32_t i = 0; i < registry.count(); ++i) {
             const StageId other = registry.at(i);
             const int32_t dependencies = registry.dependencyCount(other);
@@ -149,6 +156,16 @@ public:
                 }
             }
         }
+    }
+
+    // Decision 3, last step of a re-run, after the stage is set Running: the prior output
+    // goes. A crash part-way leaves the stage Running, which the next run treats as a re-run.
+    void discardPriorOutput(Store& store) {
+        if (gFailNextRerunDiscard.exchange(false)) throw IoError("injected re-run discard fault");
+        store.objects().discardStage(stage);
+        store.edges().discardEdgesOfStage(stage);
+        store.annotations().discardAnnotationsOfStage(stage);
+        store.rasters().discardRasterOfStage(stage);
     }
 
     // Decision 5, best effort: each step is tried whatever the one before did, and a step
@@ -191,8 +208,8 @@ public:
         return context;
     }
 
-    // Everything after the run slot is taken: the run proper, §4.4's listing without the
-    // rasters.
+    // Everything after gate(): the run proper, §4.4's listing from the re-run preparation
+    // on. All of it is inside the guarded region, so any failure records Failed.
     void execute() {
         StageRegistry& registry = workspace.stages();
         const StageDefinition definition = registry.definition(stage);
@@ -202,18 +219,15 @@ public:
         rerun = registry.status(stage) != StageStatus::Pending;
         objects = 0;
         edges = 0;
-        if (rerun) {
-            try {
-                prepareRerun(registry, *store);
-            } catch (...) {
-                // Part of the prior output may be gone: the stage must not stay Complete.
-                guarded("marking it Failed", [&] { store->stageStateWriter().setStatus(stage, StageStatus::Failed); });
-                throw;
-            }
-        }
-        store->stageStateWriter().setStatus(stage, StageStatus::Running);
         RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
         try {
+            // Decision 3's order: dependents stale, then Running, then the discards, so a
+            // crash between any two steps never leaves the stage Complete with part of its
+            // output gone, nor its dependents looking current.
+            if (rerun) markDependentsStale(registry);
+            store->stageStateWriter().setStatus(stage, StageStatus::Running);
+            if (rerun) discardPriorOutput(*store);
+
             const ObjectWriterPtr sink = store->objects().writerForStage(stage);
             const EdgeWriterPtr edgeWriter = store->edges().writerForStage(stage);
             const AnnotationWriterPtr notes = store->annotations().writerForStage(stage);
@@ -261,7 +275,6 @@ public:
                 pipeline.auxiliaryRaster(definition.readRasterBindingAt(i), sources[next++].get());
             }
             if (rasterWriter) pipeline.rasterSink(rasterWriter.get());
-            checkLayerBinding(definition);
             pipeline.validate();
 
             pipeline.runInto(*sink, progress, cancel);
@@ -329,8 +342,11 @@ StageRunner& StageRunner::cancellation(const CancellationToken& token) noexcept 
 }
 
 void StageRunner::run() {
-    impl_->gate();
+    // Read-only needs no slot; the rest of the gate runs under the slot, so a racing
+    // re-run of a dependency cannot slip between the dependency check and the run.
+    impl_->checkWritable();
     const detail::RunSlot slot(impl_->workspace, impl_->name.c_str());
+    impl_->gate();
     impl_->execute();
 }
 
