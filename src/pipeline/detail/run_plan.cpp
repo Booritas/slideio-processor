@@ -369,12 +369,16 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         }
         return largest;
     };
-    // When the buffers alone fit the ceiling, the working sets decide: the message names the largest.
-    auto decidedBy = [&](int64_t buffers, int64_t area) {
+    // When the buffers alone fit the ceiling, the working sets decide: the message names the
+    // largest, unless it belongs to `named`, the operation the error's context names.
+    auto decidedBy = [&](int64_t buffers, int64_t area, const char* named) {
         const char* name = nullptr;
         largestWorkingSet(area, &name);
         if (buffers > inputs.ceilingBytes || name == nullptr) {
             return std::string();
+        }
+        if (named != nullptr && std::strcmp(name, named) == 0) {
+            return std::string("; the largest working set is its own");
         }
         return std::string("; the largest working set is ") + name + "'s";
     };
@@ -389,7 +393,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         invalid((*whole)->name(), std::string(prefix) + "the operation needs level " + std::to_string(level) +
                 " whole in memory: " + bytesText(wholeNeed(region)) + " bytes, above the memory ceiling of " +
                 std::to_string(inputs.ceilingBytes) + " bytes" +
-                decidedBy(wholeBuffers(region), mulSat(region.width, region.height)));
+                decidedBy(wholeBuffers(region), mulSat(region.width, region.height), (*whole)->name()));
     };
 
     // What one tile's buffers need: every step's planes, the reader's interleave
@@ -494,7 +498,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 std::to_string(haloSide(tileW, chainHalo.left, chainHalo.right)) + " x " +
                 std::to_string(haloSide(tileH, chainHalo.top, chainHalo.bottom)) + " with the chain's halo) needs " +
                 bytesText(tileBytes) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
-                " bytes" + decidedBy(mulSat(area, tilePixelBytes), area));
+                " bytes" + decidedBy(mulSat(area, tilePixelBytes), area, nullptr));
     }
 
     // The state a global-context operation's instances keep between calls. A run holds

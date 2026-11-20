@@ -176,6 +176,17 @@ TEST(WorkingSet, WholeLevelAddsPerTile) {
     EXPECT_TRUE(contains(message, "whole in memory")) << message;
     EXPECT_TRUE(contains(message, "test.workingSet")) << message;
 
+    // With 1,000,000 bytes per call, test.wholeLevel's 6,250,000 is the largest working
+    // set: the operation's own, so the message does not repeat the name
+    // ErrorContext::operationName already appends.
+    Pipeline own(scene, config(256), chain(1000000));
+    own.memoryBudget(makeMemoryBudget(wholeWithoutPerTile + 1000000 - 1));
+    const std::string ownMessage = validateMessage(own);
+    EXPECT_TRUE(contains(ownMessage, "the largest working set is its own")) << ownMessage;
+    const size_t first = ownMessage.find("test.wholeLevel");
+    ASSERT_NE(first, std::string::npos) << ownMessage;
+    EXPECT_EQ(ownMessage.find("test.wholeLevel", first + 1), std::string::npos) << ownMessage;
+
     Pipeline fits(scene, config(256), chain(10000000));
     fits.memoryBudget(makeMemoryBudget(wholeWithoutPerTile + 10000000));
     EXPECT_NO_THROW(fits.validate());

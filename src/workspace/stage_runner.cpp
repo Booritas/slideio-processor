@@ -239,15 +239,30 @@ public:
         return context;
     }
 
-    // The context of an error built from `original`: this stage, the original's text as
-    // the cause, and the operation and tile the original names.
-    ErrorContext contextOf(const ProcessorError& original) const {
-        ErrorContext context = contextOf(original.what());
+    // The context of an error built from `original`: this stage, `cause` (causeOf the
+    // original, kept alive by the caller), and the operation and tile the original names.
+    ErrorContext contextOf(const ProcessorError& original, const std::string& cause) const {
+        ErrorContext context = contextOf(cause.c_str());
         if (original.operationName()[0] != '\0') context.operationName = original.operationName();
         context.hasTile = original.hasTile();
         context.tileX = original.tileX();
         context.tileY = original.tileY();
         return context;
+    }
+
+    // The original's text as a cause, without the operation and tile it names: the
+    // wrapping error's context carries those, and what() would otherwise repeat them.
+    static std::string causeOf(const ProcessorError& original) {
+        std::string text = original.what();
+        const auto erase = [&text](const std::string& piece) {
+            const size_t at = text.find(piece);
+            if (at != std::string::npos) text.erase(at, piece.size());
+        };
+        if (original.operationName()[0] != '\0') erase(std::string("; operation: ") + original.operationName());
+        if (original.hasTile()) {
+            erase("; tile: (" + std::to_string(original.tileX()) + ", " + std::to_string(original.tileY()) + ")");
+        }
+        return text;
     }
 
     // Decision 5 and error.hpp's exception stance, applied to the exception being
@@ -259,12 +274,15 @@ public:
         try {
             throw;
         } catch (const CancelledError& e) {
-            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e, cause));
         } catch (const StageError& e) {
             if (name == e.stageName()) throw;
-            throw StageError(message.c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw StageError(message.c_str(), contextOf(e, cause));
         } catch (const ProcessorError& e) {
-            throw StageError(message.c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw StageError(message.c_str(), contextOf(e, cause));
         } catch (const std::bad_alloc&) {
             throw;
         } catch (const std::ios_base::failure& e) {

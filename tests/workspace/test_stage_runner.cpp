@@ -1230,8 +1230,12 @@ TEST(StageRunner, GateRefusalWrapsThePipelineError) {
         EXPECT_STREQ(e.stageName(), "two");
         const std::string cause = e.cause();
         EXPECT_NE(cause.find("Pipeline::validate"), std::string::npos) << "the pipeline's own error: " << cause;
-        EXPECT_NE(cause.find("segment.connected_components"), std::string::npos) << cause;
         EXPECT_STREQ(e.operationName(), "segment.connected_components") << "copied from the pipeline's error";
+        // The copied name is left out of the cause, so what() names the operation once.
+        const std::string what = e.what();
+        const size_t first = what.find("segment.connected_components");
+        ASSERT_NE(first, std::string::npos) << what;
+        EXPECT_EQ(what.find("segment.connected_components", first + 1), std::string::npos) << what;
     }
     EXPECT_EQ(f.stages().status(id), StageStatus::Pending) << "refused at the gate";
     EXPECT_EQ(discardEventsOf(f, id), 0);
