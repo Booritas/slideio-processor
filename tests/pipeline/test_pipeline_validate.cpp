@@ -204,6 +204,19 @@ TEST(PipelineValidate, TargetLayerResolution) {
     two.bindLayer("nuclei", LayerId(7)).bindLayer("cells", LayerId(8));
     EXPECT_TRUE(contains(validateMessage<InvalidArgumentError>(two), "test.components"));
 
+    // An empty targetLayer counts as absent: it resolves with one bound layer and is
+    // refused as having no target with two.
+    OperationParameters empty;
+    empty.setString("targetLayer", "");
+    Pipeline emptyOne(scene, config(), specOf("test.components", empty));
+    emptyOne.bindLayer("nuclei", LayerId(7));
+    emptyOne.validate();
+    ASSERT_EQ(planOf(emptyOne).targetLayers.size(), 1u);
+    EXPECT_EQ(planOf(emptyOne).targetLayers[0], LayerId(7));
+    Pipeline emptyTwo(scene, config(), specOf("test.components", empty));
+    emptyTwo.bindLayer("nuclei", LayerId(7)).bindLayer("cells", LayerId(8));
+    EXPECT_TRUE(contains(validateMessage<InvalidArgumentError>(emptyTwo), "no target layer"));
+
     // An explicit targetLayer picks among several.
     OperationParameters cells;
     cells.setString("targetLayer", "cells");

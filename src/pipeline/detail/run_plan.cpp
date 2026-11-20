@@ -165,16 +165,22 @@ std::vector<LayerId> resolveTargetLayers(const std::vector<OperationPtr>& operat
             continue;
         }
         const OperationParameters& parameters = spec.operationParameters(static_cast<int32_t>(k));
+        // An empty name counts as absent (SDS 04 4.4), a non-string value is an error.
         bool present = false;
         for (int32_t i = 0; i < parameters.count(); ++i) {
             present = present || std::strcmp(parameters.keyAt(i), "targetLayer") == 0;
         }
         const std::pair<std::string, LayerId>* bound = nullptr;
+        bool named = false;
         if (present) {
             const char* name = parameters.getString("targetLayer", nullptr);
             if (name == nullptr) {
                 invalid(std::string("the \"targetLayer\" parameter of ") + op.name() + " is not a string");
             }
+            named = name[0] != '\0';
+        }
+        if (named) {
+            const char* name = parameters.getString("targetLayer", "");
             const auto found = std::find_if(layers.begin(), layers.end(),
                                             [name](const std::pair<std::string, LayerId>& l) { return l.first == name; });
             if (found == layers.end()) {

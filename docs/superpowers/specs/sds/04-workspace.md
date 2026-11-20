@@ -807,10 +807,8 @@ one written layer. Otherwise `run()` throws `StageError` naming the stage, the
 operation and the layer (the `ErrorContext` carries both `stageName` and
 `operationName`), and the stage ends `Failed` with nothing written. The check is
 the runner's so that its message names the stage; `Pipeline::validate()` repeats
-the resolution for callers that use a pipeline directly. An empty `targetLayer`
-that does reach `validate()` (a hand-built parameter bag; the typed parameter
-classes drop an empty name) is still refused there as an unbound layer, so a
-single-layer stage with an empty name fails, in the pipeline's words.
+the resolution for callers that use a pipeline directly, and treats an empty
+`targetLayer` as absent there too.
 
 **Annotation targets are not checked here yet.** No operation in the catalog
 names an annotation target layer today, and `storage` refuses an undeclared

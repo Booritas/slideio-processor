@@ -34,6 +34,7 @@
 using namespace slideio::processor;
 using testing_support::TempDirectory;
 using testing_support::writeBlobSlide;
+using testing_support::writeEdgeBlobSlide;
 using testing_support::writeHalfBlobSlide;
 
 namespace fs = std::filesystem;
@@ -58,7 +59,7 @@ StageDefinition blobStage(const char* name, LayerId layer) {
 }
 
 // Which 600 x 600 slide a Fixture writes.
-enum class SlideKind { Blobs, HalfBlobs };
+enum class SlideKind { Blobs, HalfBlobs, Edge };
 
 // A 600 x 600 blob slide in a workspace with the layers the tests name.
 struct Fixture {
@@ -66,8 +67,12 @@ struct Fixture {
         fs::create_directories(dir.path());
         // A pyramid needs the SVS driver, which the extension selects.
         const fs::path file = dir.path() / (levels > 1 ? "slide.svs" : "slide.tif");
-        const fs::path slide = kind == SlideKind::Blobs ? writeBlobSlide(file, 600, 600, levels)
-                                                        : writeHalfBlobSlide(file, 600, 600);
+        fs::path slide;
+        switch (kind) {
+        case SlideKind::Blobs: slide = writeBlobSlide(file, 600, 600, levels); break;
+        case SlideKind::HalfBlobs: slide = writeHalfBlobSlide(file, 600, 600); break;
+        case SlideKind::Edge: slide = writeEdgeBlobSlide(file, 600, 600, levels); break;
+        }
         workspacePath = (dir.path() / "ws").u8string();
         workspace = Workspace::create(workspacePath.c_str(), slide.u8string().c_str(), 0, Configuration::defaults());
         LayerLifecycle& l = workspace->layerLifecycle();
@@ -93,11 +98,6 @@ std::vector<Rect64> boundsOf(Fixture& f, LayerId layer) {
     const CursorPtr cursor = f.workspace->store()->objects().query(ObjectQuery().layer(layer));
     while (cursor->next()) bounds.push_back(cursor->current().boundingBox());
     return bounds;
-}
-
-bool contains(const Rect64& outer, const Rect64& inner, int64_t margin) {
-    return inner.x >= outer.x - margin && inner.y >= outer.y - margin &&
-           inner.right() <= outer.right() + margin && inner.bottom() <= outer.bottom() + margin;
 }
 
 // The grey, threshold and connected-components chain with `targetLayer` set on the last
@@ -352,6 +352,14 @@ TEST(StageRunner, EmptyTargetLayerCountsAsAbsent) {
     EXPECT_NE(message.find("stage \"both\""), std::string::npos) << message;
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
     EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+
+    // With one written layer the empty name resolves to it.
+    StageDefinition one("one");
+    one.writesLayer(f.nuclei).pipeline(chainFor(128.0, "Below", ""));
+    const StageId oneId = f.stages().declare(one);
+    StageRunner(*f.workspace, oneId).run();
+    EXPECT_EQ(f.stages().status(oneId), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 9);
 }
 
 TEST(StageRunner, TwoLayersEachNamedRun) {
@@ -416,22 +424,40 @@ TEST(StageRunner, RestrictionKeepsObjectsInsideTheLayer) {
     EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
     EXPECT_EQ(runner.objectsWritten(), 3);
     const std::vector<Rect64> bounds = boundsOf(f, f.nuclei);
+    const std::vector<Rect64> region = boundsOf(f, f.background);
     ASSERT_EQ(bounds.size(), 3u);
-    for (const Rect64& box : bounds) EXPECT_LT(box.right(), 300) << "an object right of the layer";
+    ASSERT_EQ(region.size(), 1u);
+    for (const Rect64& box : bounds) {
+        // Each object is one of the three left discs: its centre is in the white half, and
+        // inside the layer's bounds.
+        const int64_t cx = box.x + box.width / 2;
+        EXPECT_GE(box.x, 0);
+        EXPECT_EQ(cx, 100) << "an object that is not a left disc";
+        EXPECT_GE(cx, region[0].x);
+        EXPECT_LT(cx, region[0].right());
+    }
 }
 
 TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
-    Fixture f(SlideKind::Blobs, 3);
+    Fixture f(SlideKind::Edge, 3);
 
-    // The background layer is found at level 2, a quarter of the resolution.
-    PipelineSpec coarse = chainFor(128.0, "Below", nullptr);
+    // The background layer is the white region, found at level 2: its edge, at 302, is
+    // rounded out to the level-2 pixel grid.
+    PipelineSpec coarse;
+    coarse.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    coarse.operation("pixel.threshold_fixed",
+                     OperationParameters().setDouble("value", 230.0).setString("direction", "Above"));
+    coarse.operation("segment.connected_components", OperationParameters().setBool("extractHoles", false));
     coarse.analysisLevel(2);
     StageDefinition bg("background");
     bg.writesLayer(f.background).pipeline(coarse);
     StageRunner(*f.workspace, f.stages().declare(bg)).run();
-    ASSERT_EQ(f.workspace->layers().coarsestAnalysisLevel(f.background), 2);
+    const int32_t level = f.workspace->layers().coarsestAnalysisLevel(f.background);
+    ASSERT_EQ(level, 2);
     const std::vector<Rect64> background = boundsOf(f, f.background);
-    ASSERT_EQ(background.size(), 9u);
+    ASSERT_EQ(background.size(), 1u);
+    const Rect64 region = background[0];
+    EXPECT_GT(region.right(), testing_support::kEdgeX) << "the coarse region should reach past the true edge";
 
     StageDefinition def("nuclei");
     def.writesLayer(f.nuclei).restrictToLayer(f.background).pipeline(chainFor(128.0, "Below", nullptr));
@@ -439,22 +465,27 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     StageRunner(*f.workspace, id).run();
     EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
 
-    const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(2) / 2.0;
-    ASSERT_DOUBLE_EQ(halfStep, 2.0);
+    // Discs A, B, C of writeEdgeBlobSlide, by their level-0 centres.
+    const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(level) / 2.0;
+    const int64_t centreA = testing_support::kEdgeX - 25;
+    const int64_t centreB = testing_support::kEdgeX + 60;
+    // B lies wholly outside the region dilated by the half-step, A and C have their centres inside.
+    ASSERT_GT(static_cast<double>(centreB - 20), static_cast<double>(region.right()) + halfStep);
+    ASSERT_LT(centreA, region.right());
+
     const std::vector<Rect64> nuclei = boundsOf(f, f.nuclei);
+    bool foundA = false, foundB = false, foundC = false;
     for (const Rect64& box : nuclei) {
-        bool inside = false;
-        for (const Rect64& area : background) inside = inside || contains(area, box, 2);
-        EXPECT_TRUE(inside) << "a nucleus lies outside the dilated background";
+        const int64_t cx = box.x + box.width / 2;
+        const int64_t cy = box.y + box.height / 2;
+        foundA = foundA || (cx == centreA && cy == 150);
+        foundB = foundB || cx == centreB;
+        foundC = foundC || (cx == 100 && cy == 450);
+        // No object lies outside the dilated region (by its centre: the anchor decides).
+        EXPECT_LE(static_cast<double>(cx), static_cast<double>(region.right()) + halfStep);
     }
-    // Every disc whose centre is in the undilated background is found.
-    for (const Rect64& area : background) {
-        const int64_t cx = area.x + area.width / 2;
-        const int64_t cy = area.y + area.height / 2;
-        bool found = false;
-        for (const Rect64& box : nuclei) {
-            found = found || (cx >= box.x && cx < box.right() && cy >= box.y && cy < box.bottom());
-        }
-        EXPECT_TRUE(found) << "a disc inside the background was missed";
-    }
+    EXPECT_TRUE(foundA) << "the disc 25 px inside the edge was missed";
+    EXPECT_TRUE(foundC) << "the disc inside the region was missed";
+    EXPECT_FALSE(foundB) << "the disc outside the dilated region was found";
+    EXPECT_EQ(nuclei.size(), 2u);
 }

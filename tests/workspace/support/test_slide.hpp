@@ -29,6 +29,18 @@ std::filesystem::path writeBlobSlide(const std::filesystem::path& file, int32_t 
 // extractHoles = false), and below 128 selects all six discs.
 std::filesystem::path writeHalfBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height);
 
+// The column where the white region of writeEdgeBlobSlide ends and the grey begins.
+// Deliberately not a multiple of 4, so a level-2 analysis puts the region's edge past it.
+constexpr int64_t kEdgeX = 302;
+
+// A slide with a white region (x < kEdgeX) beside a grey one (200), and three dark discs of
+// radius 20: A centred 25 px inside the edge (150 down), B 60 px outside it, and C deep
+// inside the white region at (100, 450). Thresholding above 230 selects the white region
+// (disc A is a hole in it, so extractHoles = false); below 128 selects the discs. `levels` and the
+// `*.svs` naming are as for writeBlobSlide.
+std::filesystem::path writeEdgeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height,
+                                         int32_t levels = 1);
+
 // A unique path in the temp directory, not created; remove_all on destruction, so a
 // failing test leaves nothing behind.
 class TempDirectory {
