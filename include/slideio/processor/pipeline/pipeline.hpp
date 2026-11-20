@@ -396,7 +396,7 @@ public:
     /**
      * @brief The region one output level covers: the run's region (the scene, the
      * ROI and the polygon's bounding box intersected) laid out at source level
-     * analysisLevel() + @p level, as the tile grid would cover it there.
+     * analysisLevel() + @p level, as the pipeline bounds rasters and reductions there.
      * @param level The output level, from 0 to levelCount() - 1.
      * @return The rectangle, in that level's pixels.
      * @throws InvalidArgumentError When @p level is out of range; as levelCount().

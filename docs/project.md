@@ -261,6 +261,22 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     and results previously stored by ROI- or polygon-restricted stages are
     affected and are not marked stale. Re-run those stages and record the
     change in the verification evidence.
+    Also changed for ROI and polygon object runs: `tilesSkipped` now counts the
+    out-of-region tiles; the per-tile memory check uses a full tile, so a tiny
+    ROI on an object chain can now be refused by the memory ceiling where it was
+    accepted before (a stage that ran earlier can fail validation, with the
+    same message); and a float accumulation (a global-context reduction) folds
+    over different tile boundaries, so its result, and any objects thresholded
+    by it, can differ in the last bits from earlier runs.
+  - **Open follow-up (not fixed): the ROI admission rule at a non-integer level
+    scale is exact only to one level-0 column.** Pre-existing. At a non-integer
+    scale the ROI's anchor test floors the anchor to a level pixel, while the
+    ROI's level mapping rounds outward by `llround`, so the two disagree by up
+    to one level-0 column at the ROI's edges: an anchor on the ROI's first
+    column can be refused, and one just past its far edge admitted. At an
+    integer scale, and at level 0, the rule is exact. The edge-truncation fix
+    above does not change this; "Resolved" there means objects are whole, not
+    that ROI admission is exact at every scale.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

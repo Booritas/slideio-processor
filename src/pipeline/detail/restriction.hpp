@@ -26,7 +26,7 @@ namespace slideio::processor::detail {
 /// outlive the filter.
 ///
 /// The ROI is rasterised by its edges: a level pixel is set when it lies inside
-/// LevelSelector::mapToLevel(roi), the outward mapping the grid region uses.
+/// LevelSelector::mapToLevel(roi), the outward mapping that also gives the run's region.
 /// The polygon is rasterised with rasteriseInto (conservative even-odd) and the
 /// TileMaskSource fills a second mask over the same region; both are intersected
 /// with the tile mask. The mask source may be called from several workers at
@@ -69,10 +69,11 @@ public:
 
     /// True when the tile's owned rect (what skips() tests) does not intersect the run's region.
     /// Only a shortcut: the mask is empty there, because the ROI is rasterised by the outward
-    /// mapping that also gives the region and the polygon's conservative raster lies inside its
-    /// bounding box's outward mapping, so a pass skips the tile without building a mask. At a
-    /// non-integer scale the region is widened by one column and row on every side, because a
-    /// level pixel straddles its edge and a polygon's conservative raster can set it. False for an unrestricted run.
+    /// mapping that also gives the region, and the polygon's conservative raster lies inside its
+    /// bounding box's outward mapping to within one level pixel at a non-integer scale, so a pass
+    /// skips the tile without building a mask. At a non-integer scale the region is widened by
+    /// one column and row on every side, because a level pixel straddles its edge and a polygon's
+    /// conservative raster can set it. False for an unrestricted run.
     bool outsideRegion(int64_t tileIndex) const;
 
     /// Whether an object anchored at a level-0 point passes the restriction: the

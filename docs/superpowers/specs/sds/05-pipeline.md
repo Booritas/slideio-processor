@@ -1007,7 +1007,7 @@ mis-specified stage fails in seconds rather than hours. Each failure is an
 3. Every operation name is registered in the catalog; the message names it.
 4. An explicit channel index is below the scene's channel count.
 5. An explicit `analysisLevel` is within the scene's levels.
-6. The grid region (5.6) is non-empty; otherwise the message is "the
+6. The region (5.6) is non-empty; otherwise the message is "the
    restriction does not intersect the scene".
 7. Types. The check walks the chain with the per-plane types: the scene's
    channel types for the first operation, then each operation's `outputType`.
@@ -1070,7 +1070,7 @@ throws `InvalidArgumentError`. `StageRunner` sets it to the stage's name
 (`04-workspace.md` 4.4).
 
 **Whole-level chains.** If any operation reports `TileRequirement::WholeLevel`,
-the run is a single tile covering the grid region, whatever the configured tile
+the run is a single tile covering the region, whatever the configured tile
 size. The configured size is the `tileSizeFromSlide` default, not a choice about
 this operation, so the chain is laid out for what it needs rather than refused.
 `validate()` then checks the level against the memory ceiling:
@@ -1081,7 +1081,7 @@ needed = levelPixels × (Σ input plane bytes + Σ output plane bytes over the c
          + max workingSetBytesPerTile
 ```
 
-where `levelPixels` is the area of the grid region at the analysis level. The
+where `levelPixels` is the area of the region at the analysis level. The
 sum of every operation's per-pixel working set is a deliberately conservative
 bound — the operations run one after another, so only one of them holds its
 working set at a time — and the per-call figures add only the largest. When
@@ -1376,7 +1376,7 @@ tile is read when an object reaching out of an evaluated tile expects it.
 `levelCount()` is the source scene's level count minus `analysisLevel()`; output
 level *k* is the chain evaluated on source level `analysisLevel() + k`, laid out
 as `validate()` would lay the run out at that level, with every halo in that
-level's pixels — never rescaled (5.6). `rect(k)` is the grid region (5.6) at
+level's pixels — never rescaled (5.6). `rect(k)` is the region (5.6) at
 that source level, in its coordinates. The plan of every output level is
 resolved once, on the first lazy call, from a snapshot of the bindings that
 matter to pixels — spec, scene, configuration, budget, mask source and
@@ -1573,7 +1573,7 @@ coordinates, `PipelineSpec::restrictTo` takes level-0, and `Pipeline` maps it
 down with `mapToLevel`, which rounds **outward** so no level-0 pixel of the
 requested region is dropped on the way in.
 
-**What region the grid spans.** `Pipeline` intersects, in level-0 coordinates,
+**The region a restriction bounds.** `Pipeline` intersects, in level-0 coordinates,
 the scene rect with whichever of the spec's restrictions are present — the ROI
 rectangle, the polygon's `boundingBox()` — and maps the result down with
 `mapToLevel`. A bound `TileMaskSource` does **not** narrow the grid: it is
@@ -1596,8 +1596,8 @@ does not mean the run is done: tiles demanded by the seam merger (5.5) and the
 merging run after the last progress call, possibly in several rounds.
 
 The grid of an object-producing tiled run spans the level; any other run's grid
-spans the ROI's or the polygon's bounding box. The region (the ROI, or the
-polygon's bounding box, at the level) is a `RunPlan` field and still bounds
+spans that region. The region (the scene, the ROI and the polygon's
+bounding box intersected, at the level) is a `RunPlan` field and still bounds
 `rect(k)`, the raster tiles written (a tile writes only its part inside the
 region), and the pixels an accumulation pass applies to (a straddling tile
 applies over its part in the region, so a reduction that ignores the mask
