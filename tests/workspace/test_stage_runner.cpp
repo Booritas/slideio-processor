@@ -29,6 +29,8 @@
 #include <slideio/processor/workspace/stage_runner.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
+#include <workspace/detail/run_fault.hpp>
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -733,19 +735,6 @@ private:
     CancellationSource& source_;
 };
 
-// Closes the workspace from the first progress report.
-class CloseOnFirst : public ProgressObserver {
-public:
-    explicit CloseOnFirst(Workspace& workspace) : workspace_(workspace) {}
-    void onProgress(const char*, double, int64_t, int64_t) override {
-        if (!done_.exchange(true)) workspace_.close();
-    }
-
-private:
-    Workspace& workspace_;
-    std::atomic<bool> done_{false};
-};
-
 ObjectRecord unitSquare(LayerId layer, int64_t x, int64_t y) {
     const Point64 points[] = {{x, y}, {x + 1, y}, {x + 1, y + 1}, {x, y + 1}};
     Polygon polygon;
@@ -806,7 +795,7 @@ TEST(StageRunner, TileFaultFailsStageAndLeavesPriorStateIntact) {
     EXPECT_EQ(f.objectsOf(f.nuclei), 0);
     EXPECT_EQ(f.workspace->store()->edges().parentEdgeCount(), 0);
     EXPECT_EQ(f.workspace->store()->edges().derivedFromEdgeCount(), 0);
-    EXPECT_GE(discardEventsOf(f, nuclei), 1);
+    EXPECT_GE(discardEventsOf(f, nuclei), 3) << "objects, edges and annotations were each discarded";
     EXPECT_EQ(f.stages().status(background), StageStatus::Complete);
     EXPECT_EQ(f.objectsOf(f.background), backgroundObjects);
     EXPECT_EQ(runner.objectsWritten(), 0);
@@ -1034,25 +1023,50 @@ TEST(StageRunner, FailureAfterObjectsReachedTheStoreDiscardsThem) {
 
 TEST(StageRunner, FailedRecordingIsLoggedAndTheOriginalPropagates) {
     ProbeGuard guard;
-    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    // One worker, one deliberate fault; the seam makes every step of the failure recording
+    // throw, so nothing depends on scheduling and the scene is never released mid-run.
+    const Configuration config = ConfigurationBuilder(smallTiles()).workerCount(1).build();
+    Fixture f(SlideKind::Blobs, 1, config);
     const StageId id = declareProbed(f, 0);
     CaptureLog log;
-    // Closing the workspace from the first progress report makes the run fail, and the
-    // recording of the failure with it.
-    CloseOnFirst closer(*f.workspace);
-    StageRunner runner(*f.workspace, id);
-    runner.progress(&closer);
+    detail::failNextStageFailureRecordingForTesting();
     try {
-        runner.run();
+        StageRunner(*f.workspace, id).run();
         FAIL() << "no StageError";
     } catch (const StageError& e) {
-        EXPECT_STREQ(e.stageName(), "nuclei") << "the run's own failure, not one of the recording's";
-        EXPECT_NE(std::string(e.cause()).find("closed"), std::string::npos);
+        EXPECT_STREQ(e.stageName(), "nuclei");
+        EXPECT_NE(std::string(e.cause()).find("deliberate failure"), std::string::npos)
+            << "the run's own failure, not one of the recording's: " << e.what();
     }
-    bool named = false;
+    int64_t named = 0;
     for (const auto& entry : log.entries()) {
-        named = named || (entry.first == LogLevel::Error && entry.second.find("nuclei") != std::string::npos &&
-                          entry.second.find("StageRunner") != std::string::npos);
+        if (entry.first == LogLevel::Error && entry.second.find("StageRunner") != std::string::npos &&
+            entry.second.find("\"nuclei\"") != std::string::npos) {
+            ++named;
+        }
     }
-    EXPECT_TRUE(named);
+    EXPECT_GE(named, 1);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Running) << "the recording of Failed was the step that failed";
+}
+
+TEST(StageRunner, FailedRunLeavesTheAnalysisLevelUnrecorded) {
+    // Three levels; the stage analyses at level 2.
+    Fixture f(SlideKind::Blobs, 3);
+    PipelineSpec spec = blobChain();
+    spec.analysisLevel(2);
+    StageDefinition def("nuclei");
+    def.writesLayer(f.nuclei).pipeline(spec);
+    const StageId id = f.stages().declare(def);
+
+    CancellationSource source;
+    CancelOnFirst observer(source);
+    StageRunner failing(*f.workspace, id);
+    failing.progress(&observer).cancellation(source.token());
+    EXPECT_THROW(failing.run(), CancelledError);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.workspace->layers().coarsestAnalysisLevel(f.nuclei), 0);
+
+    StageRunner(*f.workspace, id).run();
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    EXPECT_EQ(f.workspace->layers().coarsestAnalysisLevel(f.nuclei), 2);
 }

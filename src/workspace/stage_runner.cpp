@@ -1,6 +1,7 @@
 // Requirements: UR-STG-3, UR-STG-10, UR-EXE-1, UR-EXE-4
 #include <slideio/processor/workspace/stage_runner.hpp>
 
+#include <workspace/detail/run_fault.hpp>
 #include <workspace/detail/run_slot.hpp>
 
 #include <slideio/processor/core/error.hpp>
@@ -22,6 +23,7 @@
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/stage_registry.hpp>
 
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <new>
@@ -55,7 +57,11 @@ namespace {
     throw StageError(message.c_str(), context);
 }
 
+std::atomic<bool> gFailNextRecording{false};
+
 } // namespace
+
+void detail::failNextStageFailureRecordingForTesting() noexcept { gFailNextRecording.store(true); }
 
 class StageRunner::Impl {
 public:
@@ -151,16 +157,19 @@ public:
     void recordFailure(Store& store, RasterWriterPtr& rasterWriter) noexcept {
         objects = 0;
         edges = 0;
+        injectFault = gFailNextRecording.exchange(false);
         guarded("abandoning the raster writer", [&] { rasterWriter.reset(); });
         guarded("discarding its objects", [&] { store.objects().discardStage(stage); });
         guarded("discarding its edges", [&] { store.edges().discardEdgesOfStage(stage); });
         guarded("discarding its annotations", [&] { store.annotations().discardAnnotationsOfStage(stage); });
         guarded("discarding its raster", [&] { store.rasters().discardRasterOfStage(stage); });
         guarded("marking it Failed", [&] { store.stageStateWriter().setStatus(stage, StageStatus::Failed); });
+        injectFault = false;
     }
 
     template <class Step> void guarded(const char* what, Step step) noexcept {
         try {
+            if (injectFault) throw IoError("injected recording fault");
             step();
         } catch (const std::exception& e) {
             logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what, e.what());
@@ -193,7 +202,15 @@ public:
         rerun = registry.status(stage) != StageStatus::Pending;
         objects = 0;
         edges = 0;
-        if (rerun) prepareRerun(registry, *store);
+        if (rerun) {
+            try {
+                prepareRerun(registry, *store);
+            } catch (...) {
+                // Part of the prior output may be gone: the stage must not stay Complete.
+                guarded("marking it Failed", [&] { store->stageStateWriter().setStatus(stage, StageStatus::Failed); });
+                throw;
+            }
+        }
         store->stageStateWriter().setStatus(stage, StageStatus::Running);
         RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
         try {
@@ -292,6 +309,7 @@ public:
     ProgressObserver* progress = nullptr;
     CancellationToken cancel;
     bool rerun = false;
+    bool injectFault = false;  ///< Test seam: the current recording's steps all throw.
     int64_t objects = 0;
     int64_t edges = 0;
 };

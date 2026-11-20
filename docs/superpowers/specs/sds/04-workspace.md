@@ -961,9 +961,13 @@ whatever the one before did. A step that itself throws is logged at `Error`,
 naming the stage, and the original exception is the one that propagates: a
 failure while recording a failure never replaces the failure being reported.
 The analysis level is never recorded on failure, and the run slot is released
-on every path, so a later `run()` of a runnable stage proceeds. Failures of the
-re-run preparation below, which happen before the stage is `Running`, are
-raised as they are and leave the stage's status untouched.
+on every path, so a later `run()` of a runnable stage proceeds.
+Failures of the re-run preparation below, which happen before the stage is
+`Running`, are recorded too: the stage is set `Failed` best effort and the
+exception is raised as it is, so a stage never stays `Complete` with part of its
+output gone. If `setStatus(Complete)` or `clearStale` throws after the analysis
+level was recorded, the level stays recorded while the stage is `Failed`; the
+level is the coarsest any writer used, so keeping it errs on the side of the coarser precision.
 
 **On re-run** — `isRerun()` true — the objects the stage previously wrote, the
 edges it previously asserted and the annotations it previously made are all
