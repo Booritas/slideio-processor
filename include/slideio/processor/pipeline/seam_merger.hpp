@@ -163,9 +163,11 @@ public:
     /// which is what keeps the resident set proportional to the working
     /// frontier rather than to the whole slide.
     ///
-    /// Only the objects touching @p tileIndex are re-examined. A tile skipped
-    /// by the run's restriction must be reported too. Reporting a tile twice
-    /// does nothing more.
+    /// Only the objects touching @p tileIndex are re-examined. Report only a
+    /// tile that was evaluated: the executor defers a tile skipped by the run's
+    /// restriction through an internal path, and a direct caller that reports a
+    /// tile it did not evaluate gets objects cut at that tile. Reporting a tile
+    /// twice does nothing more.
     /// @param tileIndex The index in the grid of the completed tile.
     /// @param sink Receives the objects that close; ThreadSafe.
     /// @throws InvalidArgumentError When @p tileIndex is outside the grid.

@@ -1288,13 +1288,16 @@ from the same three sources. Filtering never alters pixels.
 
 **A skipped tile is deferred, not complete.** An admitted object can reach past
 the mask's edge into a tile that holds no set mask pixel, and that tile
-produces no fragments of it. The seam merger (5.7) therefore tracks three
-states per tile. *Pending* is the initial state. *Deferred* is a tile the
-restriction skipped: the final pass calls `notifyTileSkipped` for it instead of
-`notifyTileComplete`, so it is not complete, and a fragment beside it still
-records that it expects it. *Demanded or completed* is the end state, reached
-by `notifyTileComplete`, or by `takeAwaitedDeferred` which marks a deferred
-tile demanded so that it is returned at most once. After the final pass the
+produces no fragments of it. The seam merger (5.7) therefore tracks four
+states per tile, named as the enum names them. *Pending* is the initial state.
+*Deferred* is a tile the restriction skipped: the final pass calls
+`notifyTileSkipped` for it instead of `notifyTileComplete`, so it is not
+complete, and a fragment beside it still records that it expects it.
+*Demanded* is a deferred tile that `takeAwaitedDeferred` has returned, marked so
+that it is returned at most once; it is not terminal, because it is still to be
+evaluated. *Completed* is the end state, reached by `notifyTileComplete`, for an
+evaluated tile (a demanded one included), or by `completeDeferred` for a
+deferred tile left over. After the final pass the
 executor loops: it takes the deferred tiles that some open component expects,
 evaluates each once with the skip bypassed, through the same workers,
 reservation and cancellation as the pass, reports it complete, and repeats
@@ -1305,7 +1308,10 @@ progress (the pass already counted it) and is counted in
 `RunCounters::tilesEvaluatedOnDemand`, while staying in `tilesSkipped`. Its
 tile objects pass the normal object filter, and admission by anchor still
 decides what is stored. Accumulation passes still skip and are unchanged, so
-global statistics do not move.
+global statistics do not move. At a non-integer scale the skip test uses the
+owned rect (below), which is wider than the bare tile rect, so an accumulation
+pass can evaluate a few more tiles than before; the results are unchanged,
+because operations mask to the tile rect.
 
 **Pass-fragment pruning, and its precondition.** Only a component holding a
 fragment from a tile evaluated in the pass (a *pass fragment*) demands tiles; a
@@ -1324,6 +1330,33 @@ the tile owns the extra column and row before it, whatever the halo, and
 row variants).
 The reproducer is `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
 (`tests/workspace/test_stage_runner.cpp`).
+
+**What the pruning rests on: the anchor.** The argument that an object lying
+wholly in skipped tiles is dropped needs the anchor to be a vertex of the
+object's own boundary, its topmost-then-leftmost pixel corner. Only then does a
+whole object admitted by its anchor have a pixel in the tile holding that
+anchor, and hence a fragment there. An anchor defined any other way, such as a
+centroid or a bounding-box corner, could lie in a skipped tile the object has no
+fragment in, and this pruning would lose the object.
+
+**Limitation: the grid-region edge.** The outer boundary of the grid region is
+not a seam (5.7), and the grid spans the ROI's or the polygon's bounding box
+(5.6). An object anchored inside an ROI rectangle that crosses the ROI's right or
+bottom edge is therefore still stored cut at that edge; for a polygon the same
+holds at its bounding box. Mask-source restrictions, such as the workspace
+restrict-to-layer path, are not affected: their grid spans the scene. This is a
+known, unfixed route, tracked under "Must fix before release" in
+`docs/project.md`; the disabled reproducer is
+`SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`.
+
+**Effect on stored results.** Objects of a restricted run that cross into a
+skipped tile are now stored whole, so against results stored before the fix:
+the identifier of an affected object changes, because a whole object's anchor
+differs from the truncated one's; counts can fall, because a truncated object
+admitted by its old anchor is dropped when the whole object's anchor lies in a
+skipped tile; and results previously stored by restricted stages are affected
+and are not marked stale. Re-run restricted stages and record the change in the
+verification evidence.
 
 **Cost.** Evaluating tiles on demand costs time, never correctness, and one
 very large object can pull in many tiles. UR-IMG-5's "reads only tiles
@@ -1552,7 +1585,13 @@ chosen for a whole-level chain.
 `tilesTotal` counts the grid, not the tiles that did work, so a heavily
 restricted run reports fast progress through its empty region rather than
 stalling at an unexplained count. `tilesCompleted` reaching `tilesTotal`
-continues to mean the run is done.
+does not mean the run is done: tiles demanded by the seam merger (5.5) and the
+merging run after the last progress call, possibly in several rounds.
+
+The grid spans the ROI's or the polygon's bounding box, so the grid region's
+outer boundary is not a seam (5.7): an object anchored inside an ROI that
+crosses the ROI's right or bottom edge is stored cut there (see the limitation
+in 5.5; reproducer `SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`).
 
 Halo is declared, supplied and applied in **level** pixels. An operation's
 neighbourhood is a property of its kernel, which works on the pixels it is

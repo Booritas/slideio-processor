@@ -218,17 +218,35 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   staleness graph acyclic (a layer-ordering edge that would close a cycle is
   suppressed), so re-running every stale stage settles.
   **Implemented** on `feat/workspace-c`, awaiting review and merge.
-  - **Resolved: restricted objects crossing into a skipped tile were stored
-    truncated.** A pre-existing pipeline defect the final review found:
-    `RestrictionFilter::skips` skipped a tile with no mask pixel, and the seam
-    merger closed the component without that tile's fragments. Fixed by the
+  - **Resolved (mask-source restrictions): restricted objects crossing into a
+    skipped tile were stored truncated.** A pre-existing pipeline defect the
+    final review found: `RestrictionFilter::skips` skipped a tile with no mask
+    pixel, and the seam merger closed the component without that tile's
+    fragments. Fixed for restrictions whose grid spans the scene (mask sources,
+    such as the workspace restrict-to-layer path) by the
     [restricted-object truncation plan](superpowers/plans/2026-11-20-restriction-truncation.md):
     a skipped tile is deferred, and after the final pass each deferred tile an
     open object reaching out of an evaluated tile expects is evaluated on demand
-    (SDS 05 §5.5, "The tile mask"). Cost: UR-IMG-5's "reads only intersecting
-    tiles" is now a strong tendency, not a guarantee. Reproducer
+    (SDS 05 §5.5, "The tile mask"). The ROI and polygon edge route is not fixed:
+    see the open entry below. Cost: UR-IMG-5's "reads only intersecting tiles"
+    is now a strong tendency, not a guarantee. Reproducer
     `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated` is
-    enabled.
+    enabled. **Effect on stored results (QA/regulatory):** the object
+    identifiers of affected objects change, because a whole object's anchor
+    differs from the truncated one's; counts can fall, because a truncated
+    object admitted by its old anchor is dropped when the whole object's anchor
+    lies in a skipped tile; and results previously stored by restricted stages
+    are affected and are not marked stale. Re-run restricted stages and record
+    the change in the verification evidence.
+  - **Must fix before release: an object crossing the ROI or polygon
+    grid-region edge is still stored truncated.** Pre-existing and documented
+    only. The tile grid spans the ROI's or the polygon's bounding box
+    (`src/pipeline/detail/run_plan.cpp`, `regionAtLevel0`), and the outer
+    boundary of the grid region is not a seam, so an object anchored inside an
+    ROI rectangle that crosses the ROI's right or bottom edge is stored cut at
+    that edge (for a polygon, at the bounding-box edge). Mask-source
+    restrictions are not affected. See the limitation note in SDS 05 §5.5 and
+    the disabled reproducer `SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

@@ -285,6 +285,43 @@ TEST(SeamRun, RestrictionAppliesToMergedObjects) {
     }
 }
 
+// Known limitation, not fixed (SDS 05, 5.5 and 5.6; docs/project.md, "Must fix
+// before release"): the outer boundary of the grid region is not a seam, so an
+// object anchored inside an ROI that crosses the ROI's right or bottom edge is
+// stored cut at that edge, with the same id (the anchor is the top-left corner)
+// but a smaller ring. Run: --gtest_also_run_disabled_tests
+// --gtest_filter=SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated
+TEST(SeamRun, DISABLED_RoiEdgeObjectIsNotTruncated) {
+    auto scene = blobScene();
+    const Rect64 roi{64, 64, 316, 316}; // right and bottom edges at 380, inside blobs
+
+    ts::CollectingObjectSink all;
+    Pipeline open(scene, config(static_cast<int32_t>(kSide), 1), components(false));
+    open.bindLayer("objects", LayerId(3));
+    open.runInto(all, nullptr, CancellationToken());
+
+    PipelineSpec spec = components(true);
+    spec.restrictTo(roi);
+    ts::CollectingObjectSink stored;
+    Pipeline restricted(scene, config(64, 4), spec);
+    restricted.bindLayer("objects", LayerId(3));
+    restricted.runInto(stored, nullptr, CancellationToken());
+
+    std::vector<ObjectRecord> expected;
+    int64_t crossingTheEdge = 0;
+    for (const ObjectRecord& r : all.records()) {
+        const Point64 a = r.geometry().anchor();
+        if (a.x >= roi.x && a.y >= roi.y && a.x < roi.x + roi.width && a.y < roi.y + roi.height) {
+            expected.push_back(r);
+            const Rect64 box = r.geometry().boundingBox();
+            crossingTheEdge += box.x + box.width > roi.x + roi.width || box.y + box.height > roi.y + roi.height ? 1 : 0;
+        }
+    }
+    ASSERT_GT(crossingTheEdge, 5) << "the fixture should have objects crossing the ROI edge";
+    EXPECT_EQ(sortedIds(stored.records()), sortedIds(expected)) << "the same objects are stored";
+    EXPECT_TRUE(sortedKeys(stored.records()) == sortedKeys(expected)) << "an object crossing the edge is stored cut";
+}
+
 // A run with an object-producing chain works in a directory of its own under the
 // configured scratch directory, and removes it after the run: on success, after a
 // tile fails, and after cancellation.

@@ -281,7 +281,6 @@ TEST(Restriction, AnchorDecides) {
     }
 }
 
-
 // With a polygon and a mask source both bound, an object is stored exactly when its
 // anchor lies in the polygon and in the mask: no stored anchor lies outside their
 // intersection, and objects inside the polygon but outside the mask are dropped.
@@ -798,7 +797,6 @@ TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
     }
 }
 
-
 namespace {
 
 // Vertical bars two level columns wide, one every three columns: each is anchored on the
@@ -824,6 +822,32 @@ private:
     bool row_;
     int64_t index_;
 };
+using SkipRing = std::vector<std::pair<int64_t, int64_t>>;
+using SkipKey = std::tuple<ObjectId, std::vector<std::pair<bool, SkipRing>>,
+                           std::vector<std::tuple<std::string, double, int32_t>>>;
+
+// A record as its id, rings and measurements, as sortedKeys of test_seam_run.cpp does.
+SkipKey keyOf(const ObjectRecord& record) {
+    std::vector<std::pair<bool, SkipRing>> rings;
+    const Polygon& polygon = record.geometry();
+    for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+        std::vector<Point64> points(static_cast<size_t>(polygon.ringPointCount(r)));
+        polygon.ringPoints(r, points.data(), static_cast<int64_t>(points.size()));
+        SkipRing ring;
+        for (const Point64& p : points) {
+            ring.emplace_back(p.x, p.y);
+        }
+        rings.emplace_back(polygon.ringIsHole(r), std::move(ring));
+    }
+    std::vector<std::tuple<std::string, double, int32_t>> measurements;
+    const MeasurementSet& m = record.measurements();
+    for (int32_t i = 0; i < m.count(); ++i) {
+        const Measurement measurement = m.at(i);
+        measurements.emplace_back(measurement.name(), measurement.value(), static_cast<int32_t>(measurement.unit()));
+    }
+    return SkipKey(record.id(), std::move(rings), std::move(measurements));
+}
+
 
 // At level 1 (scale 2.4) with 64-pixel tiles, the first level-0 column (row) of tile 2 is 307,
 // which floors to level column (row) 127, the last of tile 1. With only that line set, tile 2's
@@ -851,25 +875,25 @@ void expectSkipAgreesWithTheMask(bool row, int32_t halo) {
         return sink.records();
     };
     const std::vector<ObjectRecord> all = run(false);
-    std::vector<ObjectId> expected;
+    std::vector<SkipKey> expected;
     for (const ObjectRecord& r : all) {
         const Point64 anchor = r.geometry().anchor();
         const int64_t along = row ? anchor.y : anchor.x;
         if (static_cast<int64_t>(std::floor(static_cast<double>(along) / 2.4)) == 127) {
             // Owned by tile 2, whose first level-0 column (row) is 307, not by tile 1.
             EXPECT_GE(along, 307);
-            expected.push_back(r.id());
+            expected.push_back(keyOf(r));
         }
     }
     std::sort(expected.begin(), expected.end());
     ASSERT_FALSE(expected.empty());
     ASSERT_LT(expected.size(), all.size());
-    std::vector<ObjectId> got;
+    std::vector<SkipKey> got;
     for (const ObjectRecord& r : run(true)) {
-        got.push_back(r.id());
+        got.push_back(keyOf(r));
     }
     std::sort(got.begin(), got.end());
-    EXPECT_EQ(got, expected);
+    EXPECT_TRUE(got == expected) << "the stored objects differ from the unrestricted run's (ids, rings or measurements)";
 }
 
 } // namespace

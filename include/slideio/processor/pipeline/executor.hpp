@@ -235,6 +235,8 @@ public:
 
     /**
      * @brief The tiles the current or last run has completed, skipped ones included.
+     * Reaching tilesTotal() does not mean the run is done: tiles demanded by the
+     * seam merger and the merging run after the last progress call.
      * @return The count; 0 before the first run.
      * @throws Nothing.
      * @par Thread-safety

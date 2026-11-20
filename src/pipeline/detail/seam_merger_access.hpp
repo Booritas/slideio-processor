@@ -210,7 +210,10 @@ struct SeamMergerAccess {
     /// zero, and the restriction drops it, whole or truncated. An object with
     /// a pixel in an evaluated tile holds that tile's fragment, and so reaches
     /// every skipped tile it crosses. This holds while a skipped tile's mask is
-    /// zero over the whole tile, as RestrictionFilter::skips() decides it.
+    /// zero over the whole tile, as RestrictionFilter::skips() decides it, and
+    /// it depends on the anchor being a vertex of the object's own boundary,
+    /// its topmost-then-leftmost pixel corner: an anchor elsewhere could lie
+    /// in a skipped tile the object has no fragment in.
     /// The list is complete only when no tile is in flight: a tile still being
     /// evaluated may yet add fragments expecting further deferred tiles. So the
     /// caller evaluates and completes the returned tiles, then calls again,
