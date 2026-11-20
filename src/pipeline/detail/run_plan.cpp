@@ -171,16 +171,11 @@ std::vector<LayerId> resolveTargetLayers(const std::vector<OperationPtr>& operat
             present = present || std::strcmp(parameters.keyAt(i), "targetLayer") == 0;
         }
         const std::pair<std::string, LayerId>* bound = nullptr;
-        bool named = false;
-        if (present) {
-            const char* name = parameters.getString("targetLayer", nullptr);
-            if (name == nullptr) {
-                invalid(std::string("the \"targetLayer\" parameter of ") + op.name() + " is not a string");
-            }
-            named = name[0] != '\0';
+        const char* name = present ? parameters.getString("targetLayer", nullptr) : nullptr;
+        if (present && name == nullptr) {
+            invalid(std::string("the \"targetLayer\" parameter of ") + op.name() + " is not a string");
         }
-        if (named) {
-            const char* name = parameters.getString("targetLayer", "");
+        if (name && *name) {
             const auto found = std::find_if(layers.begin(), layers.end(),
                                             [name](const std::pair<std::string, LayerId>& l) { return l.first == name; });
             if (found == layers.end()) {
