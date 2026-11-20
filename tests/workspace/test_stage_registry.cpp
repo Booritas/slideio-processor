@@ -360,6 +360,47 @@ TEST(StageRegistry, RunnableWhenDependenciesCompleteAndCurrent) {
     EXPECT_TRUE(f.stages().isRunnable(bid));
 }
 
+// One locked call answers the first reason a stage cannot run, in StageRunner's order,
+// with the name it concerns, so the gate has no count/at race (PR #17 finding 4).
+TEST(StageRegistry, RunBlockerReportsTheFirstReasonWithItsName) {
+    Fixture f;
+    const StageId a = f.stages().declare(writer("a", f.x));
+    const StageId c = f.stages().declare(writer("c", f.background));
+    StageDefinition b("b");
+    b.readsLayer(f.x).readsLayer(f.background).dependsOn("later").dependsOn("after");
+    const StageId bid = f.stages().declare(b);
+    StageStateWriter& w = f.workspace->store()->stageStateWriter();
+    const char* name = "untouched";
+
+    EXPECT_EQ(f.stages().runBlocker(a, name), RunBlocker::None);
+    EXPECT_EQ(name, nullptr);
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::UnresolvedDependency);
+    EXPECT_STREQ(name, "later");
+    f.stages().declare(writer("later", f.y));
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::UnresolvedDependency);
+    EXPECT_STREQ(name, "after");
+    const StageId after = f.stages().declare(writer("after", f.tissue));
+    StageId later;
+    ASSERT_TRUE(f.stages().find("later", later));
+
+    // The dependencies in dependencyAt order: a, c, later, after.
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::DependencyIncomplete);
+    EXPECT_STREQ(name, "a");
+    for (const StageId d : {a, c, later, after}) w.setStatus(d, StageStatus::Complete);
+    w.setStale(c, true);
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::DependencyStale);
+    EXPECT_STREQ(name, "c");
+    w.setStale(c, false);
+    w.setStatus(after, StageStatus::Failed);
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::DependencyIncomplete);
+    EXPECT_STREQ(name, "after");
+    w.setStatus(after, StageStatus::Complete);
+    EXPECT_EQ(f.stages().runBlocker(bid, name), RunBlocker::None);
+    EXPECT_EQ(name, nullptr);
+    EXPECT_TRUE(f.stages().isRunnable(bid));
+    EXPECT_THROW(f.stages().runBlocker(StageId(99), name), InvalidArgumentError);
+}
+
 TEST(StageRegistry, TwoStagesWritingOneLayerBothCount) {
     Fixture f;
     const StageId a = f.stages().declare(writer("a", f.x));
@@ -686,6 +727,9 @@ TEST(StageRegistry, UnreadableRecordIsKeptByNameAndNeverRunnable) {
     StageId broken;
     ASSERT_TRUE(r.find("broken", broken));
     EXPECT_FALSE(r.isRunnable(broken));
+    const char* blockerName = "untouched";
+    EXPECT_EQ(r.runBlocker(broken, blockerName), RunBlocker::Unreadable);
+    EXPECT_EQ(blockerName, nullptr);
     EXPECT_TRUE(r.isRunnable(good));
     EXPECT_EQ(r.dependencyCount(broken), 0);
     EXPECT_EQ(r.definition(broken).writtenLayerCount(), 0);
@@ -1017,6 +1061,38 @@ TEST(StageRegistry, RefreshKeepsPinsOfAStillUnreadableStage) {
     EXPECT_EQ(s.dependencyAt(r, 0), w);
     EXPECT_TRUE(s.isUnreadable(w));
     EXPECT_FALSE(s.isRunnable(r));
+    ro->close();
+}
+
+// A refresh never keeps a pin the writer dropped: redeclaring an unreadable stage drops
+// every pin around it, so once its record parses the reader drops them too, even while
+// the other end is still unreadable (PR #17 finding 3).
+TEST(StageRegistry, RefreshDropsPinsOfARedeclaredStage) {
+    Fixture f;
+    const StageId b = f.stages().declare(writer("b", f.x));
+    StageDefinition ad("a");
+    ad.readsLayer(f.x).writesLayer(f.y);
+    const StageId a = f.stages().declare(ad);
+    StageStateWriter& raw = f.workspace->store()->stageStateWriter();
+    raw.setConfiguration(a, "this is not a record");
+    raw.setConfiguration(b, "this is not a record either");
+
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ro->stages();
+    ASSERT_TRUE(s.isUnreadable(a));
+    ASSERT_TRUE(s.isUnreadable(b));
+    ASSERT_EQ(s.dependencyCount(a), 1);
+    ASSERT_EQ(s.dependencyAt(a, 0), b);
+
+    // The writer redeclares a with dependencies that no longer include b; b stays unreadable.
+    const StageId redeclared = f.stages().declare(writer("a", f.y));
+    ASSERT_EQ(redeclared, a);
+    ASSERT_EQ(f.stages().dependencyCount(a), 0);
+    EXPECT_FALSE(s.isUnreadable(a));
+    EXPECT_TRUE(s.isUnreadable(b));
+    EXPECT_EQ(s.dependencyCount(a), 0);
+    EXPECT_TRUE(s.isRunnable(a));
+    EXPECT_EQ(s.staleness().affectedCount(b), 0);
     ro->close();
 }
 

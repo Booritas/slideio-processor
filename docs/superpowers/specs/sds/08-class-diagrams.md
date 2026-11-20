@@ -1097,6 +1097,7 @@ classDiagram
         +unresolvedDependencyCount(StageId) int32_t
         +unresolvedDependencyAt(StageId, int32_t) cstr
         +isRunnable(StageId) bool
+        +runBlocker(StageId, cstr&) RunBlocker
         +isUnreadable(StageId) bool
         +definition(StageId) StageDefinition
         +markStale(StageId) void

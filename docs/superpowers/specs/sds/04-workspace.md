@@ -496,6 +496,10 @@ would otherwise have to invent.
 ## 4.3 Stage registry — `workspace/stage_registry.hpp`
 
 ```cpp
+enum class RunBlocker : int32_t {
+    None, Unreadable, UnresolvedDependency, DependencyIncomplete, DependencyStale
+};
+
 class StageRegistry {
 public:
     /// Declares or redeclares a stage. Redeclaring with a different
@@ -528,6 +532,13 @@ public:
     /// True when every effective dependency is complete and not stale and no
     /// `dependsOn` name is unresolved.
     bool isRunnable(StageId) const;
+
+    /// The first reason the stage cannot run, in `StageRunner`'s order
+    /// (unreadable, an unresolved `dependsOn` name, a dependency not complete
+    /// or stale), with the name it concerns, read under one hold of the
+    /// registry mutex; `None` exactly when `isRunnable`. `StageRunner`'s gate
+    /// uses it, so no declaration lands between a count and its accessor.
+    RunBlocker runBlocker(StageId, const char*& name) const;
 
     /// True for a stage kept by name only at restore, because its record could
     /// not be read. Such a stage is never runnable; `StageRunner` refuses it.
@@ -693,8 +704,12 @@ broken writer's layer stays blocked, the writer never being runnable, instead of
 becoming runnable. Redeclaring the stage successfully drops its pins and normal
 derivation resumes. A refresh keeps the pins it already holds for a stage that is
 still unreadable, because a writer that is rewriting the rows can leave them
-empty for a moment. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
-and `isRunnable` all read this one in-memory graph; only the status and stale
+empty for a moment, but drops every held pin with an end that was unreadable
+and now parses: the writer redeclared that stage, and redeclaring drops every
+pin around it whatever the other end, so reader and writer keep the same pins
+(PR #17 review).
+`dependencyCount`, `dependencyAt`, `isExplicitDependency`,
+`isRunnable` and `runBlocker` all read this one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
 
 **A read-only registry follows a live writer (UR-OBS-1).** An observer opens
@@ -959,6 +974,10 @@ message, in six cases, checked in this order:
    (`unresolvedDependencyCount`): the message names the first missing stage;
 4. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
+
+   Cases 2 to 4 come from one `StageRegistry::runBlocker` call, under one hold
+   of the registry mutex, so a declaration on another thread cannot land
+   between a count and its accessor (PR #17 review);
 5. the stage writes a raster that another stage populated
    (`RasterRegistry::isPopulated` and `writerStage`, reads only): the message
    names the raster and that stage, which alone may write it until it is
@@ -1249,7 +1268,20 @@ refresh; the pool grows only by details not seen before.
 stored stale flag, status and `completedAtUnixMs`), so they are identical after
 a reopen. A stage that is not stale has no causes. For a stale stage S the
 causes are its incoming edges U → S where U has changed since S:
-U is stale, or is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`.
+
+- U is stale (marking U is what reaches S); or
+- U completed at some time (`completedAtUnixMs(U) > 0`) and is now `Running`
+  or `Failed`: a re-run of U is under way or failed, replacing the output S
+  was built against. The store keeps no time for a run that did not complete,
+  so this counts whenever it happened; or
+- U is `Complete` and `completedAtUnixMs(U) > completedAtUnixMs(S)`, which
+  needs S to have completed: a stage that never completed has no output a
+  later completion could have changed.
+
+A source that is not stale and never completed — `Pending`, or a first run
+`Running` or `Failed` — never changed, so it is not a cause by itself; this
+matters for `LayerOrdering`, whose target runs without its source (PR #17
+review). Each source's state is read once, however many reasons join it to S.
 There is one entry per qualifying edge, each with its own reason and detail, so a
 source joined to S by two reasons appears twice, as in the forward answer; they are
 ordered by ascending U, then by reason. When no edge

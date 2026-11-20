@@ -462,6 +462,57 @@ TEST(StalenessGraph, SourceLeftIncompleteIsACause) {
     }
 }
 
+// A stage that never completed has no output a Complete source can have changed since:
+// redeclared, it is its own single cause, not its Complete upstream (PR #17 finding 1).
+TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, background);
+    ASSERT_EQ(f.stages().completedAtUnixMs(cells), 0);
+
+    StageDefinition changed("cells");
+    changed.readsLayer(f.tissue).writesLayer(f.cells).writesLayer(f.labels);
+    ASSERT_EQ(f.stages().declare(changed), cells);
+    ASSERT_TRUE(f.stages().isStale(cells));
+    const std::vector<Cause> causes = causesOf(f.stages(), cells);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].stage, cells);
+    EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+
+    // A stale source is still a cause of a stage that never completed: marking it stale
+    // is what marked the stage.
+    f.stages().clearStale(cells);
+    f.stages().markStale(background);
+    const std::vector<Cause> fromStale = causesOf(f.stages(), cells);
+    ASSERT_FALSE(fromStale.empty());
+    EXPECT_EQ(fromStale[0].stage, background);
+    EXPECT_EQ(fromStale[0].reason, StalenessReason::LayerRead);
+}
+
+// A source that never ran, Pending or failed on its first run, did not change: a stage
+// it reaches only by LayerOrdering, which ran without it, marked stale directly is its own
+// cause (PR #17 finding 2).
+TEST(StalenessGraph, SourceThatNeverRanIsNotACause) {
+    for (const StageStatus left : {StageStatus::Pending, StageStatus::Failed, StageStatus::Running}) {
+        Fixture f;
+        const StageId background = f.stages().declare(writerOf("background", f.tissue));
+        const StageId nuclei = f.stages().declare(writerOf("nuclei", f.nuclei));
+        ASSERT_GE(indexOf(f.stages(), background, nuclei, StalenessReason::LayerOrdering), 0);
+        if (left != StageStatus::Pending) f.workspace->store()->stageStateWriter().setStatus(background, left);
+        complete(f, nuclei);
+        ASSERT_EQ(f.stages().completedAtUnixMs(background), 0);
+
+        f.stages().markStale(nuclei);
+        const std::vector<Cause> causes = causesOf(f.stages(), nuclei);
+        ASSERT_EQ(causes.size(), 1u);
+        EXPECT_EQ(causes[0].stage, nuclei);
+        EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+    }
+}
+
 // A detail string stays valid for the life of the registry: an identical redeclare and a
 // new declaration rebuild the edges, and the string held across them is still the one
 // the graph returns.

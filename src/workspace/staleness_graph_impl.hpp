@@ -52,15 +52,37 @@ public:
         std::vector<const detail::StaleEdge*> result;
         if (!states.isStale(stage)) return result;
         const int64_t completed = states.completedAtUnixMs(stage);
+        // Each source is read once, though several reasons can join it to the stage.
+        bool read = false;
+        int32_t lastSource = 0;
+        bool lastChanged = false;
         for (const detail::StaleEdge* edge : edges().incoming(stage.value())) {
-            const StageId source(edge->from);
-            if (states.isStale(source) || states.status(source) != StageStatus::Complete ||
-                states.completedAtUnixMs(source) > completed) {
-                result.push_back(edge);
+            if (!read || edge->from != lastSource) {
+                read = true;
+                lastSource = edge->from;
+                lastChanged = changedSince(states, StageId(edge->from), completed);
             }
+            if (lastChanged) result.push_back(edge);
         }
         if (result.empty()) result.push_back(nullptr);
         return result;
+    }
+
+    // Whether a source changed since the stage last completed (`completed`, 0 when it
+    // never did). A stale source changed: marking it is what reaches the stage. A source
+    // that never completed and is not stale never produced output, so nothing of it
+    // changed: Pending, or a first run that is Running or Failed (a LayerOrdering target
+    // runs without it). One that completed and is now Running or Failed has a re-run
+    // under way or failed, which replaced the output the stage was built against; the
+    // store keeps no time for it, so it counts whenever it happened. A Complete source
+    // changed when it completed after the stage did, which a stage that never completed
+    // has no time to compare with: only a stale or re-running source is its cause.
+    static bool changedSince(const StageStateReader& states, StageId source, int64_t completed) {
+        if (states.isStale(source)) return true;
+        const int64_t sourceCompleted = states.completedAtUnixMs(source);
+        if (sourceCompleted == 0) return false;
+        if (states.status(source) != StageStatus::Complete) return true;
+        return completed != 0 && sourceCompleted > completed;
     }
 
     // One cause; nullptr is the stage itself. Caller holds the mutex.

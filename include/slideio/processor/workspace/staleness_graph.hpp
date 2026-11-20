@@ -143,14 +143,17 @@ public:
      * @brief Counts the causes of a stage's staleness.
      *
      * A stage that is not stale has none. For a stale stage the causes are its incoming
-     * edges U to S whose source U changed since S: U is stale, or is not Complete, or
-     * completed after S did (StageStateReader::completedAtUnixMs); one entry per edge, so a
-     * source joined to S by several reasons appears once per reason, as in the forward
-     * answer. When no edge qualifies, the stage is its own single cause, reported as
+     * edges U to S whose source U changed since S: U is stale; or U completed once and is
+     * now Running or Failed (a re-run under way or failed, whenever it happened: the store
+     * keeps no time for it); or U is Complete and completed after S did
+     * (StageStateReader::completedAtUnixMs), which needs S to have completed. A source
+     * that is not stale and never completed (Pending, or a first run Running or Failed)
+     * did not change and is never a cause by itself. One entry per edge, so a source
+     * joined to S by several reasons appears once per reason, as in the forward answer.
+     * When no edge qualifies, the stage is its own single cause, reported as
      * Reconfigured: it was redeclared or marked stale directly. The causes come from the
-     * stored flags, status
-     * and completion times, so they are the same after a reopen. They are ordered by
-     * source stage, then reason.
+     * stored flags, status and completion times, so they are the same after a reopen.
+     * They are ordered by source stage, then reason.
      * @param stage The stage.
      * @return The number of causes; 0 for a stage that is not stale.
      * @throws InvalidArgumentError When the stage is unknown.

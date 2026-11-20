@@ -18,6 +18,18 @@
 namespace slideio::processor {
 
 /**
+ * @brief Why a stage cannot run yet: the first reason StageRegistry::runBlocker() finds,
+ * in the order StageRunner refuses them.
+ */
+enum class RunBlocker : int32_t {
+    None,                  ///< The stage is runnable.
+    Unreadable,            ///< Its stored record could not be read (StageRegistry::isUnreadable).
+    UnresolvedDependency,  ///< A dependsOn name no declared stage carries yet.
+    DependencyIncomplete,  ///< An effective dependency is not Complete.
+    DependencyStale        ///< An effective dependency is Complete but stale.
+};
+
+/**
  * @brief Declares stages, derives their dependencies and reports their state.
  *
  * Obtained from Workspace::stages(); it lives as long as the workspace. The registry
@@ -54,7 +66,7 @@ namespace slideio::processor {
  *
  * In a read-only workspace (Workspace::openReadOnly) a writer in another process may
  * declare stages while the registry is open. Before answering, declare(),
- * dependencyCount(), dependencyAt(), isExplicitDependency(), isRunnable() and
+ * dependencyCount(), dependencyAt(), isExplicitDependency(), isRunnable(), runBlocker() and
  * definition() compare the stored stage count and each stage's stored configuration
  * with those last restored, and restore again when either changed, so they agree with
  * count(), at() and configuration(), which read the store directly. A closed store is
@@ -369,6 +381,31 @@ public:
      * UR-STG-4, UR-STG-8, UR-OBS-1
      */
     bool isRunnable(StageId stage) const;
+    /**
+     * @brief Returns the first reason a stage cannot run, read in one hold of the
+     * registry mutex, so no declaration lands between its parts.
+     *
+     * The reasons are checked in StageRunner's order: the stage's record is unreadable;
+     * a dependsOn name is unresolved (the first in declaration order); an effective
+     * dependency, in dependencyAt() order, is not Complete or is stale (the first such).
+     * isRunnable() is true exactly when this returns RunBlocker::None. A caller that
+     * counts and then indexes (unresolvedDependencyCount() and unresolvedDependencyAt(),
+     * dependencyCount() and dependencyAt()) can see a declaration on another thread
+     * between the calls; this call cannot.
+     * @param stage The stage.
+     * @param name Receives the name the reason concerns: the unresolved dependsOn name,
+     * or the name of the dependency that is not Complete or is stale; nullptr for None
+     * and Unreadable. A null-terminated UTF-8 string, valid for the life of the registry.
+     * @return The first reason, or RunBlocker::None.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError As isRunnable().
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-4, UR-STG-8, UR-OBS-1
+     */
+    RunBlocker runBlocker(StageId stage, const char*& name) const;
     /**
      * @brief Tells whether a stage was kept by name only at restore, because its stored
      * record could not be read (see the class description). Such a stage is never

@@ -284,6 +284,29 @@ public:
         return result;
     }
 
+    // The first reason the stage cannot run, in StageRunner's order, and the name it
+    // concerns (nullptr for None and Unreadable). Caller holds the mutex.
+    RunBlocker blockerLocked(StageId stage, const char*& name) const {
+        name = nullptr;
+        const std::vector<Edge>& edges = edgesOf(stage);
+        if (unreadable.count(stage.value()) != 0) return RunBlocker::Unreadable;
+        const std::vector<const char*> missing = unresolvedOf(stage);
+        if (!missing.empty()) {
+            name = missing.front();
+            return RunBlocker::UnresolvedDependency;
+        }
+        const StageStateReader& reader = store.stageStates();
+        for (const Edge& edge : edges) {
+            const StageId dependency(edge.dependency);
+            const bool complete = reader.status(dependency) == StageStatus::Complete;
+            if (!complete || reader.isStale(dependency)) {
+                name = reader.name(dependency);
+                return complete ? RunBlocker::DependencyStale : RunBlocker::DependencyIncomplete;
+            }
+        }
+        return RunBlocker::None;
+    }
+
     // Sets the stale flag on the stage and on every stage its forward answer lists, along
     // all five paths of the staleness graph, each once. Caller holds the mutex.
     void markStaleLocked(StageId stage) {
@@ -379,9 +402,16 @@ public:
         }
         // A writer mid-rewrite can leave an unreadable stage's rows empty for a moment; the
         // pins already held for a stage that is still unreadable stand, until it is redeclared.
+        // A writer that redeclares an unreadable stage drops every pin around it, whatever
+        // the other end, so a held pin with an end that was unreadable and now parses is
+        // dropped too: reader and writer keep the same pins.
+        const auto redeclared = [&](int32_t id) {
+            return unreadable.count(id) != 0 && nextUnreadable.count(id) == 0;
+        };
         for (const auto& p : pins) {
             const bool known = nextDefinitions.count(p.first) != 0 && nextDefinitions.count(p.second) != 0;
-            if (known && (nextUnreadable.count(p.first) != 0 || nextUnreadable.count(p.second) != 0)) {
+            if (known && !redeclared(p.first) && !redeclared(p.second) &&
+                (nextUnreadable.count(p.first) != 0 || nextUnreadable.count(p.second) != 0)) {
                 nextPins.insert(p);
             }
         }
@@ -636,15 +666,14 @@ const char* StageRegistry::unresolvedDependencyAt(StageId stage, int32_t index) 
 bool StageRegistry::isRunnable(StageId stage) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refreshIfReadOnly();
-    if (impl_->unreadable.count(stage.value()) != 0) return false;
-    if (!impl_->unresolvedOf(stage).empty()) return false;
-    const StageStateReader& reader = impl_->store.stageStates();
-    const std::vector<Edge>& edges = impl_->edgesOf(stage);
-    for (const Edge& edge : edges) {
-        const StageId dependency(edge.dependency);
-        if (reader.status(dependency) != StageStatus::Complete || reader.isStale(dependency)) return false;
-    }
-    return true;
+    const char* name = nullptr;
+    return impl_->blockerLocked(stage, name) == RunBlocker::None;
+}
+
+RunBlocker StageRegistry::runBlocker(StageId stage, const char*& name) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->refreshIfReadOnly();
+    return impl_->blockerLocked(stage, name);
 }
 
 bool StageRegistry::isUnreadable(StageId stage) const {

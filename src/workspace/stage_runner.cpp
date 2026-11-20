@@ -94,40 +94,20 @@ public:
         try {
             noteStatus();  // again under the slot: no other run can change it from here
             const StageRegistry& registry = workspace.stages();
-            if (registry.isUnreadable(stage)) {
+            // One locked call, so a declaration on another thread cannot land between a
+            // count and its accessor: the reasons come back in §4.4's order.
+            const char* about = nullptr;
+            switch (registry.runBlocker(stage, about)) {
+            case RunBlocker::None:
+                break;
+            case RunBlocker::Unreadable:
                 throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
-            }
-            // Each count and its accessor are two calls, so a declaration on another thread can
-            // land between them: an index gone out of range means the name was resolved, or
-            // the dependency list shrank, meanwhile. The stage is the one checked above, so
-            // InvalidArgumentError here is only that.
-            if (registry.unresolvedDependencyCount(stage) > 0) {
-                std::string missing;
-                bool stillMissing = true;
-                try {
-                    missing = registry.unresolvedDependencyAt(stage, 0);
-                } catch (const InvalidArgumentError&) {
-                    stillMissing = false;  // resolved meanwhile; the dependency loop checks it
-                }
-                if (stillMissing) {
-                    throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + missing +
-                                         "\" is not declared");
-                }
-            }
-            const int32_t count = registry.dependencyCount(stage);
-            for (int32_t i = 0; i < count; ++i) {
-                StageId dependency;
-                try {
-                    dependency = registry.dependencyAt(stage, i);
-                } catch (const InvalidArgumentError&) {
-                    break;  // the list shrank meanwhile: no dependency is left at this index
-                }
-                const bool complete = registry.status(dependency) == StageStatus::Complete;
-                if (!complete || registry.isStale(dependency)) {
-                    const std::string dependencyName = registry.name(dependency);
-                    throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + dependencyName +
-                                         (complete ? "\" is stale" : "\" is not complete"));
-                }
+            case RunBlocker::UnresolvedDependency:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is not declared");
+            case RunBlocker::DependencyIncomplete:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is not complete");
+            case RunBlocker::DependencyStale:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is stale");
             }
             checkRasterOwnership(registry.definition(stage));
         } catch (...) {
