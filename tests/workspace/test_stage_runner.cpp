@@ -1,4 +1,6 @@
 // Requirements: UR-STG-3, UR-STG-10, UR-EXE-1, UR-EXE-4
+#include "storage/raster_test_util.hpp"
+#include "workspace/support/aux_probe.hpp"
 #include "workspace/support/test_slide.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
@@ -12,8 +14,10 @@
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
+#include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>
@@ -488,4 +492,125 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     EXPECT_TRUE(foundC) << "the disc inside the region was missed";
     EXPECT_FALSE(foundB) << "the disc outside the dilated region was found";
     EXPECT_EQ(nuclei.size(), 2u);
+}
+
+namespace {
+
+// The blur chain of a raster-writing stage.
+PipelineSpec blurChain() {
+    PipelineSpec spec;
+    spec.operation("pixel.gaussian_blur", OperationParameters());
+    return spec;
+}
+
+// A chain of the auxiliary probe, reading the input bound as `binding`.
+PipelineSpec probeChain(const char* binding) {
+    PipelineSpec spec;
+    spec.operation("test.ws.auxProbe", OperationParameters().setString("binding", binding));
+    return spec;
+}
+
+// The kinds of the journal's events, in order.
+std::vector<EventKind> eventKinds(Fixture& f) {
+    std::vector<EventKind> kinds;
+    const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
+    while (cursor->next(0)) kinds.push_back(cursor->current().kind());
+    return kinds;
+}
+
+// The index of the first event of `kind`; -1 when there is none.
+int64_t firstOf(const std::vector<EventKind>& kinds, EventKind kind) {
+    for (size_t i = 0; i < kinds.size(); ++i) {
+        if (kinds[i] == kind) return static_cast<int64_t>(i);
+    }
+    return -1;
+}
+
+// A raster the blur stage writes: three Float32 planes, as the blur of an RGB slide.
+RasterId declareProb(Fixture& f) {
+    return f.workspace->store()->rasters().declare(RasterDeclaration("prob", DataType::Float32, 3));
+}
+
+} // namespace
+
+TEST(StageRunner, WrittenRasterIsPublishedOnSuccess) {
+    Fixture f;
+    const RasterId prob = declareProb(f);
+    StageDefinition def("blur");
+    def.writesRaster(prob).pipeline(blurChain());
+    const StageId id = f.stages().declare(def);
+    RasterRegistry& rasters = f.workspace->store()->rasters();
+    EXPECT_FALSE(rasters.isPopulated(prob));
+
+    StageRunner(*f.workspace, id).run();
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    ASSERT_TRUE(rasters.isPopulated(prob));
+    EXPECT_EQ(rasters.writerStage(prob), id);
+
+    // One tile of the published raster reads back over the 7.0 the view started with.
+    auto owned = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 3, 7.0);
+    rasters.sourceFor(prob)->fillTile(owned->view);
+    EXPECT_NE(*static_cast<const float*>(owned->view.planeData(0)), 7.0f) << "the tile was filled";
+}
+
+TEST(StageRunner, StoredRasterIsReadByBinding) {
+    testing_support::registerAuxProbe();
+    testing_support::resetAuxProbe();
+    Fixture f;
+    const RasterId prob = declareProb(f);
+    StageDefinition blur("blur");
+    blur.writesRaster(prob).pipeline(blurChain());
+    const StageId first = f.stages().declare(blur);
+    StageDefinition probe("probe");
+    probe.readsRaster("prob", prob).pipeline(probeChain("prob"));
+    const StageId second = f.stages().declare(probe);
+
+    bool dependsOnFirst = false;
+    for (int32_t i = 0; i < f.stages().dependencyCount(second); ++i) {
+        dependsOnFirst = dependsOnFirst || f.stages().dependencyAt(second, i) == first;
+    }
+    EXPECT_TRUE(dependsOnFirst);
+
+    StageRunner second1(*f.workspace, second);
+    EXPECT_NE(messageOf(second1).find("blur"), std::string::npos) << "refused until the writer is complete";
+    EXPECT_EQ(testing_support::auxProbeTiles("prob"), 0);
+
+    StageRunner(*f.workspace, first).run();
+    StageRunner(*f.workspace, second).run();
+    EXPECT_EQ(f.stages().status(second), StageStatus::Complete);
+    EXPECT_GT(testing_support::auxProbeTiles("prob"), 0);
+}
+
+TEST(StageRunner, LayerAsRasterIsBound) {
+    testing_support::registerAuxProbe();
+    testing_support::resetAuxProbe();
+    Fixture f;
+    const StageId first = f.stages().declare(blobStage("nuclei", f.nuclei));
+    StageDefinition probe("probe");
+    probe.readsLayerAsRaster("coarse", f.nuclei, LayerRasterContent::Membership).pipeline(probeChain("coarse"));
+    const StageId second = f.stages().declare(probe);
+
+    StageRunner(*f.workspace, first).run();
+    StageRunner(*f.workspace, second).run();
+    EXPECT_EQ(f.stages().status(second), StageStatus::Complete);
+    EXPECT_GT(testing_support::auxProbeTiles("coarse"), 0);
+}
+
+TEST(StageRunner, FlushOrderObjectsEdgesAnnotationsRaster) {
+    Fixture f;
+    // The blobs chain ends in one Int32 label plane, which is what the stage's raster stores.
+    const RasterId mask = f.workspace->store()->rasters().declare(RasterDeclaration("mask", DataType::Int32, 1));
+    const PipelineSpec spec = blobChain();
+    StageDefinition def("both");
+    def.writesLayer(f.nuclei).writesRaster(mask).pipeline(spec);
+    const StageId id = f.stages().declare(def);
+    StageRunner(*f.workspace, id).run();
+
+    const std::vector<EventKind> kinds = eventKinds(f);
+    const int64_t objects = firstOf(kinds, EventKind::ObjectsAdded);
+    const int64_t raster = firstOf(kinds, EventKind::RasterWritten);
+    ASSERT_GE(objects, 0);
+    ASSERT_GE(raster, 0);
+    EXPECT_LT(objects, raster);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 9);
 }
