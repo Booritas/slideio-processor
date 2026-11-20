@@ -13,6 +13,12 @@ namespace slideio::processor::testing_support {
 // std::runtime_error when libtiff cannot write the file.
 std::filesystem::path writeTestSlide(const std::filesystem::path& file, int32_t width, int32_t height);
 
+// Writes the same TIFF form as writeTestSlide: a white slide with nine dark discs of
+// radius 20 on a 3x3 grid, their centres at 1/6, 3/6 and 5/6 of each side. Colour
+// conversion to grey, an inverted fixed threshold and connected components find
+// exactly nine objects in it, given a slide large enough to hold the discs apart.
+std::filesystem::path writeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height);
+
 // A unique path in the temp directory, not created; remove_all on destruction, so a
 // failing test leaves nothing behind.
 class TempDirectory {

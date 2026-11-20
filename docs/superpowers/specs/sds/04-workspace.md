@@ -509,6 +509,10 @@ public:
     /// True when every effective dependency is complete and not stale.
     bool isRunnable(StageId) const;
 
+    /// True for a stage kept by name only at restore, because its record could
+    /// not be read. Such a stage is never runnable; `StageRunner` refuses it.
+    bool isUnreadable(StageId) const;
+
     /// The definition the stage was declared with, as the registry holds it
     /// (restored from its record at open). Empty but for the name when the
     /// record could not be restored.
@@ -738,6 +742,9 @@ if (pixels) pixels->flush();   // last: builds the pyramid and publishes (3.8)
 
 for (int32_t i = 0; i < def.writtenLayerCount(); ++i)   // on success only
     layers.recordAnalysisLevel(def.writtenLayerAt(i), p.analysisLevel());
+
+ws_.store()->stageStateWriter().setStatus(id_, StageStatus::Complete);
+ws_.stages().clearStale(id_);                          // current again
 ```
 
 The raster flush is last and is the one that is not cheap: it builds the
@@ -759,6 +766,19 @@ and after the flushes — a stage that fails has written no geometry and must no
 coarsen a layer's stated precision. `LayerRegistry` keeps the maximum over
 writers, so re-running this stage at a finer level does not improve the
 recorded figure while a coarser writer's objects remain (`03-storage.md` 3.3).
+
+**What success records, in this order, after the flushes:** the analysis level
+of each written layer, then `setStatus(Complete)`, then
+`StageRegistry::clearStale(id)`. The level goes first because a stage is
+`Complete` only once everything it claims is recorded, and the stale flag is
+cleared last because a stage that is `Complete` and still flagged is the
+conservative state, while one cleared before it is `Complete` would be the
+dangerous one.
+
+**The counters.** `objectsWritten()` and `edgesAsserted()` are the
+`emittedCount()` of the run's `ObjectWriter` and the `assertedCount()` of its
+`EdgeWriter`, read after the flushes, so they count what was committed. Both
+are 0 before `run()` and after a failed run.
 
 **The restriction is resolved per tile, never whole.** `makeLayerMaskSource`
 (`01-core.md` 1.9) hands the pipeline an object that answers one tile at a
@@ -824,6 +844,29 @@ happen inside `Pipeline::validate()` (5.5) and are not duplicated here. The
 runner's remaining job is the stage's own: gating on dependencies and
 staleness, discarding prior output on re-run, recording state, and handling
 failure.
+
+**Gating comes before anything is written.** `run()` first throws `IoError`
+when the workspace is read-only. It then throws `StageError`, with the stage's
+name in `ErrorContext.stageName` and in the message, in three cases, checked in
+this order:
+
+1. the stage's record is unreadable (`StageRegistry::isUnreadable`);
+2. a dependency is not `Complete`, or is stale: the message names the first
+   such dependency in `dependencyAt` order;
+3. another `StageRunner` of the same workspace is inside `run()`.
+
+A stale stage whose dependencies are current is runnable: re-running it is how
+it becomes current. The third case is a run slot, a `std::atomic<bool>` in
+`Workspace::Impl` taken by a RAII holder (`workspace/detail/run_slot.hpp`) for
+the length of `run()` and released on every path out of it, so a second runner
+fails fast instead of interleaving two runs' writers. The error the runner
+raises itself is not wrapped again on failure. The messages name the stage and
+the dependency, never the slide path (UR-STG-10).
+
+`isRerun()` is true when the stage's status at the start of `run()` is not
+`Pending`: `Complete`, `Failed`, or `Running`. `Running` is what a process that
+died mid-run leaves behind, and because the workspace has a single writer lock
+no live process can own it.
 
 **Layer binding** is where UR-STG-10's "each stage shall declare the layers it
 writes" becomes enforceable rather than documentary:
