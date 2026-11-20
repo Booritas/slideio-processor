@@ -882,23 +882,37 @@ on re-run, recording state, and handling failure.
 What validation at the gate does not see is the sinks: `validate()` does not
 consult them, and the raster writer is obtained only after the re-run
 preparation, because `RasterRegistry::writerForStage` creates the raster's
-directory (3.8). Its refusals (a raster written by another stage, a live writer)
-and a chain whose output the raster cannot take therefore still surface inside
-the run, recorded `Failed`. The object, edge and annotation writers write
-nothing until given something.
+directory (3.8). The gate therefore makes the one refusal of that writer that
+needs only reads itself (case 4 below: a raster another stage populated). What
+remains inside the run, recorded `Failed`, is a second live writer of the
+raster, a populated row whose file is missing (writerForStage still refuses it),
+and a chain whose output the raster cannot take: `Pipeline` does not expose the
+plan's output type, so that check is a follow-up. The object, edge and
+annotation writers write nothing until given something.
 
 **Gating comes before anything is written.** `run()` first throws `IoError`
 when the workspace is read-only; that check needs no run slot. It then throws
 `StageError`, with the stage's name in `ErrorContext.stageName` and in the
-message, in four cases, checked in this order:
+message, in five cases, checked in this order:
 
 1. another `StageRunner` of the same workspace is inside `run()`;
 2. the stage's record is unreadable (`StageRegistry::isUnreadable`);
 3. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
-4. the stage's bound pipeline fails `Pipeline::validate()` (the layer binding
-   below among others): the `cause` is the pipeline's error, which names the
-   operation and the layer.
+4. the stage writes a raster that another stage populated
+   (`RasterRegistry::isPopulated` and `writerStage`, reads only): the message
+   names the raster and that stage, which alone may write it until it is
+   discarded (ruling S47);
+5. the stage's bound pipeline cannot be built (an auxiliary source that cannot
+   be opened, say) or fails `Pipeline::validate()` (the layer binding below
+   among others): the `cause` is the original error, the pipeline's naming the
+   operation and the layer, and `ErrorContext.operationName` is copied when the
+   original carries it (`validate()` sets it on every refusal of one operation).
+
+An error of the reads the gate makes (the stage's status, its record, its
+dependencies, on a closed workspace say) is raised the same way, as a
+`StageError` naming the stage with the original as its `cause`, so every error
+leaving `run()` but `std::bad_alloc` names the stage.
 
 A stale stage whose dependencies are current is runnable: re-running it is how
 it becomes current. The first case is a run slot, a `std::atomic<bool>` in
@@ -939,7 +953,7 @@ writes" becomes enforceable rather than documentary:
 
 Raster-only operations are not consulted, and a stage whose chain produces no
 objects may legally declare no layer at all. All three steps run at the gate
-(case 4 above): step 1 when the runner binds its `Pipeline`, steps 2 and 3 in
+(case 5 above): step 1 when the runner binds its `Pipeline`, steps 2 and 3 in
 the `validate()` that follows, together with every other check `validate()`
 makes, an unregistered operation's among them.
 
@@ -1032,6 +1046,17 @@ a re-run of them fixes; a crash after step 2 or during step 3 leaves the stage
 `Complete` with part of its output gone, or its dependents looking current.
 `isRerun()` is decided before step 1. Steps 2 and 3 sit inside the run's guarded
 region, so a failure in either is recorded `Failed` as above.
+
+**A stage may read the raster it writes** (`readsRaster` and `writesRaster`
+naming one raster); the declaration is legal. The gate opened that raster's
+source on its prior file, which a re-run must neither read (the re-run would
+see its own earlier output, and two runs over the same input would differ,
+against UR-STG-6) nor hold open while step 3 deletes the file (on Windows the
+delete would fail). So on a re-run, just before step 3, the runner unbinds and
+drops each such source, and after step 3 re-acquires it with
+`RasterRegistry::sourceFor` and binds it again: it then reads the raster as it
+is after the discard, unpopulated, so as zero. Rebinding resets the pipeline's
+plan, and `runInto` validates again.
 
 A stage left `Running` by a dead process is a re-run too (decision 2), so what
 that process had flushed is discarded and the next run ends with exactly the

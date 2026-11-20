@@ -1,5 +1,6 @@
 // Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
 #include "pipeline/test_support/executor_support.hpp"
+#include "pipeline/test_support/test_operations.hpp"
 #include "storage/raster_test_util.hpp"
 #include "workspace/support/aux_probe.hpp"
 #include "workspace/support/test_slide.hpp"
@@ -12,6 +13,8 @@
 #include <slideio/processor/core/log.hpp>
 #include <slideio/processor/core/object_query.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/pipeline/operation.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
@@ -662,6 +665,83 @@ TEST(StageRunner, StoredRasterIsReadByBinding) {
     EXPECT_GT(testing_support::auxProbeTiles("prob"), 0);
 }
 
+TEST(StageRunner, RerunOfSelfReadingStageDoesNotSeeItsPriorOutput) {
+    testing_support::registerAuxProbe();
+    Fixture f;
+    const RasterId prob = declareProb(f);
+    PipelineSpec spec;
+    spec.operation("test.ws.auxAdd", OperationParameters().setString("binding", "self"));
+    StageDefinition def("accumulate");
+    def.readsRaster("self", prob).writesRaster(prob).pipeline(spec);
+    const StageId id = f.stages().declare(def);
+    RasterRegistry& rasters = f.workspace->store()->rasters();
+
+    // The whole 600 x 600 raster, all three planes, as stored.
+    const auto samples = [&rasters, prob] {
+        auto view = makeView(0, Rect64{0, 0, 600, 600}, 600, 600, DataType::Float32, 3, -1.0);
+        rasters.sourceFor(prob)->fillTile(view->view);
+        std::vector<float> values;
+        for (const std::vector<uint8_t>& plane : view->buffers) {
+            const float* begin = reinterpret_cast<const float*>(plane.data());
+            values.insert(values.end(), begin, begin + plane.size() / sizeof(float));
+        }
+        return values;
+    };
+    const auto rasterFiles = [&rasters] {
+        std::vector<fs::path> files;
+        for (const auto& entry : fs::directory_iterator(fs::u8path(rasters.directory()))) {
+            if (entry.is_regular_file()) files.push_back(entry.path());
+        }
+        return files;
+    };
+
+    StageRunner(*f.workspace, id).run();
+    ASSERT_TRUE(rasters.isPopulated(prob));
+    const std::vector<float> first = samples();
+    ASSERT_TRUE(std::any_of(first.begin(), first.end(), [](float v) { return v > 0.0f; }));
+    const std::vector<fs::path> firstFiles = rasterFiles();
+    ASSERT_FALSE(firstFiles.empty());
+
+    StageRunner rerun(*f.workspace, id);
+    rerun.run();
+    EXPECT_TRUE(rerun.isRerun());
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    EXPECT_TRUE(samples() == first) << "the re-run read its own prior output";
+    for (const fs::path& file : firstFiles) {
+        EXPECT_FALSE(fs::exists(file)) << "the prior raster file was not released and deleted: " << file.u8string();
+    }
+}
+
+TEST(StageRunner, RasterWrittenByAnotherStageIsRefusedBeforeAnyWrite) {
+    Fixture f;
+    const RasterId prob = declareProb(f);
+    StageDefinition owner("blur");
+    owner.writesRaster(prob).pipeline(blurChain());
+    const StageId first = f.stages().declare(owner);
+    // The second writer also writes a layer, so a run that got past the gate would have
+    // discarded and rewritten it.
+    StageDefinition rival("rival");
+    rival.writesLayer(f.nuclei).writesRaster(prob).pipeline(blobChain());
+    const StageId second = f.stages().declare(rival);
+    f.workspace->store()->stageStateWriter().setStatus(second, StageStatus::Complete);  // as if it had run
+    RasterRegistry& rasters = f.workspace->store()->rasters();
+    ASSERT_FALSE(rasters.isPopulated(prob));
+    StageRunner(*f.workspace, first).run();
+    ASSERT_EQ(rasters.writerStage(prob), first);
+    const int64_t discardsBefore = discardEventsOf(f, second);
+
+    StageRunner runner(*f.workspace, second);
+    std::string stageName;
+    const std::string message = messageOf(runner, &stageName);
+    EXPECT_EQ(stageName, "rival");
+    EXPECT_NE(message.find("stage \"rival\""), std::string::npos) << message;
+    EXPECT_NE(message.find("\"prob\""), std::string::npos) << message;
+    EXPECT_NE(message.find("\"blur\""), std::string::npos) << message;
+    EXPECT_EQ(f.stages().status(second), StageStatus::Complete) << "refused at the gate";
+    EXPECT_EQ(discardEventsOf(f, second), discardsBefore);
+    EXPECT_EQ(rasters.writerStage(prob), first);
+}
+
 TEST(StageRunner, LayerAsRasterIsBound) {
     testing_support::registerAuxProbe();
     testing_support::resetAuxProbe();
@@ -1012,6 +1092,7 @@ TEST(StageRunner, GateRefusalWrapsThePipelineError) {
         const std::string cause = e.cause();
         EXPECT_NE(cause.find("Pipeline::validate"), std::string::npos) << "the pipeline's own error: " << cause;
         EXPECT_NE(cause.find("segment.connected_components"), std::string::npos) << cause;
+        EXPECT_STREQ(e.operationName(), "segment.connected_components") << "copied from the pipeline's error";
     }
     EXPECT_EQ(f.stages().status(id), StageStatus::Pending) << "refused at the gate";
     EXPECT_EQ(discardEventsOf(f, id), 0);
@@ -1079,38 +1160,73 @@ TEST(StageRunner, NonStringTargetLayerIsRefusedBeforeAnyWrite) {
 
 namespace {
 
-// Calls another runner's run() from inside its first progress report and lets what that
-// call throws leave the observer.
-class ThrowingNestedRunObserver : public ProgressObserver {
+// "test.ws.nestedRun": a pass-through whose factory, once armed, runs another stage the
+// first time it is called while the armed stage is Running. Pipeline::runInto() validates
+// again after the runner attaches its sinks, so that call is inside the run, after the
+// re-run preparation and outside any tile: what it throws reaches the runner's failure
+// path as it was thrown, a StageError naming the other stage.
+struct NestedRunArming {
+    Workspace* workspace = nullptr;
+    StageId stage;
+    StageRunner* inner = nullptr;
+    bool fired = false;
+};
+NestedRunArming gNestedRun;
+
+class PassThroughOperation : public Operation {
 public:
-    explicit ThrowingNestedRunObserver(StageRunner& inner) : inner_(inner) {}
-    void onProgress(const char*, double, int64_t, int64_t) override {
-        if (!called_.exchange(true)) inner_.run();
-    }
+    explicit PassThroughOperation(const OperationParameters& parameters) : parameters_(parameters) {}
+    const char* name() const override { return "test.ws.nestedRun"; }
+    ChannelArity arity() const override { return ChannelArity::PerChannel; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte); }
+    Halo halo() const override { return Halo::uniform(0); }
+    DataType outputType(DataType) const override { return DataType::Byte; }
+    const OperationParameters& parameters() const override { return parameters_; }
+    void apply(OperationContext&) override {}
 
 private:
-    StageRunner& inner_;
-    std::atomic<bool> called_{false};
+    OperationParameters parameters_;
 };
+
+OperationPtr makeNestedRun(const OperationParameters& parameters) {
+    NestedRunArming& arming = gNestedRun;
+    if (arming.inner != nullptr && !arming.fired &&
+        arming.workspace->stages().status(arming.stage) == StageStatus::Running) {
+        arming.fired = true;
+        arming.inner->run();
+    }
+    return std::make_shared<PassThroughOperation>(parameters);
+}
 
 } // namespace
 
 TEST(StageRunner, NestedStageErrorNamesTheOuterStage) {
+    OperationCatalog& catalog = OperationCatalog::instance();
+    if (!catalog.isRegistered("test.ws.nestedRun")) {
+        catalog.registerFactory(std::make_shared<testing_support::PrototypeFactory>(
+            &makeNestedRun, "Passes its input through; runs another stage when armed", "O(1)"));
+    }
     Fixture f;
-    const StageId first = f.stages().declare(blobStage("first", f.nuclei));
+    PipelineSpec spec;
+    spec.operation("test.ws.nestedRun", OperationParameters());
+    StageDefinition outerDef("first");
+    outerDef.pipeline(spec);
+    const StageId first = f.stages().declare(outerDef);
     const StageId second = f.stages().declare(blobStage("second", f.background));
     StageRunner inner(*f.workspace, second);
-    ThrowingNestedRunObserver observer(inner);
-    StageRunner outer(*f.workspace, first);
-    outer.progress(&observer);
+    gNestedRun = NestedRunArming{f.workspace.get(), first, &inner, false};
     try {
-        outer.run();
-        FAIL() << "no StageError";
+        StageRunner(*f.workspace, first).run();
+        ADD_FAILURE() << "no StageError";
     } catch (const StageError& e) {
         EXPECT_STREQ(e.stageName(), "first") << e.what();
         EXPECT_NE(std::string(e.cause()).find("\"second\" cannot run"), std::string::npos) << e.what();
     }
-    EXPECT_EQ(f.stages().status(first), StageStatus::Failed);
+    const bool fired = gNestedRun.fired;
+    gNestedRun = NestedRunArming();
+    ASSERT_TRUE(fired) << "the factory was never called while the stage was Running";
+    EXPECT_EQ(f.stages().status(first), StageStatus::Failed) << "a failure of the run, not a gate refusal";
     EXPECT_EQ(f.stages().status(second), StageStatus::Pending);
 }
 

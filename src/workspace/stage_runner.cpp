@@ -26,6 +26,7 @@
 #include <ios>
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -87,27 +88,56 @@ public:
     }
 
     // The refusals made while the caller holds the run slot, in §4.4's order, but for the
-    // last, prepare(). Each leaves the stage as it was: nothing has been written yet.
-    void gate() const {
-        const StageRegistry& registry = workspace.stages();
-        if (registry.isUnreadable(stage)) {
-            throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
-        }
-        const int32_t count = registry.dependencyCount(stage);
-        for (int32_t i = 0; i < count; ++i) {
-            const StageId dependency = registry.dependencyAt(stage, i);
-            const bool complete = registry.status(dependency) == StageStatus::Complete;
-            if (!complete || registry.isStale(dependency)) {
-                const std::string dependencyName = registry.name(dependency);
-                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + dependencyName +
-                                     (complete ? "\" is stale" : "\" is not complete"));
+    // last, prepare(). Each leaves the stage as it was: nothing has been written yet. An
+    // error of the reads themselves (a closed workspace) is raised for this stage too.
+    void gate() {
+        try {
+            noteStatus();  // again under the slot: no other run can change it from here
+            const StageRegistry& registry = workspace.stages();
+            if (registry.isUnreadable(stage)) {
+                throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
             }
+            const int32_t count = registry.dependencyCount(stage);
+            for (int32_t i = 0; i < count; ++i) {
+                const StageId dependency = registry.dependencyAt(stage, i);
+                const bool complete = registry.status(dependency) == StageStatus::Complete;
+                if (!complete || registry.isStale(dependency)) {
+                    const std::string dependencyName = registry.name(dependency);
+                    throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + dependencyName +
+                                         (complete ? "\" is stale" : "\" is not complete"));
+                }
+            }
+            checkRasterOwnership(registry.definition(stage));
+        } catch (...) {
+            rethrowForStage("\" cannot run");
         }
+    }
+
+    // A raster another stage populated stays that stage's until it is discarded (ruling
+    // S47). RasterRegistry::writerForStage() refuses it too, but only inside the run,
+    // after a re-run has discarded this stage's output; this read-only check refuses it
+    // first. A populated row whose file is missing is left to writerForStage().
+    void checkRasterOwnership(const StageDefinition& definition) const {
+        if (!definition.writesAnyRaster()) return;
+        const RasterRegistry& rasters = workspace.store()->rasters();
+        const RasterId raster = definition.writtenRaster();
+        if (!rasters.isPopulated(raster)) return;
+        const StageId writer = rasters.writerStage(raster);
+        if (writer == stage) return;
+        const StageRegistry& registry = workspace.stages();
+        bool known = false;
+        for (int32_t i = 0; i < registry.count() && !known; ++i) known = registry.at(i) == writer;
+        const std::string writerName =
+            known ? "stage \"" + std::string(registry.name(writer)) + "\"" : "stage " + std::to_string(writer.value());
+        throwStage(name, "stage \"" + name + "\" cannot run: its raster \"" + rasters.name(raster) +
+                             "\" was written by " + writerName + ", which alone may write it until it is discarded");
     }
 
     // What the run reads from, built and validated at the gate. The Pipeline holds raw
     // pointers to the mask and the sources, so it is declared last and destroyed first.
     struct Prepared {
+        std::optional<StageDefinition> definition;
+        StorePtr store;
         TileMaskSourcePtr mask;  // null when the stage is unrestricted
         std::vector<TileRasterSourcePtr> sources;  // the layer-backed first, then the stored
         std::unique_ptr<Pipeline> pipeline;
@@ -122,22 +152,24 @@ public:
     // consult them.
     Prepared prepare() const {
         try {
-            const StageDefinition definition = workspace.stages().definition(stage);
-            const StorePtr store = workspace.store();
-            const LayerRegistry& layers = workspace.layers();
             Prepared prepared;
+            prepared.definition.emplace(workspace.stages().definition(stage));
+            prepared.store = workspace.store();
+            const StageDefinition& definition = *prepared.definition;
+            Store& store = *prepared.store;
+            const LayerRegistry& layers = workspace.layers();
             if (definition.hasLayerRestriction()) {
                 const LayerId source = definition.layerRestriction();
                 const double halfStep =
                     LevelSelector(workspace.scene()).scaleOfLevel(layers.coarsestAnalysisLevel(source)) / 2.0;
-                prepared.mask = makeLayerMaskSource(store->objects(), source, halfStep);
+                prepared.mask = makeLayerMaskSource(store.objects(), source, halfStep);
             }
             for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
-                prepared.sources.push_back(makeLayerRasterSource(store->objects(), definition.rasterLayerAt(i),
+                prepared.sources.push_back(makeLayerRasterSource(store.objects(), definition.rasterLayerAt(i),
                                                                  definition.rasterContentAt(i)));
             }
             for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
-                prepared.sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
+                prepared.sources.push_back(store.rasters().sourceFor(definition.readRasterAt(i)));
             }
             prepared.pipeline = std::make_unique<Pipeline>(workspace.scene(), workspace.scratchConfiguration(),
                                                            definition.pipeline());
@@ -156,7 +188,7 @@ public:
             pipeline.validate();
             return prepared;
         } catch (...) {
-            rethrowForStage("\" cannot run: its pipeline is invalid");
+            rethrowForStage("\" cannot run: preparing its pipeline failed");
         }
     }
 
@@ -259,12 +291,43 @@ public:
         }
     }
 
+    // A stage may read the raster it writes (readsRaster and writesRaster naming one
+    // raster). prepare() opened that raster's prior file, which a re-run must neither read
+    // (UR-STG-6: the re-run would see its own earlier output) nor hold open while the
+    // discard deletes it (Windows). So on a re-run each such source is unbound and
+    // dropped before the discards, and re-acquired after them, reading the raster as it
+    // now is, unpopulated. Rebinding resets the plan; runInto() validates again.
+    template <class Each> void forEachSelfRead(const Prepared& prepared, Each each) const {
+        const StageDefinition& definition = *prepared.definition;
+        if (!definition.writesAnyRaster()) return;
+        const size_t base = static_cast<size_t>(definition.rasterLayerCount());
+        for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
+            if (definition.readRasterAt(i) == definition.writtenRaster()) {
+                each(definition.readRasterBindingAt(i), base + static_cast<size_t>(i));
+            }
+        }
+    }
+
+    void releaseSelfReads(Prepared& prepared) const {
+        forEachSelfRead(prepared, [&prepared](const char* binding, size_t index) {
+            prepared.pipeline->auxiliaryRaster(binding, nullptr);
+            prepared.sources[index].reset();
+        });
+    }
+
+    void rebindSelfReads(Prepared& prepared) const {
+        forEachSelfRead(prepared, [&prepared](const char* binding, size_t index) {
+            prepared.sources[index] = prepared.store->rasters().sourceFor(prepared.definition->writtenRaster());
+            prepared.pipeline->auxiliaryRaster(binding, prepared.sources[index].get());
+        });
+    }
+
     // Everything after prepare(): the run proper, §4.4's listing from the re-run
     // preparation on. All of it is inside the guarded region, so any failure records Failed.
     void execute(Prepared& prepared) {
         StageRegistry& registry = workspace.stages();
-        const StageDefinition definition = registry.definition(stage);
-        const StorePtr store = workspace.store();
+        const StageDefinition& definition = *prepared.definition;
+        const StorePtr& store = prepared.store;
         LayerRegistry& layers = workspace.layers();
         Pipeline& pipeline = *prepared.pipeline;
 
@@ -277,7 +340,11 @@ public:
             // output gone, nor its dependents looking current.
             if (rerun) markDependentsStale(registry);
             store->stageStateWriter().setStatus(stage, StageStatus::Running);
-            if (rerun) discardPriorOutput(*store);
+            if (rerun) {
+                releaseSelfReads(prepared);  // first: an open source would keep the file
+                discardPriorOutput(*store);
+                rebindSelfReads(prepared);
+            }
 
             // The object, edge and annotation writers write nothing until given something.
             // The raster writer creates the raster's directory, so it is obtained here,
@@ -338,12 +405,15 @@ StageRunner& StageRunner::cancellation(const CancellationToken& token) noexcept 
 
 void StageRunner::run() {
     // Decision 2, decided first so that a refused run answers for its own start too.
-    impl_->noteStatus();
+    try {
+        impl_->noteStatus();
+    } catch (...) {
+        impl_->rethrowForStage("\" cannot run");
+    }
     // Read-only needs no slot; the rest of the gate runs under the slot, so a racing
     // re-run of a dependency cannot slip between the dependency check and the run.
     impl_->checkWritable();
     const detail::RunSlot slot(impl_->workspace, impl_->name.c_str());
-    impl_->noteStatus();  // again under the slot: no other run can change it from here
     impl_->gate();
     Impl::Prepared prepared = impl_->prepare();
     impl_->execute(prepared);
