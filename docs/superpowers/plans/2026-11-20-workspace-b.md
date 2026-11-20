@@ -30,11 +30,14 @@
    - a dependency is not `Complete`, or is stale (the message names the first such dependency, in `dependencyAt` order);
    - another `StageRunner` of the same workspace is inside `run()`.
    A stale stage whose dependencies are current is runnable: re-running it is how it becomes current.
+   (Amended by the final review: read-only is checked first and needs no slot; the run slot is then taken before the other checks, so a re-run of a dependency cannot slip between the dependency check and the run; the layer-binding check of decision 6 is the last refusal. No refusal changes anything.)
 2. **`isRerun()`** is true when the stage's status at the start of `run()` is not `Pending`. That covers `Complete`, `Failed`, and `Running`; `Running` is left behind by a process that died mid-run, because the workspace's single writer lock means no live process can own it. Before `run()` it answers for the status at construction.
 3. **Re-run order.**
-   1. Discard the stage's prior output with `discardStage`, `discardEdgesOfStage`, `discardAnnotationsOfStage` and `discardRasterOfStage`.
-   2. Call `StageRegistry::markStale` on every stage that depends directly on this one, because its inputs are gone or about to be replaced whatever this run's outcome.
-   3. Only then set the stage `Running`.
+   1. Call `StageRegistry::markStale` on every stage that depends directly on this one, because its inputs are about to be replaced whatever this run's outcome.
+   2. Set the stage `Running`.
+   3. Only then discard the stage's prior output with `discardStage`, `discardEdgesOfStage`, `discardAnnotationsOfStage` and `discardRasterOfStage`.
+
+   The order is crash-safe: no point leaves the stage `Complete` with part of its output gone, or its dependents looking current; a stage left `Running` is a re-run (decision 2). `isRerun()` is captured before step 1, and steps 2 and 3 sit inside the run's guarded region, so a failure in either is recorded `Failed` (decision 5). (Amended by the final review: the order was discard, mark stale, then `Running`.)
 4. **Success** records the following, in this order after the flushes:
    1. the analysis level of each written layer;
    2. `setStatus(Complete)`;
@@ -50,7 +53,7 @@
    3. sets the stage `Failed`.
 
    If any of these steps itself throws, the runner logs an Error naming the stage and the original exception still propagates. The analysis level is never recorded on failure.
-6. **Layer binding checks** run before `Pipeline::validate()` and throw `StageError` naming the stage, the operation and the layer. They cover every operation for which `OperationCatalog::instance().producesObjects(name)` is true:
+6. **Layer binding checks** run at the gate (amended by the final review: before any write, not after `Running`), before `Pipeline::validate()`, and throw `StageError` naming the stage, the operation and the layer. They cover every operation for which `OperationCatalog::instance().producesObjects(name)` is true:
    - its `targetLayer`, when present and non-empty, must name one of the stage's written layers;
    - when absent or empty, the stage must declare exactly one written layer.
    Raster-only operations are not consulted.

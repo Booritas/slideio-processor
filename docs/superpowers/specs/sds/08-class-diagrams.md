@@ -1218,8 +1218,9 @@ ceiling can span raster tiles, object accumulation and store buffers at once.
 
 `StageRunner`'s failure and re-run paths are what call the four
 `discard...` calls, and `markStale` on a stage's direct dependents. On a
-re-run it discards, then marks the dependents stale, then sets the stage
-`Running`; on a failure it abandons the raster writer, discards, and sets
+re-run it marks the dependents stale, then sets the stage `Running`, then
+discards, so a crash part-way never leaves the stage `Complete` with its output
+gone; on a failure it abandons the raster writer, discards, and sets
 `Failed`, with each step best effort so that the exception that propagates is
 the run's own (`04-workspace.md` 4.4). The run slot that keeps a second runner
 out of the workspace is an implementation detail of `Workspace` and is not a

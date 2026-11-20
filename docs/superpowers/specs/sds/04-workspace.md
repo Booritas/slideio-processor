@@ -763,9 +763,11 @@ removes a question.
 
 The analysis level is recorded against each written layer **on success only**,
 and after the flushes — a stage that fails has written no geometry and must not
-coarsen a layer's stated precision. `LayerRegistry` keeps the maximum over
-writers, so re-running this stage at a finer level does not improve the
-recorded figure while a coarser writer's objects remain (`03-storage.md` 3.3).
+coarsen a layer's stated precision. The level `LayerRegistry` records is the
+maximum ever recorded, and discards do not lower it, so re-running this stage
+at a finer level does not improve the recorded figure (`03-storage.md` 3.3).
+Erring coarse is the safe side: a consumer that dilates by the recorded level
+over-includes rather than missing objects.
 
 **What success records, in this order, after the flushes:** the analysis level
 of each written layer, then `setStatus(Complete)`, then
@@ -798,14 +800,15 @@ which was the signal that the case had not been thought through. It is not
 needed and does not exist. `core::dilate(Polygon, double)` was its only other
 caller and is gone too (`01-core.md` 1.3).
 
-**Layer binding.** Before `validate()`, and after the stage is marked `Running`,
-the runner checks every operation for which
+**Layer binding.** At the gate, under the run slot and before anything is
+written, the runner checks every operation for which
 `OperationCatalog::producesObjects(name)` is true; raster-only operations are
 not consulted. Its `targetLayer`, when present and non-empty, must name one of
 the stage's written layers; when absent or empty, the stage must declare exactly
 one written layer. Otherwise `run()` throws `StageError` naming the stage, the
 operation and the layer (the `ErrorContext` carries both `stageName` and
-`operationName`), and the stage ends `Failed` with nothing written. The check is
+`operationName`), and the stage is left as it was: no status change, no discard,
+no stale marking. The check is
 the runner's so that its message names the stage; `Pipeline::validate()` repeats
 the resolution for callers that use a pipeline directly, and treats an empty
 `targetLayer` as absent there too.
@@ -864,28 +867,36 @@ recoverable but wasteful, and the failure path then discards the stage exactly
 as any other fault does.
 
 Operation resolution, type and arity checking, and target-layer resolution all
-happen inside `Pipeline::validate()` (5.5) and are not duplicated here. The
-runner's remaining job is the stage's own: gating on dependencies and
-staleness, discarding prior output on re-run, recording state, and handling
-failure.
+happen inside `Pipeline::validate()` (5.5). The one check the runner makes
+first, at the gate, is its own layer-binding check against the stage's
+declaration (below), so that a binding error names the stage and is refused
+before anything is written; `Pipeline::validate()` then repeats target
+resolution against the bound layers. The runner's remaining job is the stage's
+own: gating on dependencies and staleness, discarding prior output on re-run,
+recording state, and handling failure.
 
 **Gating comes before anything is written.** `run()` first throws `IoError`
-when the workspace is read-only. It then throws `StageError`, with the stage's
-name in `ErrorContext.stageName` and in the message, in three cases, checked in
-this order:
+when the workspace is read-only; that check needs no run slot. It then throws
+`StageError`, with the stage's name in `ErrorContext.stageName` and in the
+message, in four cases, checked in this order:
 
-1. the stage's record is unreadable (`StageRegistry::isUnreadable`);
-2. a dependency is not `Complete`, or is stale: the message names the first
+1. another `StageRunner` of the same workspace is inside `run()`;
+2. the stage's record is unreadable (`StageRegistry::isUnreadable`);
+3. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
-3. another `StageRunner` of the same workspace is inside `run()`.
+4. the layer binding below fails: the message names the operation too.
 
 A stale stage whose dependencies are current is runnable: re-running it is how
-it becomes current. The third case is a run slot, a `std::atomic<bool>` in
+it becomes current. The first case is a run slot, a `std::atomic<bool>` in
 `Workspace::Impl` taken by a RAII holder (`workspace/detail/run_slot.hpp`) for
 the length of `run()` and released on every path out of it, so a second runner
-fails fast instead of interleaving two runs' writers. The error the runner
-raises itself is not wrapped again on failure. The messages name the stage and
-the dependency, never the slide path (UR-STG-10).
+fails fast instead of interleaving two runs' writers. The slot is taken before
+the dependency check, so a re-run of a dependency cannot slip in between the
+check and this run. Every refusal leaves the stage exactly as it was: no
+status change, no discard, no stale marking. The messages name the stage, the
+dependency and the operation; the runner adds no slide path to any message,
+and a `StageError` that wraps another error carries the original's text
+unchanged in its `cause` (UR-STG-10).
 
 `isRerun()` is true when the stage's status at the start of `run()` is not
 `Pending`: `Complete`, `Failed`, or `Running`. `Running` is what a process that
@@ -902,15 +913,18 @@ writes" becomes enforceable rather than documentary:
    emitting objects — the runner reads the `targetLayer` string from its
    parameters. A non-empty name that is not among the stage's bound layers
    throws `StageError` naming the stage, the operation and the layer — so a
-   stage that declares `nuclei` and runs an operation targeting `cells` fails
-   at declaration-checking time, not after an hour of tiles.
+   stage that declares `nuclei` and runs an operation targeting `cells` is
+   refused at the gate, before anything is written, not after an hour of tiles.
 3. An empty or absent name on such an operation resolves to the stage's single
    declared layer. Where the stage declared none, or more than one, it throws
    `StageError` instead of choosing — a stage emitting cells and nuclei in one
    pass must say which operation writes which.
 
 Raster-only operations are not consulted, and a stage whose chain produces no
-objects may legally declare no layer at all.
+objects may legally declare no layer at all. Steps 2 and 3 need only the stage's
+definition, so they run at the gate (case 4 above); an operation the catalog
+does not know is skipped there and refused by `Pipeline::validate()` inside the
+run. Step 1 happens when the run builds its `Pipeline`.
 
 **The stage name travels with the run.** `StageRunner` passes `def.name()` to
 `Pipeline::stageName` (5.5), so the `stageName` of every `onProgress` call and
@@ -938,14 +952,15 @@ edges, annotations and raster are discarded, and a `StageDiscarded` event is
 appended by each discard. The workspace is left in its prior consistent state
 and no partial objects are visible to later stages (UR-STG-5). An observer that
 had opted into in-flight objects sees the discard event and retracts them
-(UR-OBS-4). The exceptions the run can raise, from validation, the tile run or
-the flushes, leave `run()` as follows:
+(UR-OBS-4). The exceptions the run can raise, from the re-run preparation,
+validation, the tile run or the flushes, leave `run()` as follows:
 
 - `CancelledError` is re-thrown as a `CancelledError` carrying the stage name
   (UR-EXE-4).
-- A `StageError` the runner raised itself (gating after the slot, the layer
-  binding checks) passes through unchanged: it already names the stage and is
-  not wrapped again.
+- A `StageError` raised inside the run (for instance a nested runner's
+  refusal) passes through unchanged: it already names its stage and is not
+  wrapped again. The gate's own refusals never reach this path; they leave the
+  stage as it was.
 - `std::bad_alloc` is re-thrown unchanged (C-6).
 - Every other `ProcessorError` or `std::exception` becomes a `StageError` with
   `stageName` the stage and `cause` the original's `what()`; the original's
@@ -962,10 +977,11 @@ naming the stage, and the original exception is the one that propagates: a
 failure while recording a failure never replaces the failure being reported.
 The analysis level is never recorded on failure, and the run slot is released
 on every path, so a later `run()` of a runnable stage proceeds.
-Failures of the re-run preparation below, which happen before the stage is
-`Running`, are recorded too: the stage is set `Failed` best effort and the
-exception is raised as it is, so a stage never stays `Complete` with part of its
-output gone. If `setStatus(Complete)` or `clearStale` throws after the analysis
+The re-run preparation below is inside the same guarded region: a failure of
+`setStatus(Running)` or of a discard is recorded and raised like any other, so a
+stage never stays `Complete` with part of its output gone. The runner adds no
+slide path to the messages it builds; a wrapped error's `cause` carries the
+original error's text unchanged. If `setStatus(Complete)` or `clearStale` throws after the analysis
 level was recorded, the level stays recorded while the stage is `Failed`; the
 level is the coarsest any writer used, so keeping it errs on the side of the coarser precision.
 
@@ -973,14 +989,23 @@ level is the coarsest any writer used, so keeping it errs on the side of the coa
 edges it previously asserted and the annotations it previously made are all
 replaced, not duplicated (UR-STG-6). The order is fixed:
 
-1. discard the prior output with `discardStage`, `discardEdgesOfStage`,
-   `discardAnnotationsOfStage` and `discardRasterOfStage`;
-2. call `StageRegistry::markStale` on every stage that depends directly on this
+1. call `StageRegistry::markStale` on every stage that depends directly on this
    one (found by scanning the stages' `dependencyAt`), because its inputs are
-   gone or about to be replaced whatever this run's outcome; `markStale` is a
-   locking public call of the registry and the runner is outside it, so there is
-   no re-entrancy;
-3. only then set the stage `Running`.
+   about to be replaced whatever this run's outcome; `markStale` is a locking
+   public call of the registry and the runner is outside it, so there is no
+   re-entrancy;
+2. set the stage `Running`;
+3. only then discard the prior output with `discardStage`,
+   `discardEdgesOfStage`, `discardAnnotationsOfStage` and
+   `discardRasterOfStage`.
+
+The order makes the preparation crash-safe. A crash after step 1 leaves the
+stage `Complete` with its output intact and its dependents merely stale, which
+a re-run of them fixes; a crash after step 2 or during step 3 leaves the stage
+`Running`, which the next run treats as a re-run. No point leaves the stage
+`Complete` with part of its output gone, or its dependents looking current.
+`isRerun()` is decided before step 1. Steps 2 and 3 sit inside the run's guarded
+region, so a failure in either is recorded `Failed` as above.
 
 A stage left `Running` by a dead process is a re-run too (decision 2), so what
 that process had flushed is discarded and the next run ends with exactly the
