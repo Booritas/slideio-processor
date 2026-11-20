@@ -481,6 +481,9 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
     ASSERT_EQ(causes.size(), 1u);
     EXPECT_EQ(causes[0].stage, cells);
     EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+    EXPECT_EQ(causes[0].detail,
+              "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+              "re-ran");
 
     // A stale source is still a cause of a stage that never completed: marking it stale
     // is what marked the stage.
@@ -494,7 +497,8 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
 
 // A source that never ran, Pending or failed on its first run, did not change: a stage
 // it reaches only by LayerOrdering, which ran without it, marked stale directly is its own
-// cause (PR #17 finding 2).
+// cause (PR #17 finding 2). A Running source is replacing its output now, so it is a cause
+// even on its first run.
 TEST(StalenessGraph, SourceThatNeverRanIsNotACause) {
     for (const StageStatus left : {StageStatus::Pending, StageStatus::Failed, StageStatus::Running}) {
         Fixture f;
@@ -508,9 +512,46 @@ TEST(StalenessGraph, SourceThatNeverRanIsNotACause) {
         f.stages().markStale(nuclei);
         const std::vector<Cause> causes = causesOf(f.stages(), nuclei);
         ASSERT_EQ(causes.size(), 1u);
-        EXPECT_EQ(causes[0].stage, nuclei);
-        EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+        if (left == StageStatus::Running) {
+            EXPECT_EQ(causes[0].stage, background);
+            EXPECT_EQ(causes[0].reason, StalenessReason::LayerOrdering);
+        } else {
+            EXPECT_EQ(causes[0].stage, nuclei);
+            EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+            EXPECT_EQ(causes[0].detail, "the stage was redeclared or marked stale directly");
+        }
     }
+}
+
+// A stage that never completed, marked stale by a re-run of its source that has since
+// completed, cannot be told from one redeclared after the source completed: the store
+// keeps no time for a stale flag. It names no source, and its detail says either may have
+// happened (PR #17 review, I-1). While the re-run is under way, the source is named.
+TEST(StalenessGraph, NeverCompletedStageMarkedByAReRunSaysSo) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, background);
+
+    // StageRunner's re-run of background: its dependents go stale, it runs, it completes.
+    f.stages().markAffectedStale(background);
+    f.workspace->store()->stageStateWriter().setStatus(background, StageStatus::Running);
+    ASSERT_TRUE(f.stages().isStale(cells));
+    std::vector<Cause> causes = causesOf(f.stages(), cells);
+    ASSERT_FALSE(causes.empty());
+    EXPECT_EQ(causes[0].stage, background);
+    EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
+
+    complete(f, background);
+    causes = causesOf(f.stages(), cells);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].stage, cells);
+    EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+    EXPECT_EQ(causes[0].detail,
+              "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+              "re-ran");
 }
 
 // The answers are cached between calls (PR #17 finding 5), and the cache follows every
@@ -545,6 +586,11 @@ TEST(StalenessGraph, CachedAnswersFollowEveryChange) {
 
     f.stages().clearStale(cells);
     EXPECT_EQ(f.stages().staleness().causeCount(cells), 0);
+
+    // A stale flag written straight through the store's writer, bypassing the registry,
+    // is followed too: the writer's revision keys the cache.
+    f.workspace->store()->stageStateWriter().setStale(cells, true);
+    EXPECT_GT(f.stages().staleness().causeCount(cells), 0);
 }
 
 // A detail string stays valid for the life of the registry: an identical redeclare and a

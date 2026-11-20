@@ -706,8 +706,15 @@ derivation resumes. A refresh keeps the pins it already holds for a stage that i
 still unreadable, because a writer that is rewriting the rows can leave them
 empty for a moment, but drops every held pin with an end that was unreadable
 and now parses: the writer redeclared that stage, and redeclaring drops every
-pin around it whatever the other end, so reader and writer keep the same pins
-(PR #17 review).
+pin around it whatever the other end, so once the redeclaration has finished
+reader and writer hold the same pins (PR #17 review). A redeclaration is not one
+transaction: a refresh landing after the writer stores the new record but before
+it rewrites the dependency rows re-pins its stale stored row to a stage that is
+still unreadable, and later refreshes carry that pin as held (the redeclared
+stage was no longer unreadable when they began) until the other end is
+redeclared, so the reader can disagree with the writer. Making `declare` one write
+transaction (or adding the dependency rows to the refresh snapshot) closes this;
+it is a follow-up.
 `dependencyCount`, `dependencyAt`, `isExplicitDependency`,
 `isRunnable` and `runBlocker` all read this one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
@@ -1077,7 +1084,9 @@ them the same way, but records nothing, as it has changed nothing):
 - Every other `ProcessorError` becomes a `StageError` with `stageName` the
   stage and `cause` the original's `what()`; the original's operation name and
   tile (`hasTile`, `tileX`, `tileY`) are copied when it has them, so a tile
-  fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5).
+  fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5). What is copied
+  is left out of the `cause` text, so `what()` names the operation and tile once
+  (PR #17 review).
 - An exception that is not a `ProcessorError` is translated as `error.hpp`'s
   exception stance (C-6) requires: `std::system_error` (with
   `std::filesystem::filesystem_error`) and `std::ios_base::failure` become
@@ -1270,39 +1279,50 @@ a reopen. A stage that is not stale has no causes. For a stale stage S the
 causes are its incoming edges U → S where U has changed since S:
 
 - U is stale (marking U is what reaches S); or
-- U completed at some time (`completedAtUnixMs(U) > 0`) and is now `Running`
-  or `Failed`: a re-run of U is under way or failed, replacing the output S
-  was built against. The store keeps no time for a run that did not complete,
-  so this counts whenever it happened; or
+- U is `Running`: a run of U is replacing its output now; or
+- U is `Failed` and completed at some time (`completedAtUnixMs(U) > 0`): a
+  re-run of U failed, replacing the output S was built against. The store
+  keeps no time for a run that did not complete, so this counts whenever it
+  happened; or
 - U is `Complete` and `completedAtUnixMs(U) > completedAtUnixMs(S)`, which
-  needs S to have completed: a stage that never completed has no output a
-  later completion could have changed.
+  needs S to have completed.
 
-A source that is not stale and never completed — `Pending`, or a first run
-`Running` or `Failed` — never changed, so it is not a cause by itself; this
-matters for `LayerOrdering`, whose target runs without its source (PR #17
-review). Each source's state is read once, however many reasons join it to S.
-There is one entry per qualifying edge, each with its own reason and detail, so a
-source joined to S by two reasons appears twice, as in the forward answer; they are
-ordered by ascending U, then by reason. When no edge
-qualifies, S is its own single cause with reason `Reconfigured` and detail
-`the stage was redeclared or marked stale directly`: it was redeclared, or
-marked stale directly. `None` is never reported. Causes need no storage of
-their own. They take the same errors as the forward answer.
+A `Pending` source never ran, and a `Failed` one that never completed never
+produced output, so neither is a cause by itself; this matters for
+`LayerOrdering`, whose target runs without its source (PR #17 review). Each
+source's state is read once, however many reasons join it to S. There is one
+entry per qualifying edge, each with its own reason and detail, so a source
+joined to S by two reasons appears twice, as in the forward answer; they are
+ordered by ascending U, then by reason. When no edge qualifies, S is its own
+single cause with reason `Reconfigured`. `None` is never reported. Causes need
+no storage of their own. They take the same errors as the forward answer.
+
+The detail of that self cause depends on whether S ever completed. A stage
+that completed and has no changed source was redeclared or marked stale
+directly: the detail is `the stage was redeclared or marked stale directly`. A
+stage that never completed has no completion time to compare a `Complete`
+source with, and the store keeps no time for when a stale flag was set, so two
+histories look the same from durable data: S redeclared after U completed, and
+S marked by a re-run of U that has since completed. Blaming U would be wrong in
+the first; not blaming it is wrong in the second. The answer names no source,
+and the detail says only what is known: `the stage has not completed: it was
+redeclared or marked stale directly, or a stage it depends on re-ran`. While U
+is still `Running`, or stale, it is named. Telling the two apart exactly needs
+a durable record of when, or by what, a stale flag was set, which storage does
+not keep (PR #17 review).
 
 **Cached answers (PR #17 review).** Iterating an answer by index would otherwise
 recompute it on every call. The forward answer of a stage is computed once per
 set of edges: the registry bumps a generation whenever it replaces them (every
 declare and restore), and the answer depends on nothing else. The causes are
-cached per stage under a key of that generation, a counter the registry bumps
-before every stale flag it writes (`markStale`, `markAffectedStale`,
-`clearStale`, a redeclaration), and the newest sequence of the event journal,
-which every `StageStateWriter::setStatus` — so every status and completion time,
-`StageRunner`'s included — appends in its own transaction. A read-only registry
-does not cache causes: its writer is another process, whose stale flags leave no
-trace it can see. The stale flags belong to the registry (4.3); one written
-straight through `StageStateWriter::setStale` is not a change the key follows
-until the next one that is.
+cached per stage under a key of that generation and
+`StageStateWriter::revision()`, an in-memory count the store's writer advances
+after every committed `setStatus` and `setStale`. The store's exclusive writer
+lock makes that writer the only one of statuses, completion times and stale
+flags while it is open, so the key follows every change — the registry's,
+`StageRunner`'s, or a caller's straight through `StageStateWriter` — and reading
+it costs no query. A read-only registry does not cache causes: its writer is
+another process, whose changes advance no count it can see.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

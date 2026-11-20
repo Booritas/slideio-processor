@@ -10,6 +10,7 @@
 #include <slideio/processor/core/ids.hpp>
 #include <slideio/processor/storage/types.hpp>
 
+#include <cstdint>
 #include <memory>
 
 namespace slideio::processor {
@@ -105,6 +106,21 @@ public:
      * @throws IoError When the store is closed or read-only, or when SQLite fails.
      */
     void addWrittenLayer(StageId stage, LayerId layer);
+    /**
+     * @brief Returns how many changes of a stage's status, completion time or stale flag
+     * this writer has committed since the store opened.
+     *
+     * Held in memory, not stored. setStatus() and setStale() advance it once each, after
+     * their transaction commits, so a reader that notes it before reading stage state and
+     * sees it unchanged later knows no such change committed in between. The store's
+     * exclusive writer lock makes this the only writer of that state while it is open, so
+     * StageRegistry keys the staleness causes it caches on it.
+     * @return The count; 0 before any change.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadSafe.
+     */
+    uint64_t revision() const noexcept;
 
 private:
     friend class Store;

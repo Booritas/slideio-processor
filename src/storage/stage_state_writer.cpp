@@ -8,6 +8,7 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 
@@ -30,6 +31,8 @@ class StageStateWriter::Impl {
 public:
     explicit Impl(detail::StoreImpl& s) : store(s) {}
     detail::StoreImpl& store;
+    // Committed changes of a status or a stale flag; see revision().
+    std::atomic<uint64_t> revision{0};
 };
 
 StageStateWriter::StageStateWriter(detail::StoreImpl& store) : impl_(std::make_unique<Impl>(store)) {}
@@ -83,6 +86,7 @@ void StageStateWriter::setStatus(StageId stage, StageStatus status) {
         detail::appendEvent(db, event);
         appended = true;
     });
+    impl_->revision.fetch_add(1);
     if (appended) impl_->store.notifyCommitted();
 }
 
@@ -95,7 +99,10 @@ void StageStateWriter::setStale(StageId stage, bool stale) {
         update.bindInt64(2, stage.value());
         update.run();
     });
+    impl_->revision.fetch_add(1);
 }
+
+uint64_t StageStateWriter::revision() const noexcept { return impl_->revision.load(); }
 
 void StageStateWriter::setConfiguration(StageId stage, const char* configurationJson) {
     constexpr const char* kOperation = "StageStateWriter::setConfiguration";

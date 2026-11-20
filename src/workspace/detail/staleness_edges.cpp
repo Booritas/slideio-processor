@@ -2,6 +2,7 @@
 #include <workspace/detail/staleness_edges.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <deque>
 #include <limits>
 #include <map>
@@ -78,7 +79,8 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
         // The stages that can have an edge to V, so only real pairs are examined: the
         // writers of what V reads, the writers of a semantic layer below one V writes, and
         // the stages V depends on by name or pin.
-        std::vector<size_t> sources = writers.readSources(t);
+        const std::vector<size_t> reads = writers.readSources(t);
+        std::vector<size_t> sources = reads;
         for (int32_t a = 0; a < v.writtenLayerCount(); ++a) {
             const LayerId upper = v.writtenLayerAt(a);
             if (!semantic(upper)) continue;
@@ -140,6 +142,10 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
                 std::vector<Candidate>& list = reason == StalenessReason::LayerOrdering ? orderings : effective;
                 list.push_back({source.id, target.id, reason, std::move(text)});
             };
+            // Every pair deriveGraph derives (readSources) carries a read reason, so the
+            // effective edges are exactly the dependency graph the acyclicity rests on.
+            assert(!std::binary_search(reads.begin(), reads.end(), s) || !layerRead.empty() || !derivedFrom.empty() ||
+                   !rasterRead.empty());
             // DerivedFrom replaces LayerRead for the whole pair, not layer by layer.
             if (!derivedFrom.empty()) layerRead.clear();
             add(StalenessReason::LayerRead, layerRead);

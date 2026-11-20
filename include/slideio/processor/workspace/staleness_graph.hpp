@@ -70,10 +70,9 @@ class StageRegistry;
  *
  * Each answer is computed once and cached until something it depends on changes: the
  * forward answer until the edges are rebuilt; the causes, in a writable workspace, until
- * the edges are rebuilt, the registry writes a stale flag, or a status changes (the store
- * journals each). A read-only workspace recomputes the causes on every call. A stale flag
- * written straight through StageStateWriter, bypassing the registry, is not followed until
- * the next such change.
+ * the edges are rebuilt or StageStateWriter::revision() advances (every committed status
+ * or stale-flag change, whoever makes it). A read-only workspace recomputes the causes on
+ * every call.
  * @par Thread-safety
  * ThreadSafe: every member takes the registry's mutex; the view is not an independent
  * object. The reference StageRegistry::staleness() returns stays valid across declare().
@@ -150,17 +149,20 @@ public:
      * @brief Counts the causes of a stage's staleness.
      *
      * A stage that is not stale has none. For a stale stage the causes are its incoming
-     * edges U to S whose source U changed since S: U is stale; or U completed once and is
-     * now Running or Failed (a re-run under way or failed, whenever it happened: the store
+     * edges U to S whose source U changed since S: U is stale; or U is Running; or U is
+     * Failed after having completed once (a re-run failed, whenever it happened: the store
      * keeps no time for it); or U is Complete and completed after S did
-     * (StageStateReader::completedAtUnixMs), which needs S to have completed. A source
-     * that is not stale and never completed (Pending, or a first run Running or Failed)
-     * did not change and is never a cause by itself. One entry per edge, so a source
-     * joined to S by several reasons appears once per reason, as in the forward answer.
-     * When no edge qualifies, the stage is its own single cause, reported as
-     * Reconfigured: it was redeclared or marked stale directly. The causes come from the
-     * stored flags, status and completion times, so they are the same after a reopen.
-     * They are ordered by source stage, then reason.
+     * (StageStateReader::completedAtUnixMs), which needs S to have completed. A Pending
+     * source, or a Failed one that never completed, did not change and is never a cause
+     * by itself. One entry per edge, so a source joined to S by several reasons appears
+     * once per reason, as in the forward answer. When no edge qualifies, the stage is its
+     * own single cause, reported as Reconfigured. For a stage that completed it was
+     * redeclared or marked stale directly. For one that never completed the store cannot
+     * tell that from being marked by a re-run of a source that has since completed (it
+     * keeps no time for a stale flag), so no source is named and the detail says either
+     * may have happened (see causeReasonDetailAt()). The causes come from the stored
+     * flags, status and completion times, so they are the same after a reopen. They are
+     * ordered by source stage, then reason.
      * @param stage The stage.
      * @return The number of causes; 0 for a stage that is not stale.
      * @throws InvalidArgumentError When the stage is unknown.
@@ -203,7 +205,9 @@ public:
     StalenessReason causeReasonAt(StageId stage, int32_t index) const;
     /**
      * @brief Returns the detail of one cause: the edge's detail (see reasonDetailAt()), or
-     * `the stage was redeclared or marked stale directly`.
+     * for the stage itself `the stage was redeclared or marked stale directly` when it has
+     * completed, and `the stage has not completed: it was redeclared or marked stale
+     * directly, or a stage it depends on re-ran` when it never has.
      * @param stage The stale stage.
      * @param index Zero-based position, below causeCount().
      * @return A null-terminated UTF-8 string; stays valid as the class describes.

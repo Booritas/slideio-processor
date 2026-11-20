@@ -1791,6 +1791,8 @@ public:
     void addDependency(StageId stage, StageId dependsOn);
     void clearDependencies(StageId stage);
     void addWrittenLayer(StageId stage, LayerId layer);
+    /// Committed setStatus and setStale calls since the store opened; in memory.
+    uint64_t revision() const noexcept;
 };
 ```
 
@@ -1819,6 +1821,12 @@ refuses everything — and `InvalidArgumentError` for an unknown stage.
 - `addDependency` and `addWrittenLayer` are idempotent. A stage cannot depend
   on itself, and the pixel layer cannot be written. `clearDependencies`
   removes every dependency of a stage.
+- `revision` counts the `setStatus` and `setStale` calls this writer has
+  committed since the store opened, advanced after each commit; it is held in
+  memory, not stored, and never throws. With the exclusive writer lock this is
+  the only writer of statuses, completion times and stale flags while the store
+  is open, so `StageRegistry` keys the staleness causes it caches on it
+  (`04-workspace.md` 4.5; PR #17 review).
 
 ## 3.11 GeoJSON import — `storage/geojson_import.hpp`
 

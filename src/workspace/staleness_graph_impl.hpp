@@ -23,16 +23,14 @@ class StalenessGraph::Impl {
 public:
     using Answer = std::vector<const detail::StaleEdge*>;
 
-    // What the causes of a stage were computed against: the edges, the stale flags the
-    // registry wrote, and the newest entry of the store's event journal, which every
-    // status change (and so every completion time) appends in its own transaction.
+    // What the causes of a stage were computed against: the edges, and the revision of the
+    // store's StageStateWriter, which every committed change of a stage's status,
+    // completion time or stale flag advances (the store's exclusive writer lock makes it
+    // the only writer of those).
     struct CausesKey {
         uint64_t edges = 0;
-        uint64_t stale = 0;
-        int64_t journal = 0;
-        bool operator==(const CausesKey& other) const {
-            return edges == other.edges && stale == other.stale && journal == other.journal;
-        }
+        uint64_t states = 0;
+        bool operator==(const CausesKey& other) const { return edges == other.edges && states == other.states; }
     };
 
     // The registry owns everything the functions reach and outlives the view; they run
@@ -72,12 +70,11 @@ public:
 
     // The causes of a stage's staleness, from the durable flags, statuses and completion
     // times (decision 3): every incoming edge whose source changed since the stage, or a
-    // single nullptr when the stage is its own cause. Empty when it is not stale. Cached
-    // per stage under causesKey(), which follows every change to the flags, statuses and
-    // completion times the registry or a run makes; a read-only registry, whose writer is
-    // another process that writes stale flags without a trace this one sees, computes
-    // them every call. Caller holds the mutex. Throws InvalidArgumentError for an unknown
-    // stage.
+    // single self cause (selfCause()) when the stage is its own cause. Empty when it is not
+    // stale. Cached per stage under causesKey(), which follows every change to the flags,
+    // statuses and completion times; a read-only registry, whose writer is another process
+    // that leaves no in-memory trace here, computes them every call. Caller holds the
+    // mutex. Throws InvalidArgumentError for an unknown stage.
     const Answer& causes(StageId stage) const {
         refresh();
         if (!edges().knows(stage.value())) throw InvalidArgumentError("the stage is not known to the registry");
@@ -95,7 +92,7 @@ public:
         return causesCache.emplace(stage.value(), computeCauses(stage)).first->second;
     }
 
-    // One cause; nullptr is the stage itself. Caller holds the mutex.
+    // One cause; one with reason Reconfigured is the stage itself. Caller holds the mutex.
     const detail::StaleEdge* cause(StageId stage, int32_t index) const {
         const Answer& list = causes(stage);
         if (index < 0 || static_cast<size_t>(index) >= list.size()) {
@@ -129,31 +126,51 @@ private:
             }
             if (lastChanged) result.push_back(edge);
         }
-        if (result.empty()) result.push_back(nullptr);
+        if (result.empty()) result.push_back(&selfCause(completed != 0));
         return result;
     }
 
+    // The stage as its own cause. A stage that completed and has no changed source was
+    // redeclared or marked stale directly. One that never completed has no completion to
+    // compare its sources with, and the store keeps no time for when its flag was set, so
+    // it cannot be told whether it was redeclared or marked by a source's re-run that has
+    // since completed: the detail says only what is known.
+    static const detail::StaleEdge& selfCause(bool completed) {
+        static const detail::StaleEdge kCompleted{0, 0, StalenessReason::Reconfigured,
+                                                  "the stage was redeclared or marked stale directly"};
+        static const detail::StaleEdge kNeverCompleted{
+            0, 0, StalenessReason::Reconfigured,
+            "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+            "re-ran"};
+        return completed ? kCompleted : kNeverCompleted;
+    }
+
     // Whether a source changed since the stage last completed (`completed`, 0 when it
-    // never did). A stale source changed: marking it is what reaches the stage. A source
-    // that never completed and is not stale never produced output, so nothing of it
-    // changed: Pending, or a first run that is Running or Failed (a LayerOrdering target
-    // runs without it). One that completed and is now Running or Failed has a re-run
-    // under way or failed, which replaced the output the stage was built against; the
-    // store keeps no time for it, so it counts whenever it happened. A Complete source
-    // changed when it completed after the stage did, which a stage that never completed
-    // has no time to compare with: only a stale or re-running source is its cause.
+    // never did). A stale source changed: marking it is what reaches the stage. A Running
+    // source is replacing its output now. A Failed one changed only if it had completed
+    // before: a re-run failed, replacing the output the stage was built against (the store
+    // keeps no time for it, so it counts whenever it happened); a first run that failed
+    // never produced output. A Pending source never ran. A Complete source changed when it
+    // completed after the stage did, which needs the stage to have completed: a stage that
+    // never completed has no time to compare with, and is its own cause (selfCause()).
     static bool changedSince(const StageStateReader& states, StageId source, int64_t completed) {
         if (states.isStale(source)) return true;
-        const int64_t sourceCompleted = states.completedAtUnixMs(source);
-        if (sourceCompleted == 0) return false;
-        if (states.status(source) != StageStatus::Complete) return true;
-        return completed != 0 && sourceCompleted > completed;
+        switch (states.status(source)) {
+        case StageStatus::Running:
+            return true;
+        case StageStatus::Failed:
+            return states.completedAtUnixMs(source) != 0;
+        case StageStatus::Complete:
+            return completed != 0 && states.completedAtUnixMs(source) > completed;
+        default:
+            return false;
+        }
     }
 
     // Guarded by the registry mutex, like everything the view reads.
     mutable uint64_t forwardGeneration = ~uint64_t(0);
     mutable std::map<int32_t, Answer> forwardCache;
-    mutable CausesKey causesGeneration{~uint64_t(0), 0, 0};
+    mutable CausesKey causesGeneration{~uint64_t(0), 0};
     mutable std::map<int32_t, Answer> causesCache;
     mutable Answer uncached;
 };

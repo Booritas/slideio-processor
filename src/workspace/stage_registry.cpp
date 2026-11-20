@@ -4,7 +4,6 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
 #include <slideio/processor/core/provenance.hpp>
-#include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
@@ -288,14 +287,15 @@ public:
     }
 
     // The first reason the stage cannot run, in StageRunner's order, and the name it
-    // concerns (nullptr for None and Unreadable). Caller holds the mutex.
-    RunBlocker blockerLocked(StageId stage, const char*& name) const {
-        name = nullptr;
+    // concerns (nullptr for None and Unreadable) into `name` unless it is null: isRunnable
+    // discards the name, so it does not read it. Caller holds the mutex.
+    RunBlocker blockerLocked(StageId stage, const char** name) const {
+        if (name != nullptr) *name = nullptr;
         const std::vector<Edge>& edges = edgesOf(stage);
         if (unreadable.count(stage.value()) != 0) return RunBlocker::Unreadable;
         const std::vector<int32_t>& missing = unresolvedOf(stage);
         if (!missing.empty()) {
-            name = unresolvedName(stage, missing.front());
+            if (name != nullptr) *name = unresolvedName(stage, missing.front());
             return RunBlocker::UnresolvedDependency;
         }
         const StageStateReader& reader = store.stageStates();
@@ -303,7 +303,7 @@ public:
             const StageId dependency(edge.dependency);
             const bool complete = reader.status(dependency) == StageStatus::Complete;
             if (!complete || reader.isStale(dependency)) {
-                name = reader.name(dependency);
+                if (name != nullptr) *name = reader.name(dependency);
                 return complete ? RunBlocker::DependencyStale : RunBlocker::DependencyIncomplete;
             }
         }
@@ -314,7 +314,6 @@ public:
     // all five paths of the staleness graph, each once. Caller holds the mutex.
     void markStaleLocked(StageId stage) {
         edgesOf(stage);
-        ++staleGeneration;
         store.stageStateWriter().setStale(stage, true);
         markAffectedLocked(stage);
     }
@@ -323,9 +322,6 @@ public:
     // and not on the stage itself: the staleness graph is acyclic. Caller holds the mutex.
     void markAffectedLocked(StageId stage) {
         edgesOf(stage);
-        // Before the first write, so an answer cached before it is never taken for one
-        // after, even when a write fails part way.
-        ++staleGeneration;
         StageStateWriter& writer = store.stageStateWriter();
         std::set<int32_t> seen;
         for (const detail::StaleEdge* edge : stalenessEdges.forward(stage.value())) {
@@ -407,7 +403,8 @@ public:
         // pins already held for a stage that is still unreadable stand, until it is redeclared.
         // A writer that redeclares an unreadable stage drops every pin around it, whatever
         // the other end, so a held pin with an end that was unreadable and now parses is
-        // dropped too: reader and writer keep the same pins.
+        // dropped too. A finished redeclaration so leaves reader and writer the same pins (one
+        // landing mid-redeclare can still re-pin a stored row: SDS 04 4.3).
         const auto redeclared = [&](int32_t id) {
             return unreadable.count(id) != 0 && nextUnreadable.count(id) == 0;
         };
@@ -473,10 +470,9 @@ public:
     detail::StalenessEdges stalenessEdges;
     // The unresolved dependsOn names of every held stage, derived with the graph.
     Unresolved unresolved;
-    // Bumped whenever stalenessEdges is replaced, and before every stale flag the registry
-    // writes: StalenessGraph keys the answers it caches on them.
+    // Bumped whenever stalenessEdges is replaced: StalenessGraph keys the answers it
+    // caches on it.
     uint64_t edgesGeneration = 0;
-    uint64_t staleGeneration = 0;
     std::unique_ptr<StalenessGraph> staleness;
     // The stored configuration of every stage at the last restore, by id: a read-only
     // registry compares it with the store to tell whether a writer changed the stages.
@@ -494,12 +490,11 @@ StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {
         [impl]() -> const StageStateReader& { return impl->store.stageStates(); },
         [impl] { return impl->edgesGeneration; },
         [impl](StalenessGraph::Impl::CausesKey& key) {
-            // A writer in another process sets stale flags without a journal entry, so a
-            // read-only registry has no key that follows them.
+            // The writer of a read-only store is another process, whose changes advance no
+            // revision here, so a read-only registry has no key that follows them.
             if (impl->store.isReadOnly()) return false;
             key.edges = impl->edgesGeneration;
-            key.stale = impl->staleGeneration;
-            key.journal = impl->store.events().newestSequence();
+            key.states = impl->store.stageStateWriter().revision();
             return true;
         })));
     impl_->restore();
@@ -617,7 +612,6 @@ void StageRegistry::clearStale(StageId stage) {
     impl_->requireOpen("StageRegistry::clearStale");
     if (impl_->store.isReadOnly()) throw IoError("StageRegistry::clearStale: the workspace is read-only");
     impl_->edgesOf(stage);
-    ++impl_->staleGeneration;
     impl_->store.stageStateWriter().setStale(stage, false);
 }
 
@@ -693,14 +687,13 @@ const char* StageRegistry::unresolvedDependencyAt(StageId stage, int32_t index) 
 bool StageRegistry::isRunnable(StageId stage) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refreshIfReadOnly();
-    const char* name = nullptr;
-    return impl_->blockerLocked(stage, name) == RunBlocker::None;
+    return impl_->blockerLocked(stage, nullptr) == RunBlocker::None;
 }
 
 RunBlocker StageRegistry::runBlocker(StageId stage, const char*& name) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refreshIfReadOnly();
-    return impl_->blockerLocked(stage, name);
+    return impl_->blockerLocked(stage, &name);
 }
 
 bool StageRegistry::isUnreadable(StageId stage) const {
