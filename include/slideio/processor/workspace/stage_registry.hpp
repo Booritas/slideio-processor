@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
 #pragma once
 
 /**
@@ -292,6 +292,22 @@ public:
      * UR-STG-4, UR-STG-8, UR-OBS-1
      */
     bool isRunnable(StageId stage) const;
+    /**
+     * @brief Tells whether a stage was kept by name only at restore, because its stored
+     * record could not be read (see the class description). Such a stage is never
+     * runnable and StageRunner refuses it.
+     * @param stage The stage.
+     * @return True for a stage kept by name only; false once it is redeclared with a real
+     * definition.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError In a read-only workspace, when re-reading the changed stages fails.
+     * Never for a closed store, which answers from memory.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-4, UR-STG-10
+     */
+    bool isUnreadable(StageId stage) const;
 
     /**
      * @brief Returns the definition a stage was declared with.

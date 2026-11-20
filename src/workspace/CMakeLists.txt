@@ -3,6 +3,7 @@ add_library(slideio-processor-workspace OBJECT
     stage_registry.cpp
     stage_definition.cpp
     detail/stage_record.cpp
+    stage_runner.cpp
     workspace.cpp
 )
 set_target_properties(slideio-processor-workspace PROPERTIES POSITION_INDEPENDENT_CODE ON)

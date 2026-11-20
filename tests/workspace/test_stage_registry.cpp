@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
 #include "workspace/support/test_slide.hpp"
 
 #include <workspace/detail/stage_record.hpp>
@@ -771,4 +771,35 @@ TEST(StageRegistry, ReadOnlyRegistryFollowsLiveWriter) {
     ro->close();
     EXPECT_EQ(r.dependencyCount(nuclei), 2);
     EXPECT_TRUE(detail::sameDeclaration(r.definition(nuclei), changed));
+}
+
+TEST(StageRegistry, IsUnreadableReportsRestoredNameOnlyStages) {
+    Fixture f;
+    f.workspace->store()->stageStateWriter().declare("broken", "this is not a record");
+    const StageId good = f.stages().declare(writer("good", f.x));
+    EXPECT_FALSE(f.stages().isUnreadable(good));
+    f.workspace->close();
+
+    {
+        WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+        StageId broken;
+        ASSERT_TRUE(ro->stages().find("broken", broken));
+        EXPECT_TRUE(ro->stages().isUnreadable(broken));
+        EXPECT_FALSE(ro->stages().isUnreadable(good));
+        EXPECT_THROW(ro->stages().isUnreadable(StageId(99)), InvalidArgumentError);
+        ro->close();
+    }
+
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ws->stages();
+    StageId broken;
+    ASSERT_TRUE(r.find("broken", broken));
+    EXPECT_TRUE(r.isUnreadable(broken));
+    EXPECT_FALSE(r.isUnreadable(good));
+    EXPECT_THROW(r.isUnreadable(StageId(99)), InvalidArgumentError);
+
+    // Redeclaring the stage with a real definition repairs it.
+    r.declare(writer("broken", f.y));
+    EXPECT_FALSE(r.isUnreadable(broken));
+    ws->close();
 }

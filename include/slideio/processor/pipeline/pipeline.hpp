@@ -464,7 +464,9 @@ public:
      * unnamed, unbound or ambiguous, an auxiliary raster declares no plane or
      * a plane type without a size (the message names its binding), a level of
      * the scene has a non-positive size, or the run does not fit the memory
-     * ceiling.
+     * ceiling. A refusal of one operation (unknown, a target layer, an output it
+     * declares, a halo, a memory need) carries its name in
+     * ErrorContext::operationName.
      * @throws UnsupportedDataTypeError When an operation does not accept a type
      * it would receive, or a selected channel has a type the pipeline cannot
      * read; the message names the operation or the channel, and the type.

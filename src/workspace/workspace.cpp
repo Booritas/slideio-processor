@@ -210,6 +210,9 @@ public:
     std::shared_ptr<slideio::Slide> slide;
     std::shared_ptr<slideio::Scene> scene;
     bool closed = false;
+
+    // Taken by the StageRunner inside run(): one runner at a time per workspace.
+    std::atomic<bool> runSlotTaken{false};
 };
 
 Workspace::Workspace(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -391,6 +394,10 @@ LayerRegistry& Workspace::layers() noexcept { return impl_->store->layers(); }
 LayerLifecycle& Workspace::layerLifecycle() noexcept { return impl_->lifecycle; }
 
 StageRegistry& Workspace::stages() noexcept { return impl_->registry; }
+
+bool detail::takeRunSlot(Workspace& workspace) noexcept { return !workspace.impl_->runSlotTaken.exchange(true); }
+
+void detail::releaseRunSlot(Workspace& workspace) noexcept { workspace.impl_->runSlotTaken.store(false); }
 
 void Workspace::close() {
     std::shared_ptr<slideio::Scene> scene;

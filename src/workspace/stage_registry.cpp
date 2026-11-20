@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
 #include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <slideio/processor/core/error.hpp>
@@ -538,6 +538,13 @@ bool StageRegistry::isRunnable(StageId stage) const {
         if (reader.status(dependency) != StageStatus::Complete || reader.isStale(dependency)) return false;
     }
     return true;
+}
+
+bool StageRegistry::isUnreadable(StageId stage) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->refreshIfReadOnly();
+    impl_->edgesOf(stage);
+    return impl_->unreadable.count(stage.value()) != 0;
 }
 
 const StageDefinition& StageRegistry::definition(StageId stage) const {

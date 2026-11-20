@@ -1,4 +1,4 @@
-// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-STG-10, UR-STG-12, UR-STG-2, UR-STG-4
+// Requirements: UR-STG-1, UR-STG-9, UR-EXE-2, UR-STG-10, UR-STG-12, UR-STG-2, UR-STG-4, UR-EXE-1
 #pragma once
 
 /**
@@ -27,6 +27,13 @@ namespace slideio::processor {
 class Workspace;
 /** @brief Shared ownership of an open Workspace. */
 using WorkspacePtr = std::shared_ptr<Workspace>;
+
+namespace detail {
+/** @brief Library-internal, not API: the workspace's run slot (run_slot.hpp). Takes it; false when taken. */
+bool takeRunSlot(Workspace& workspace) noexcept;
+/** @brief Library-internal, not API: releases the run slot takeRunSlot() took. */
+void releaseRunSlot(Workspace& workspace) noexcept;
+} // namespace detail
 
 /**
  * @brief A directory holding one slide scene's analysis: its store, the binding to
@@ -298,6 +305,9 @@ public:
     void close();
 
 private:
+    // Library-internal: the run slot (run_slot.hpp) reaches its flag through these.
+    friend bool detail::takeRunSlot(Workspace& workspace) noexcept;
+    friend void detail::releaseRunSlot(Workspace& workspace) noexcept;
     class Impl;
     explicit Workspace(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;

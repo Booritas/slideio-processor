@@ -190,7 +190,20 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   restore at open. Plan B is `StageRunner` (SDS 04 §4.4); plan C is
   `StalenessGraph` (§4.5, adding the layer-ordering and derived-from paths and
   `StageRegistry::staleness()`) and `declareCoarseToFine`.
-  **Implemented** on `feat/workspace-a`, awaiting review and merge.
+  **Implemented**; merged and pushed to `main` (48a2955).
+- [Workspace implementation plan B](superpowers/plans/2026-11-20-workspace-b.md) —
+  plan B of three for the `workspace` module: `StageRunner` (SDS 04 §4.4). It
+  gates a run before writing anything (read-only, one runner per workspace,
+  unreadable record, incomplete or stale dependency, layer binding), binds the
+  layer restriction and the auxiliary and stored rasters, flushes objects,
+  edges, annotations and the raster in that order, and records the analysis
+  level, `Complete` and the cleared stale flag on success. On failure or
+  cancellation it discards the stage's output and records `Failed`, best
+  effort, so the run's own exception is the one that propagates; on a re-run,
+  including a stage left `Running` by a dead process, it marks the direct
+  dependents stale, sets the stage `Running`, and only then discards the prior
+  output. Annotation-target checks are deferred (decision 7).
+  **Implemented** on `feat/workspace-b`, awaiting review and merge.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
