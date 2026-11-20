@@ -518,8 +518,8 @@ public:
     /// record could not be restored.
     const StageDefinition& definition(StageId) const;
 
-    /// Marks `stage` and every stage reachable from it stale, by the four
-    /// paths of 4.5. **Transitive**, and there is no non-propagating form:
+    /// Marks `stage` and every stage its forward answer lists stale, by the five
+    /// paths of 4.5, each once. **Transitive**, and there is no non-propagating form:
     /// a caller who wanted one would be asking for exactly the UR-STG-8
     /// failure — a dependent left current whose parents have been replaced.
     void markStale(StageId);
@@ -530,17 +530,17 @@ public:
     /// nothing established.
     void clearStale(StageId);
 
-    /// **Plan C; not declared in plan A** (decision 6). The derived graph
+    /// The derived graph
     /// behind `markStale` and `isRunnable`: what a re-run would invalidate,
     /// and why a stage is stale now (4.5). Recomputed with the dependency
     /// set on every `declare`; the reference stays valid for the life of the
     /// registry.
-    const StalenessGraph& staleness() const noexcept;  // plan C
+    const StalenessGraph& staleness() const noexcept;
 };
 ```
 
 **Thread-safety:** ThreadSafe. **Requirements:** UR-STG-2, UR-STG-4,
-UR-STG-8, UR-OBS-1.
+UR-STG-8, UR-STG-11, UR-OBS-1.
 
 The read side duplicates `storage::StageStateReader` deliberately: an observer
 gets the same information without linking this module, while a producer gets it
@@ -594,16 +594,20 @@ instead would make staleness depend on key order and float formatting, so a
 redeclaration that changed nothing could mark a slide's worth of downstream
 work stale.
 
-**Plan A: staleness follows the effective dependencies only (decision 6).**
-Until plan C adds `StalenessGraph` and `staleness()`, `markStale` walks the
-reversed effective dependencies — the `LayerRead`, `RasterRead` and explicit
-`dependsOn` edges — and nothing else. The layer-ordering and derived-from paths
-of 4.5 are not followed yet, and `staleness()` is not declared. `markStale`
-sets the flag through `StageStateWriter::setStale` on the stage and on every
-stage reachable from it; `clearStale` sets it on that stage alone. A
-redeclaration marks along the old dependents first, then writes the record,
-re-derives, and marks again along the new ones, so a failure part way never
-leaves a changed stage current.
+**Staleness follows the staleness graph (plan C, decisions 1 and 2).**
+`markStale` walks the forward answer of 4.5 from the stage: the layer-read,
+raster-read, layer-ordering, derived-from and explicit-dependency edges, not
+the effective dependencies alone. It sets the flag through
+`StageStateWriter::setStale` on the stage and on every stage the answer lists,
+each once, so a cycle in the staleness graph terminates; `clearStale` sets it
+on that stage alone. A redeclaration marks along the old edges first, then
+writes the record, re-derives, and marks again along the new ones, so a
+failure part way never leaves a changed stage current. The staleness edges
+are rebuilt in memory with the dependency graph on every declare and restore,
+from the held definitions and never from `LayerRegistry::writerStageAt`, which
+keeps a writer a redeclaration dropped. They are not persisted: the dependency
+rows, `isRunnable` and the cycle check are unchanged, because `LayerOrdering`
+and `DerivedFrom` do not gate running.
 
 **Plan A: persisted dependencies and restore (decision 7).** Every `declare`
 rewrites the dependency rows of every stage (`clearDependencies`, then
@@ -1127,6 +1131,49 @@ relation, and any explicit `dependsOn`. Re-running the stage that writes `tissue
 `nuclei` stale whether or not anything was declared between them, and
 re-running a stage that writes a primitive layer marks the semantic layers
 derived from it stale (UR-STG-11).
+
+**The five edges (plan C, decision 1).** For stages U and V (U ≠ V) there is
+an edge U → V, one per reason, when:
+
+- `LayerRead`: V reads (`readLayerAt`) a layer U writes;
+- `RasterRead`: V reads (`readRasterAt`) the raster U writes;
+- `LayerOrdering`: V writes a semantic layer strictly above
+  (`LayerRegistry::isAbove(descendant, ancestor)`) a layer U writes, so the
+  `tissue` writer reaches the `cells` and `nuclei` writers;
+- `DerivedFrom`: V reads a *primitive* layer U writes and V writes at least
+  one semantic layer; such a pair is reported as `DerivedFrom` instead of
+  `LayerRead`. A stage can only assert derived-from edges onto objects it has
+  read, so a reads-based relation finds every derivation a run can produce;
+  storage has no layer-level derived-from relation, and object-level edges
+  are not consulted;
+- `StageDependency`: V's explicit `dependsOn` names U.
+
+The edges come from the in-memory definitions, never from
+`LayerRegistry::writerStageAt`, which keeps a writer a redeclaration dropped.
+An unreadable stage contributes its pinned edges with reason
+`StageDependency`.
+
+The staleness graph may contain cycles: a `cells` stage that reads `nuclei`,
+with `nuclei` below `cells`, reaches the `nuclei` writer by `LayerOrdering` and
+is reached from it by `LayerRead`. Only the effective-dependency graph
+(`LayerRead`, `RasterRead`, `StageDependency`) must stay acyclic, as in 4.3.
+`isRunnable` and the persisted dependency rows are unchanged: `LayerOrdering`
+and `DerivedFrom` do not gate running.
+
+**The forward answer (plan C, decision 2).** `affectedCount`, `affectedAt`,
+`reasonAt` and `reasonDetailAt` list one entry per edge U → V in the subgraph
+reachable from the stage S, with V the affected stage: breadth first from S,
+the edges of one source ordered by ascending V and then by reason; a stage
+reached down two paths appears twice, and S itself appears only when a cycle
+leads back to it. Each detail names the source stage and the artifact, for
+example `reads layer "tissue" written by stage "background"` or
+`writes layer "nuclei" below layer "tissue" written by stage "background"`.
+The accessors take the registry's mutex, and a read-only registry first
+follows a live writer. An unknown stage or an index out of range is an
+`InvalidArgumentError`. The detail strings live in storage the graph owns,
+rebuilt with the edges, and stay valid until the registry next declares a
+stage whose declaration changed or a read-only registry restores after a
+writer's change; a caller holding one longer copies it.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

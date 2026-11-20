@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #pragma once
 
 /**
@@ -10,6 +10,7 @@
 #include <slideio/processor/pipeline/export.hpp>
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/workspace/stage_definition.hpp>
+#include <slideio/processor/workspace/staleness_graph.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -41,8 +42,10 @@ namespace slideio::processor {
  * later declare, so a reader of its layers stays blocked rather than becoming runnable.
  * Redeclaring the stage with a real definition drops the pins and normal derivation
  * resumes. The dependency accessors, isExplicitDependency and isRunnable all read this
- * one graph. In this version staleness follows these dependencies only; the
- * layer-ordering and derived-from paths and the StalenessGraph arrive later.
+ * one graph. Staleness follows a wider graph, the StalenessGraph of staleness(): the
+ * layer-ordering and derived-from paths join the dependencies, and an unreadable stage
+ * contributes its pinned edges as StageDependency edges. It is rebuilt from the held
+ * definitions with the dependency graph, and may contain cycles the dependencies cannot.
  *
  * In a read-only workspace (Workspace::openReadOnly) a writer in another process may
  * declare stages while the registry is open. Before answering, declare(),
@@ -105,22 +108,37 @@ public:
     StageId declare(const StageDefinition& definition);
 
     /**
-     * @brief Marks a stage and everything that depends on it, transitively, as stale.
+     * @brief Marks a stage and everything its re-run would invalidate, transitively, as stale.
      *
-     * Staleness follows the effective dependencies (reads of layers and rasters and
-     * explicit dependsOn) in reverse: the stage and every stage reachable from it through
-     * the stages that depend on them. Each is set through StageStateWriter::setStale, so
-     * StageStateReader::isStale agrees. A stage whose record could not be restored takes
-     * part like any other, through its pinned edges.
+     * Staleness follows the staleness() graph forward along all five paths (layer reads,
+     * raster reads, layer ordering, derived-from and explicit dependsOn): the stage and
+     * every stage in its forward answer. A cycle is walked once, each stage set once.
+     * Each is set through StageStateWriter::setStale, so StageStateReader::isStale
+     * agrees. A stage whose record could not be restored takes part like any other,
+     * through its pinned edges.
      * @param stage The stage.
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the workspace is read-only or closed, or when SQLite fails.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements
-     * UR-STG-8
+     * UR-STG-8, UR-STG-11
      */
     void markStale(StageId stage);
+    /**
+     * @brief Returns the staleness graph: what re-running a stage invalidates, and why.
+     *
+     * The view lives as long as the registry and its members follow every declaration;
+     * the reference stays valid across declare(). See StalenessGraph for how long the
+     * strings it returns stay valid.
+     * @return The graph.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    const StalenessGraph& staleness() const noexcept;
     /**
      * @brief Clears the stale flag of one stage; its dependents are not touched.
      * @param stage The stage.

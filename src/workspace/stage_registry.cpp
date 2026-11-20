@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <slideio/processor/core/error.hpp>
@@ -10,6 +10,8 @@
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
 #include <workspace/detail/stage_record.hpp>
+#include <workspace/detail/staleness_edges.hpp>
+#include <workspace/staleness_graph_impl.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -140,6 +142,23 @@ void requireAcyclic(const Graph& graph, const std::vector<Entry>& entries) {
 // Held by StageId; unique_ptr keeps references from definition() stable.
 using Definitions = std::map<int32_t, std::unique_ptr<StageDefinition>>;
 
+// The staleness edges (SDS 04 4.5) of the held definitions. The explicit and pinned
+// edges of the effective graph are the ones reads do not derive. Built from the
+// definitions, never from LayerRegistry::writerStageAt, which keeps a writer a
+// redeclaration dropped.
+detail::StalenessEdges buildStalenessEdges(const std::vector<Entry>& entries, const Graph& graph, const Pins& pins,
+                                           const LayerRegistry& layers, const RasterRegistry& rasters) {
+    detail::DependencyPairs named(pins.begin(), pins.end());
+    for (const auto& stage : graph) {
+        for (const Edge& edge : stage.second) {
+            if (edge.isExplicit) named.insert({stage.first, edge.dependency});
+        }
+    }
+    std::vector<detail::StageRef> stages;
+    for (const Entry& e : entries) stages.push_back({e.id, e.definition});
+    return detail::StalenessEdges(stages, named, layers, rasters);
+}
+
 std::vector<Entry> entriesOf(const Definitions& definitions) {
     std::vector<Entry> result;
     for (const auto& d : definitions) result.push_back({d.first, d.second.get()});
@@ -226,13 +245,16 @@ public:
     // the next. The in-memory graph changes only after the whole rewrite succeeds. One
     // function, so redeclaring a stage can reuse it.
     void deriveAndPersist() {
-        Graph next = deriveWithPins(entries(), pins);
+        const std::vector<Entry> held = entries();
+        Graph next = deriveWithPins(held, pins);
+        detail::StalenessEdges nextEdges = buildStalenessEdges(held, next, pins, store.layers(), store.rasters());
         StageStateWriter& writer = store.stageStateWriter();
         for (const auto& stage : next) {
             writer.clearDependencies(StageId(stage.first));
             for (const Edge& edge : stage.second) writer.addDependency(StageId(stage.first), StageId(edge.dependency));
         }
         graph = std::move(next);
+        stalenessEdges = std::move(nextEdges);
     }
 
     const std::vector<Edge>& edgesOf(StageId stage) const {
@@ -241,22 +263,16 @@ public:
         return found->second;
     }
 
-    // Sets the stale flag on the stage and on every stage reachable from it through the
-    // reversed edges of the current graph. Caller holds the mutex.
+    // Sets the stale flag on the stage and on every stage its forward answer lists, along
+    // all five paths of the staleness graph. A cycle is walked once: each stage is set once.
+    // Caller holds the mutex.
     void markStaleLocked(StageId stage) {
         edgesOf(stage);
-        std::vector<int32_t> pending{stage.value()};
-        std::set<int32_t> seen{stage.value()};
         StageStateWriter& writer = store.stageStateWriter();
-        while (!pending.empty()) {
-            const int32_t current = pending.back();
-            pending.pop_back();
-            writer.setStale(StageId(current), true);
-            for (const auto& other : graph) {
-                for (const Edge& edge : other.second) {
-                    if (edge.dependency == current && seen.insert(other.first).second) pending.push_back(other.first);
-                }
-            }
+        std::set<int32_t> seen{stage.value()};
+        writer.setStale(stage, true);
+        for (const detail::StaleEdge* edge : stalenessEdges.forward(stage.value())) {
+            if (seen.insert(edge->to).second) writer.setStale(StageId(edge->to), true);
         }
     }
 
@@ -330,7 +346,10 @@ public:
             }
         }
         // Every explicit dependency now resolves, so derivation cannot throw.
-        Graph nextGraph = deriveWithPins(entriesOf(nextDefinitions), nextPins);
+        const std::vector<Entry> nextEntries = entriesOf(nextDefinitions);
+        Graph nextGraph = deriveWithPins(nextEntries, nextPins);
+        detail::StalenessEdges nextEdges =
+            buildStalenessEdges(nextEntries, nextGraph, nextPins, store.layers(), store.rasters());
 
         // A definition whose record is unchanged is kept, and a replaced one retired
         // rather than destroyed, so a reference from definition() stays valid.
@@ -351,6 +370,7 @@ public:
         snapshot = std::move(nextSnapshot);
         pins = std::move(nextPins);
         graph = std::move(nextGraph);
+        stalenessEdges = std::move(nextEdges);
     }
 
     static void warnUnreadable(const char* name, const char* cause) {
@@ -368,6 +388,11 @@ public:
     // Edges kept from the stored rows around unreadable stages, until they are redeclared.
     Pins pins;
     Graph graph;
+    // The staleness edges of the held definitions, rebuilt with the graph. StalenessGraph
+    // reads them (and hands out strings inside them) under the mutex; replacing them
+    // ends the validity of those strings.
+    detail::StalenessEdges stalenessEdges;
+    std::unique_ptr<StalenessGraph> staleness;
     // The stored configuration of every stage at the last restore, by id: a read-only
     // registry compares it with the store to tell whether a writer changed the stages.
     std::map<int32_t, std::string> snapshot;
@@ -376,7 +401,13 @@ public:
     std::vector<std::unique_ptr<StageDefinition>> retired;
 };
 
-StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) { impl_->restore(); }
+StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {
+    Impl* impl = impl_.get();
+    impl->staleness.reset(new StalenessGraph(std::make_unique<StalenessGraph::Impl>(
+        impl->mutex, [impl] { impl->refreshIfReadOnly(); },
+        [impl]() -> const detail::StalenessEdges& { return impl->stalenessEdges; })));
+    impl_->restore();
+}
 
 StageRegistry::~StageRegistry() = default;
 
@@ -466,6 +497,8 @@ void StageRegistry::markStale(StageId stage) {
     impl_->requireOpen("StageRegistry::markStale");
     impl_->markStaleLocked(stage);
 }
+
+const StalenessGraph& StageRegistry::staleness() const noexcept { return *impl_->staleness; }
 
 void StageRegistry::clearStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
