@@ -505,6 +505,42 @@ TEST(SeamMerger, AwaitedDeferredIsReturnedOnce) {
     EXPECT_EQ(measurement(sink.records().front(), "area"), 69.0);
 }
 
+// On an 8-connected layer a fragment touching a tile corner awaits the
+// diagonal tile, though no edge of the fragment borders it; on a 4-connected
+// layer it does not.
+TEST(SeamMerger, DeferredDiagonalTileIsAwaitedAcrossACorner) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    for (const bool eight : {true, false}) {
+        auto merger = mergerFor(grid);
+        if (eight) {
+            detail::SeamMergerAccess::setEightConnected(*merger, kLayer);
+        }
+        ts::CollectingObjectSink sink;
+        // The square ends at the corner (10,10); tile 4 lies diagonally across it.
+        detail::SeamMergerAccess::notifyTileSkipped(*merger, 4);
+        merger->addFragment(0, rectangle(5, 5, 5, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        merger->notifyTileComplete(3, sink);
+        if (!eight) {
+            EXPECT_EQ(sink.emittedCount(), 1) << "4-connected: nothing waits on the corner";
+            EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+            continue;
+        }
+        EXPECT_EQ(sink.emittedCount(), 0);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{4});
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        merger->addFragment(4, rectangle(10, 10, 5, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(4, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 50.0);
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 1);
+    }
+}
+
 TEST(SeamMerger, CompleteDeferredClosesWhatNothingAwaits) {
     const TileGrid grid = gridOf(3, 3, 10, 10);
     {

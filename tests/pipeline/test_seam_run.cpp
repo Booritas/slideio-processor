@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-3, UR-STG-3, UR-EXE-5
+// Requirements: UR-SEG-3, UR-STG-3, UR-EXE-5, UR-IMG-5
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -567,3 +567,252 @@ TEST(SeamRun, UnusableScratchDirectoryIsAnIoError) {
     }
 }
 #endif
+
+namespace {
+
+// A scene of `width` x `height` Byte samples, 255 inside one of `rects` and 0 elsewhere.
+std::shared_ptr<slideio::Scene> rectScene(int64_t width, int64_t height, std::vector<Rect64> rects) {
+    ts::registerTestOperations();
+    ts::registerProbeOperation();
+    return ts::makeSyntheticScene({{width, height, 0, 0}}, {slideio::DataType::DT_Byte},
+                                  [rects](int, int64_t x, int64_t y) {
+                                      for (const Rect64& r : rects) {
+                                          if (r.contains(Point64{x, y})) {
+                                              return 255.0;
+                                          }
+                                      }
+                                      return 0.0;
+                                  });
+}
+
+// Horizontal bars three pixels high, 150 pixels long with 20-pixel gaps, every
+// 11 rows, each row of bars shifted: most cross several 64-pixel tiles.
+double bars(int, int64_t x, int64_t y) {
+    return y % 11 >= 2 && y % 11 < 5 && (x + 37 * (y / 11)) % 170 < 150 ? 255.0 : 0.0;
+}
+
+// The objects of an unrestricted single-tile run of `spec` whose anchor's
+// pixel `disc` sets: what a restricted run must store.
+std::vector<ObjectKey> referenceInside(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
+                                       const ts::DiscMaskSource& disc) {
+    const auto rect = scene->getRect();
+    const int32_t side = std::max(std::get<2>(rect), std::get<3>(rect));
+    ts::CollectingObjectSink all;
+    Pipeline p(scene, config(side, 1), spec);
+    p.bindLayer("objects", LayerId(3));
+    p.runInto(all, nullptr, CancellationToken());
+    std::vector<ObjectRecord> inside;
+    for (const ObjectRecord& r : all.records()) {
+        const Point64 anchor = r.geometry().anchor();
+        if (disc.contains(static_cast<double>(anchor.x) + 0.5, static_cast<double>(anchor.y) + 0.5)) {
+            inside.push_back(r);
+        }
+    }
+    return sortedKeys(inside);
+}
+
+// The width of an object's outer ring, from its key; -1 for an empty key.
+int64_t outerWidth(const ObjectKey& key) {
+    const std::vector<std::pair<bool, Ring>>& rings = std::get<1>(key);
+    if (rings.empty() || rings.front().second.empty()) {
+        return -1;
+    }
+    const Ring& ring = rings.front().second;
+    const auto byX = [](const std::pair<int64_t, int64_t>& a, const std::pair<int64_t, int64_t>& b) {
+        return a.first < b.first;
+    };
+    return std::max_element(ring.begin(), ring.end(), byX)->first -
+           std::min_element(ring.begin(), ring.end(), byX)->first;
+}
+
+// What a run restricted by a mask source stored and counted.
+struct RestrictedRun {
+    std::vector<ObjectKey> keys;
+    int64_t onDemand = 0;
+    int64_t skipped = 0;
+};
+
+RestrictedRun runRestricted(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
+                            ts::DiscMaskSource& disc, int32_t workers, RasterSink* raster = nullptr,
+                            ProgressObserver* progress = nullptr) {
+    ts::CollectingObjectSink stored;
+    Pipeline p(scene, config(64, workers), spec);
+    p.maskSource(&disc);
+    p.bindLayer("objects", LayerId(3));
+    if (raster != nullptr) {
+        p.rasterSink(raster);
+    }
+    p.runInto(stored, progress, CancellationToken());
+    const detail::RunCounters& counters = detail::PipelineAccess::impl(p).counters;
+    return RestrictedRun{sortedKeys(stored.records()), counters.tilesEvaluatedOnDemand.load(),
+                         counters.tilesSkipped.load()};
+}
+
+// The tiles of `grid` holding a pixel whose centre `disc` contains.
+int64_t tilesHoldingMask(const TileGrid& grid, const ts::DiscMaskSource& disc) {
+    int64_t count = 0;
+    for (int64_t t = 0; t < grid.tileCount(); ++t) {
+        const Rect64 r = grid.tileRect(t);
+        bool any = false;
+        for (int64_t y = r.y; y < r.y + r.height && !any; ++y) {
+            for (int64_t x = r.x; x < r.x + r.width && !any; ++x) {
+                any = disc.contains(static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5);
+            }
+        }
+        count += any ? 1 : 0;
+    }
+    return count;
+}
+
+// Counts the raster tiles written.
+class CountingRasterSink : public RasterSink {
+public:
+    void writeTile(const BlockView&) override { ++written_; }
+    void flush() override {}
+    int64_t tilesWritten() const override { return written_; }
+
+private:
+    std::atomic<int64_t> written_{0};
+};
+
+// Records every progress call.
+class ProgressLog : public ProgressObserver {
+public:
+    void onProgress(const char*, double, int64_t completed, int64_t total) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        calls_.emplace_back(completed, total);
+    }
+    std::vector<std::pair<int64_t, int64_t>> calls() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return calls_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<std::pair<int64_t, int64_t>> calls_;
+};
+
+// A disc that sets pixels in tile 0 of 64-pixel tiles only.
+constexpr double kDiscX = 20.0;
+constexpr double kDiscY = 25.0;
+constexpr double kDiscRadius = 30.0;
+
+} // namespace
+
+// An object whose anchor the mask admits, reaching into a tile the mask
+// excludes, is stored whole: the excluded tile is evaluated for it.
+TEST(SeamRun, RestrictedObjectCrossingIntoASkippedTileIsWhole) {
+    auto scene = rectScene(256, 256, {Rect64{44, 20, 41, 10}});
+    ts::DiscMaskSource disc(kDiscX, kDiscY, kDiscRadius);
+    ASSERT_FALSE(disc.contains(64.5, 25.5)) << "tile 1 should hold no mask pixel";
+    const std::vector<ObjectKey> reference = referenceInside(scene, components(false), disc);
+    ASSERT_EQ(reference.size(), 1u);
+    ASSERT_EQ(outerWidth(reference.front()), 41);
+
+    const RestrictedRun run = runRestricted(scene, components(true), disc, 4);
+    ASSERT_EQ(run.keys.size(), 1u);
+    EXPECT_EQ(outerWidth(run.keys.front()), 41) << "the object was truncated at the skipped tile";
+    EXPECT_TRUE(run.keys == reference) << "the object was not stored whole";
+    EXPECT_EQ(run.onDemand, 1);
+    EXPECT_EQ(run.skipped, 15) << "a tile evaluated on demand stays counted as skipped";
+}
+
+// An object running from inside the mask across three excluded tiles pulls in
+// each of them, one after another, and no other tile.
+TEST(SeamRun, RestrictedObjectSpanningSeveralSkippedTilesIsWhole) {
+    auto scene = rectScene(320, 256, {Rect64{40, 20, 200, 10}});
+    ts::DiscMaskSource disc(kDiscX, kDiscY, kDiscRadius);
+    const std::vector<ObjectKey> reference = referenceInside(scene, components(false), disc);
+    ASSERT_EQ(reference.size(), 1u);
+    ASSERT_EQ(outerWidth(reference.front()), 200);
+
+    const RestrictedRun run = runRestricted(scene, components(true), disc, 4);
+    ASSERT_EQ(run.keys.size(), 1u);
+    EXPECT_EQ(outerWidth(run.keys.front()), 200) << "the object was truncated at the skipped tiles";
+    EXPECT_TRUE(run.keys == reference) << "the object was not stored whole";
+    EXPECT_EQ(run.onDemand, 3);
+}
+
+// A restricted run with many objects crossing out of the mask stores the same
+// objects, geometry and measurements, whatever the worker count.
+TEST(SeamRun, RestrictedRunIsWorkerCountInvariant) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte}, bars);
+    ts::DiscMaskSource disc(256.0, 256.0, 120.0);
+    const std::vector<ObjectKey> reference = referenceInside(scene, components(false), disc);
+    ASSERT_GT(reference.size(), 15u);
+
+    for (const int32_t workers : {1, 4, 8}) {
+        const RestrictedRun run = runRestricted(scene, components(true), disc, workers);
+        EXPECT_GT(run.onDemand, 0) << workers << " workers: the fixture should cross into skipped tiles";
+        EXPECT_TRUE(run.keys == reference) << workers << " workers: objects differ from the reference";
+    }
+}
+
+// A tile evaluated on demand writes no raster tile and reports no progress:
+// the raster holds the tiles holding a mask pixel, as when skipped tiles were
+// not evaluated, and progress ends at its total.
+TEST(SeamRun, DemandedTilesWriteNoRasterAndReportNoProgress) {
+    auto scene = rectScene(256, 256, {Rect64{40, 20, 200, 10}});
+    ts::DiscMaskSource disc(kDiscX, kDiscY, kDiscRadius);
+    CountingRasterSink raster;
+    ProgressLog progress;
+    const RestrictedRun run = runRestricted(scene, components(true), disc, 4, &raster, &progress);
+    ASSERT_EQ(run.onDemand, 3);
+
+    Pipeline p(scene, config(64, 1), components(true));
+    p.bindLayer("objects", LayerId(3));
+    p.validate();
+    const TileGrid& grid = detail::PipelineAccess::plan(p).grid;
+    EXPECT_EQ(raster.tilesWritten(), tilesHoldingMask(grid, disc));
+    const std::vector<std::pair<int64_t, int64_t>> calls = progress.calls();
+    ASSERT_EQ(static_cast<int64_t>(calls.size()), grid.tileCount());
+    EXPECT_EQ(calls.back(), std::make_pair(grid.tileCount(), grid.tileCount()));
+    for (const auto& call : calls) {
+        EXPECT_LE(call.first, call.second);
+    }
+}
+
+// A cancellation inside a tile evaluated on demand stops the run with a
+// CancelledError, and the object waiting for that tile is not stored.
+TEST(SeamRun, CancellationDuringDemandedTiles) {
+    auto scene = rectScene(256, 256, {Rect64{44, 20, 41, 10}});
+    ts::DiscMaskSource disc(kDiscX, kDiscY, kDiscRadius);
+    DisarmGuard guard;
+    ts::ProbeOperation::setFailuresArmed(true);
+    PipelineSpec spec;
+    OperationParameters probe;
+    probe.setInt("copy", 1);
+    probe.setInt("failX", 70);
+    probe.setInt("failY", 25);
+    probe.setInt("failKind", 2);
+    spec.operation("test.probe", probe);
+    spec.operation("test.threshold", OperationParameters());
+    spec.operation("test.components", seams(true));
+
+    ts::CollectingObjectSink stored;
+    Pipeline p(scene, config(64, 4), spec);
+    p.maskSource(&disc);
+    p.bindLayer("objects", LayerId(3));
+    EXPECT_THROW(p.runInto(stored, nullptr, CancellationToken()), CancelledError);
+    EXPECT_EQ(stored.emittedCount(), 0) << "an object waiting for the cancelled tile was stored";
+}
+
+// Without a restriction nothing is skipped, so nothing is evaluated on demand,
+// and the objects are those of the single-tile run.
+TEST(SeamRun, UnrestrictedRunIsUnchanged) {
+    auto scene = blobScene();
+    ts::CollectingObjectSink whole;
+    Pipeline single(scene, config(static_cast<int32_t>(kSide), 1), components(false));
+    single.bindLayer("objects", LayerId(3));
+    single.runInto(whole, nullptr, CancellationToken());
+
+    ts::CollectingObjectSink stored;
+    Pipeline p(scene, config(64, 4), components(true));
+    p.bindLayer("objects", LayerId(3));
+    p.runInto(stored, nullptr, CancellationToken());
+    EXPECT_TRUE(sortedKeys(stored.records()) == sortedKeys(whole.records()));
+    const detail::RunCounters& counters = detail::PipelineAccess::impl(p).counters;
+    EXPECT_EQ(counters.tilesSkipped.load(), 0);
+    EXPECT_EQ(counters.tilesEvaluatedOnDemand.load(), 0);
+}

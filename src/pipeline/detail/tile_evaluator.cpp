@@ -173,7 +173,8 @@ TileEvaluator::TileEvaluator(const RunPlan& plan, std::vector<OperationPtr> oper
 const RestrictionFilter& TileEvaluator::restriction() const noexcept { return restriction_; }
 
 TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& token,
-                                    const char** runningOperation, const Accumulation* accumulation) const {
+                                    const char** runningOperation, const Accumulation* accumulation,
+                                    EvaluationMode mode) const {
     if (runningOperation != nullptr) {
         *runningOperation = nullptr;
     }
@@ -181,6 +182,10 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     if (accumulation != nullptr &&
         (accumulation->position >= operations.size() || accumulation->accumulator == nullptr)) {
         throw InvalidArgumentError("TileEvaluator::evaluate: the accumulation names no operation");
+    }
+    const bool onDemand = mode == EvaluationMode::OnDemand;
+    if (onDemand && accumulation != nullptr) {
+        throw InvalidArgumentError("TileEvaluator::evaluate: an accumulation pass evaluates no tile on demand");
     }
     token.throwIfCancelled();
     const TileGrid& grid = plan_.grid;
@@ -192,7 +197,10 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     if (!mask.isNull()) {
         bytes += mask.regionAtLevel().width * mask.regionAtLevel().height;
     }
-    if (restriction_.skips(mask, tileIndex)) {
+    // A tile evaluated on demand was skipped, and counted, by the pass.
+    if (onDemand) {
+        ++bindings_.counters->tilesEvaluatedOnDemand;
+    } else if (restriction_.skips(mask, tileIndex)) {
         if (accumulation == nullptr) {
             ++bindings_.counters->tilesSkipped;  // Once per run: the final pass counts it.
         }
@@ -340,7 +348,9 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         currentRect = outputRect;
     }
 
-    if (bindings_.rasterSink != nullptr) {
+    // A tile evaluated on demand writes no raster tile: the raster stays what
+    // the restriction selects.
+    if (bindings_.rasterSink != nullptr && !onDemand) {
         const BlockView result = current->view(plan_.level, tile, plan_.levelScale);
         bindings_.rasterSink->writeTile(result);
     }

@@ -177,10 +177,14 @@ public:
      * fragments of objects cut by tile seams with a SeamMerger, which works in
      * a directory of the run's own, `pipeline-<32 random lowercase hex digits>`
      * under the configuration's scratch directory (the platform's temporary
-     * directory when that is empty). Every tile of the final pass, a skipped one
-     * included, is reported to it as it completes, so merged objects reach
-     * @p sink during the pass; whatever remains is resolved after the last tile.
-     * A merged object is stored only when the restriction admits its anchor.
+     * directory when that is empty). Every tile of the final pass is reported to
+     * it as it completes, so merged objects reach @p sink during the pass. A tile
+     * the restriction skips is held back instead: after the pass, each skipped
+     * tile an unfinished object reaches into is evaluated once, through the same
+     * workers, writing no raster tile and reporting no progress, so the object
+     * is stored whole; the other skipped tiles then complete unevaluated, and
+     * whatever remains is resolved. A merged object is stored only when the
+     * restriction admits its anchor.
      * The directory is removed before run() returns or throws, on every path; a
      * chain producing no objects creates none.
      *

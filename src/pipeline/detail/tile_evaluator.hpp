@@ -24,16 +24,18 @@ namespace slideio::processor::detail {
 /// What a run counts besides what reaches the sinks. Shared by every worker of
 /// the run, hence atomic; reset at the start of each run.
 struct RunCounters {
-    std::atomic<int64_t> droppedOutsideTile{0};    ///< Objects whose anchor left the emitting tile.
-    std::atomic<int64_t> droppedByRestriction{0};  ///< Objects whose anchor the tile's mask excludes.
-    std::atomic<int64_t> droppedByFilter{0};       ///< Objects their producer's finishObject() discards.
-    std::atomic<int64_t> tilesSkipped{0};          ///< Tiles whose mask is empty inside the tile.
+    std::atomic<int64_t> droppedOutsideTile{0};     ///< Objects whose anchor left the emitting tile.
+    std::atomic<int64_t> droppedByRestriction{0};   ///< Objects whose anchor the tile's mask excludes.
+    std::atomic<int64_t> droppedByFilter{0};        ///< Objects their producer's finishObject() discards.
+    std::atomic<int64_t> tilesSkipped{0};           ///< Tiles whose mask is empty inside the tile.
+    std::atomic<int64_t> tilesEvaluatedOnDemand{0}; ///< Skipped tiles evaluated for an object reaching into them.
 
     void reset() noexcept {
         droppedOutsideTile = 0;
         droppedByRestriction = 0;
         droppedByFilter = 0;
         tilesSkipped = 0;
+        tilesEvaluatedOnDemand = 0;
     }
 };
 
@@ -108,6 +110,17 @@ struct TileOutcome {
     int64_t bytesUsed;  ///< Bytes of every buffer the tile allocated (source, intermediates, auxiliaries, mask).
 };
 
+/// How the final pass evaluates a tile.
+enum class EvaluationMode {
+    /// As the pass: a tile the restriction excludes is skipped.
+    Normal,
+    /// For an object reaching into a tile the pass skipped: the tile is
+    /// evaluated though the restriction excludes it, writes no raster tile and
+    /// is counted in RunCounters::tilesEvaluatedOnDemand, not again in
+    /// RunCounters::tilesSkipped.
+    OnDemand,
+};
+
 /// One tile of a global-context accumulation pass: the operations
 /// before `position` are applied (already finalised), then `accumulator`, a fresh
 /// instance of operation `position`, accumulates their output in its place.
@@ -143,11 +156,14 @@ public:
     /// pass instead of the final one: same mask, reads and rects as a chain ending
     /// at `accumulation->position`, no sink is written, and a skipped tile is not
     /// counted in RunCounters::tilesSkipped (the final pass counts it).
+    /// With EvaluationMode::OnDemand, the final-pass tile is evaluated as that
+    /// mode says; its owned objects still pass the tile's mask.
     /// Throws InvalidArgumentError when `accumulation` names no operation or has a
-    /// null accumulator.
+    /// null accumulator, or is given with EvaluationMode::OnDemand.
     TileOutcome evaluate(int64_t tileIndex, const CancellationToken& token,
                          const char** runningOperation = nullptr,
-                         const Accumulation* accumulation = nullptr) const;
+                         const Accumulation* accumulation = nullptr,
+                         EvaluationMode mode = EvaluationMode::Normal) const;
 
     const RestrictionFilter& restriction() const noexcept;
 
