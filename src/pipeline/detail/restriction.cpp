@@ -109,8 +109,20 @@ bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {
     if (mask.isNull()) {
         return false;
     }
-    const Rect64 tile = plan_.grid.tileRectAtLevel(tileIndex);
+    // The tile rect and, as buildTileMask adds them at a non-integer scale, the extra column
+    // and row before it: the tile owns objects anchored there, so the mask over them counts.
+    Rect64 tile = plan_.grid.tileRectAtLevel(tileIndex);
     const Rect64 region = mask.regionAtLevel();
+    if (plan_.levelScale != std::floor(plan_.levelScale)) {
+        if (plan_.chainHalo.left == 0) {
+            --tile.x;
+            ++tile.width;
+        }
+        if (plan_.chainHalo.top == 0) {
+            --tile.y;
+            ++tile.height;
+        }
+    }
     for (int64_t y = tile.y; y < tile.y + tile.height; ++y) {
         const uint8_t* row = mask.row(y - region.y) + (tile.x - region.x);
         if (std::any_of(row, row + tile.width, [](uint8_t v) { return v != 0; })) {

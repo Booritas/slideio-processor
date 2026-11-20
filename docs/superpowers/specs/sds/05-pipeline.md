@@ -943,7 +943,7 @@ applied at three points, and it matters that they are three rather than one:
 | Point | What it does | Why there |
 |---|---|---|
 | Grid construction | The grid spans the restriction's bounding box, not the scene (5.6) | Whole rows and columns of tiles never exist |
-| Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels | UR-IMG-5: "reads only tiles intersecting it" |
+| Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels; an object reaching into a skipped tile gets it evaluated on demand (5.5) | UR-IMG-5: "reads only tiles intersecting it", as a strong tendency |
 | Object emission | Each object is kept only if the mask is set at its **anchor** | UR-STG-3: "produces no objects outside those regions" |
 
 The third is the authoritative one and the other two are optimisations that
@@ -1275,30 +1275,56 @@ rect), an anchor is tested at the level pixel `floor(anchor / scale)`, and the
 tile's first level-0 column or row can floor to the pixel before the tile.
 Without the extra pixel, such an object would be dropped by the tile that owns
 it, while a merged object at the same anchor is admitted. When the
-mask has no set pixel inside the **tile** rect, the tile is skipped: no pixel is
-read and it counts as complete. `OperationContext::mask()` returns the tile's
+mask has no set pixel inside the **tile** rect, widened by the same extra column
+and row at a non-integer scale, the tile is skipped: no pixel is read and it
+is deferred, not complete (below). `OperationContext::mask()` returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
 the `ObjectSink` and admits an object when the mask is set at its anchor; for
 objects emitted outside a tile, such as merged objects (5.7), it exposes
 `admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
 from the same three sources. Filtering never alters pixels.
 
-**Known limitation — a restricted object crossing into a skipped tile is stored
-truncated (must fix before release).** Skipping a tile assumes no admitted
-object has pixels in it, and that does not hold: an object whose anchor is in
-the mask can reach past the mask's edge into a tile that holds no set mask
-pixel. `RestrictionFilter::skips` skips that tile, so it produces no fragments;
-the seam merger (5.7) still counts it complete, closes the component without
-the fragments it would have held, and admits the partial object by its anchor.
-The object is stored cut at the tile seam, with wrong geometry and
-measurements, and nothing reports it. The reproducer is
-`StageRunner.DISABLED_RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
-(`tests/workspace/test_stage_runner.cpp`): a disc spanning x = 285 to 325, whose
-anchor lies in a level-2 region dilated to x = 306, is stored 35 px wide
-instead of 41 because the tile beyond the seam at x = 320 is skipped. It is
-disabled until the pipeline is fixed (for example by skipping a tile only when
-no tile it borders holds an open fragment, or by reading a skipped tile that a
-held fragment expects); `docs/project.md` tracks it.
+**A skipped tile is deferred, not complete.** An admitted object can reach past
+the mask's edge into a tile that holds no set mask pixel, and that tile
+produces no fragments of it. The seam merger (5.7) therefore tracks three
+states per tile. *Pending* is the initial state. *Deferred* is a tile the
+restriction skipped: the final pass calls `notifyTileSkipped` for it instead of
+`notifyTileComplete`, so it is not complete, and a fragment beside it still
+records that it expects it. *Demanded or completed* is the end state, reached
+by `notifyTileComplete`, or by `takeAwaitedDeferred` which marks a deferred
+tile demanded so that it is returned at most once. After the final pass the
+executor loops: it takes the deferred tiles that some open component expects,
+evaluates each once with the skip bypassed, through the same workers,
+reservation and cancellation as the pass, reports it complete, and repeats
+until none is awaited. It then calls `completeDeferred`, which completes every
+deferred tile still left without evaluating it, and `resolve`. A demanded tile
+is an ordinary evaluated tile except that it writes no raster tile, reports no
+progress (the pass already counted it) and is counted in
+`RunCounters::tilesEvaluatedOnDemand`, while staying in `tilesSkipped`. Its
+tile objects pass the normal object filter, and admission by anchor still
+decides what is stored. Accumulation passes still skip and are unchanged, so
+global statistics do not move.
+
+**Pass-fragment pruning, and its precondition.** Only a component holding a
+fragment from a tile evaluated in the pass (a *pass fragment*) demands tiles; a
+fragment from a demanded tile does not set the flag, and a union has it when
+either side had it. Without this, every object a demanded tile found would pull
+in its own neighbours and the demands would spread over dense objects. It is
+sound because the pass completes every tile it evaluates before the first
+demand, so an object with a pixel in an evaluated tile holds that tile's
+fragment and reaches every skipped tile it crosses, while an object lying
+wholly in skipped tiles has its anchor where the mask is zero and the
+restriction drops it, whole or truncated. The precondition is that `skips()`
+means the mask is zero over the whole tile. At a non-integer scale
+`buildTileMask` adds the extra column and row before the tile, so `skips()`
+tests those too (`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale`).
+The reproducer is `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
+(`tests/workspace/test_stage_runner.cpp`).
+
+**Cost.** Evaluating tiles on demand costs time, never correctness, and one
+very large object can pull in many tiles. UR-IMG-5's "reads only tiles
+intersecting it" is therefore a strong tendency, not a guarantee: a skipped
+tile is read when an object reaching out of an evaluated tile expects it.
 
 ### The lazy mode: `levelCount`, `rect`, `readBlock`, `asScene`
 
@@ -1720,8 +1746,11 @@ the output, because identity comes from the merged object's anchor
 A fragment in tile *t* with a contact on seam line *s* **expects** the tile on
 the other side of *s* at that contact. A component closes when every tile
 holding one of its fragments and every tile one of them expects has completed —
-reported through `notifyTileComplete`, which the executor calls for every tile,
-**a tile skipped by the restriction included**. `notifyTileComplete(t, sink)`
+reported through `notifyTileComplete`, which the executor calls for every tile
+the pass evaluated and for every deferred tile evaluated on demand. **A tile
+skipped by the restriction is not complete**: it is deferred (5.5), and
+completes only when it is evaluated on demand or `completeDeferred` completes
+it. `notifyTileComplete(t, sink)`
 re-examines only the components touching *t*; reporting a tile twice does
 nothing more. A closed component is merged, measured, tested against the
 restriction at its anchor (through the filter the executor hands the merger;
@@ -2130,9 +2159,11 @@ each tile, with `total` equal to `tileCount()` (5.6) for a single pass and
 `done` counting skipped tiles. Observer calls are serialised.
 
 The executor calls `SeamMerger::notifyTileComplete` as each tile of the final
-pass finishes, a tile skipped by the restriction included, which is what lets
-seam-crossing objects be emitted during the pass instead of piling up until the
-end (5.7). After the pass it calls `resolve`, on success only: after a
+pass that was evaluated finishes, and `notifyTileSkipped` for a tile the
+restriction skipped, which is what lets seam-crossing objects be emitted during
+the pass instead of piling up until the end (5.7). After the pass it evaluates
+the deferred tiles an open object expects, completes the rest with
+`completeDeferred` (5.5), and calls `resolve`, on success only: after a
 cancellation or a tile failure the merger is destroyed with whatever it still
 holds. When the run is restricted, the tile masks the restriction filter caches
 to test merged anchors are released as tiles settle — a tile's mask once it and

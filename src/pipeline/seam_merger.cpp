@@ -153,8 +153,9 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     component.members.push_back(id);
     component.first = id;
     component.residentCount = 1;
-    // A demanded tile's fragments come from its evaluation on demand.
-    component.hasPassFragment = tiles_[static_cast<size_t>(tile)] != TileState::Demanded;
+    // A fragment of a tile evaluated in the pass (still pending) is a pass fragment; one from a
+    // demanded tile comes from its evaluation on demand.
+    component.hasPassFragment = tiles_[static_cast<size_t>(tile)] == TileState::Pending;
     if (tiles_[static_cast<size_t>(tile)] != TileState::Completed) {
         component.openTiles.insert(tile);
         touching_[tile].push_back(id);

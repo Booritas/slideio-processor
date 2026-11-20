@@ -180,11 +180,12 @@ public:
      * directory when that is empty). Every tile of the final pass is reported to
      * it as it completes, so merged objects reach @p sink during the pass. A tile
      * the restriction skips is held back instead: after the pass, each skipped
-     * tile an unfinished object reaches into is evaluated once, through the same
-     * workers, writing no raster tile and reporting no progress, so the object
-     * is stored whole; the other skipped tiles then complete unevaluated, and
-     * whatever remains is resolved. A merged object is stored only when the
-     * restriction admits its anchor.
+     * tile an unfinished object reaching out of a tile the pass evaluated still
+     * expects is evaluated once, through the same workers, writing no raster
+     * tile and reporting no progress, so the object is stored whole; the other
+     * skipped tiles then complete unevaluated, and whatever remains is
+     * resolved. A merged object is stored only when the restriction admits its
+     * anchor.
      * The directory is removed before run() returns or throws, on every path; a
      * chain producing no objects creates none.
      *

@@ -797,3 +797,65 @@ TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
         EXPECT_EQ(barObjects(tile, true, true), whole) << "tile " << tile;
     }
 }
+
+namespace {
+
+// Sets only the level column `column`, on every row.
+class ColumnMaskSource : public TileMaskSource {
+public:
+    explicit ColumnMaskSource(int64_t column) : column_(column) {}
+    void fillMask(RasterMask& out) override {
+        const Rect64 region = out.regionAtLevel();
+        for (int64_t y = 0; y < region.height; ++y) {
+            uint8_t* row = out.row(y);
+            for (int64_t x = 0; x < region.width; ++x) {
+                row[x] = region.x + x == column_ ? 255 : 0;
+            }
+        }
+    }
+
+private:
+    int64_t column_;
+};
+
+} // namespace
+
+// At level 1 (scale 2.4) with 64-pixel tiles, the first level-0 column of tile 2 is 307, which
+// floors to level column 127, the last column of tile 1. With only column 127 set, tile 2's
+// rect is empty but it owns objects anchored on that column: the skip test must agree with
+// the mask the tile was given, so those objects are emitted.
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, bars);
+    const Configuration configuration =
+        ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(4).build();
+    const auto run = [&](bool restricted) {
+        PipelineSpec spec = spec1("test.components");
+        spec.analysisLevel(1);
+        ColumnMaskSource column(127);
+        ts::CollectingObjectSink sink;
+        Pipeline p(scene, configuration, spec);
+        p.bindLayer("objects", LayerId(3));
+        if (restricted) {
+            p.maskSource(&column);
+        }
+        p.runInto(sink, nullptr, CancellationToken());
+        return sink.records();
+    };
+    const std::vector<ObjectRecord> all = run(false);
+    std::vector<ObjectId> expected;
+    for (const ObjectRecord& r : all) {
+        if (static_cast<int64_t>(std::floor(static_cast<double>(r.geometry().anchor().x) / 2.4)) == 127) {
+            expected.push_back(r.id());
+        }
+    }
+    std::sort(expected.begin(), expected.end());
+    ASSERT_FALSE(expected.empty());
+    ASSERT_LT(expected.size(), all.size());
+    std::vector<ObjectId> got;
+    for (const ObjectRecord& r : run(true)) {
+        got.push_back(r.id());
+    }
+    std::sort(got.begin(), got.end());
+    EXPECT_EQ(got, expected);
+}

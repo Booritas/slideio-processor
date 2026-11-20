@@ -218,13 +218,17 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   staleness graph acyclic (a layer-ordering edge that would close a cycle is
   suppressed), so re-running every stale stage settles.
   **Implemented** on `feat/workspace-c`, awaiting review and merge.
-  - **Must fix before release: restricted objects crossing into a skipped tile
-    are stored truncated.** A pre-existing pipeline defect the final review
-    found: `RestrictionFilter::skips` skips a tile with no mask pixel, the seam
-    merger closes the component without that tile's fragments and admits the
-    partial object by its anchor. See the limitation note in SDS 05 §5.5 ("The
-    tile mask") and the disabled reproducer
-    `StageRunner.DISABLED_RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`.
+  - **Resolved: restricted objects crossing into a skipped tile were stored
+    truncated.** A pre-existing pipeline defect the final review found:
+    `RestrictionFilter::skips` skipped a tile with no mask pixel, and the seam
+    merger closed the component without that tile's fragments. Fixed by the
+    [restricted-object truncation plan](superpowers/plans/2026-11-20-restriction-truncation.md):
+    a skipped tile is deferred, and after the final pass each deferred tile an
+    open object reaching out of an evaluated tile expects is evaluated on demand
+    (SDS 05 §5.5, "The tile mask"). Cost: UR-IMG-5's "reads only intersecting
+    tiles" is now a strong tendency, not a guarantee. Reproducer
+    `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated` is
+    enabled.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

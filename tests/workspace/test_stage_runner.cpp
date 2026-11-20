@@ -561,14 +561,13 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     EXPECT_EQ(nuclei.size(), 3u);
 }
 
-// DISABLED: reproduces a known pipeline defect, "Must fix before release" in docs/project.md
-// and SDS 05 (5.4, restriction). RestrictionFilter::skips drops a tile holding no mask pixel,
-// the seam merger then closes the component without that tile's fragments, and the partial
-// object is admitted by its anchor. Disc D of the edge-blob slide, with the edge at
-// kEdgeXTruncation, spans 285 to 325 across the tile seam at 320; the tile beyond holds no
-// pixel of the dilated mask, so D is stored cut at the seam. Run it with
-// --gtest_also_run_disabled_tests once the pipeline is fixed.
-TEST(StageRunner, DISABLED_RestrictedObjectCrossingIntoASkippedTileIsNotTruncated) {
+// Reproduces the defect fixed by the restricted-truncation plan: a tile holding no mask pixel
+// was skipped and the seam merger closed the component without that tile's fragments, so
+// the partial object was admitted by its anchor. Disc D of the edge-blob slide, with the edge
+// at kEdgeXTruncation, spans 285 to 325 across the tile seam at 320; the tile beyond holds no
+// pixel of the dilated mask. D must be stored whole, 41 px wide, the skipped tile having been
+// evaluated on demand.
+TEST(StageRunner, RestrictedObjectCrossingIntoASkippedTileIsNotTruncated) {
     Fixture f(SlideKind::EdgeTruncation, 3);
     const int64_t edgeX = testing_support::kEdgeXTruncation;
 
