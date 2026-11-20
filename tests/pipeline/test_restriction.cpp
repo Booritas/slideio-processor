@@ -1055,15 +1055,21 @@ namespace {
 
 // For every tile of an object run at level 1 (scale 2.4), outsideRegion implies the built mask
 // has no set pixel in the owned rect, so the shortcut never skips a tile the mask would keep.
-void expectOutsideRegionAgreesWithTheMask(int32_t halo, bool polygon) {
+void expectOutsideRegionAgreesWithTheMask(int32_t halo, int variant) {
     ts::registerTestOperations();
     auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, blobs);
     OperationParameters parameters;
     parameters.setInt("halo", halo);
     PipelineSpec spec = spec1("test.components", parameters);
     spec.analysisLevel(1);
-    if (polygon) {
+    if (variant == 1) {
         spec.restrictToPolygon(triangle(307, 307, 1000, 700));
+    } else if (variant == 2) {
+        // The bounding box ends inside the level: the raster can set the pixel past the region.
+        spec.restrictToPolygon(rectangle(100, 100, 305, 305));
+    } else if (variant == 3) {
+        spec.restrictToPolygon(rectangle(100, 100, 305, 305));
+        spec.restrictTo(Rect64{0, 0, 450, 450});
     } else {
         spec.restrictTo(Rect64{307, 307, 700, 400});
     }
@@ -1087,12 +1093,20 @@ void expectOutsideRegionAgreesWithTheMask(int32_t halo, bool polygon) {
 
 } // namespace
 
-TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScale) { expectOutsideRegionAgreesWithTheMask(0, false); }
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScale) { expectOutsideRegionAgreesWithTheMask(0, 0); }
 
 TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleWithAHalo) {
-    expectOutsideRegionAgreesWithTheMask(2, false);
+    expectOutsideRegionAgreesWithTheMask(2, 0);
 }
 
 TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleForAPolygon) {
-    expectOutsideRegionAgreesWithTheMask(0, true);
+    expectOutsideRegionAgreesWithTheMask(0, 1);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForAPolygonEndingInsideTheLevel) {
+    expectOutsideRegionAgreesWithTheMask(0, 2);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForARoiPastThePolygonBox) {
+    expectOutsideRegionAgreesWithTheMask(0, 3);
 }

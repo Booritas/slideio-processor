@@ -135,15 +135,16 @@ bool RestrictionFilter::outsideRegion(int64_t tileIndex) const {
     if (!restricted_) {
         return false;
     }
-    // At a non-integer scale an anchor on the region's first level-0 column or row floors to the
-    // level pixel before it, and a polygon's conservative raster sets that pixel: the region is
-    // widened by it, as the owned rect is.
+    // At a non-integer scale a level pixel straddles the region's edge: an anchor on its first
+    // level-0 column or row floors to the pixel before it, and the outward mapping of its far
+    // edge rounds, so a polygon's conservative raster can set the pixel past it. The region is
+    // widened by one on every side.
     Rect64 region = plan_.region;
     if (plan_.levelScale != std::floor(plan_.levelScale)) {
         --region.x;
-        ++region.width;
         --region.y;
-        ++region.height;
+        region.width += 2;
+        region.height += 2;
     }
     return !ownedRectAtLevel(tileIndex).intersects(region);
 }

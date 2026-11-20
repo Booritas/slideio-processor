@@ -71,8 +71,8 @@ public:
     /// Only a shortcut: the mask is empty there, because the ROI is rasterised by the outward
     /// mapping that also gives the region and the polygon's conservative raster lies inside its
     /// bounding box's outward mapping, so a pass skips the tile without building a mask. At a
-    /// non-integer scale the region is widened by the one column and row before it, which an
-    /// anchor on its first level-0 column or row floors to. False for an unrestricted run.
+    /// non-integer scale the region is widened by one column and row on every side, because a
+    /// level pixel straddles its edge and a polygon's conservative raster can set it. False for an unrestricted run.
     bool outsideRegion(int64_t tileIndex) const;
 
     /// Whether an object anchored at a level-0 point passes the restriction: the
