@@ -117,6 +117,7 @@ void SeamMerger::Impl::unite(int64_t a, int64_t b) {
     }
     big->members.insert(big->members.end(), small->members.begin(), small->members.end());
     big->openTiles.insert(small->openTiles.begin(), small->openTiles.end());
+    big->hasPassFragment = big->hasPassFragment || small->hasPassFragment;
     if (big->residentCount > 0) {
         residentByOpening_.erase(big->first);
     }
@@ -152,6 +153,8 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     component.members.push_back(id);
     component.first = id;
     component.residentCount = 1;
+    // A demanded tile's fragments come from its evaluation on demand.
+    component.hasPassFragment = tiles_[static_cast<size_t>(tile)] != TileState::Demanded;
     if (tiles_[static_cast<size_t>(tile)] != TileState::Completed) {
         component.openTiles.insert(tile);
         touching_[tile].push_back(id);
@@ -359,6 +362,9 @@ std::vector<int64_t> SeamMerger::Impl::takeAwaitedDeferred() {
     std::lock_guard<std::mutex> lock(mutex);
     // A fragment listed with a tile that has not completed belongs to a
     // component still open on that tile, unless its object closed already.
+    // Only a component holding a fragment of a tile the pass evaluated demands
+    // the tile: one made of on-demand fragments alone lies wholly in skipped
+    // tiles, and the restriction drops it (SeamMergerAccess::takeAwaitedDeferred).
     std::vector<int64_t> awaited;
     for (int64_t tile : deferred_) {
         const auto touching = touching_.find(tile);
@@ -366,7 +372,7 @@ std::vector<int64_t> SeamMerger::Impl::takeAwaitedDeferred() {
             continue;
         }
         const bool expected = std::any_of(touching->second.begin(), touching->second.end(), [this](int64_t fragment) {
-            return !fragments_[static_cast<size_t>(fragment)].taken;
+            return !fragments_[static_cast<size_t>(fragment)].taken && components_.at(find(fragment)).hasPassFragment;
         });
         if (expected) {
             awaited.push_back(tile);

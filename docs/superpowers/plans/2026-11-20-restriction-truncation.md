@@ -34,7 +34,9 @@
 
 1. **Three tile states in the merger: pending, completed, deferred.**
    - `notifyTileSkipped(tile)` marks a tile deferred. It is not complete, so `add()` records expectations on it as on a pending tile. This removes the path where a skipped tile completed before its neighbour's fragment arrived and the expectation was silently dropped.
-   - `takeAwaitedDeferred()` returns, in ascending order, the deferred tiles that some open component expects, and marks them as *demanded*, so each is returned at most once.
+   - `takeAwaitedDeferred()` returns, in ascending order, the deferred tiles that some open component *with a pass fragment* expects, and marks them as *demanded*, so each is returned at most once.
+   - A component has a pass fragment when one of its fragments came from a tile evaluated in the pass, not on demand. The flag is set when a fragment arrives from a tile that is not demanded, and a union has it when either side had it. A fragment from a demanded tile does not set it.
+   - Why that is sound at integer scales: every tile the pass evaluated has completed before the first demand. An object with a pixel in such a tile holds that tile's fragment, so it reaches every skipped tile it crosses. An object lying wholly in skipped tiles has its anchor where the mask is zero, so the restriction drops it, whole or truncated. Without the rule, objects found in a demanded tile would pull in their own neighbours, and the demands would spread over dense objects; the dense-squares fixture went from 32 demanded tiles to 11. The non-integer-scale case is decision 5's (Task 3).
    - `completeDeferred()` completes every still-deferred tile without evaluation, then emits whatever closes.
 2. **The executor's final pass** calls `notifyTileSkipped` for a tile `evaluate` reports as skipped, and `notifyTileComplete` otherwise. After the pass it loops:
    1. take the awaited deferred tiles;
@@ -42,7 +44,7 @@
    3. `notifyTileComplete` each one;
    4. repeat until the list is empty.
 
-   Then it calls `completeDeferred()`, then `resolve`. Each tile is evaluated at most once. One very large object can pull in many tiles. That costs time, never correctness, and UR-IMG-5's "reads only intersecting tiles" becomes a strong tendency rather than a guarantee. The SDS says so.
+   Then it calls `completeDeferred()`, then `resolve`. Each tile is evaluated at most once. Only objects reaching out of the tiles the pass evaluated demand tiles (decision 1), so the demands stop at the skipped tiles those objects touch; the objects a demanded tile finds on its own pull in nothing more. One very large object can still pull in many tiles. That costs time, never correctness, and UR-IMG-5's "reads only intersecting tiles" becomes a strong tendency rather than a guarantee. The SDS says so.
 3. **A demanded tile is an ordinary evaluated tile**, except in three ways:
    - it writes no raster tile, so raster output is identical to before, when a skipped tile wrote nothing;
    - it does not report tile progress, because the pass already counted it done;

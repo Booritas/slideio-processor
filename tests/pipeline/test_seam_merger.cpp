@@ -541,6 +541,82 @@ TEST(SeamMerger, DeferredDiagonalTileIsAwaitedAcrossACorner) {
     }
 }
 
+// Only an object holding a fragment of a tile the pass evaluated demands a
+// tile: one made of fragments of demanded tiles alone demands nothing until
+// it joins such a fragment.
+TEST(SeamMerger, OnlyObjectsWithAPassFragmentDemandTiles) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        for (const int64_t tile : {1, 2, 4, 5}) {
+            detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+        }
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+
+        // Tile 1, evaluated on demand: the first fragment joins the pass
+        // fragment and reaches tile 2; the second, alone, reaches tile 4.
+        merger->addFragment(1, rectangle(10, 2, 10, 4), kLayer, nullptr, 0);
+        merger->addFragment(1, rectangle(16, 7, 3, 3), kLayer, nullptr, 0);
+        merger->notifyTileComplete(1, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{2});
+
+        merger->addFragment(2, rectangle(20, 2, 3, 4), kLayer, nullptr, 0);
+        merger->notifyTileComplete(2, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 72.0);
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        // Tile 4 was never evaluated: the lone fragment closes with it.
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        ASSERT_EQ(sink.emittedCount(), 2);
+        EXPECT_EQ(measurement(sink.records().back(), "area"), 9.0);
+        for (const int64_t tile : {3, 6, 7, 8}) {
+            merger->notifyTileComplete(tile, sink);
+        }
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 2);
+    }
+    {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        for (const int64_t tile : {1, 2, 4}) {
+            detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+        }
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        merger->addFragment(3, rectangle(5, 15, 5, 3), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(3, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), (std::vector<int64_t>{1, 4}));
+
+        // Tile 1's fragment reaches tiles 2 and 4 but holds no pass fragment:
+        // tile 2 is not demanded yet.
+        merger->addFragment(1, rectangle(12, 5, 8, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(1, sink);
+        EXPECT_EQ(sink.emittedCount(), 1) << "tile 0's fragment closes alone";
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        // Tile 4's fragment joins it to tile 3's pass fragment: now tile 2 is demanded.
+        merger->addFragment(4, rectangle(10, 10, 5, 6), kLayer, nullptr, 0);
+        merger->notifyTileComplete(4, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{2});
+
+        merger->addFragment(2, rectangle(20, 5, 2, 2), kLayer, nullptr, 0);
+        merger->notifyTileComplete(2, sink);
+        ASSERT_EQ(sink.emittedCount(), 2);
+        EXPECT_EQ(measurement(sink.records().back(), "area"), 89.0);
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        for (const int64_t tile : {5, 6, 7, 8}) {
+            merger->notifyTileComplete(tile, sink);
+        }
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 2);
+    }
+}
+
 TEST(SeamMerger, CompleteDeferredClosesWhatNothingAwaits) {
     const TileGrid grid = gridOf(3, 3, 10, 10);
     {

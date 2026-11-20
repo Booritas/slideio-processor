@@ -53,6 +53,9 @@ struct SeamComponent {
     std::unordered_set<int64_t> openTiles; ///< Tiles held or expected that have not completed.
     int64_t first = 0;                     ///< The smallest member id: when it opened.
     int64_t residentCount = 0;             ///< Members still in memory.
+    /// A member came from a tile the pass evaluated, not from one evaluated on
+    /// demand; only such a component makes takeAwaitedDeferred demand a tile.
+    bool hasPassFragment = false;
 };
 
 /// Bytes held in a memory budget, given back when the holder is destroyed.
@@ -198,6 +201,16 @@ struct SeamMergerAccess {
     /// Returns, in ascending order, the deferred tiles some open object
     /// expects, and marks them demanded, so each is returned at most once. A
     /// demanded tile is evaluated and then completed with notifyTileComplete.
+    /// Only an object holding a fragment from a tile the pass evaluated (one
+    /// that was not demanded) demands a tile; joining such a fragment gives a
+    /// component that right. An object made only of fragments of demanded
+    /// tiles demands nothing: every tile the pass evaluated has completed
+    /// before the first demand, so it can never gain such a fragment; the
+    /// object then lies only in skipped tiles, its anchor where the mask is
+    /// zero, and the restriction drops it, whole or truncated. An object with
+    /// a pixel in an evaluated tile holds that tile's fragment, and so reaches
+    /// every skipped tile it crosses. This holds while a skipped tile's mask is
+    /// zero over the whole tile, as RestrictionFilter::skips() decides it.
     /// The list is complete only when no tile is in flight: a tile still being
     /// evaluated may yet add fragments expecting further deferred tiles. So the
     /// caller evaluates and completes the returned tiles, then calls again,
@@ -240,8 +253,8 @@ public:
     std::vector<detail::ClosedComponent> complete(int64_t tileIndex);
     // Marks a pending tile deferred.
     void defer(int64_t tileIndex);
-    // The deferred tiles an open component expects, ascending; each is marked
-    // demanded.
+    // The deferred tiles an open component with a pass fragment expects,
+    // ascending; each is marked demanded.
     std::vector<int64_t> takeAwaitedDeferred();
     // Completes every deferred tile that is not demanded and takes out the
     // components that close with them.

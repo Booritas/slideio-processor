@@ -749,6 +749,34 @@ TEST(SeamRun, RestrictedRunIsWorkerCountInvariant) {
     }
 }
 
+// Only objects reaching out of the tiles the pass evaluated demand tiles: the
+// objects found in a demanded tile, lying wholly in skipped tiles, pull in no
+// more. Dense 20-pixel squares every 30 pixels; the disc sets pixels in the
+// four tiles of columns and rows 3 and 4 only. Squares cross the seams at 192
+// (into column and row 2); at 320 squares end on the seam, which still makes
+// columns and row 5 expected. So the evaluated tiles' squares reach the eleven
+// tiles around them, but for the corner (5,5), which a 4-connected square
+// ending at the corner does not reach: (2,2), (2,3), (2,4), (3,2), (4,2) and
+// (3,5), (4,5), (5,3), (5,4), and through the squares cut at both 192 and 320,
+// (2,5) and (5,2). Without the rule the demands spread to 32 tiles.
+TEST(SeamRun, OnlyObjectsReachingFromEvaluatedTilesDemandTiles) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        [](int, int64_t x, int64_t y) {
+                                            return x % 30 < 20 && y % 30 < 20 ? 255.0 : 0.0;
+                                        });
+    ts::DiscMaskSource disc(256.0, 256.0, 60.0);
+    const std::vector<ObjectKey> reference = referenceInside(scene, components(false), disc);
+    ASSERT_FALSE(reference.empty());
+
+    for (const int32_t workers : {1, 4, 8}) {
+        const RestrictedRun run = runRestricted(scene, components(true), disc, workers);
+        EXPECT_EQ(run.skipped, 60) << workers << " workers";
+        EXPECT_EQ(run.onDemand, 11) << workers << " workers";
+        EXPECT_TRUE(run.keys == reference) << workers << " workers: objects differ from the reference";
+    }
+}
+
 // A tile evaluated on demand writes no raster tile and reports no progress:
 // the raster holds the tiles holding a mask pixel, as when skipped tiles were
 // not evaluated, and progress ends at its total.
