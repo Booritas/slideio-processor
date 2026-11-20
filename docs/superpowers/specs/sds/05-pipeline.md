@@ -1042,8 +1042,8 @@ behaves identically whether a stage or a direct caller ran it. Operations that
 do not produce objects are not consulted.
 
 **One producer per layer.** Two operations producing objects that resolve to
-the same layer are refused, "operations X and Y both target layer \"L\"" —
-names only. A layer's objects are finished by the operation producing it
+the same layer are refused, "the operation and operation X both target layer
+\"L\"", with Y in `ErrorContext::operationName` — names only. A layer's objects are finished by the operation producing it
 (5.1), and a merged object carries no trace of which operation emitted its
 fragments, so a second producer would leave the finisher ambiguous.
 
@@ -1051,16 +1051,17 @@ fragments, so a second producer would leave the finisher ambiguous.
 finds its seams on its own tile rect, and a later operation's halo would grow
 that rect, so its fragments would miss the seams the merger joins on. A chain
 in which an operation producing objects is followed by any operation with a
-non-zero halo is therefore refused, "operation X produces objects and must not
-be followed by a halo". A point operation after it is accepted.
+non-zero halo is therefore refused, "the operation produces objects and must
+not be followed by a halo", with X in `ErrorContext::operationName`. A point operation after it is accepted.
 
 **A per-channel object producer gets one plane.** A `PerChannel` operation
 producing objects is applied once per plane and emits into its one layer, so
 over several planes it would store every object once per plane under the same
 `ObjectId` — a label raster stored as identical channels, for one, would give
 each region twice. A chain giving such an operation more than one plane is
-refused, "operation \"X\" produces objects and runs per channel, so it must be
-given exactly one channel" — the name only. A `Joint` producer is unaffected.
+refused, "the operation produces objects and runs per channel, so it must be
+given exactly one channel", with X in `ErrorContext::operationName` — the name
+only. A `Joint` producer is unaffected.
 
 **Stage name.** `stageName(name)` sets the name the run reports: the
 `stageName` of every `ProgressObserver::onProgress` call and the stage in every

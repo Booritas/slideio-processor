@@ -583,3 +583,27 @@ TEST(PipelineValidate, TypeAndArityErrorsNameTheOperation) {
         EXPECT_STREQ(e.operationName(), "test.jointUniform");
     }
 }
+
+// ErrorContext::operationName already appends "; operation: <name>" to what(), so the
+// message text does not repeat the name: it appears exactly once (PR #17 finding 10).
+TEST(PipelineValidate, RefusalNamesTheOperationOnce) {
+    const auto once = [](const std::string& text, const std::string& name) {
+        const size_t first = text.find(name);
+        return first != std::string::npos && text.find(name, first + 1) == std::string::npos;
+    };
+    auto words = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_UInt16});
+    Pipeline unsupported(ts::makeSyntheticScene(words), config(), specOf("test.threshold"));
+    const std::string type = validateMessage<UnsupportedDataTypeError>(unsupported);
+    EXPECT_TRUE(once(type, "test.threshold")) << type;
+    EXPECT_TRUE(contains(type, "the operation does not accept UInt16 input")) << type;
+
+    auto mixed = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
+    Pipeline arity(ts::makeSyntheticScene(mixed), config(), specOf("test.jointUniform"));
+    const std::string planes = validateMessage<ChannelArityError>(arity);
+    EXPECT_TRUE(once(planes, "test.jointUniform")) << planes;
+
+    auto bytes = byteSource();
+    Pipeline unknown(ts::makeSyntheticScene(bytes), config(), specOf("test.V.nope"));
+    const std::string missing = validateMessage<InvalidArgumentError>(unknown);
+    EXPECT_TRUE(once(missing, "test.V.nope")) << missing;
+}

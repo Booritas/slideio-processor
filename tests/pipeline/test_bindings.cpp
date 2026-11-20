@@ -451,7 +451,7 @@ TEST(Bindings, PerChannelObjectProducerNeedsExactlyOneChannel) {
         FAIL() << "validate() accepted a per-channel object producer over two channels";
     } catch (const InvalidArgumentError& e) {
         const std::string message = e.what();
-        EXPECT_NE(message.find("\"test.B6.objects\""), std::string::npos) << message;
+        EXPECT_STREQ(e.operationName(), "test.B6.objects");
         EXPECT_NE(message.find("exactly one channel"), std::string::npos) << message;
     }
 

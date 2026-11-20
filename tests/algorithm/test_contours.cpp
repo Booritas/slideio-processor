@@ -474,7 +474,7 @@ TEST(Contours, NeedsExactlyOneChannel) {
         FAIL() << "validate() accepted segment.contours over two channels";
     } catch (const InvalidArgumentError& e) {
         const std::string message = e.what();
-        EXPECT_NE(message.find("\"segment.contours\""), std::string::npos) << message;
+        EXPECT_STREQ(e.operationName(), "segment.contours");
         EXPECT_NE(message.find("exactly one channel"), std::string::npos) << message;
     }
 
