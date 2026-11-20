@@ -35,14 +35,19 @@ std::filesystem::path writeHalfBlobSlide(const std::filesystem::path& file, int3
 // mask edge can lose the fragment whose anchor falls outside the mask.
 constexpr int64_t kEdgeX = 290;
 
-// A slide with a white region (x < kEdgeX) beside a grey one (200), and four dark discs of
+// An edge column for writeEdgeBlobSlide that puts disc D (centred 3 px past it, radius 20) across
+// the 64 px tile seam at x = 320: D spans 285 to 325. The tile beyond the seam holds no pixel of
+// the region dilated by a level-2 analysis's half-step, so a restricted run skips it.
+constexpr int64_t kEdgeXTruncation = 302;
+
+// A slide with a white region (x < edgeX) beside a grey one (200), and four dark discs of
 // radius 20: A centred 25 px inside the edge (150 down), B 60 px outside it, C deep
 // inside the white region at (100, 450), and D centred 3 px outside the edge (300 down), in the band
 // a level-2 analysis dilates the region by. Thresholding above 230 selects the white region
 // (disc A is a hole in it, so extractHoles = false); below 128 selects the discs. `levels` and the
-// `*.svs` naming are as for writeBlobSlide.
+// `*.svs` naming are as for writeBlobSlide. `edgeX` moves the edge, and discs A, B and D with it.
 std::filesystem::path writeEdgeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height,
-                                         int32_t levels = 1);
+                                         int32_t levels = 1, int64_t edgeX = kEdgeX);
 
 // A unique path in the temp directory, not created; remove_all on destruction, so a
 // failing test leaves nothing behind.

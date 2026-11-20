@@ -148,7 +148,8 @@ using Definitions = std::map<int32_t, std::unique_ptr<StageDefinition>>;
 // definitions, never from LayerRegistry::writerStageAt, which keeps a writer a
 // redeclaration dropped.
 detail::StalenessEdges buildStalenessEdges(const std::vector<Entry>& entries, const Graph& graph, const Pins& pins,
-                                           const LayerRegistry& layers, const RasterRegistry& rasters) {
+                                           const LayerRegistry& layers, const RasterRegistry& rasters,
+                                           detail::DetailPool& pool) {
     detail::DependencyPairs named(pins.begin(), pins.end());
     for (const auto& stage : graph) {
         for (const Edge& edge : stage.second) {
@@ -157,7 +158,7 @@ detail::StalenessEdges buildStalenessEdges(const std::vector<Entry>& entries, co
     }
     std::vector<detail::StageRef> stages;
     for (const Entry& e : entries) stages.push_back({e.id, e.definition});
-    return detail::StalenessEdges(stages, named, layers, rasters);
+    return detail::StalenessEdges(stages, named, layers, rasters, pool);
 }
 
 std::vector<Entry> entriesOf(const Definitions& definitions) {
@@ -250,7 +251,8 @@ public:
     void deriveAndPersist() {
         const std::vector<Entry> held = entries();
         Graph next = deriveWithPins(held, pins);
-        detail::StalenessEdges nextEdges = buildStalenessEdges(held, next, pins, store.layers(), store.rasters());
+        detail::StalenessEdges nextEdges =
+            buildStalenessEdges(held, next, pins, store.layers(), store.rasters(), details);
         StageStateWriter& writer = store.stageStateWriter();
         for (const auto& stage : next) {
             writer.clearDependencies(StageId(stage.first));
@@ -283,8 +285,7 @@ public:
     }
 
     // Sets the stale flag on the stage and on every stage its forward answer lists, along
-    // all five paths of the staleness graph. A cycle is walked once: each stage is set once.
-    // Caller holds the mutex.
+    // all five paths of the staleness graph, each once. Caller holds the mutex.
     void markStaleLocked(StageId stage) {
         edgesOf(stage);
         StageStateWriter& writer = store.stageStateWriter();
@@ -296,7 +297,7 @@ public:
     }
 
     // Sets the stale flag on every stage the forward answer of `stage` lists, each once,
-    // and not on the stage itself unless a cycle leads back to it. Caller holds the mutex.
+    // and not on the stage itself: the staleness graph is acyclic. Caller holds the mutex.
     void markAffectedLocked(StageId stage) {
         edgesOf(stage);
         StageStateWriter& writer = store.stageStateWriter();
@@ -388,7 +389,7 @@ public:
         const std::vector<Entry> nextEntries = entriesOf(nextDefinitions);
         Graph nextGraph = deriveWithPins(nextEntries, nextPins);
         detail::StalenessEdges nextEdges =
-            buildStalenessEdges(nextEntries, nextGraph, nextPins, store.layers(), store.rasters());
+            buildStalenessEdges(nextEntries, nextGraph, nextPins, store.layers(), store.rasters(), details);
 
         // A definition whose record is unchanged is kept, and a replaced one retired
         // rather than destroyed, so a reference from definition() stays valid.
@@ -427,16 +428,19 @@ public:
     // Edges kept from the stored rows around unreadable stages, until they are redeclared.
     Pins pins;
     Graph graph;
+    // Every detail string the staleness edges were ever built with, each once. Kept for the
+    // life of the registry, like the retired definitions, so a string StalenessGraph handed
+    // out survives every rebuild; it grows only by details not seen before.
+    detail::DetailPool details;
     // The staleness edges of the held definitions, rebuilt with the graph. StalenessGraph
-    // reads them (and hands out strings inside them) under the mutex; replacing them
-    // ends the validity of those strings.
+    // reads them under the mutex; their details point into `details`.
     detail::StalenessEdges stalenessEdges;
     std::unique_ptr<StalenessGraph> staleness;
     // The stored configuration of every stage at the last restore, by id: a read-only
     // registry compares it with the store to tell whether a writer changed the stages.
     std::map<int32_t, std::string> snapshot;
-    // Definitions a refresh replaced, kept for the life of the registry so a reference
-    // from definition() never dangles.
+    // Definitions replaced by a refresh or a redeclare, kept for the life of the registry
+    // so a reference from definition() never dangles.
     std::vector<std::unique_ptr<StageDefinition>> retired;
 };
 

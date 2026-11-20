@@ -30,7 +30,7 @@ StalenessReason StalenessGraph::reasonAt(StageId stage, int32_t index) const {
 
 const char* StalenessGraph::reasonDetailAt(StageId stage, int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
-    return impl_->entry(stage, index).detail.c_str();
+    return impl_->entry(stage, index).detail;
 }
 
 StageId StalenessGraph::causeAt(StageId stage, int32_t index) const {
@@ -53,7 +53,7 @@ StalenessReason StalenessGraph::causeReasonAt(StageId stage, int32_t index) cons
 const char* StalenessGraph::causeReasonDetailAt(StageId stage, int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     const detail::StaleEdge* cause = impl_->cause(stage, index);
-    return cause != nullptr ? cause->detail.c_str() : "the stage was redeclared or marked stale directly";
+    return cause != nullptr ? cause->detail : "the stage was redeclared or marked stale directly";
 }
 
 } // namespace slideio::processor

@@ -33,12 +33,14 @@ class StageRegistry;
  * @brief A read-only view over the staleness graph a StageRegistry derives.
  *
  * Obtained from StageRegistry::staleness(); it lives as long as the registry and
- * changes nothing (StageRegistry::markStale acts on the answers). For two stages U and V
- * there is an edge U to V, one per reason, when:
+ * changes nothing (StageRegistry::markStale acts on the answers). A layer is above
+ * another when it lies further from the pixel layer in the layer hierarchy
+ * (LayerRegistry::isAbove): `nuclei`, a child of `cells`, is above `cells`, which is above
+ * `tissue`. For two stages U and V there is an edge U to V, one per reason, when:
  * - LayerRead: V reads a layer U writes;
  * - RasterRead: V reads the raster U writes;
  * - LayerOrdering: V writes a semantic layer strictly above a layer U writes (the
- *   writer of `tissue` reaches the writers of `cells` and `nuclei` below it in the
+ *   writer of `tissue` reaches the writers of `cells` and `nuclei` above it in the
  *   hierarchy, whether or not they read anything);
  * - DerivedFrom: V reads a primitive layer U writes and V writes a semantic layer; the
  *   pair is reported as DerivedFrom instead of LayerRead;
@@ -46,20 +48,25 @@ class StageRegistry;
  *   whose record could not be restored.
  *
  * The edges come from the registry's held definitions, never from the store's writer
- * rows, which keep a writer a redeclaration dropped. The graph may contain cycles (a
- * `cells` stage reading `nuclei` reaches the `nuclei` writer by LayerOrdering and is
- * reached from it by LayerRead); only the effective dependencies, which gate running,
- * must stay acyclic.
+ * rows, which keep a writer a redeclaration dropped. The graph is acyclic, so re-running
+ * every stale stage settles. The effective edges (LayerRead, RasterRead, DerivedFrom,
+ * StageDependency, and the pinned edges) are the registry's dependency graph, which is
+ * kept acyclic. A LayerOrdering edge U to V is left out when V already reaches U, since it
+ * would close a cycle: a `cells` stage that reads `nuclei`, a layer above `cells`, is
+ * reached from the `nuclei` writer by LayerRead, and the writer of `nuclei` is not
+ * reached from it by LayerOrdering. The stage that reads the layer above re-asserts the
+ * parent links, so its effective edge wins. LayerOrdering edges are decided in ascending
+ * (U, V) order of stage id, against the effective edges and those kept so far.
  *
  * The forward answer lists one entry per edge U to V in the subgraph reachable from the
  * stage S, with V as the affected stage: breadth first from S, the edges of one source
  * ordered by ascending V and then by reason. A stage reached down two paths, or by two
- * reasons, appears twice. S itself appears only when a cycle leads back to it.
+ * reasons, appears twice. S itself never appears.
  *
- * The strings returned are copied into storage the graph owns. They stay valid until
- * the next declare() on this registry, or a read-only refresh that re-reads a writer's
- * changes; a caller keeps its own copy to hold one longer. Positions are into one
- * answer, so a declaration between two calls can change it.
+ * The strings returned are interned in storage the registry owns and never frees, so
+ * they stay valid for the life of the registry, across every declare() and read-only
+ * refresh. Positions are into one answer, so a declaration between two calls can
+ * change it.
  * @par Thread-safety
  * ThreadSafe: every member takes the registry's mutex; the view is not an independent
  * object. The reference StageRegistry::staleness() returns stays valid across declare().

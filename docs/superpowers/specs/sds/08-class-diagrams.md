@@ -1180,7 +1180,7 @@ classDiagram
     StageRunner ..> TileMaskSource : makeLayerMaskSource, binds
     StageRunner ..> TileRasterSource : makeLayerRasterSource, binds
     StageRunner ..> RasterWriter : writerForStage, flush last, abandon on failure
-    StageRunner ..> StageRegistry : markStale of dependents on re-run, clearStale on success
+    StageRunner ..> StageRegistry : markAffectedStale along the staleness graph on re-run, clearStale on success
     StageRunner ..> ObjectStore : discardStage on re-run and on failure
     StageRunner ..> EdgeStore : discardEdgesOfStage
     StageRunner ..> AnnotationStore : discardAnnotationsOfStage
@@ -1223,8 +1223,9 @@ reaching both `pipeline` and `storage`, which is the only way UR-EXE-2's
 ceiling can span raster tiles, object accumulation and store buffers at once.
 
 `StageRunner`'s failure and re-run paths are what call the four
-`discard...` calls, and `markStale` on a stage's direct dependents. On a
-re-run it marks the dependents stale, then sets the stage `Running`, then
+`discard...` calls, and `markAffectedStale`, which marks stale every stage the
+staleness graph says a re-run invalidates (`04-workspace.md` 4.5). On a
+re-run it marks those stages stale, then sets the stage `Running`, then
 discards, so a crash part-way never leaves the stage `Complete` with its output
 gone; on a failure it abandons the raster writer, discards, and sets
 `Failed`, with each step best effort so that the exception that propagates is

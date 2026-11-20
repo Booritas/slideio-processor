@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <map>
 
 namespace slideio::processor::detail {
 
@@ -17,10 +18,37 @@ bool writesLayer(const StageDefinition& def, LayerId layer) {
     return false;
 }
 
+// An edge before its detail is interned.
+struct Candidate {
+    int32_t from;
+    int32_t to;
+    StalenessReason reason;
+    std::string detail;
+};
+
+using Adjacency = std::map<int32_t, std::set<int32_t>>;
+
+// True when `to` is reachable from `from` along `adjacency` (a stage reaches itself).
+bool reaches(const Adjacency& adjacency, int32_t from, int32_t to) {
+    std::vector<int32_t> pending{from};
+    std::set<int32_t> seen{from};
+    while (!pending.empty()) {
+        const int32_t current = pending.back();
+        pending.pop_back();
+        if (current == to) return true;
+        const auto found = adjacency.find(current);
+        if (found == adjacency.end()) continue;
+        for (const int32_t next : found->second) {
+            if (seen.insert(next).second) pending.push_back(next);
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const DependencyPairs& namedDependencies,
-                               const LayerRegistry& layers, const RasterRegistry& rasters) {
+                               const LayerRegistry& layers, const RasterRegistry& rasters, DetailPool& pool) {
     for (const StageRef& s : stages) stages_.insert(s.id);
     const auto semantic = [&](LayerId layer) { return layers.kind(layer) == LayerKind::Semantic; };
     const auto writesSemantic = [&](const StageDefinition& def) {
@@ -30,6 +58,8 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
         return false;
     };
 
+    std::vector<Candidate> effective;
+    std::vector<Candidate> orderings;
     for (const StageRef& source : stages) {
         for (const StageRef& target : stages) {
             if (source.id == target.id) continue;
@@ -77,7 +107,9 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
             }
 
             const auto add = [&](StalenessReason reason, std::string& text) {
-                if (!text.empty()) edges_.push_back({source.id, target.id, reason, std::move(text)});
+                if (text.empty()) return;
+                std::vector<Candidate>& list = reason == StalenessReason::LayerOrdering ? orderings : effective;
+                list.push_back({source.id, target.id, reason, std::move(text)});
             };
             // DerivedFrom replaces LayerRead for the whole pair, not layer by layer.
             if (!derivedFrom.empty()) layerRead.clear();
@@ -88,8 +120,32 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
             add(StalenessReason::StageDependency, dependency);
         }
     }
-    // Sources and targets arrive in id order and reasons in enum order; sorting keeps the
-    // documented order exact whatever order the caller listed the stages in.
+
+    // The graph stays acyclic, so re-running every stale stage settles. The effective
+    // edges come from the registry's acyclic dependency graph; a LayerOrdering edge U to V
+    // that would close a cycle (V already reaches U) is suppressed. The case is a stage
+    // reading a layer above the one it writes (`cells` reading `nuclei`): that stage
+    // re-asserts the parent links, so its effective edge from the `nuclei` writer wins.
+    // The LayerOrdering edges are decided in ascending (U, V) order, so the answer does
+    // not depend on the order the stages were listed in.
+    Adjacency adjacency;
+    for (const Candidate& c : effective) adjacency[c.from].insert(c.to);
+    std::sort(orderings.begin(), orderings.end(), [](const Candidate& a, const Candidate& b) {
+        return a.from != b.from ? a.from < b.from : a.to < b.to;
+    });
+    for (Candidate& c : orderings) {
+        if (reaches(adjacency, c.to, c.from)) continue;
+        adjacency[c.from].insert(c.to);
+        effective.push_back(std::move(c));
+    }
+
+    edges_.reserve(effective.size());
+    for (Candidate& c : effective) {
+        const std::string& interned = *pool.insert(std::move(c.detail)).first;
+        edges_.push_back({c.from, c.to, c.reason, interned.c_str()});
+    }
+    // The kept LayerOrdering edges arrive after the others; sorting keeps the
+    // documented order exact, whatever order the caller listed the stages in.
     std::stable_sort(edges_.begin(), edges_.end(), [](const StaleEdge& a, const StaleEdge& b) {
         if (a.from != b.from) return a.from < b.from;
         if (a.to != b.to) return a.to < b.to;

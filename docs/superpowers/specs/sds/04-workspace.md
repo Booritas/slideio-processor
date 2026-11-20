@@ -546,8 +546,8 @@ public:
     void markStale(StageId);
 
     /// Marks every stage a re-run of `stage` would invalidate, by the five
-    /// paths of 4.5, each once, in one locked pass; `stage` itself only when a
-    /// cycle leads back to it. Transitive. `IoError` when the workspace is
+    /// paths of 4.5, each once, in one locked pass; never `stage` itself, as
+    /// the staleness graph is acyclic. Transitive. `IoError` when the workspace is
     /// read-only, before the stage is resolved. This is step 1 of a re-run (4.4).
     void markAffectedStale(StageId);
 
@@ -637,7 +637,7 @@ work stale.
 raster-read, layer-ordering, derived-from and explicit-dependency edges, not
 the effective dependencies alone. It sets the flag through
 `StageStateWriter::setStale` on the stage and on every stage the answer lists,
-each once, so a cycle in the staleness graph terminates; `clearStale` sets it
+each once (the staleness graph is acyclic, 4.5); `clearStale` sets it
 on that stage alone. A redeclaration marks along the old edges first, then
 writes the record, re-derives, and marks again along the new ones, so a
 failure part way never leaves a changed stage current. The staleness edges
@@ -649,12 +649,13 @@ and `DerivedFrom` do not gate running.
 
 `markAffectedStale` is the same walk without the stage itself: it sets the flag
 on every stage the forward answer lists, each once, under one hold of the
-registry mutex (PR #16 finding 7), and on the stage only when a cycle reaches
-it. `StageRunner` calls it at re-run step 1 instead of scanning the stages for
-direct dependents. On a read-only registry it throws `IoError` before it
-resolves the stage, as do `markStale` and `clearStale`, so an observer asking about
-a stage the writer declared after it opened gets `IoError`, not an unknown-stage
-error. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
+registry mutex (PR #16 finding 7), and never on the stage itself, which no
+edge of the acyclic graph leads back to. `StageRunner` calls it at re-run
+step 1 instead of scanning the stages for direct dependents. On a read-only
+registry it throws `IoError` before it resolves the stage, as do `markStale`
+and `clearStale`, so an observer asking about a stage the writer declared after
+it opened gets `IoError`, not an unknown-stage error. `LayerLifecycle::drop`
+still marks nothing (UR-STG-12).
 
 **Plan A: persisted dependencies and restore (decision 7).** Every `declare`
 rewrites the dependency rows of every stage (`clearDependencies`, then
@@ -1186,7 +1187,10 @@ relation, and any explicit `dependsOn`. Re-running the stage that writes `tissue
 re-running a stage that writes a primitive layer marks the semantic layers
 derived from it stale (UR-STG-11).
 
-**The five edges (plan C, decision 1).** For stages U and V (U ≠ V) there is
+**The five edges (plan C, decision 1).** A layer is *above* another when it
+lies further from the pixel layer in the layer hierarchy
+(`LayerRegistry::isAbove`): `nuclei`, a child of `cells`, is above `cells`,
+which is above `tissue`. For stages U and V (U ≠ V) there is
 an edge U → V, one per reason, when:
 
 - `LayerRead`: V reads (`readLayerAt`) a layer U writes;
@@ -1209,27 +1213,36 @@ The edges come from the in-memory definitions, never from
 An unreadable stage contributes its pinned edges with reason
 `StageDependency`.
 
-The staleness graph may contain cycles: a `cells` stage that reads `nuclei`,
-with `nuclei` below `cells`, reaches the `nuclei` writer by `LayerOrdering` and
-is reached from it by `LayerRead`. Only the effective-dependency graph
-(`LayerRead`, `RasterRead`, `StageDependency`) must stay acyclic, as in 4.3.
-`isRunnable` and the persisted dependency rows are unchanged: `LayerOrdering`
-and `DerivedFrom` do not gate running.
+**The staleness graph is acyclic (plan C, decision 1, amended by the final
+review).** A cycle would never settle: re-running either stage on it would mark
+the other stale, so "run every stale stage" would not end. The effective edges
+— `LayerRead`, `RasterRead`, `DerivedFrom`, `StageDependency` and the pinned
+edges — are the dependency graph of 4.3, which is already kept acyclic. A
+`LayerOrdering` edge U → V is suppressed when it would close a cycle, that is,
+when V already reaches U. The `LayerOrdering` edges are decided in ascending
+(U, V) order of stage id, each against the effective edges plus the
+`LayerOrdering` edges kept so far, so the result is deterministic and the same
+after a reopen. The case is a `cells` stage that reads `nuclei`,
+with `nuclei` above `cells`: the `nuclei` writer reaches it by `LayerRead`, and
+the `LayerOrdering` edge from it back to the `nuclei` writer is suppressed. The
+stage that reads the layer above re-asserts the parent links, so its effective
+edge wins. `isRunnable` and the persisted dependency rows are unchanged:
+`LayerOrdering` and `DerivedFrom` do not gate running.
 
 **The forward answer (plan C, decision 2).** `affectedCount`, `affectedAt`,
 `reasonAt` and `reasonDetailAt` list one entry per edge U → V in the subgraph
 reachable from the stage S, with V the affected stage: breadth first from S,
 the edges of one source ordered by ascending V and then by reason; a stage
-reached down two paths appears twice, and S itself appears only when a cycle
-leads back to it. Each detail names the source stage and the artifact, for
+reached down two paths appears twice, and S itself never appears, the graph
+being acyclic. Each detail names the source stage and the artifact, for
 example `reads layer "tissue" written by stage "background"` or
 `writes layer "nuclei" above layer "tissue" written by stage "background"`.
 The accessors take the registry's mutex, and a read-only registry first
 follows a live writer. An unknown stage or an index out of range is an
-`InvalidArgumentError`. The detail strings live in storage the graph owns,
-rebuilt with the edges, and stay valid until the next `declare()` on this
-registry, or a read-only refresh that re-reads a writer's changes (every
-declare rebuilds them, changed or not); a caller holding one longer copies it.
+`InvalidArgumentError`. The detail strings are interned in a pool the registry
+keeps for its own life and never shrinks, so a string returned stays valid
+for the life of the registry, across every later `declare()` and read-only
+refresh; the pool grows only by details not seen before.
 
 **The reverse answer (plan C, decision 3).** `causeCount`, `causeAt`,
 `causeReasonAt` and `causeReasonDetailAt` answer from durable data alone (the

@@ -26,19 +26,30 @@ struct StaleEdge {
     int32_t from;
     int32_t to;
     StalenessReason reason;
-    std::string detail;
+    // Points into the DetailPool the edges were built with.
+    const char* detail;
 };
 
 // Pairs (dependent, dependency) the registry's graph carries by name or pin rather than
 // by reads: explicit dependsOn edges and the edges pinned around unreadable stages.
 using DependencyPairs = std::set<std::pair<int32_t, int32_t>>;
 
+// The detail strings of every edge ever built, each once. The owner keeps it for its own
+// life and never removes from it, so a string handed out stays valid across rebuilds;
+// it grows only by details not seen before.
+using DetailPool = std::set<std::string>;
+
 class StalenessEdges {
 public:
     StalenessEdges() = default;
-    // Throws InvalidArgumentError when a layer or raster a definition names is unknown.
+    // The graph is acyclic: the effective edges (every reason but LayerOrdering) come
+    // from the registry's acyclic dependency graph, and a LayerOrdering edge U to V is
+    // kept only when V does not already reach U. The LayerOrdering edges are decided in
+    // ascending (U, V) order, against the effective edges and those kept so far. Details
+    // are interned into `pool`. Throws InvalidArgumentError when a layer or raster a
+    // definition names is unknown.
     StalenessEdges(const std::vector<StageRef>& stages, const DependencyPairs& namedDependencies,
-                   const LayerRegistry& layers, const RasterRegistry& rasters);
+                   const LayerRegistry& layers, const RasterRegistry& rasters, DetailPool& pool);
 
     bool knows(int32_t stage) const;
     // The forward answer from a stage: the edges in breadth-first order, each source once.

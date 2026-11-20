@@ -196,27 +196,53 @@ TEST(StalenessGraph, TransitiveAndMultiPathEntries) {
                  "reads layer \"cells\" written by stage \"cells\"");
 }
 
-TEST(StalenessGraph, CycleThroughLayerOrderingTerminates) {
+TEST(StalenessGraph, LayerOrderingThatWouldCloseACycleIsSuppressed) {
     Fixture f;
+    // cells reads nuclei, a layer above the one it writes; nucStage writes nuclei.
     StageDefinition c("cells");
     c.readsLayer(f.nuclei).writesLayer(f.cells);
     const StageId cells = f.stages().declare(c);
     const StageId nucStage = f.stages().declare(writerOf("nucStage", f.nuclei));
 
-    // The effective graph stays acyclic: cells depends on nucStage and not the reverse.
+    // The effective graph: cells depends on nucStage and not the reverse.
     EXPECT_EQ(f.stages().dependencyCount(cells), 1);
     EXPECT_EQ(f.stages().dependencyCount(nucStage), 0);
 
-    const std::vector<Entry> fromCells = affected(f.stages(), cells);
-    EXPECT_TRUE(has(fromCells, nucStage, StalenessReason::LayerOrdering));
-    EXPECT_TRUE(has(affected(f.stages(), nucStage), cells, StalenessReason::LayerRead));
-    // The cycle leads back to the stage itself, once.
-    EXPECT_TRUE(has(fromCells, cells, StalenessReason::LayerRead));
-    EXPECT_EQ(fromCells.size(), 2u);
+    // nucStage reaches cells by LayerRead. The LayerOrdering edge cells to nucStage would
+    // close a cycle, so it is suppressed: re-running cells invalidates nothing.
+    const std::vector<Entry> fromNuclei = affected(f.stages(), nucStage);
+    ASSERT_EQ(fromNuclei.size(), 1u);
+    EXPECT_EQ(fromNuclei[0], Entry(cells, StalenessReason::LayerRead));
+    EXPECT_TRUE(affected(f.stages(), cells).empty());
 
     f.stages().markStale(cells);
     EXPECT_TRUE(f.stages().isStale(cells));
+    EXPECT_FALSE(f.stages().isStale(nucStage));
+    f.stages().clearStale(cells);
+    f.stages().markStale(nucStage);
     EXPECT_TRUE(f.stages().isStale(nucStage));
+    EXPECT_TRUE(f.stages().isStale(cells));
+}
+
+// The suppression does not depend on the declaration order: with the writer of nuclei
+// declared first, the LayerOrdering edge from cells is still the one left out.
+TEST(StalenessGraph, CycleSuppressionIsOrderIndependent) {
+    Fixture f;
+    const StageId nucStage = f.stages().declare(writerOf("nucStage", f.nuclei));
+    StageDefinition c("cells");
+    c.readsLayer(f.nuclei).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+
+    const std::vector<Entry> fromNuclei = affected(f.stages(), nucStage);
+    ASSERT_EQ(fromNuclei.size(), 1u);
+    EXPECT_EQ(fromNuclei[0], Entry(cells, StalenessReason::LayerRead));
+    EXPECT_TRUE(affected(f.stages(), cells).empty());
+
+    // A tissue writer still reaches both by LayerOrdering (UR-STG-11).
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    const std::vector<Entry> fromBackground = affected(f.stages(), background);
+    EXPECT_TRUE(has(fromBackground, nucStage, StalenessReason::LayerOrdering));
+    EXPECT_TRUE(has(fromBackground, cells, StalenessReason::LayerOrdering));
 }
 
 TEST(StalenessGraph, MarkStaleFollowsLayerOrdering) {
@@ -383,9 +409,17 @@ TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
     ASSERT_EQ(cellsBefore.size(), 2u);
     EXPECT_EQ(cellsBefore[1].stage, background);
     EXPECT_EQ(cellsBefore[1].reason, StalenessReason::LayerOrdering);
-    // nuclei is reached from the changed background by LayerOrdering, and from the stale cells.
-    EXPECT_EQ(nucleiBefore[0].stage, background);
-    EXPECT_EQ(nucleiBefore[0].reason, StalenessReason::LayerOrdering);
+    // nuclei is reached from background, which completed after it, by LayerOrdering, and
+    // from cells by LayerOrdering. cells completed before nuclei and is Complete, so it is
+    // a cause only because it is stale.
+    const std::vector<Cause> nucleiExpected = {
+        {background, StalenessReason::LayerOrdering,
+         "writes layer \"nuclei\" above layer \"tissue\" written by stage \"background\""},
+        {cells, StalenessReason::LayerOrdering,
+         "writes layer \"nuclei\" above layer \"cells\" written by stage \"cells\""}};
+    EXPECT_EQ(nucleiBefore, nucleiExpected);
+    ASSERT_LT(f.stages().completedAtUnixMs(cells), f.stages().completedAtUnixMs(nuclei));
+    ASSERT_EQ(f.stages().status(cells), StageStatus::Complete);
 
     f.workspace->close();
     WorkspacePtr ro = Workspace::openReadOnly(f.path().c_str(), Configuration::defaults());
@@ -396,6 +430,58 @@ TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
     EXPECT_EQ(cellsAfter[1].reason, StalenessReason::LayerOrdering);
     ro->close();
     f.workspace = Workspace::open(f.path().c_str(), Configuration::defaults());
+}
+
+// A source whose re-run did not complete is a cause even though it completed, last,
+// before the dependent did: it is not Complete.
+TEST(StalenessGraph, SourceLeftIncompleteIsACause) {
+    for (const StageStatus left : {StageStatus::Failed, StageStatus::Running}) {
+        Fixture f;
+        const StageId background = f.stages().declare(writerOf("background", f.tissue));
+        StageDefinition c("cells");
+        c.restrictToLayer(f.tissue).writesLayer(f.cells);
+        const StageId cells = f.stages().declare(c);
+        complete(f, background);
+        complete(f, cells);
+
+        // The re-run of background marks cells stale and is left Failed or Running: its
+        // completion time is the old one, before cells, and it is not stale itself.
+        f.stages().markAffectedStale(background);
+        f.workspace->store()->stageStateWriter().setStatus(background, left);
+        ASSERT_TRUE(f.stages().isStale(cells));
+        ASSERT_FALSE(f.stages().isStale(background));
+        ASSERT_LT(f.stages().completedAtUnixMs(background), f.stages().completedAtUnixMs(cells));
+
+        const std::vector<Cause> causes = causesOf(f.stages(), cells);
+        ASSERT_EQ(causes.size(), 2u);
+        EXPECT_EQ(causes[0].stage, background);
+        EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
+        EXPECT_EQ(causes[0].detail, "reads layer \"tissue\" written by stage \"background\"");
+        EXPECT_EQ(causes[1].stage, background);
+        EXPECT_EQ(causes[1].reason, StalenessReason::LayerOrdering);
+    }
+}
+
+// A detail string stays valid for the life of the registry: an identical redeclare and a
+// new declaration rebuild the edges, and the string held across them is still the one
+// the graph returns.
+TEST(StalenessGraph, DetailSurvivesRebuilds) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    const StalenessGraph& graph = f.stages().staleness();
+    const int32_t at = indexOf(f.stages(), background, cells, StalenessReason::LayerRead);
+    ASSERT_GE(at, 0);
+    const char* held = graph.reasonDetailAt(background, at);
+
+    ASSERT_EQ(f.stages().declare(c), cells);  // identical: rebuilds the edges
+    f.stages().declare(writerOf("other", f.other));  // rebuilds them again
+    EXPECT_STREQ(held, "reads layer \"tissue\" written by stage \"background\"");
+    // The same interned storage is handed out again.
+    EXPECT_EQ(held, graph.reasonDetailAt(background, indexOf(f.stages(), background, cells,
+                                                              StalenessReason::LayerRead)));
 }
 
 TEST(StalenessGraph, ReconfiguredStageIsItsOwnCause) {

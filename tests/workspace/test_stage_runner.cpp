@@ -75,7 +75,7 @@ StageDefinition blobStage(const char* name, LayerId layer) {
 }
 
 // Which 600 x 600 slide a Fixture writes.
-enum class SlideKind { Blobs, HalfBlobs, Edge };
+enum class SlideKind { Blobs, HalfBlobs, Edge, EdgeTruncation };
 
 // A 600 x 600 blob slide in a workspace with the layers the tests name.
 struct Fixture {
@@ -89,6 +89,9 @@ struct Fixture {
         case SlideKind::Blobs: slide = writeBlobSlide(file, 600, 600, levels); break;
         case SlideKind::HalfBlobs: slide = writeHalfBlobSlide(file, 600, 600); break;
         case SlideKind::Edge: slide = writeEdgeBlobSlide(file, 600, 600, levels); break;
+        case SlideKind::EdgeTruncation:
+            slide = writeEdgeBlobSlide(file, 600, 600, levels, testing_support::kEdgeXTruncation);
+            break;
         }
         workspacePath = (dir.path() / "ws").u8string();
         workspace = Workspace::create(workspacePath.c_str(), slide.u8string().c_str(), 0, config);
@@ -556,6 +559,95 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     EXPECT_TRUE(foundD) << "the disc in the dilation band was missed";
     EXPECT_FALSE(foundB) << "the disc outside the dilated region was found";
     EXPECT_EQ(nuclei.size(), 3u);
+}
+
+// DISABLED: reproduces a known pipeline defect, "Must fix before release" in docs/project.md
+// and SDS 05 (5.4, restriction). RestrictionFilter::skips drops a tile holding no mask pixel,
+// the seam merger then closes the component without that tile's fragments, and the partial
+// object is admitted by its anchor. Disc D of the edge-blob slide, with the edge at
+// kEdgeXTruncation, spans 285 to 325 across the tile seam at 320; the tile beyond holds no
+// pixel of the dilated mask, so D is stored cut at the seam. Run it with
+// --gtest_also_run_disabled_tests once the pipeline is fixed.
+TEST(StageRunner, DISABLED_RestrictedObjectCrossingIntoASkippedTileIsNotTruncated) {
+    Fixture f(SlideKind::EdgeTruncation, 3);
+    const int64_t edgeX = testing_support::kEdgeXTruncation;
+
+    // The background layer is the white region, found at level 2.
+    PipelineSpec coarse;
+    coarse.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    coarse.operation("pixel.threshold_fixed",
+                     OperationParameters().setDouble("value", 230.0).setString("direction", "Above"));
+    coarse.operation("segment.connected_components", OperationParameters().setBool("extractHoles", false));
+    coarse.analysisLevel(2);
+    StageDefinition bg("background");
+    bg.writesLayer(f.background).pipeline(coarse);
+    StageRunner(*f.workspace, f.stages().declare(bg)).run();
+    const int32_t level = f.workspace->layers().coarsestAnalysisLevel(f.background);
+    ASSERT_EQ(level, 2);
+    const std::vector<Rect64> background = boundsOf(f, f.background);
+    ASSERT_EQ(background.size(), 1u);
+    const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(level) / 2.0;
+    // The geometry the reproducer relies on: D's centre is in the dilated region, and the
+    // dilated region ends before the tile seam at 320 that D crosses.
+    const int64_t centreD = edgeX + 3;
+    ASSERT_LE(static_cast<double>(centreD), static_cast<double>(background[0].right()) + halfStep);
+    ASSERT_LT(static_cast<double>(background[0].right()) + halfStep, 320.0);
+    ASSERT_GT(centreD + 20, 320);
+
+    StageDefinition def("nuclei");
+    def.writesLayer(f.nuclei).restrictToLayer(f.background).pipeline(chainFor(128.0, "Below", nullptr));
+    const StageId id = f.stages().declare(def);
+    StageRunner(*f.workspace, id).run();
+    ASSERT_EQ(f.stages().status(id), StageStatus::Complete);
+
+    // D is found (its anchor is in the mask) and must be whole: 2 x 20 + 1 px wide and high.
+    bool foundD = false;
+    for (const Rect64& box : boundsOf(f, f.nuclei)) {
+        if (box.y > 300 || box.bottom() <= 300 || box.x > centreD || box.right() <= centreD) continue;
+        foundD = true;
+        EXPECT_EQ(box.x, centreD - 20) << "disc D's left edge";
+        EXPECT_EQ(box.width, 41) << "disc D is truncated at the tile seam x = 320 (its box spans x " << box.x
+                                 << " to " << box.right() << ")";
+        EXPECT_EQ(box.height, 41) << "disc D's height";
+    }
+    EXPECT_TRUE(foundD) << "disc D, whose anchor is in the dilated region, was not found";
+}
+
+// A cells stage seeded by nuclei, a layer above cells: the staleness graph stays acyclic
+// (SDS 04 4.5), so re-running either stage and then whichever is stale settles.
+TEST(StageRunner, NucleiSeededCellsPairSettles) {
+    Fixture f;
+    LayerLifecycle& l = f.workspace->layerLifecycle();
+    const LayerId cellLayer = l.declareSemantic("cell_bodies", f.tissue);
+    const LayerId seedLayer = l.declareSemantic("seeds", cellLayer);
+    const StageId nuclei = f.stages().declare(blobStage("seed_nuclei", seedLayer));
+    StageDefinition c("seeded_cells");
+    c.readsLayer(seedLayer).writesLayer(cellLayer).pipeline(blobChain());
+    const StageId cells = f.stages().declare(c);
+    StageRunner(*f.workspace, nuclei).run();
+    StageRunner(*f.workspace, cells).run();
+
+    const std::vector<StageId> pair = {nuclei, cells};
+    // Re-runs `first`, then the first stale stage of the pair while any is, at most four
+    // times; returns how many extra runs it took.
+    const auto settle = [&](StageId first) {
+        StageRunner(*f.workspace, first).run();
+        int extra = 0;
+        for (; extra < 4; ++extra) {
+            const auto stale =
+                std::find_if(pair.begin(), pair.end(), [&](StageId s) { return f.stages().isStale(s); });
+            if (stale == pair.end()) break;
+            StageRunner(*f.workspace, *stale).run();
+        }
+        return extra;
+    };
+    for (const StageId first : pair) {
+        EXPECT_LE(settle(first), 2) << "re-running " << f.stages().name(first) << " did not settle";
+        for (const StageId s : pair) {
+            EXPECT_FALSE(f.stages().isStale(s)) << f.stages().name(s);
+            EXPECT_EQ(f.stages().status(s), StageStatus::Complete) << f.stages().name(s);
+        }
+    }
 }
 
 namespace {

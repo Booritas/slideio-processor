@@ -50,12 +50,12 @@
 
    Edges come from the in-memory definitions, never from `LayerRegistry::writerStageAt`, which keeps a writer a redeclaration dropped (plan A follow-up). An unreadable stage contributes its pinned edges with reason `StageDependency`.
 
-   The staleness graph may contain cycles. One example: a `cells` stage that reads `nuclei`, with `nuclei` below `cells`. Only the effective-dependency graph (LayerRead, RasterRead, StageDependency) must stay acyclic, as today. `isRunnable` and the persisted dependency rows are unchanged: LayerOrdering and DerivedFrom do not gate running.
+   **Amended by the final review (I1): the staleness graph is acyclic.** A cycle never settles: a `cells` stage that reads `nuclei`, with `nuclei` above `cells` (further from the pixel layer), reaches the `nuclei` writer by LayerOrdering and is reached from it by LayerRead, so re-running either marks the other stale and "run every stale stage" never ends. The effective edges (LayerRead, RasterRead, DerivedFrom, StageDependency and the pinned edges) are the acyclic dependency graph. A LayerOrdering edge U → V is suppressed when it would close a cycle (V already reaches U). LayerOrdering edges are decided in ascending (U, V) order, against the effective edges plus the LayerOrdering edges kept so far, in `StalenessEdges` construction. Rationale: the stage that reads the child layer re-asserts the parent links, so its effective edge wins. `isRunnable` and the persisted dependency rows are unchanged: LayerOrdering and DerivedFrom do not gate running.
 
 2. **Forward answer.** `affectedCount/At/reasonAt/reasonDetailAt(S)` list one entry per edge U → V in the subgraph reachable from S, with V as the affected stage:
    - in breadth-first order from S, edges of one source ordered by ascending V, then by reason enum;
    - a stage reached down two paths appears twice;
-   - S itself appears only when a cycle leads back to it.
+   - S itself appears only when a cycle leads back to it. (Amended by I1: the graph is acyclic, so S never appears.)
 
    Each detail names the source stage and the artifact, e.g. `reads layer "tissue" written by stage "background"` or `writes layer "nuclei" above layer "tissue" written by stage "background"`.
 
@@ -63,7 +63,7 @@
    - Causes need no extra storage, and they are the same after a reopen.
    - `None` is never reported. It remains in the enum as §4.5 declares it.
 
-4. **`markStale` follows all five paths.** It walks the staleness graph forward. A new member, `void markAffectedStale(StageId)`, marks every stage the forward answer lists, excluding S unless a cycle reaches it, in one locked pass (PR #16 finding #7). `StageRunner`'s re-run step 1 calls it instead of scanning dependencies itself. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
+4. **`markStale` follows all five paths.** It walks the staleness graph forward. A new member, `void markAffectedStale(StageId)`, marks every stage the forward answer lists, excluding S (amended by I1: no cycle reaches it), in one locked pass (PR #16 finding #7). `StageRunner`'s re-run step 1 calls it instead of scanning dependencies itself. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
 
 5. **`dependsOn` may name a stage not yet declared** (plan A deferral, §4.3 "derivation is order-independent").
    - An unresolved name makes the stage not runnable. `isRunnable` is false, and `StageRunner`'s gate refuses with a `StageError` naming the missing stage.
@@ -97,7 +97,7 @@
 
 ## Review Focus
 
-1. **A staleness graph with a cycle.** A `cells` stage reads `nuclei`, and `nuclei` is below `cells`. `markStale` must terminate, mark both, and leave the effective graph acyclic and declarable. Task 1, `StalenessGraph.CycleThroughLayerOrderingTerminates`.
+1. **A staleness graph that would cycle.** A `cells` stage reads `nuclei`, and `nuclei` is above `cells`. Amended by I1: the LayerOrdering edge that would close the cycle is suppressed, `markStale(cells)` marks `cells` alone, and re-running the pair settles. `StalenessGraph.LayerOrderingThatWouldCloseACycleIsSuppressed`, `StageRunner.NucleiSeededCellsPairSettles`.
 2. **Causes survive a reopen.** Re-run `background`, close, reopen read-only: `causeAt(cells)` names `background` with `LayerOrdering`, from durable data alone. Task 2, `StalenessGraph.CausesAreTheSameAfterReopen`.
 3. **Dropping a primitive layer marks nothing stale**, even when a semantic stage reads it (UR-STG-12). Task 2, `StalenessGraph.DroppingAPrimitiveLayerMarksNothing`.
 4. **A `dependsOn` naming a stage declared later.** The stage is refused at run, naming the missing stage. Once the other is declared and completes, it runs. A later declaration that closes a cycle through it is refused. Task 3, `StageRegistry.LateDeclaredDependencyResolves`.
@@ -126,7 +126,7 @@
   - `StalenessGraph.DerivedFromReplacesLayerReadForPrimitives`: `sp` writes `superpixels` (primitive). `cells` reads `superpixels` and writes `cells`. Exactly one entry: `(cells, DerivedFrom)`.
   - `StalenessGraph.ExplicitDependencyIsStageDependency`.
   - `StalenessGraph.TransitiveAndMultiPathEntries`: `cells` is reached by both LayerRead and LayerOrdering, so it appears twice. A stage two hops away appears, with the reason of its own edge.
-  - `StalenessGraph.CycleThroughLayerOrderingTerminates` (Review Focus 1): `cells` writes `cells` and reads `nuclei`; `nucStage` writes `nuclei`. Both declare successfully. `markStale(cells)` marks both and returns. `affected(cells)` lists `(nucStage, LayerOrdering)`, and `affected(nucStage)` lists `(cells, LayerRead)`.
+  - `StalenessGraph.LayerOrderingThatWouldCloseACycleIsSuppressed` (Review Focus 1; was `CycleThroughLayerOrderingTerminates`, amended by I1): `cells` writes `cells` and reads `nuclei`; `nucStage` writes `nuclei`. Both declare successfully. The LayerOrdering edge `cells` → `nucStage` would close a cycle and is suppressed: `affected(cells)` is empty, `affected(nucStage)` lists `(cells, LayerRead)`, and `markStale(cells)` marks `cells` alone.
   - `StalenessGraph.MarkStaleFollowsLayerOrdering`: `markStale(background)` marks `nuclei`, which only LayerOrdering reaches.
   - `StalenessGraph.ReadOnlyViewFollowsLiveWriter`: an observer's `staleness()` sees a stage the writer declared after the observer opened.
 - [ ] **Step 2: Run;** expect a compile failure. **Step 3: Implement** decision 1 and decision 2; `markStale` walks the graph with a visited set. **Step 4: Run** the focused tests (`-R "StalenessGraph|StageRegistry"`), then the full suite.

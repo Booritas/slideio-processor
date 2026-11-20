@@ -45,7 +45,7 @@ namespace slideio::processor {
  * one graph. Staleness follows a wider graph, the StalenessGraph of staleness(): the
  * layer-ordering and derived-from paths join the dependencies, and an unreadable stage
  * contributes its pinned edges as StageDependency edges. It is rebuilt from the held
- * definitions with the dependency graph, and may contain cycles the dependencies cannot.
+ * definitions with the dependency graph, and is acyclic like it (see StalenessGraph).
  *
  * A dependsOn may name a stage declared later. Until a stage of that name exists the
  * name is unresolved: it gives no dependency and no edge, the stage is not runnable, and
@@ -117,13 +117,14 @@ public:
      *
      * Staleness follows the staleness() graph forward along all five paths (layer reads,
      * raster reads, layer ordering, derived-from and explicit dependsOn): the stage and
-     * every stage in its forward answer. A cycle is walked once, each stage set once.
+     * every stage in its forward answer, each set once (the graph is acyclic).
      * Each is set through StageStateWriter::setStale, so StageStateReader::isStale
      * agrees. A stage whose record could not be restored takes part like any other,
      * through its pinned edges.
      * @param stage The stage.
      * @throws InvalidArgumentError When the stage is unknown.
-     * @throws IoError When the workspace is read-only or closed, or when SQLite fails.
+     * @throws IoError When the workspace is read-only (before the stage is resolved) or
+     * closed, or when SQLite fails.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements
@@ -135,8 +136,8 @@ public:
      * stage itself.
      *
      * The stages are those of the stage's forward answer in staleness(), along all five
-     * paths, each set once in one locked pass; the stage itself is set only when a cycle
-     * leads back to it. This is what StageRunner does first when it re-runs a stage.
+     * paths, each set once in one locked pass; the stage itself is never among them, since
+     * the graph is acyclic. This is what StageRunner does first when it re-runs a stage.
      * @param stage The stage being re-run.
      * @throws InvalidArgumentError When the stage is unknown.
      * @throws IoError When the workspace is read-only (before the stage is resolved) or
@@ -165,7 +166,8 @@ public:
      * @brief Clears the stale flag of one stage; its dependents are not touched.
      * @param stage The stage.
      * @throws InvalidArgumentError When the stage is unknown.
-     * @throws IoError When the workspace is read-only or closed, or when SQLite fails.
+     * @throws IoError When the workspace is read-only (before the stage is resolved) or
+     * closed, or when SQLite fails.
      * @par Thread-safety
      * ThreadSafe.
      * @par Requirements

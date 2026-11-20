@@ -979,16 +979,12 @@ TEST(StageRegistry, RefreshNeverShrinksToEmpty) {
     ASSERT_EQ(r.dependencyCount(a), 0);
 
     // The writer declares a stage, so the observer's next graph accessor restores, and
-    // that restore reads no stages.
+    // that restore reads no stages: the snapshot stands, and the accessor answers from it.
     const StageId b = f.stages().declare(writer("b", f.y));
     detail::readNextStoredStageCountAsZeroForTesting();
-    try {
-        EXPECT_EQ(r.dependencyCount(a), 0);
-        EXPECT_FALSE(r.isUnreadable(a));
-        EXPECT_STREQ(r.definition(a).name(), "a");
-    } catch (const IoError&) {
-        // Also acceptable: the snapshot is kept or the call says the store cannot be read.
-    }
+    EXPECT_EQ(r.dependencyCount(a), 0);
+    EXPECT_FALSE(r.isUnreadable(a));
+    EXPECT_STREQ(r.definition(a).name(), "a");
 
     // The next refresh reads the store again and follows the writer.
     EXPECT_EQ(r.dependencyCount(b), 0);

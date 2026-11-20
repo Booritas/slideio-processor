@@ -97,13 +97,31 @@ public:
             if (registry.isUnreadable(stage)) {
                 throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
             }
+            // Each count and its accessor are two calls, so a declaration on another thread can
+            // land between them: an index gone out of range means the name was resolved, or
+            // the dependency list shrank, meanwhile. The stage is the one checked above, so
+            // InvalidArgumentError here is only that.
             if (registry.unresolvedDependencyCount(stage) > 0) {
-                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" +
-                                     registry.unresolvedDependencyAt(stage, 0) + "\" is not declared");
+                std::string missing;
+                bool stillMissing = true;
+                try {
+                    missing = registry.unresolvedDependencyAt(stage, 0);
+                } catch (const InvalidArgumentError&) {
+                    stillMissing = false;  // resolved meanwhile; the dependency loop checks it
+                }
+                if (stillMissing) {
+                    throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + missing +
+                                         "\" is not declared");
+                }
             }
             const int32_t count = registry.dependencyCount(stage);
             for (int32_t i = 0; i < count; ++i) {
-                const StageId dependency = registry.dependencyAt(stage, i);
+                StageId dependency;
+                try {
+                    dependency = registry.dependencyAt(stage, i);
+                } catch (const InvalidArgumentError&) {
+                    break;  // the list shrank meanwhile: no dependency is left at this index
+                }
                 const bool complete = registry.status(dependency) == StageStatus::Complete;
                 if (!complete || registry.isStale(dependency)) {
                     const std::string dependencyName = registry.name(dependency);

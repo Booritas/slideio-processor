@@ -190,13 +190,13 @@ TEST(CoarseToFine, MissingHalfIsRefused) {
     CoarseToFineSpec noCoarse("nests_coarse", "nests");
     noCoarse.fine(probeChain("coarse", 0), f.nests);
     std::string message = refusal(f, noCoarse);
-    EXPECT_NE(message.find("coarse"), std::string::npos) << message;
+    EXPECT_NE(message.find("(\"coarse\")"), std::string::npos) << message;
     EXPECT_EQ(f.stages().count(), 0);
 
     CoarseToFineSpec noFine("nests_coarse", "nests");
     noFine.coarse(blobChain(2), f.nestsCoarse);
     message = refusal(f, noFine);
-    EXPECT_NE(message.find("fine"), std::string::npos) << message;
+    EXPECT_NE(message.find("(\"fine\")"), std::string::npos) << message;
     EXPECT_EQ(f.stages().count(), 0);
 }
 
