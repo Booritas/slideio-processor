@@ -83,25 +83,34 @@ RasterMask RestrictionFilter::buildMask(const Rect64& regionAtLevel) const {
     return mask;
 }
 
+Rect64 RestrictionFilter::ownedRectAtLevel(int64_t tileIndex) const {
+    // A tile owns the objects anchored in its level-0 rect, llround(level rect x scale), and
+    // tests each at the level pixel floor(anchor / scale). At a non-integer scale the first
+    // level-0 column or row of a tile can floor to the level pixel before it, whatever the halo.
+    Rect64 owned = plan_.grid.tileRectAtLevel(tileIndex);
+    if (plan_.levelScale != std::floor(plan_.levelScale)) {
+        --owned.x;
+        ++owned.width;
+        --owned.y;
+        ++owned.height;
+    }
+    return owned;
+}
+
 RasterMask RestrictionFilter::buildTileMask(int64_t tileIndex) const {
     if (!restricted_) {
         return RasterMask();
     }
-    // A tile owns the objects anchored in its level-0 rect, llround(level rect x scale), and
-    // tests each at the level pixel floor(anchor / scale). At a non-integer scale the first
-    // level-0 column or row of a tile can floor to the level pixel before it; a zero halo
-    // there is widened by that one pixel, so the test stays inside the mask.
+    // The halo rect, grown to hold the owned rect: a zero halo at a non-integer scale is
+    // widened by the one pixel, so every anchor the tile owns is tested inside the mask.
     Rect64 region = plan_.grid.tileRectAtLevelWithHalo(tileIndex, plan_.chainHalo);
-    if (plan_.levelScale != std::floor(plan_.levelScale)) {
-        if (plan_.chainHalo.left == 0) {
-            --region.x;
-            ++region.width;
-        }
-        if (plan_.chainHalo.top == 0) {
-            --region.y;
-            ++region.height;
-        }
-    }
+    const Rect64 owned = ownedRectAtLevel(tileIndex);
+    const int64_t right = std::max(region.x + region.width, owned.x + owned.width);
+    const int64_t bottom = std::max(region.y + region.height, owned.y + owned.height);
+    region.x = std::min(region.x, owned.x);
+    region.y = std::min(region.y, owned.y);
+    region.width = right - region.x;
+    region.height = bottom - region.y;
     return buildMask(region);
 }
 
@@ -109,20 +118,10 @@ bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {
     if (mask.isNull()) {
         return false;
     }
-    // The tile rect and, as buildTileMask adds them at a non-integer scale, the extra column
-    // and row before it: the tile owns objects anchored there, so the mask over them counts.
-    Rect64 tile = plan_.grid.tileRectAtLevel(tileIndex);
+    // The tile's owned rect, which the mask built for it always covers: the tile owns objects
+    // anchored in the extra column and row too, so the mask over them counts.
+    const Rect64 tile = ownedRectAtLevel(tileIndex);
     const Rect64 region = mask.regionAtLevel();
-    if (plan_.levelScale != std::floor(plan_.levelScale)) {
-        if (plan_.chainHalo.left == 0) {
-            --tile.x;
-            ++tile.width;
-        }
-        if (plan_.chainHalo.top == 0) {
-            --tile.y;
-            ++tile.height;
-        }
-    }
     for (int64_t y = tile.y; y < tile.y + tile.height; ++y) {
         const uint8_t* row = mask.row(y - region.y) + (tile.x - region.x);
         if (std::any_of(row, row + tile.width, [](uint8_t v) { return v != 0; })) {

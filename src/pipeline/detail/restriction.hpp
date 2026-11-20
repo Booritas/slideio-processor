@@ -103,6 +103,9 @@ private:
 
     // The level pixel holding a level-0 point, as RasterMask::testLevel0 finds it.
     Point64 levelPixelOf(Point64 anchorLevel0) const;
+    /// The tile rect at the level and, at a non-integer scale, the one column and row before
+    /// it that the tile's first level-0 column or row can floor to. What the tile owns.
+    Rect64 ownedRectAtLevel(int64_t tileIndex) const;
 
     // A mask over `regionAtLevel` holding exactly the restriction.
     RasterMask buildMask(const Rect64& regionAtLevel) const;

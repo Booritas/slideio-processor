@@ -798,46 +798,54 @@ TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
     }
 }
 
+
 namespace {
 
-// Sets only the level column `column`, on every row.
-class ColumnMaskSource : public TileMaskSource {
+// Vertical bars two level columns wide, one every three columns: each is anchored on the
+// first level-0 row of every tile, as bars() is on the first column.
+double vbars(int, int64_t x, int64_t) { return x % 3 < 2 ? 255.0 : 0.0; }
+
+// Sets only the level column (or row) `index`, over the whole slide.
+class LineMaskSource : public TileMaskSource {
 public:
-    explicit ColumnMaskSource(int64_t column) : column_(column) {}
+    LineMaskSource(bool row, int64_t index) : row_(row), index_(index) {}
     void fillMask(RasterMask& out) override {
         const Rect64 region = out.regionAtLevel();
         for (int64_t y = 0; y < region.height; ++y) {
-            uint8_t* row = out.row(y);
+            uint8_t* line = out.row(y);
             for (int64_t x = 0; x < region.width; ++x) {
-                row[x] = region.x + x == column_ ? 255 : 0;
+                const int64_t at = row_ ? region.y + y : region.x + x;
+                line[x] = at == index_ ? 255 : 0;
             }
         }
     }
 
 private:
-    int64_t column_;
+    bool row_;
+    int64_t index_;
 };
 
-} // namespace
-
-// At level 1 (scale 2.4) with 64-pixel tiles, the first level-0 column of tile 2 is 307, which
-// floors to level column 127, the last column of tile 1. With only column 127 set, tile 2's
-// rect is empty but it owns objects anchored on that column: the skip test must agree with
-// the mask the tile was given, so those objects are emitted.
-TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) {
+// At level 1 (scale 2.4) with 64-pixel tiles, the first level-0 column (row) of tile 2 is 307,
+// which floors to level column (row) 127, the last of tile 1. With only that line set, tile 2's
+// rect is empty but it owns objects anchored on it: the skip test must agree with the mask the
+// tile was given, so those objects are emitted, with or without a halo.
+void expectSkipAgreesWithTheMask(bool row, int32_t halo) {
     ts::registerTestOperations();
-    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, bars);
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        row ? vbars : bars);
     const Configuration configuration =
         ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(4).build();
     const auto run = [&](bool restricted) {
-        PipelineSpec spec = spec1("test.components");
+        OperationParameters parameters;
+        parameters.setInt("halo", halo);
+        PipelineSpec spec = spec1("test.components", parameters);
         spec.analysisLevel(1);
-        ColumnMaskSource column(127);
+        LineMaskSource line(row, 127);
         ts::CollectingObjectSink sink;
         Pipeline p(scene, configuration, spec);
         p.bindLayer("objects", LayerId(3));
         if (restricted) {
-            p.maskSource(&column);
+            p.maskSource(&line);
         }
         p.runInto(sink, nullptr, CancellationToken());
         return sink.records();
@@ -845,7 +853,11 @@ TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) {
     const std::vector<ObjectRecord> all = run(false);
     std::vector<ObjectId> expected;
     for (const ObjectRecord& r : all) {
-        if (static_cast<int64_t>(std::floor(static_cast<double>(r.geometry().anchor().x) / 2.4)) == 127) {
+        const Point64 anchor = r.geometry().anchor();
+        const int64_t along = row ? anchor.y : anchor.x;
+        if (static_cast<int64_t>(std::floor(static_cast<double>(along) / 2.4)) == 127) {
+            // Owned by tile 2, whose first level-0 column (row) is 307, not by tile 1.
+            EXPECT_GE(along, 307);
             expected.push_back(r.id());
         }
     }
@@ -858,4 +870,16 @@ TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) {
     }
     std::sort(got.begin(), got.end());
     EXPECT_EQ(got, expected);
+}
+
+} // namespace
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) { expectSkipAgreesWithTheMask(false, 0); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleWithAHalo) { expectSkipAgreesWithTheMask(false, 2); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRows) { expectSkipAgreesWithTheMask(true, 0); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRowsWithAHalo) {
+    expectSkipAgreesWithTheMask(true, 2);
 }

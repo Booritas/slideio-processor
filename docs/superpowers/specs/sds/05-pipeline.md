@@ -1269,15 +1269,17 @@ Per tile, before any pixel is read, the worker builds the tile's mask over its
 **halo** rect at the level, and only when the run is restricted: all pixels set,
 intersected with the ROI rectangle, then with the polygon, then with the bound
 `TileMaskSource` (which fills a second mask that is intersected in). At a
-non-integer level scale, a zero left or top halo is widened by one pixel: a
-tile owns the objects anchored in its level-0 rect (`llround` of the level
-rect), an anchor is tested at the level pixel `floor(anchor / scale)`, and the
-tile's first level-0 column or row can floor to the pixel before the tile.
-Without the extra pixel, such an object would be dropped by the tile that owns
-it, while a merged object at the same anchor is admitted. When the
-mask has no set pixel inside the **tile** rect, widened by the same extra column
-and row at a non-integer scale, the tile is skipped: no pixel is read and it
-is deferred, not complete (below). `OperationContext::mask()` returns the tile's
+non-integer level scale a tile owns, besides its rect, one more column and row
+before it, whatever the halo: a tile owns the objects anchored in its level-0
+rect (`llround` of the level rect), an anchor is tested at the level pixel
+`floor(anchor / scale)`, and the tile's first level-0 column or row can floor
+to the pixel before the tile. A zero left or top halo is widened to cover that
+pixel; a larger halo already does. Without it, such an object would be dropped
+by the tile that owns it, while a merged object at the same anchor is
+admitted. When the mask has no set pixel inside the tile's owned rect (the
+tile rect and that extra column and row), the tile is skipped: no pixel is
+read and it is deferred, not complete (below). `OperationContext::mask()`
+returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
 the `ObjectSink` and admits an object when the mask is set at its anchor; for
 objects emitted outside a tile, such as merged objects (5.7), it exposes
@@ -1315,9 +1317,11 @@ demand, so an object with a pixel in an evaluated tile holds that tile's
 fragment and reaches every skipped tile it crosses, while an object lying
 wholly in skipped tiles has its anchor where the mask is zero and the
 restriction drops it, whole or truncated. The precondition is that `skips()`
-means the mask is zero over the whole tile. At a non-integer scale
-`buildTileMask` adds the extra column and row before the tile, so `skips()`
-tests those too (`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale`).
+means the mask is zero over everything the tile owns. At a non-integer scale
+the tile owns the extra column and row before it, whatever the halo, and
+`skips()` and `buildTileMask` share one owned rect
+(`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale` and its halo and
+row variants).
 The reproducer is `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
 (`tests/workspace/test_stage_runner.cpp`).
 
