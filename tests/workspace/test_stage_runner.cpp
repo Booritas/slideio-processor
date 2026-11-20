@@ -261,6 +261,15 @@ TEST(StageRunner, BlockedByStaleDependency) {
     const std::string message = messageOf(runner);
     EXPECT_NE(message.find("background"), std::string::npos) << message;
     EXPECT_EQ(f.stages().status(nuclei), StageStatus::Pending);
+
+    // isRerun() is decided at the start of each run(), a refused one included.
+    StageRunner early(*f.workspace, nuclei);
+    EXPECT_FALSE(early.isRerun());
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    f.stages().markStale(background);
+    EXPECT_NE(messageOf(early).find("background"), std::string::npos);
+    EXPECT_TRUE(early.isRerun()) << "the refused run started from Complete";
 }
 
 TEST(StageRunner, UnreadableStageIsRefused) {
@@ -375,7 +384,7 @@ TEST(StageRunner, EmptyTargetLayerCountsAsAbsent) {
     const StageId id = f.stages().declare(def);
     StageRunner runner(*f.workspace, id);
     const std::string message = messageOf(runner);
-    // The runner's refusal, not the pipeline's: it names the stage.
+    // The pipeline's refusal, raised by the runner at the gate: it names the stage.
     EXPECT_NE(message.find("stage \"both\""), std::string::npos) << message;
     EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
     EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
@@ -990,7 +999,7 @@ TEST(StageRunner, RunSlotIsReleasedAfterFailureAndCancellation) {
     EXPECT_EQ(f.objectsOf(f.background), 9);
 }
 
-TEST(StageRunner, RunnerStageErrorPassesThroughUnchanged) {
+TEST(StageRunner, GateRefusalWrapsThePipelineError) {
     Fixture f;
     StageDefinition def("two");
     def.writesLayer(f.nuclei).writesLayer(f.cells).pipeline(blobChain());
@@ -1000,10 +1009,109 @@ TEST(StageRunner, RunnerStageErrorPassesThroughUnchanged) {
         FAIL() << "no StageError";
     } catch (const StageError& e) {
         EXPECT_STREQ(e.stageName(), "two");
-        EXPECT_STREQ(e.operationName(), "segment.connected_components");
-        EXPECT_STREQ(e.cause(), "") << "the runner's own error is not wrapped";
+        const std::string cause = e.cause();
+        EXPECT_NE(cause.find("Pipeline::validate"), std::string::npos) << "the pipeline's own error: " << cause;
+        EXPECT_NE(cause.find("segment.connected_components"), std::string::npos) << cause;
     }
     EXPECT_EQ(f.stages().status(id), StageStatus::Pending) << "refused at the gate";
+    EXPECT_EQ(discardEventsOf(f, id), 0);
+}
+
+TEST(StageRunner, RerunWithInvalidDefinitionKeepsPriorOutput) {
+    Fixture f;
+    const StageId background = f.stages().declare(blobStage("background", f.background));
+    StageDefinition def("nuclei");
+    def.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blobChain());
+    const StageId nuclei = f.stages().declare(def);
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    const std::vector<ObjectId> before = idsOf(f, f.background);
+    ASSERT_EQ(before.size(), 9u);
+    const int64_t discardsBefore = discardEventsOf(f, background);
+
+    // Two definitions Pipeline::validate() refuses and a declaration-only check passes:
+    // two operations targeting the one written layer, and an unregistered operation.
+    PipelineSpec twoProducers = blobChain();
+    twoProducers.operation("segment.connected_components", OperationParameters());
+    PipelineSpec unregistered = blobChain();
+    unregistered.operation("test.no_such_operation", OperationParameters());
+    for (const PipelineSpec& spec : {twoProducers, unregistered}) {
+        StageDefinition broken("background");
+        broken.writesLayer(f.background).pipeline(spec);
+        f.stages().declare(broken);  // a redeclaration marks the stage and its dependents stale
+        f.stages().clearStale(nuclei);
+
+        StageRunner runner(*f.workspace, background);
+        std::string stageName;
+        const std::string message = messageOf(runner, &stageName);
+        EXPECT_NE(message.find("stage \"background\""), std::string::npos) << message;
+        EXPECT_EQ(stageName, "background");
+        EXPECT_TRUE(runner.isRerun());
+        EXPECT_EQ(f.stages().status(background), StageStatus::Complete) << message;
+        EXPECT_EQ(idsOf(f, f.background), before) << message;
+        EXPECT_FALSE(f.stages().isStale(nuclei)) << message;
+        EXPECT_EQ(discardEventsOf(f, background), discardsBefore) << message;
+    }
+}
+
+TEST(StageRunner, NonStringTargetLayerIsRefusedBeforeAnyWrite) {
+    Fixture f;
+    PipelineSpec numbered;
+    numbered.operation("pixel.colour_convert",
+                       OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    numbered.operation("pixel.threshold_fixed",
+                       OperationParameters().setDouble("value", 128.0).setString("direction", "Below"));
+    numbered.operation("segment.connected_components", OperationParameters().setInt("targetLayer", 3));
+    StageDefinition def("nuclei");
+    def.writesLayer(f.nuclei).pipeline(numbered);
+    const StageId id = f.stages().declare(def);
+    StageRunner runner(*f.workspace, id);
+    std::string stageName;
+    const std::string message = messageOf(runner, &stageName);
+    EXPECT_EQ(stageName, "nuclei");
+    EXPECT_NE(message.find("targetLayer"), std::string::npos) << message;
+    EXPECT_NE(message.find("string"), std::string::npos) << message;
+    EXPECT_NE(message.find("segment.connected_components"), std::string::npos) << message;
+    EXPECT_EQ(f.stages().status(id), StageStatus::Pending);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+    EXPECT_EQ(discardEventsOf(f, id), 0);
+}
+
+namespace {
+
+// Calls another runner's run() from inside its first progress report and lets what that
+// call throws leave the observer.
+class ThrowingNestedRunObserver : public ProgressObserver {
+public:
+    explicit ThrowingNestedRunObserver(StageRunner& inner) : inner_(inner) {}
+    void onProgress(const char*, double, int64_t, int64_t) override {
+        if (!called_.exchange(true)) inner_.run();
+    }
+
+private:
+    StageRunner& inner_;
+    std::atomic<bool> called_{false};
+};
+
+} // namespace
+
+TEST(StageRunner, NestedStageErrorNamesTheOuterStage) {
+    Fixture f;
+    const StageId first = f.stages().declare(blobStage("first", f.nuclei));
+    const StageId second = f.stages().declare(blobStage("second", f.background));
+    StageRunner inner(*f.workspace, second);
+    ThrowingNestedRunObserver observer(inner);
+    StageRunner outer(*f.workspace, first);
+    outer.progress(&observer);
+    try {
+        outer.run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "first") << e.what();
+        EXPECT_NE(std::string(e.cause()).find("\"second\" cannot run"), std::string::npos) << e.what();
+    }
+    EXPECT_EQ(f.stages().status(first), StageStatus::Failed);
+    EXPECT_EQ(f.stages().status(second), StageStatus::Pending);
 }
 
 TEST(StageRunner, FailureAfterObjectsReachedTheStoreDiscardsThem) {

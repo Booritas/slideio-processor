@@ -26,10 +26,12 @@ namespace slideio::processor {
  * with a StageError naming the stage, a workspace in which another StageRunner is inside
  * run(), a stage whose record could not be read, a stage with a dependency that is not
  * Complete or is stale (the message names the first such dependency, in
- * StageRegistry::dependencyAt() order), and a stage whose definition has an operation
- * producing objects that names no layer the stage writes (or none, with the stage
- * writing other than one layer). A stale stage whose dependencies are current is
- * runnable: running it is how it becomes current.
+ * StageRegistry::dependencyAt() order), and a stage whose Pipeline, built from its
+ * definition and bound to its written layers, auxiliary rasters and restriction, fails
+ * Pipeline::validate() (an unregistered operation, an operation producing objects with
+ * no written layer to target, two operations targeting one layer, a bad auxiliary
+ * binding and so on). A stale stage whose dependencies are current is runnable: running
+ * it is how it becomes current.
  *
  * Once past those refusals, a re-run first marks every direct dependent stale; then the
  * stage is set Running; then a re-run discards the stage's prior objects, edges,
@@ -38,9 +40,9 @@ namespace slideio::processor {
  * the flushes. Any failure from the re-run preparation on leaves the stage Failed, best
  * effort, and propagates.
  *
- * Errors the runner raises itself carry the stage name in ErrorContext::stageName and
- * name the stage in the message. The runner adds no slide path to any message; a
- * wrapped error's ErrorContext::cause carries the original error's text unchanged.
+ * Every error leaving run(), but std::bad_alloc, names the stage in the message and in
+ * ErrorContext::stageName. The runner adds no slide path to any message; a wrapped
+ * error's ErrorContext::cause carries the original error's text unchanged.
  * @par Thread-safety
  * ThreadConfined; one runner at a time per workspace.
  * @par Requirements
@@ -100,16 +102,22 @@ public:
      * @brief Runs the stage to completion.
      * @throws IoError When the workspace is read-only; nothing is changed.
      * @throws StageError When another runner of the workspace is inside run(), the
-     * stage's record is unreadable, a dependency is not Complete or is stale, or an
-     * operation that produces objects names no layer the stage writes (or none, with the
-     * stage writing other than one layer); nothing is changed, and for the last case the
-     * error names the operation too. Also for every failure of the run itself, from the
-     * re-run preparation to the final status write: the stage is left Failed (best
-     * effort) and the error names the stage, carries the original error's text as its
-     * cause, and copies the operation and tile when the original names them. A
-     * StageError raised inside the run (a nested runner's refusal) propagates unchanged.
+     * stage's record is unreadable, a dependency is not Complete or is stale, or the
+     * stage's bound Pipeline fails validate(); nothing is changed, and for the last case
+     * the cause is the pipeline's error, which names the operation and the layer. Also
+     * for every ProcessorError of the run itself, from the re-run preparation to the
+     * final status write: the stage is left Failed (best effort) and the error carries
+     * the original error's text as its cause, and copies the operation and tile when the
+     * original names them. A StageError naming this stage propagates unchanged; one
+     * naming another stage (a nested runner's) is wrapped.
      * @throws CancelledError When the run's token is cancelled; it names the stage and
      * the stage is left Failed.
+     * @throws IoError When a std::system_error (std::filesystem::filesystem_error
+     * included) or a std::ios_base::failure that is not a ProcessorError escapes the run,
+     * with its text as the cause; the stage is left Failed, or, at validation, unchanged.
+     * @throws InternalError When any other exception that is not a ProcessorError, of a
+     * std::exception type or not, escapes the run, with its text, when it has one, as
+     * the cause; the stage is left Failed, or, at validation, unchanged.
      * @throws std::bad_alloc When allocation fails, unchanged; once the run has started
      * the stage is left Failed.
      * @par Thread-safety
@@ -121,8 +129,9 @@ public:
 
     /**
      * @brief Tells whether this run replaces an earlier one: the stage's status at the
-     * start of run() was not Pending (Complete, Failed, or Running left by a process that
-     * died mid-run). Before run() it answers for the status at construction.
+     * start of the last run() was not Pending (Complete, Failed, or Running left by a
+     * process that died mid-run). A refused run() updates it too. Before any run() it
+     * answers for the status at construction.
      * @return True for a re-run.
      * @throws Nothing.
      * @par Thread-safety

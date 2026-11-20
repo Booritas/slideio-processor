@@ -30,8 +30,8 @@
    - a dependency is not `Complete`, or is stale (the message names the first such dependency, in `dependencyAt` order);
    - another `StageRunner` of the same workspace is inside `run()`.
    A stale stage whose dependencies are current is runnable: re-running it is how it becomes current.
-   (Amended by the final review: read-only is checked first and needs no slot; the run slot is then taken before the other checks, so a re-run of a dependency cannot slip between the dependency check and the run; the layer-binding check of decision 6 is the last refusal. No refusal changes anything.)
-2. **`isRerun()`** is true when the stage's status at the start of `run()` is not `Pending`. That covers `Complete`, `Failed`, and `Running`; `Running` is left behind by a process that died mid-run, because the workspace's single writer lock means no live process can own it. Before `run()` it answers for the status at construction.
+   (Amended by the final review: read-only is checked first and needs no slot; the run slot is then taken before the other checks, so a re-run of a dependency cannot slip between the dependency check and the run; the layer-binding check of decision 6 is the last refusal. No refusal changes anything. Amended again by the PR #16 review: the last refusal is the validation of the stage's bound pipeline, decision 6.)
+2. **`isRerun()`** is true when the stage's status at the start of `run()` is not `Pending`. That covers `Complete`, `Failed`, and `Running`; `Running` is left behind by a process that died mid-run, because the workspace's single writer lock means no live process can own it. Before `run()` it answers for the status at construction. (Amended by the PR #16 review: the status is read first thing in every `run()`, so a refused run updates it too, and again once the run slot is held.)
 3. **Re-run order.**
    1. Call `StageRegistry::markStale` on every stage that depends directly on this one, because its inputs are about to be replaced whatever this run's outcome.
    2. Set the stage `Running`.
@@ -42,10 +42,12 @@
    1. the analysis level of each written layer;
    2. `setStatus(Complete)`;
    3. `StageRegistry::clearStale(id)`.
-5. **Failure.** The following exceptions are raised from validation, the tile run or the flushes:
+5. **Failure.** The following exceptions are raised from the re-run preparation, the tile run or the flushes (and, without the recording below, from the gate's validation, decision 6):
    - `CancelledError` is re-thrown as `CancelledError` carrying the stage name.
    - `std::bad_alloc` is re-thrown unchanged.
-   - Every other `ProcessorError` or `std::exception` becomes a `StageError` with `stageName` = the stage, `cause` = the original `what()`, and the original's operation name and tile copied when it has them.
+   - A `StageError` whose `stageName` is this stage passes through unchanged; one naming another stage is wrapped as below.
+   - Every other `ProcessorError` becomes a `StageError` with `stageName` = the stage, `cause` = the original `what()`, and the original's operation name and tile copied when it has them.
+   - (Amended by the PR #16 review, following `error.hpp`'s exception stance, C-6.) A `std::exception` that is not a `ProcessorError` becomes an `IoError` for an I/O failure (`std::system_error`, `std::filesystem::filesystem_error`, `std::ios_base::failure`), otherwise an `InternalError`, with `stageName` = the stage and `cause` = its `what()`. An exception that is not a `std::exception` becomes an `InternalError` naming the stage.
 
    Before any of these leaves `run()`, the runner does the following, best effort:
    1. abandons the raster writer;
@@ -53,10 +55,11 @@
    3. sets the stage `Failed`.
 
    If any of these steps itself throws, the runner logs an Error naming the stage and the original exception still propagates. The analysis level is never recorded on failure.
-6. **Layer binding checks** run at the gate (amended by the final review: before any write, not after `Running`), before `Pipeline::validate()`, and throw `StageError` naming the stage, the operation and the layer. They cover every operation for which `OperationCatalog::instance().producesObjects(name)` is true:
+6. **Layer binding** is checked at the gate (amended by the final review: before any write, not after `Running`). Amended by the PR #16 review: the runner builds the stage's `Pipeline`, binds every written layer, every auxiliary raster and the mask, and calls `Pipeline::validate()` at the gate, after the run slot is taken and before the dependents are marked stale, the stage set `Running` or anything discarded; the sinks are attached afterwards. The check is the pipeline's alone (the runner's own copy is gone), so binding errors, and every other definition error `validate()` catches, arrive before any write. A failure is a refusal: a `StageError` naming the stage, with `cause` = the pipeline's error (which names the operation and the layer) and the operation copied when the original names one; the stage keeps its prior status and output. For every operation that produces objects:
    - its `targetLayer`, when present and non-empty, must name one of the stage's written layers;
-   - when absent or empty, the stage must declare exactly one written layer.
-   Raster-only operations are not consulted.
+   - when absent or empty, the stage must declare exactly one written layer;
+   - a non-string `targetLayer`, or two operations targeting one layer, is refused.
+   Raster-only operations are not consulted. Not checked at the gate: the raster writer, obtained after the re-run preparation because `RasterRegistry::writerForStage` creates the raster's directory, so its refusals and a raster that cannot take the chain's output still fail inside the run.
 7. **Annotation-target checks (§4.4) are deferred.** No operation in the catalog names an annotation target layer today, and `storage` refuses an undeclared layer at emit (§4.4: "the invariant itself lives in storage"). §4.4 gains a note saying the runner check arrives with the first operation that takes such a parameter.
 8. **Counters.** `objectsWritten()` and `edgesAsserted()` are the `emittedCount()` and `assertedCount()` of this run's writers, taken after the flushes. Both are 0 before `run()` and after a failed run.
 9. **Resumable unit (UR-STG-7).** The runner keeps the tile as its unit of work by passing everything through `Pipeline::runInto`. No per-tile state is written in v1. §4.4 already says this; the task adds no schema.

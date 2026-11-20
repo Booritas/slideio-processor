@@ -7,8 +7,6 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/log.hpp>
-#include <slideio/processor/pipeline/operation_catalog.hpp>
-#include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
@@ -24,10 +22,12 @@
 #include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <atomic>
-#include <cstring>
 #include <exception>
+#include <ios>
+#include <memory>
 #include <new>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace slideio::processor {
@@ -72,18 +72,22 @@ public:
         StageRegistry& registry = workspace.stages();
         registry.isUnreadable(stage);  // throws InvalidArgumentError for an unknown stage
         name = registry.name(stage);
-        rerun = registry.status(stage) != StageStatus::Pending;
+        noteStatus();
     }
+
+    // Decision 2: whether a run now replaces an earlier one.
+    void noteStatus() { rerun = workspace.stages().status(stage) != StageStatus::Pending; }
 
     // The first refusal; it needs no run slot.
     void checkWritable() const {
         if (workspace.isReadOnly()) {
-            throw IoError(("stage \"" + name + "\" cannot run: the workspace is read-only").c_str());
+            throw IoError(("stage \"" + name + "\" cannot run: the workspace is read-only").c_str(),
+                          contextOf(nullptr));
         }
     }
 
-    // The refusals made while the caller holds the run slot, in §4.4's order. Each leaves
-    // the stage as it was: nothing has been written yet.
+    // The refusals made while the caller holds the run slot, in §4.4's order, but for the
+    // last, prepare(). Each leaves the stage as it was: nothing has been written yet.
     void gate() const {
         const StageRegistry& registry = workspace.stages();
         if (registry.isUnreadable(stage)) {
@@ -99,48 +103,61 @@ public:
                                      (complete ? "\" is stale" : "\" is not complete"));
             }
         }
-        checkLayerBinding(registry.definition(stage));
     }
 
-    // Decision 6: every operation that produces objects names one of the stage's written
-    // layers, or leaves it out when the stage writes exactly one. Raster-only operations are
-    // not consulted. Part of gate(): it needs only the definition, so a bad definition is
-    // refused before anything is written, and the refusal names the stage.
-    void checkLayerBinding(const StageDefinition& definition) const {
-        const PipelineSpec spec = definition.pipeline();
-        const LayerRegistry& layers = workspace.layers();
-        for (int32_t i = 0; i < spec.operationCount(); ++i) {
-            const char* operation = spec.operationName(i);
-            // An unknown operation is Pipeline::validate()'s refusal, inside the run.
-            const OperationCatalog& catalog = OperationCatalog::instance();
-            if (!catalog.isRegistered(operation) || !catalog.producesObjects(operation)) continue;
-            const OperationParameters& parameters = spec.operationParameters(i);
-            bool present = false;
-            for (int32_t k = 0; k < parameters.count(); ++k) {
-                present = present || std::strcmp(parameters.keyAt(k), "targetLayer") == 0;
+    // What the run reads from, built and validated at the gate. The Pipeline holds raw
+    // pointers to the mask and the sources, so it is declared last and destroyed first.
+    struct Prepared {
+        TileMaskSourcePtr mask;  // null when the stage is unrestricted
+        std::vector<TileRasterSourcePtr> sources;  // the layer-backed first, then the stored
+        std::unique_ptr<Pipeline> pipeline;
+    };
+
+    // The last refusal (decision 6): the stage's Pipeline is built, bound to its written
+    // layers, its auxiliary rasters and its mask, and validated, before anything is
+    // written. Whether every object-producing operation targets a written layer is the
+    // pipeline's check alone. A failure here is a refusal, raised for this stage, and the
+    // stage is left as it was. Nothing built here writes: the mask and the sources read
+    // per tile. The sinks are attached after the re-run preparation; validate() does not
+    // consult them.
+    Prepared prepare() const {
+        try {
+            const StageDefinition definition = workspace.stages().definition(stage);
+            const StorePtr store = workspace.store();
+            const LayerRegistry& layers = workspace.layers();
+            Prepared prepared;
+            if (definition.hasLayerRestriction()) {
+                const LayerId source = definition.layerRestriction();
+                const double halfStep =
+                    LevelSelector(workspace.scene()).scaleOfLevel(layers.coarsestAnalysisLevel(source)) / 2.0;
+                prepared.mask = makeLayerMaskSource(store->objects(), source, halfStep);
             }
-            const std::string target = present ? parameters.getString("targetLayer", "") : "";
-            if (!target.empty()) {
-                bool declared = false;
-                for (int32_t k = 0; k < definition.writtenLayerCount(); ++k) {
-                    declared = declared || target == layers.name(definition.writtenLayerAt(k));
-                }
-                if (!declared) {
-                    throwBinding(operation, "targets layer \"" + target + "\", which the stage does not write");
-                }
-            } else if (definition.writtenLayerCount() != 1) {
-                throwBinding(operation, "has no target layer and the stage writes " +
-                                            std::to_string(definition.writtenLayerCount()) +
-                                            " layers; name one with its \"targetLayer\" parameter");
+            for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
+                prepared.sources.push_back(makeLayerRasterSource(store->objects(), definition.rasterLayerAt(i),
+                                                                 definition.rasterContentAt(i)));
             }
+            for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
+                prepared.sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
+            }
+            prepared.pipeline = std::make_unique<Pipeline>(workspace.scene(), workspace.scratchConfiguration(),
+                                                           definition.pipeline());
+            Pipeline& pipeline = *prepared.pipeline;
+            pipeline.memoryBudget(workspace.memoryBudget()).stageName(name.c_str()).maskSource(prepared.mask.get());
+            for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
+                pipeline.bindLayer(layers.name(definition.writtenLayerAt(i)), definition.writtenLayerAt(i));
+            }
+            size_t next = 0;
+            for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
+                pipeline.auxiliaryRaster(definition.rasterBindingAt(i), prepared.sources[next++].get());
+            }
+            for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
+                pipeline.auxiliaryRaster(definition.readRasterBindingAt(i), prepared.sources[next++].get());
+            }
+            pipeline.validate();
+            return prepared;
+        } catch (...) {
+            rethrowForStage("\" cannot run: its pipeline is invalid");
         }
-    }
-
-    [[noreturn]] void throwBinding(const char* operation, const std::string& what) const {
-        ErrorContext context;
-        context.stageName = name.c_str();
-        context.operationName = operation;
-        throw StageError(("stage \"" + name + "\": operation " + operation + " " + what).c_str(), context);
     }
 
     // Decision 3, first step of a re-run: every stage that depends directly on this one is
@@ -195,28 +212,62 @@ public:
         }
     }
 
-    // The context of a StageError built from `original`: this stage, and the operation
-    // and tile the original names.
-    ErrorContext contextOf(const ProcessorError& original) const {
+    // The context of an error raised for this stage, with `cause` (may be null).
+    ErrorContext contextOf(const char* cause) const {
         ErrorContext context;
         context.stageName = name.c_str();
+        context.cause = cause;
+        return context;
+    }
+
+    // The context of an error built from `original`: this stage, the original's text as
+    // the cause, and the operation and tile the original names.
+    ErrorContext contextOf(const ProcessorError& original) const {
+        ErrorContext context = contextOf(original.what());
         if (original.operationName()[0] != '\0') context.operationName = original.operationName();
-        context.cause = original.what();
         context.hasTile = original.hasTile();
         context.tileX = original.tileX();
         context.tileY = original.tileY();
         return context;
     }
 
-    // Everything after gate(): the run proper, §4.4's listing from the re-run preparation
-    // on. All of it is inside the guarded region, so any failure records Failed.
-    void execute() {
+    // Decision 5 and error.hpp's exception stance, applied to the exception being
+    // handled; call only from a handler. `outcome` completes "stage \"<name>" into the
+    // message. A StageError naming this stage passes through unchanged; one naming
+    // another stage (a nested runner's refusal) is wrapped like any ProcessorError.
+    [[noreturn]] void rethrowForStage(const char* outcome) const {
+        const std::string message = "stage \"" + name + outcome;
+        try {
+            throw;
+        } catch (const CancelledError& e) {
+            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e));
+        } catch (const StageError& e) {
+            if (name == e.stageName()) throw;
+            throw StageError(message.c_str(), contextOf(e));
+        } catch (const ProcessorError& e) {
+            throw StageError(message.c_str(), contextOf(e));
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::ios_base::failure& e) {
+            throw IoError(message.c_str(), contextOf(e.what()));
+        } catch (const std::system_error& e) {  // std::filesystem::filesystem_error too
+            throw IoError(message.c_str(), contextOf(e.what()));
+        } catch (const std::exception& e) {
+            throw InternalError(message.c_str(), contextOf(e.what()));
+        } catch (...) {
+            throw InternalError((message + " with an exception of unknown type").c_str(), contextOf(nullptr));
+        }
+    }
+
+    // Everything after prepare(): the run proper, §4.4's listing from the re-run
+    // preparation on. All of it is inside the guarded region, so any failure records Failed.
+    void execute(Prepared& prepared) {
         StageRegistry& registry = workspace.stages();
         const StageDefinition definition = registry.definition(stage);
         const StorePtr store = workspace.store();
         LayerRegistry& layers = workspace.layers();
+        Pipeline& pipeline = *prepared.pipeline;
 
-        rerun = registry.status(stage) != StageStatus::Pending;
         objects = 0;
         edges = 0;
         RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
@@ -228,54 +279,17 @@ public:
             store->stageStateWriter().setStatus(stage, StageStatus::Running);
             if (rerun) discardPriorOutput(*store);
 
+            // The object, edge and annotation writers write nothing until given something.
+            // The raster writer creates the raster's directory, so it is obtained here,
+            // after the discards, and not at the gate.
             const ObjectWriterPtr sink = store->objects().writerForStage(stage);
             const EdgeWriterPtr edgeWriter = store->edges().writerForStage(stage);
             const AnnotationWriterPtr notes = store->annotations().writerForStage(stage);
-
-            // The restriction is resolved per tile by the mask source, which therefore lives
-            // as long as the run; null when the stage is unrestricted.
-            TileMaskSourcePtr mask;
-            if (definition.hasLayerRestriction()) {
-                const LayerId source = definition.layerRestriction();
-                const double halfStep =
-                    LevelSelector(workspace.scene()).scaleOfLevel(layers.coarsestAnalysisLevel(source)) / 2.0;
-                mask = makeLayerMaskSource(store->objects(), source, halfStep);
-            }
-
-            // Auxiliary rasters (layer-backed and stored) and the raster writer, §4.4's
-            // order. Built before the Pipeline, which holds raw pointers to them, so it is
-            // destroyed first; they live until runInto returns.
-            std::vector<TileRasterSourcePtr> sources;
-            for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
-                sources.push_back(makeLayerRasterSource(store->objects(), definition.rasterLayerAt(i),
-                                                        definition.rasterContentAt(i)));
-            }
-            for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
-                sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
-            }
             if (definition.writesAnyRaster()) {
                 rasterWriter = store->rasters().writerForStage(stage, definition.writtenRaster());
             }
-
-            Pipeline pipeline(workspace.scene(), workspace.scratchConfiguration(), definition.pipeline());
-            pipeline.memoryBudget(workspace.memoryBudget())
-                .edgeSink(edgeWriter.get())
-                .stageName(name.c_str())
-                .annotationSink(notes.get())
-                .maskSource(mask.get());
-            for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
-                pipeline.bindLayer(layers.name(definition.writtenLayerAt(i)), definition.writtenLayerAt(i));
-            }
-            // The layer-backed sources come first in `sources`, then the stored ones.
-            size_t next = 0;
-            for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
-                pipeline.auxiliaryRaster(definition.rasterBindingAt(i), sources[next++].get());
-            }
-            for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
-                pipeline.auxiliaryRaster(definition.readRasterBindingAt(i), sources[next++].get());
-            }
+            pipeline.edgeSink(edgeWriter.get()).annotationSink(notes.get());
             if (rasterWriter) pipeline.rasterSink(rasterWriter.get());
-            pipeline.validate();
 
             pipeline.runInto(*sink, progress, cancel);
 
@@ -291,28 +305,9 @@ public:
             }
             store->stageStateWriter().setStatus(stage, StageStatus::Complete);
             registry.clearStale(stage);
-        } catch (const CancelledError& e) {
-            recordFailure(*store, rasterWriter);
-            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e));
-        } catch (const StageError&) {
-            // Raised by the runner itself or by a nested stage: already names its stage.
-            recordFailure(*store, rasterWriter);
-            throw;
-        } catch (const ProcessorError& e) {
-            recordFailure(*store, rasterWriter);
-            throw StageError(("stage \"" + name + "\" failed").c_str(), contextOf(e));
-        } catch (const std::bad_alloc&) {
-            recordFailure(*store, rasterWriter);
-            throw;
-        } catch (const std::exception& e) {
-            recordFailure(*store, rasterWriter);
-            ErrorContext context;
-            context.stageName = name.c_str();
-            context.cause = e.what();
-            throw StageError(("stage \"" + name + "\" failed").c_str(), context);
         } catch (...) {
             recordFailure(*store, rasterWriter);
-            throw;
+            rethrowForStage("\" failed");
         }
     }
 
@@ -342,12 +337,16 @@ StageRunner& StageRunner::cancellation(const CancellationToken& token) noexcept 
 }
 
 void StageRunner::run() {
+    // Decision 2, decided first so that a refused run answers for its own start too.
+    impl_->noteStatus();
     // Read-only needs no slot; the rest of the gate runs under the slot, so a racing
     // re-run of a dependency cannot slip between the dependency check and the run.
     impl_->checkWritable();
     const detail::RunSlot slot(impl_->workspace, impl_->name.c_str());
+    impl_->noteStatus();  // again under the slot: no other run can change it from here
     impl_->gate();
-    impl_->execute();
+    Impl::Prepared prepared = impl_->prepare();
+    impl_->execute(prepared);
 }
 
 bool StageRunner::isRerun() const noexcept { return impl_->rerun; }

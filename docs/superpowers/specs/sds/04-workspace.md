@@ -684,13 +684,15 @@ UR-EXE-4, UR-EXE-5.
 
 `run()` binds the definition's layer restriction to a mask source, constructs
 a `Pipeline` from the definition's `PipelineSpec`, binds the stage's declared
-layers, validates, wires the workspace's `ObjectWriter` as the sink, and
-executes eagerly across the tile grid:
+layers and auxiliary rasters, and validates, all at the gate, before anything
+is written. Only then does it prepare a re-run, wire the workspace's writers as
+the sinks, and execute eagerly across the tile grid:
 
 ```cpp
 PipelineSpec spec = def.pipeline();
 LayerRegistry& layers = ws_.layers();
 
+// ---- at the gate: build, bind and validate; nothing here writes ----
 TileMaskSourcePtr mask;                            // null when unrestricted
 if (def.hasLayerRestriction()) {                   // the one thing a spec
     LayerId src = def.layerRestriction();          // cannot express alone
@@ -698,14 +700,6 @@ if (def.hasLayerRestriction()) {                   // the one thing a spec
     double  halfStep = LevelSelector(ws_.scene()).scaleOfLevel(srcLevel) / 2.0;
     mask = makeLayerMaskSource(ws_.store()->objects(), src, halfStep);
 }
-
-auto sink  = ws_.store()->objects().writerForStage(id_);
-auto edges = ws_.store()->edges().writerForStage(id_);
-auto notes = ws_.store()->annotations().writerForStage(id_);   // 3.7
-
-RasterWriterPtr pixels;                            // null unless declared
-if (def.writesAnyRaster())                                       // 3.8
-    pixels = ws_.store()->rasters().writerForStage(id_, def.writtenRaster());
 
 std::vector<TileRasterSourcePtr> aux;              // coarse-to-fine inputs
 for (int32_t i = 0; i < def.rasterLayerCount(); ++i)
@@ -719,19 +713,29 @@ for (int32_t i = 0; i < def.readRasterCount(); ++i)
 
 Pipeline p(ws_.scene(), ws_.scratchConfiguration(), spec);   // scratch inside
 p.memoryBudget(ws_.memoryBudget())                           // the workspace
- .edgeSink(edges.get())                                      // UR-RES-5
  .stageName(def.name())                                     // progress, errors
- .annotationSink(notes.get())                                // 3.7
  .maskSource(mask.get());                        // null when unrestricted
+for (int32_t i = 0; i < def.writtenLayerCount(); ++i)
+    p.bindLayer(layers.name(def.writtenLayerAt(i)), def.writtenLayerAt(i));
 for (int32_t i = 0; i < def.rasterLayerCount(); ++i)             // coarse-to-
     p.auxiliaryRaster(def.rasterBindingAt(i), aux[i].get());     // fine (5.5)
 for (int32_t i = 0; i < def.readRasterCount(); ++i)              // stored
     p.auxiliaryRaster(def.readRasterBindingAt(i),                // rasters
                       stored[i].get());                          // (3.8)
-p.rasterSink(pixels.get());                        // null unless declared
-for (int32_t i = 0; i < def.writtenLayerCount(); ++i)
-    p.bindLayer(layers.name(def.writtenLayerAt(i)), def.writtenLayerAt(i));
-p.validate();
+p.validate();                                      // a refusal: nothing changed
+
+// ---- the run: re-run preparation (below), then the writers ----
+auto sink  = ws_.store()->objects().writerForStage(id_);
+auto edges = ws_.store()->edges().writerForStage(id_);
+auto notes = ws_.store()->annotations().writerForStage(id_);   // 3.7
+
+RasterWriterPtr pixels;                            // null unless declared
+if (def.writesAnyRaster())                                       // 3.8
+    pixels = ws_.store()->rasters().writerForStage(id_, def.writtenRaster());
+
+p.edgeSink(edges.get())                                      // UR-RES-5
+ .annotationSink(notes.get())                                // 3.7
+ .rasterSink(pixels.get());                        // null unless declared
 
 p.runInto(*sink, progress_, cancel_);
 
@@ -801,17 +805,18 @@ needed and does not exist. `core::dilate(Polygon, double)` was its only other
 caller and is gone too (`01-core.md` 1.3).
 
 **Layer binding.** At the gate, under the run slot and before anything is
-written, the runner checks every operation for which
-`OperationCatalog::producesObjects(name)` is true; raster-only operations are
-not consulted. Its `targetLayer`, when present and non-empty, must name one of
-the stage's written layers; when absent or empty, the stage must declare exactly
-one written layer. Otherwise `run()` throws `StageError` naming the stage, the
-operation and the layer (the `ErrorContext` carries both `stageName` and
-`operationName`), and the stage is left as it was: no status change, no discard,
-no stale marking. The check is
-the runner's so that its message names the stage; `Pipeline::validate()` repeats
-the resolution for callers that use a pipeline directly, and treats an empty
-`targetLayer` as absent there too.
+written, the stage's bound pipeline is validated, so binding errors arrive
+before any write. The check is the pipeline's alone (`Pipeline::validate()`,
+5.5): for every operation that produces objects, its `targetLayer`, when present
+and non-empty, must name one of the bound (that is, the stage's written) layers;
+when absent or empty, exactly one layer must be bound; a non-string
+`targetLayer` is refused, and so are two operations targeting one layer.
+Raster-only operations are not consulted. A failure is raised as a `StageError`
+naming the stage (`ErrorContext::stageName`), with the pipeline's error, which
+names the operation and the layer, as its `cause`, and the operation name copied
+when the original carries one. The stage is left as it was: no status change,
+no discard, no stale marking. The runner keeps no copy of the resolution, so
+the two cannot disagree.
 
 **Annotation targets are not checked here yet.** No operation in the catalog
 names an annotation target layer today, and `storage` refuses an undeclared
@@ -867,13 +872,20 @@ recoverable but wasteful, and the failure path then discards the stage exactly
 as any other fault does.
 
 Operation resolution, type and arity checking, and target-layer resolution all
-happen inside `Pipeline::validate()` (5.5). The one check the runner makes
-first, at the gate, is its own layer-binding check against the stage's
-declaration (below), so that a binding error names the stage and is refused
-before anything is written; `Pipeline::validate()` then repeats target
-resolution against the bound layers. The runner's remaining job is the stage's
-own: gating on dependencies and staleness, discarding prior output on re-run,
-recording state, and handling failure.
+happen inside `Pipeline::validate()` (5.5), which the runner calls at the gate
+on the stage's fully bound pipeline, so that any definition error (an
+unregistered operation, a binding error, a bad auxiliary binding) names the
+stage and is refused before anything is written. The runner's remaining job is
+the stage's own: gating on dependencies and staleness, discarding prior output
+on re-run, recording state, and handling failure.
+
+What validation at the gate does not see is the sinks: `validate()` does not
+consult them, and the raster writer is obtained only after the re-run
+preparation, because `RasterRegistry::writerForStage` creates the raster's
+directory (3.8). Its refusals (a raster written by another stage, a live writer)
+and a chain whose output the raster cannot take therefore still surface inside
+the run, recorded `Failed`. The object, edge and annotation writers write
+nothing until given something.
 
 **Gating comes before anything is written.** `run()` first throws `IoError`
 when the workspace is read-only; that check needs no run slot. It then throws
@@ -884,7 +896,9 @@ message, in four cases, checked in this order:
 2. the stage's record is unreadable (`StageRegistry::isUnreadable`);
 3. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
-4. the layer binding below fails: the message names the operation too.
+4. the stage's bound pipeline fails `Pipeline::validate()` (the layer binding
+   below among others): the `cause` is the pipeline's error, which names the
+   operation and the layer.
 
 A stale stage whose dependencies are current is runnable: re-running it is how
 it becomes current. The first case is a run slot, a `std::atomic<bool>` in
@@ -898,8 +912,10 @@ dependency and the operation; the runner adds no slide path to any message,
 and a `StageError` that wraps another error carries the original's text
 unchanged in its `cause` (UR-STG-10).
 
-`isRerun()` is true when the stage's status at the start of `run()` is not
-`Pending`: `Complete`, `Failed`, or `Running`. `Running` is what a process that
+`isRerun()` is true when the stage's status at the start of the last `run()`
+was not `Pending`: `Complete`, `Failed`, or `Running`. It is read first thing in
+`run()`, so a refused run updates it too, and again once the run slot is held;
+before any `run()` it answers for the status at construction. `Running` is what a process that
 died mid-run leaves behind, and because the workspace has a single writer lock
 no live process can own it.
 
@@ -909,22 +925,23 @@ writes" becomes enforceable rather than documentary:
 1. For every layer in `writesLayer()`, the runner calls
    `Pipeline::bindLayer(registry.name(id), id)` (5.5), giving the pipeline the
    only name-to-`LayerId` mapping it will have.
-2. For every **object-producing** operation — one the catalog declares as
-   emitting objects — the runner reads the `targetLayer` string from its
-   parameters. A non-empty name that is not among the stage's bound layers
-   throws `StageError` naming the stage, the operation and the layer — so a
-   stage that declares `nuclei` and runs an operation targeting `cells` is
-   refused at the gate, before anything is written, not after an hour of tiles.
-3. An empty or absent name on such an operation resolves to the stage's single
-   declared layer. Where the stage declared none, or more than one, it throws
-   `StageError` instead of choosing — a stage emitting cells and nuclei in one
-   pass must say which operation writes which.
+2. For every **object-producing** operation — one that declares it emits
+   objects — `Pipeline::validate()` reads the `targetLayer` string from its
+   parameters. A non-empty name that is not among the bound layers is refused,
+   and the runner raises it as a `StageError` naming the stage, with the
+   pipeline's message naming the operation and the layer — so a stage that
+   declares `nuclei` and runs an operation targeting `cells` is refused at the
+   gate, before anything is written, not after an hour of tiles.
+3. An empty or absent name on such an operation resolves to the single bound
+   layer. Where the stage bound none, or more than one, `validate()` refuses
+   instead of choosing — a stage emitting cells and nuclei in one pass must say
+   which operation writes which.
 
 Raster-only operations are not consulted, and a stage whose chain produces no
-objects may legally declare no layer at all. Steps 2 and 3 need only the stage's
-definition, so they run at the gate (case 4 above); an operation the catalog
-does not know is skipped there and refused by `Pipeline::validate()` inside the
-run. Step 1 happens when the run builds its `Pipeline`.
+objects may legally declare no layer at all. All three steps run at the gate
+(case 4 above): step 1 when the runner binds its `Pipeline`, steps 2 and 3 in
+the `validate()` that follows, together with every other check `validate()`
+makes, an unregistered operation's among them.
 
 **The stage name travels with the run.** `StageRunner` passes `def.name()` to
 `Pipeline::stageName` (5.5), so the `stageName` of every `onProgress` call and
@@ -935,37 +952,46 @@ the `StageError` it raises name the stage and the tile (UR-EXE-5).
 `WholeLevel` operation, `Pipeline::validate()` (5.5) lays the run out as a
 single tile and checks the level against the memory budget before any pixel is
 read. A level that does not fit surfaces as an `InvalidArgumentError` from
-`p.validate()`, ahead of `runInto`, so the stage has written nothing and is
-recorded failed like any other fault.
+`p.validate()` at the gate, which the runner raises as a `StageError` refusal:
+the stage has written nothing and is left as it was.
 
-`Pipeline::validate()` then rejects any operation whose target resolves to
-nothing, which covers the direct-pipeline path where no stage performed step 1.
+The same `validate()` covers the direct-pipeline path, where no stage performed
+step 1: an operation whose target resolves to nothing is refused there too.
 
 That a stage cannot write an undeclared layer is therefore checked twice, in
-two modules: here against the declaration, and in `storage` at `emit` time
-against the registry (`03-storage.md` 3.3). The second is the invariant — it
-holds for GeoJSON import and any future writer — and this one exists to make the
-failure arrive before the work does.
+two modules: by the pipeline against the stage's bound layers, and in `storage`
+at `emit` time against the registry (`03-storage.md` 3.3). The second is the
+invariant — it holds for GeoJSON import and any future writer — and the first
+exists to make the failure arrive before the work does.
 
 **On failure or cancellation** the stage is recorded `Failed`, its objects,
 edges, annotations and raster are discarded, and a `StageDiscarded` event is
 appended by each discard. The workspace is left in its prior consistent state
 and no partial objects are visible to later stages (UR-STG-5). An observer that
 had opted into in-flight objects sees the discard event and retracts them
-(UR-OBS-4). The exceptions the run can raise, from the re-run preparation,
-validation, the tile run or the flushes, leave `run()` as follows:
+(UR-OBS-4). The exceptions the run can raise, from the re-run preparation, the
+tile run or the flushes, leave `run()` as follows (the gate's validation maps
+them the same way, but records nothing, as it has changed nothing):
 
 - `CancelledError` is re-thrown as a `CancelledError` carrying the stage name
   (UR-EXE-4).
-- A `StageError` raised inside the run (for instance a nested runner's
-  refusal) passes through unchanged: it already names its stage and is not
-  wrapped again. The gate's own refusals never reach this path; they leave the
-  stage as it was.
+- A `StageError` whose `stageName` is this stage passes through unchanged: it
+  already names its stage. One naming another stage (for instance a nested
+  runner's refusal, should it arrive unwrapped) is wrapped like any other
+  `ProcessorError`, so the error leaving `run()` always names this stage. The
+  gate's own refusals never reach this path; they leave the stage as it was.
 - `std::bad_alloc` is re-thrown unchanged (C-6).
-- Every other `ProcessorError` or `std::exception` becomes a `StageError` with
-  `stageName` the stage and `cause` the original's `what()`; the original's
-  operation name and tile (`hasTile`, `tileX`, `tileY`) are copied when it has
-  them, so a tile fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5).
+- Every other `ProcessorError` becomes a `StageError` with `stageName` the
+  stage and `cause` the original's `what()`; the original's operation name and
+  tile (`hasTile`, `tileX`, `tileY`) are copied when it has them, so a tile
+  fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5).
+- An exception that is not a `ProcessorError` is translated as `error.hpp`'s
+  exception stance (C-6) requires: `std::system_error` (with
+  `std::filesystem::filesystem_error`) and `std::ios_base::failure` become
+  `IoError`, any other `std::exception` becomes `InternalError`, each with
+  `stageName` the stage and `cause` the original's `what()`; an exception of a
+  type that is not a `std::exception` becomes an `InternalError` naming the
+  stage, with no cause.
 
 Before any of these leaves `run()` the runner records the failure, best effort:
 it abandons the raster writer (dropping it, which abandons its unflushed tiles;
