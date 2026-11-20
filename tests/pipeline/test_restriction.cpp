@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -994,4 +995,104 @@ TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRows) { expectS
 
 TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRowsWithAHalo) {
     expectSkipAgreesWithTheMask(true, 2);
+}
+
+namespace {
+
+// Sets every pixel and records the region of each fill.
+class RegionRecordingMaskSource : public TileMaskSource {
+public:
+    void fillMask(RasterMask& out) override {
+        const Rect64 region = out.regionAtLevel();
+        for (int64_t y = 0; y < region.height; ++y) {
+            std::memset(out.row(y), 255, static_cast<size_t>(region.width));
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        regions_.push_back(region);
+    }
+    std::vector<Rect64> regions() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return regions_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<Rect64> regions_;
+};
+
+// An ROI in an object run, and a mask source over the whole level: a tile whose owned rect misses
+// the ROI builds no mask in a pass, so only a tile evaluated on demand fills a mask outside it.
+void expectOutsideTilesBuildNoMask() {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Rect64 roi{70, 70, 260, 130};
+    RegionRecordingMaskSource fills;
+    Pipeline p(scene, config(), [&] {
+        PipelineSpec spec = spec1("test.components");
+        spec.restrictTo(roi);
+        return spec;
+    }());
+    p.bindLayer("objects", LayerId(3)).maskSource(&fills);
+    ts::CollectingObjectSink sink;
+    p.runInto(sink, nullptr, CancellationToken());
+
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    // Tiles 1..5 by 1..3 meet the ROI; every other tile of the 8 x 8 grid is skipped.
+    ASSERT_EQ(plan.grid.tileCount(), (kSide / kTile) * (kSide / kTile));
+    const auto& counters = detail::PipelineAccess::impl(p).counters;
+    EXPECT_EQ(counters.tilesSkipped.load(), 64 - 5 * 3);
+    int64_t outside = 0;
+    for (const Rect64& r : fills.regions()) {
+        outside += r.intersects(roi) ? 0 : 1;
+    }
+    EXPECT_LE(outside, counters.tilesEvaluatedOnDemand.load());
+}
+
+} // namespace
+
+TEST(Restriction, OutsideRegionTilesBuildNoMask) { expectOutsideTilesBuildNoMask(); }
+
+namespace {
+
+// For every tile of an object run at level 1 (scale 2.4), outsideRegion implies the built mask
+// has no set pixel in the owned rect, so the shortcut never skips a tile the mask would keep.
+void expectOutsideRegionAgreesWithTheMask(int32_t halo, bool polygon) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, blobs);
+    OperationParameters parameters;
+    parameters.setInt("halo", halo);
+    PipelineSpec spec = spec1("test.components", parameters);
+    spec.analysisLevel(1);
+    if (polygon) {
+        spec.restrictToPolygon(triangle(307, 307, 1000, 700));
+    } else {
+        spec.restrictTo(Rect64{307, 307, 700, 400});
+    }
+    Pipeline p(scene, config(), spec);
+    p.bindLayer("objects", LayerId(3));
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+    ASSERT_TRUE(filter.restricted());
+    int64_t outside = 0;
+    for (int64_t t = 0; t < plan.grid.tileCount(); ++t) {
+        if (filter.outsideRegion(t)) {
+            ++outside;
+            EXPECT_TRUE(filter.skips(filter.buildTileMask(t), t)) << "tile " << t;
+        }
+    }
+    EXPECT_GT(outside, 0);
+    EXPECT_LT(outside, plan.grid.tileCount());
+}
+
+} // namespace
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScale) { expectOutsideRegionAgreesWithTheMask(0, false); }
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleWithAHalo) {
+    expectOutsideRegionAgreesWithTheMask(2, false);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleForAPolygon) {
+    expectOutsideRegionAgreesWithTheMask(0, true);
 }

@@ -131,6 +131,23 @@ bool RestrictionFilter::skips(const RasterMask& mask, int64_t tileIndex) const {
     return true;
 }
 
+bool RestrictionFilter::outsideRegion(int64_t tileIndex) const {
+    if (!restricted_) {
+        return false;
+    }
+    // At a non-integer scale an anchor on the region's first level-0 column or row floors to the
+    // level pixel before it, and a polygon's conservative raster sets that pixel: the region is
+    // widened by it, as the owned rect is.
+    Rect64 region = plan_.region;
+    if (plan_.levelScale != std::floor(plan_.levelScale)) {
+        --region.x;
+        ++region.width;
+        --region.y;
+        ++region.height;
+    }
+    return !ownedRectAtLevel(tileIndex).intersects(region);
+}
+
 Point64 RestrictionFilter::levelPixelOf(Point64 anchorLevel0) const {
     // The level pixel whose square holds the point, computed as RasterMask::testLevel0
     // computes it (double division, then floor).

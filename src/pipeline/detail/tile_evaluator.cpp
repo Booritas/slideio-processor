@@ -192,6 +192,14 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     const Rect64 tile = grid.tileRectAtLevel(tileIndex);
     int64_t bytes = 0;
 
+    // A tile outside the region is skipped without a mask: it is empty there anyway.
+    if (!onDemand && restriction_.outsideRegion(tileIndex)) {
+        if (accumulation == nullptr) {
+            ++bindings_.counters->tilesSkipped;  // Once per run: the final pass counts it.
+        }
+        return TileOutcome{true, 0};
+    }
+
     // The mask comes first: an excluded tile reads no pixel.
     const RasterMask mask = restriction_.buildTileMask(tileIndex);
     if (!mask.isNull()) {
