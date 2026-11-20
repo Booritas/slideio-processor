@@ -440,8 +440,8 @@ TEST(SeamRun, RoiAtTheSceneEdgeMatchesTheUnrestrictedRun) {
 // both, and whole.
 TEST(SeamRun, RoiWithAMaskSourceStoresWholeObjects) {
     auto scene = blobScene();
-    const Rect64 roi{70, 70, 316, 316};
-    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    const Rect64 roi{70, 80, 311, 298}; // edges at 70, 80, 381, 378, inside blobs
+    ts::DiscMaskSource disc(370.0, 230.0, 150.0); // reaches the right and bottom edges
     const std::vector<ObjectRecord> all = unrestrictedObjects(scene);
     const std::vector<ObjectRecord> inRoi =
         filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
@@ -450,6 +450,12 @@ TEST(SeamRun, RoiWithAMaskSourceStoresWholeObjects) {
         return disc.contains(static_cast<double>(a.x) + 0.5, static_cast<double>(a.y) + 0.5);
     });
     ASSERT_GT(expected.size(), 100u);
+    int64_t crossingTheEdge = 0;
+    for (const ObjectRecord& r : expected) {
+        const Rect64 box = r.geometry().boundingBox();
+        crossingTheEdge += box.x + box.width > roi.x + roi.width || box.y + box.height > roi.y + roi.height ? 1 : 0;
+    }
+    ASSERT_GT(crossingTheEdge, 5) << "the fixture should have admitted objects crossing the ROI edge";
     ASSERT_LT(expected.size(), inRoi.size()) << "the mask should exclude some objects the ROI admits";
 
     PipelineSpec spec = components(true);
