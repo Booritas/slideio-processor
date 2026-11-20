@@ -4,6 +4,7 @@ add_library(slideio-processor-workspace OBJECT
     stage_registry.cpp
     staleness_graph.cpp
     detail/staleness_edges.cpp
+    detail/stage_reads.cpp
     stage_definition.cpp
     detail/stage_record.cpp
     stage_runner.cpp

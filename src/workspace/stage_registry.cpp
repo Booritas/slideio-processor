@@ -4,12 +4,14 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
 #include <slideio/processor/core/provenance.hpp>
+#include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
 #include <workspace/detail/refresh_fault.hpp>
+#include <workspace/detail/stage_reads.hpp>
 #include <workspace/detail/stage_record.hpp>
 #include <workspace/detail/staleness_edges.hpp>
 #include <workspace/staleness_graph_impl.hpp>
@@ -33,10 +35,8 @@ namespace {
 
 std::atomic<bool> gReadStoredCountAsZero{false};
 
-struct Entry {
-    int32_t id;
-    const StageDefinition* definition;
-};
+using Entry = detail::StageRef;
+using detail::quoted;
 
 struct Edge {
     int32_t dependency;
@@ -46,37 +46,21 @@ struct Edge {
 // Stage id to its effective dependencies, ascending by dependency id, each once.
 using Graph = std::map<int32_t, std::vector<Edge>>;
 
-std::string quoted(const char* name) { return std::string("\"") + name + "\""; }
-
-bool writesAnyOf(const StageDefinition& writer, const StageDefinition& reader) {
-    for (int32_t r = 0; r < reader.readLayerCount(); ++r) {
-        const LayerId layer = reader.readLayerAt(r);
-        for (int32_t w = 0; w < writer.writtenLayerCount(); ++w) {
-            if (writer.writtenLayerAt(w) == layer) return true;
-        }
-    }
-    if (writer.writesAnyRaster()) {
-        for (int32_t r = 0; r < reader.readRasterCount(); ++r) {
-            if (reader.readRasterAt(r) == writer.writtenRaster()) return true;
-        }
-    }
-    return false;
-}
-
-// Derives the effective dependencies of every entry: writers of what it reads, and
-// its explicit dependsOn names. A name no entry carries gives no edge until a stage of
-// that name is declared (the next derivation resolves it). Throws StageError for a
-// self-named explicit dependency.
+// Derives the effective dependencies of every entry: writers of what it reads
+// (detail::WriterIndex, shared with the staleness edges), and its explicit dependsOn
+// names. A name no entry carries gives no edge until a stage of that name is declared
+// (the next derivation resolves it). Throws StageError for a self-named explicit
+// dependency.
 Graph deriveGraph(const std::vector<Entry>& entries) {
     std::map<std::string, int32_t> byName;
     for (const Entry& e : entries) byName[e.definition->name()] = e.id;
+    const detail::WriterIndex writers(entries);
 
     Graph graph;
-    for (const Entry& stage : entries) {
+    for (size_t p = 0; p < entries.size(); ++p) {
+        const Entry& stage = entries[p];
         std::map<int32_t, bool> deps;
-        for (const Entry& other : entries) {
-            if (other.id != stage.id && writesAnyOf(*other.definition, *stage.definition)) deps[other.id] |= false;
-        }
+        for (const size_t source : writers.readSources(p)) deps[entries[source].id] |= false;
         for (int32_t i = 0; i < stage.definition->explicitDependencyCount(); ++i) {
             const char* target = stage.definition->explicitDependencyAt(i);
             const auto found = byName.find(target);
@@ -90,6 +74,25 @@ Graph deriveGraph(const std::vector<Entry>& entries) {
         for (const auto& d : deps) edges.push_back({d.first, d.second});
     }
     return graph;
+}
+
+// Stage id to the positions (explicitDependencyAt) of its dependsOn names that no held
+// stage carries yet, in declaration order. Positions, not strings, so the answer holds for
+// an equal definition that replaces the one it was derived from.
+using Unresolved = std::map<int32_t, std::vector<int32_t>>;
+
+// The unresolved dependsOn names of every entry.
+Unresolved deriveUnresolved(const std::vector<Entry>& entries) {
+    std::set<std::string> names;
+    for (const Entry& e : entries) names.insert(e.definition->name());
+    Unresolved result;
+    for (const Entry& e : entries) {
+        std::vector<int32_t>& missing = result[e.id];
+        for (int32_t i = 0; i < e.definition->explicitDependencyCount(); ++i) {
+            if (names.count(e.definition->explicitDependencyAt(i)) == 0) missing.push_back(i);
+        }
+    }
+    return result;
 }
 
 // Edges (stage, dependency) kept from the stored rows around a stage whose record could
@@ -156,9 +159,7 @@ detail::StalenessEdges buildStalenessEdges(const std::vector<Entry>& entries, co
             if (edge.isExplicit) named.insert({stage.first, edge.dependency});
         }
     }
-    std::vector<detail::StageRef> stages;
-    for (const Entry& e : entries) stages.push_back({e.id, e.definition});
-    return detail::StalenessEdges(stages, named, layers, rasters, pool);
+    return detail::StalenessEdges(entries, named, layers, rasters, pool);
 }
 
 std::vector<Entry> entriesOf(const Definitions& definitions) {
@@ -250,6 +251,9 @@ public:
     // function, so redeclaring a stage can reuse it.
     void deriveAndPersist() {
         const std::vector<Entry> held = entries();
+        // A function of the held definitions alone, so it follows them even when the
+        // rewrite below fails.
+        unresolved = deriveUnresolved(held);
         Graph next = deriveWithPins(held, pins);
         detail::StalenessEdges nextEdges =
             buildStalenessEdges(held, next, pins, store.layers(), store.rasters(), details);
@@ -260,6 +264,7 @@ public:
         }
         graph = std::move(next);
         stalenessEdges = std::move(nextEdges);
+        ++edgesGeneration;
     }
 
     const std::vector<Edge>& edgesOf(StageId stage) const {
@@ -268,20 +273,18 @@ public:
         return found->second;
     }
 
-    // The explicit dependsOn names of a held stage that no held stage carries yet, in
-    // declaration order. The strings live in the held definition, which is never freed
+    // The positions of a held stage's dependsOn names that no held stage carries yet, in
+    // declaration order, derived with the graph (deriveUnresolved). Caller holds the mutex.
+    const std::vector<int32_t>& unresolvedOf(StageId stage) const {
+        const auto found = unresolved.find(stage.value());
+        if (found == unresolved.end()) throw InvalidArgumentError("the stage is not known to the registry");
+        return found->second;
+    }
+
+    // One unresolved name. The string lives in the held definition, which is never freed
     // (a replaced one is retired). Caller holds the mutex.
-    std::vector<const char*> unresolvedOf(StageId stage) const {
-        const auto found = definitions.find(stage.value());
-        if (found == definitions.end()) throw InvalidArgumentError("the stage is not known to the registry");
-        std::set<std::string> names;
-        for (const auto& d : definitions) names.insert(d.second->name());
-        std::vector<const char*> result;
-        const StageDefinition& def = *found->second;
-        for (int32_t i = 0; i < def.explicitDependencyCount(); ++i) {
-            if (names.count(def.explicitDependencyAt(i)) == 0) result.push_back(def.explicitDependencyAt(i));
-        }
-        return result;
+    const char* unresolvedName(StageId stage, int32_t position) const {
+        return definitions.at(stage.value())->explicitDependencyAt(position);
     }
 
     // The first reason the stage cannot run, in StageRunner's order, and the name it
@@ -290,9 +293,9 @@ public:
         name = nullptr;
         const std::vector<Edge>& edges = edgesOf(stage);
         if (unreadable.count(stage.value()) != 0) return RunBlocker::Unreadable;
-        const std::vector<const char*> missing = unresolvedOf(stage);
+        const std::vector<int32_t>& missing = unresolvedOf(stage);
         if (!missing.empty()) {
-            name = missing.front();
+            name = unresolvedName(stage, missing.front());
             return RunBlocker::UnresolvedDependency;
         }
         const StageStateReader& reader = store.stageStates();
@@ -311,18 +314,18 @@ public:
     // all five paths of the staleness graph, each once. Caller holds the mutex.
     void markStaleLocked(StageId stage) {
         edgesOf(stage);
-        StageStateWriter& writer = store.stageStateWriter();
-        std::set<int32_t> seen{stage.value()};
-        writer.setStale(stage, true);
-        for (const detail::StaleEdge* edge : stalenessEdges.forward(stage.value())) {
-            if (seen.insert(edge->to).second) writer.setStale(StageId(edge->to), true);
-        }
+        ++staleGeneration;
+        store.stageStateWriter().setStale(stage, true);
+        markAffectedLocked(stage);
     }
 
     // Sets the stale flag on every stage the forward answer of `stage` lists, each once,
     // and not on the stage itself: the staleness graph is acyclic. Caller holds the mutex.
     void markAffectedLocked(StageId stage) {
         edgesOf(stage);
+        // Before the first write, so an answer cached before it is never taken for one
+        // after, even when a write fails part way.
+        ++staleGeneration;
         StageStateWriter& writer = store.stageStateWriter();
         std::set<int32_t> seen;
         for (const detail::StaleEdge* edge : stalenessEdges.forward(stage.value())) {
@@ -418,6 +421,7 @@ public:
         // No explicit dependency names its own stage now, so derivation cannot throw.
         const std::vector<Entry> nextEntries = entriesOf(nextDefinitions);
         Graph nextGraph = deriveWithPins(nextEntries, nextPins);
+        Unresolved nextUnresolved = deriveUnresolved(nextEntries);
         detail::StalenessEdges nextEdges =
             buildStalenessEdges(nextEntries, nextGraph, nextPins, store.layers(), store.rasters(), details);
 
@@ -441,6 +445,8 @@ public:
         pins = std::move(nextPins);
         graph = std::move(nextGraph);
         stalenessEdges = std::move(nextEdges);
+        unresolved = std::move(nextUnresolved);
+        ++edgesGeneration;
     }
 
     static void warnUnreadable(const char* name, const char* cause) {
@@ -465,6 +471,12 @@ public:
     // The staleness edges of the held definitions, rebuilt with the graph. StalenessGraph
     // reads them under the mutex; their details point into `details`.
     detail::StalenessEdges stalenessEdges;
+    // The unresolved dependsOn names of every held stage, derived with the graph.
+    Unresolved unresolved;
+    // Bumped whenever stalenessEdges is replaced, and before every stale flag the registry
+    // writes: StalenessGraph keys the answers it caches on them.
+    uint64_t edgesGeneration = 0;
+    uint64_t staleGeneration = 0;
     std::unique_ptr<StalenessGraph> staleness;
     // The stored configuration of every stage at the last restore, by id: a read-only
     // registry compares it with the store to tell whether a writer changed the stages.
@@ -479,7 +491,17 @@ StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {
     impl->staleness.reset(new StalenessGraph(std::make_unique<StalenessGraph::Impl>(
         impl->mutex, [impl] { impl->refreshIfReadOnly(); },
         [impl]() -> const detail::StalenessEdges& { return impl->stalenessEdges; },
-        [impl]() -> const StageStateReader& { return impl->store.stageStates(); })));
+        [impl]() -> const StageStateReader& { return impl->store.stageStates(); },
+        [impl] { return impl->edgesGeneration; },
+        [impl](StalenessGraph::Impl::CausesKey& key) {
+            // A writer in another process sets stale flags without a journal entry, so a
+            // read-only registry has no key that follows them.
+            if (impl->store.isReadOnly()) return false;
+            key.edges = impl->edgesGeneration;
+            key.stale = impl->staleGeneration;
+            key.journal = impl->store.events().newestSequence();
+            return true;
+        })));
     impl_->restore();
 }
 
@@ -515,6 +537,9 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
         }
     }
     requireAcyclic(deriveWithPins(candidate, candidatePins), candidate);
+    // Derived aside so a redeclared definition and its unresolved names are swapped in
+    // together; a new stage gets its own in deriveAndPersist.
+    Unresolved candidateUnresolved = redeclared ? deriveUnresolved(candidate) : Unresolved();
 
     // Everything that can run out of memory is allocated before the store is touched:
     // the copy, and for a new stage a map node parked under a placeholder key until the
@@ -544,6 +569,7 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
         impl_->markStaleLocked(existing);
         writer.setConfiguration(existing, record.c_str());
         held->second.swap(copy);
+        impl_->unresolved = std::move(candidateUnresolved);  // positions of the definition now held
         impl_->retired.push_back(std::move(copy));  // capacity reserved above: cannot throw
         impl_->unreadable.erase(existing.value());
         impl_->pins = std::move(candidatePins);
@@ -591,6 +617,7 @@ void StageRegistry::clearStale(StageId stage) {
     impl_->requireOpen("StageRegistry::clearStale");
     if (impl_->store.isReadOnly()) throw IoError("StageRegistry::clearStale: the workspace is read-only");
     impl_->edgesOf(stage);
+    ++impl_->staleGeneration;
     impl_->store.stageStateWriter().setStale(stage, false);
 }
 
@@ -656,11 +683,11 @@ int32_t StageRegistry::unresolvedDependencyCount(StageId stage) const {
 const char* StageRegistry::unresolvedDependencyAt(StageId stage, int32_t index) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refreshIfReadOnly();
-    const std::vector<const char*> names = impl_->unresolvedOf(stage);
-    if (index < 0 || static_cast<size_t>(index) >= names.size()) {
+    const std::vector<int32_t>& positions = impl_->unresolvedOf(stage);
+    if (index < 0 || static_cast<size_t>(index) >= positions.size()) {
         throw InvalidArgumentError("the unresolved dependency index is out of range");
     }
-    return names[static_cast<size_t>(index)];
+    return impl_->unresolvedName(stage, positions[static_cast<size_t>(index)]);
 }
 
 bool StageRegistry::isRunnable(StageId stage) const {

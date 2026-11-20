@@ -513,6 +513,40 @@ TEST(StalenessGraph, SourceThatNeverRanIsNotACause) {
     }
 }
 
+// The answers are cached between calls (PR #17 finding 5), and the cache follows every
+// change they depend on: a declaration for the forward answer; a stale flag the registry
+// writes and a status written straight to the store, as StageRunner does, for the causes.
+TEST(StalenessGraph, CachedAnswersFollowEveryChange) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, background);
+    complete(f, cells);
+    const int32_t before = f.stages().staleness().affectedCount(background);
+    StageDefinition l("labels");
+    l.readsLayer(f.tissue).writesLayer(f.labels);
+    const StageId labels = f.stages().declare(l);
+    EXPECT_EQ(f.stages().staleness().affectedCount(background), before + 1);
+    EXPECT_TRUE(has(affected(f.stages(), background), labels, StalenessReason::LayerRead));
+
+    EXPECT_EQ(f.stages().staleness().causeCount(cells), 0);
+    f.stages().markStale(cells);
+    std::vector<Cause> causes = causesOf(f.stages(), cells);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+
+    // A re-run of background begins: a status change outside the registry.
+    f.workspace->store()->stageStateWriter().setStatus(background, StageStatus::Running);
+    causes = causesOf(f.stages(), cells);
+    ASSERT_FALSE(causes.empty());
+    EXPECT_EQ(causes[0].stage, background);
+
+    f.stages().clearStale(cells);
+    EXPECT_EQ(f.stages().staleness().causeCount(cells), 0);
+}
+
 // A detail string stays valid for the life of the registry: an identical redeclare and a
 // new declaration rebuild the edges, and the string held across them is still the one
 // the graph returns.

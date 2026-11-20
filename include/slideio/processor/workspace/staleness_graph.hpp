@@ -67,6 +67,13 @@ class StageRegistry;
  * they stay valid for the life of the registry, across every declare() and read-only
  * refresh. Positions are into one answer, so a declaration between two calls can
  * change it.
+ *
+ * Each answer is computed once and cached until something it depends on changes: the
+ * forward answer until the edges are rebuilt; the causes, in a writable workspace, until
+ * the edges are rebuilt, the registry writes a stale flag, or a status changes (the store
+ * journals each). A read-only workspace recomputes the causes on every call. A stale flag
+ * written straight through StageStateWriter, bypassing the registry, is not followed until
+ * the next such change.
  * @par Thread-safety
  * ThreadSafe: every member takes the registry's mutex; the view is not an independent
  * object. The reference StageRegistry::staleness() returns stays valid across declare().

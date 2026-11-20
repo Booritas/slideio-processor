@@ -1290,6 +1290,20 @@ qualifies, S is its own single cause with reason `Reconfigured` and detail
 marked stale directly. `None` is never reported. Causes need no storage of
 their own. They take the same errors as the forward answer.
 
+**Cached answers (PR #17 review).** Iterating an answer by index would otherwise
+recompute it on every call. The forward answer of a stage is computed once per
+set of edges: the registry bumps a generation whenever it replaces them (every
+declare and restore), and the answer depends on nothing else. The causes are
+cached per stage under a key of that generation, a counter the registry bumps
+before every stale flag it writes (`markStale`, `markAffectedStale`,
+`clearStale`, a redeclaration), and the newest sequence of the event journal,
+which every `StageStateWriter::setStatus` — so every status and completion time,
+`StageRunner`'s included — appends in its own transaction. A read-only registry
+does not cache causes: its writer is another process, whose stale flags leave no
+trace it can see. The stale flags belong to the registry (4.3); one written
+straight through `StageStateWriter::setStale` is not a change the key follows
+until the next one that is.
+
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,
 `restrictToLayer` and `readsLayerAsRaster` all do — so they travel the

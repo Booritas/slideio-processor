@@ -9,6 +9,8 @@
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/staleness_graph.hpp>
 
+#include <workspace/detail/stage_reads.hpp>
+
 #include <cstdint>
 #include <set>
 #include <string>
@@ -16,11 +18,6 @@
 #include <vector>
 
 namespace slideio::processor::detail {
-
-struct StageRef {
-    int32_t id;
-    const StageDefinition* definition;
-};
 
 struct StaleEdge {
     int32_t from;
