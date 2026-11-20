@@ -387,6 +387,7 @@ class CoarseToFineSpec {
 public:
     CoarseToFineSpec(const char* coarseStageName, const char* fineStageName);
     CoarseToFineSpec(const CoarseToFineSpec&);
+    CoarseToFineSpec& operator=(const CoarseToFineSpec&);
     ~CoarseToFineSpec();
 
     /// The coarse half: what it computes, and the layer it writes. Its
@@ -413,13 +414,18 @@ public:
 /// Declares the two stages, wired. The fine one gets `readsLayerAsRaster`
 /// against the coarse one's layer — and so, through the implied `readsLayer`,
 /// the dependency and the staleness edge (4.3, 4.5) — plus the restriction
-/// unless it was turned off. Throws `StageError` naming the offending field
-/// when the names match, the layers match, or the levels are not ordered.
+/// unless it was turned off. Everything is validated before anything is
+/// declared: it throws `StageError` naming the offending field (`"coarse"` or
+/// `"fine"` when a half was never set, `"names"`, `"layers"`, `"levels"`) when
+/// the names match, the layers match, or both levels are explicit and the
+/// coarse one is not strictly greater. If the fine `declare` throws, the
+/// coarse stage stays declared (`storage` has no transaction across
+/// declarations) and the error is rethrown unchanged.
 void declareCoarseToFine(StageRegistry&, const CoarseToFineSpec&,
                          StageId& coarseOut, StageId& fineOut);
 ```
 
-**Thread-safety:** `CoarseToFineSpec` is ThreadConfined.
+**Thread-safety:** `CoarseToFineSpec` is ThreadConfined; `declareCoarseToFine` declares through the registry, one `declare` at a time, and the pair is not atomic.
 **Requirements:** UR-SEG-8, UR-IMG-4, UR-STG-10.
 
 Written out, the pair it replaces is five declarations and one string that has
@@ -456,7 +462,14 @@ separately and silently:
   inheriting `LayerRasterContent`'s own default for exactly that reason.
 
 `declareCoarseToFine` makes all three true by construction and throws on the
-one it can check, which is the ordering.
+one it can check, which is the ordering. The checks (both halves set, distinct
+names, distinct layers, strictly ordered explicit levels) all run before the
+first `declare`, so a refused pair declares nothing. A fine level of -1 passes,
+because automatic selection cannot be compared. The one failure the helper cannot
+check in advance is the fine `declare` itself (a cycle, say); by then the coarse
+stage is declared, and it stays so, since `storage` has no transaction across
+declarations. The helper says so and rethrows rather than trying to undo a
+declaration, which would also discard a stage that was already there.
 
 **It is sugar over `StageDefinition`, not a second path.** It declares two
 ordinary stages, and nothing downstream can tell: dependency derivation,
