@@ -9,7 +9,7 @@
 namespace slideio::processor::testing_support {
 
 // Registers "test.ws.auxProbe" (and the other test operations), skipping any already
-// registered. PerChannel, Byte, halo 0, output Byte zeros: the probe only observes.
+// registered. PerChannel, Byte, halo 0, the output is left as allocated (zero-initialised): the probe only observes.
 void registerAuxProbe();
 
 // Clears what the probe has recorded.

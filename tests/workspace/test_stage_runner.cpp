@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -510,6 +511,27 @@ PipelineSpec probeChain(const char* binding) {
     return spec;
 }
 
+// A raster sink that keeps a copy of every Float32 tile it is given.
+class CopyingRasterSink : public RasterSink {
+public:
+    void writeTile(const BlockView& tile) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tiles_.push_back(makeView(tile.level(), tile.slideRect(), tile.width(), tile.height(), DataType::Float32,
+                                  tile.planeCount(), [&tile](int64_t x, int64_t y, int32_t plane) {
+                                      const uint8_t* row = static_cast<const uint8_t*>(tile.planeData(plane)) +
+                                                           y * tile.planeRowStrideBytes(plane);
+                                      return static_cast<double>(reinterpret_cast<const float*>(row)[x]);
+                                  }));
+    }
+    void flush() override {}
+    int64_t tilesWritten() const override { return static_cast<int64_t>(tiles_.size()); }
+    const std::vector<std::unique_ptr<OwnedView>>& tiles() const { return tiles_; }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::unique_ptr<OwnedView>> tiles_;
+};
+
 // The kinds of the journal's events, in order.
 std::vector<EventKind> eventKinds(Fixture& f) {
     std::vector<EventKind> kinds;
@@ -547,10 +569,37 @@ TEST(StageRunner, WrittenRasterIsPublishedOnSuccess) {
     ASSERT_TRUE(rasters.isPopulated(prob));
     EXPECT_EQ(rasters.writerStage(prob), id);
 
-    // One tile of the published raster reads back over the 7.0 the view started with.
-    auto owned = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Float32, 3, 7.0);
-    rasters.sourceFor(prob)->fillTile(owned->view);
-    EXPECT_NE(*static_cast<const float*>(owned->view.planeData(0)), 7.0f) << "the tile was filled";
+    // The same blur run directly: the sink keeps a copy of each tile the pipeline writes.
+    CopyingRasterSink direct;
+    Pipeline reference(f.workspace->scene(), f.workspace->scratchConfiguration(), blurChain());
+    reference.rasterSink(&direct);
+    reference.run(nullptr, CancellationToken());
+    ASSERT_FALSE(direct.tiles().empty());
+
+    // Every stored tile of the same rect and level matches it; some sample is non-zero
+    // (an empty raster reads as zeros) and some is below white (a disc edge).
+    const TileRasterSourcePtr stored = rasters.sourceFor(prob);
+    bool nonZero = false, edge = false;
+    for (const auto& tile : direct.tiles()) {
+        const BlockView& want = tile->view;
+        auto got = makeView(want.level(), want.slideRect(), want.width(), want.height(), DataType::Float32, 3, 7.0);
+        stored->fillTile(got->view);
+        for (int32_t plane = 0; plane < 3; ++plane) {
+            for (int64_t y = 0; y < want.height(); ++y) {
+                const float* a = reinterpret_cast<const float*>(static_cast<const uint8_t*>(want.planeData(plane)) +
+                                                                y * want.planeRowStrideBytes(plane));
+                const float* b = reinterpret_cast<const float*>(static_cast<const uint8_t*>(got->view.planeData(plane)) +
+                                                                y * got->view.planeRowStrideBytes(plane));
+                for (int64_t x = 0; x < want.width(); ++x) {
+                    ASSERT_NEAR(a[x], b[x], 1e-3) << "plane " << plane << " at (" << x << ", " << y << ")";
+                    nonZero = nonZero || b[x] > 0.0f;
+                    edge = edge || (b[x] > 0.0f && b[x] < 250.0f);
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(nonZero);
+    EXPECT_TRUE(edge) << "the compared tiles cover a disc edge";
 }
 
 TEST(StageRunner, StoredRasterIsReadByBinding) {

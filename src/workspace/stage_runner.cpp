@@ -150,6 +150,22 @@ public:
                 mask = makeLayerMaskSource(store->objects(), source, halfStep);
             }
 
+            // Auxiliary rasters (layer-backed and stored) and the raster writer, §4.4's
+            // order. Built before the Pipeline, which holds raw pointers to them, so it is
+            // destroyed first; they live until runInto returns.
+            std::vector<TileRasterSourcePtr> sources;
+            for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
+                sources.push_back(makeLayerRasterSource(store->objects(), definition.rasterLayerAt(i),
+                                                        definition.rasterContentAt(i)));
+            }
+            for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
+                sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
+            }
+            RasterWriterPtr rasterWriter;
+            if (definition.writesAnyRaster()) {
+                rasterWriter = store->rasters().writerForStage(stage, definition.writtenRaster());
+            }
+
             Pipeline pipeline(workspace.scene(), workspace.scratchConfiguration(), definition.pipeline());
             pipeline.memoryBudget(workspace.memoryBudget())
                 .edgeSink(edgeWriter.get())
@@ -159,23 +175,15 @@ public:
             for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
                 pipeline.bindLayer(layers.name(definition.writtenLayerAt(i)), definition.writtenLayerAt(i));
             }
-            // Auxiliary rasters (layer-backed and stored) and the raster writer, §4.4's
-            // order: the sources are built first and live until runInto returns.
-            std::vector<TileRasterSourcePtr> sources;
+            // The layer-backed sources come first in `sources`, then the stored ones.
+            size_t next = 0;
             for (int32_t i = 0; i < definition.rasterLayerCount(); ++i) {
-                sources.push_back(makeLayerRasterSource(store->objects(), definition.rasterLayerAt(i),
-                                                        definition.rasterContentAt(i)));
-                pipeline.auxiliaryRaster(definition.rasterBindingAt(i), sources.back().get());
+                pipeline.auxiliaryRaster(definition.rasterBindingAt(i), sources[next++].get());
             }
             for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
-                sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
-                pipeline.auxiliaryRaster(definition.readRasterBindingAt(i), sources.back().get());
+                pipeline.auxiliaryRaster(definition.readRasterBindingAt(i), sources[next++].get());
             }
-            RasterWriterPtr rasterWriter;
-            if (definition.writesAnyRaster()) {
-                rasterWriter = store->rasters().writerForStage(stage, definition.writtenRaster());
-                pipeline.rasterSink(rasterWriter.get());
-            }
+            if (rasterWriter) pipeline.rasterSink(rasterWriter.get());
             checkLayerBinding(definition);
             pipeline.validate();
 

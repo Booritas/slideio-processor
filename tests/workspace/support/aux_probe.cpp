@@ -11,18 +11,17 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 namespace slideio::processor::testing_support {
 
 namespace {
 
-struct Seen {
-    int64_t tiles = 0;
-};
-
 std::mutex gMutex;
-std::map<std::string, Seen> gSeen;
+std::map<std::string, int64_t> gTiles;  // tiles on which each binding was seen
 
+// Operations have no hook to declare an auxiliary input, so the probe reads the binding by
+// the name its "binding" parameter gives.
 class AuxProbeOperation : public Operation {
 public:
     explicit AuxProbeOperation(const OperationParameters& parameters) : parameters_(parameters) {
@@ -36,11 +35,9 @@ public:
     DataType outputType(DataType) const override { return DataType::Byte; }
     const OperationParameters& parameters() const override { return parameters_; }
     void apply(OperationContext& context) override {
-        const BlockView* aux = context.auxiliary(binding_.c_str());
-        if (aux == nullptr) return;
+        if (context.auxiliary(binding_.c_str()) == nullptr) return;
         std::lock_guard<std::mutex> lock(gMutex);
-        Seen& seen = gSeen[binding_];
-        ++seen.tiles;
+        ++gTiles[binding_];
     }
 
 private:
@@ -56,20 +53,19 @@ void registerAuxProbe() {
     if (!catalog.isRegistered("test.ws.auxProbe")) {
         catalog.registerFactory(std::make_shared<PrototypeFactory>(
             [](const OperationParameters& p) -> OperationPtr { return std::make_shared<AuxProbeOperation>(p); },
-            "Records the auxiliary raster it is given; writes zeros", "O(n) in the number of samples"));
+            "Records the auxiliary raster it is given; leaves the output as allocated", "O(1) per tile"));
     }
 }
 
 void resetAuxProbe() {
     std::lock_guard<std::mutex> lock(gMutex);
-    gSeen.clear();
+    gTiles.clear();
 }
 
 int64_t auxProbeTiles(const std::string& binding) {
     std::lock_guard<std::mutex> lock(gMutex);
-    const auto it = gSeen.find(binding);
-    return it == gSeen.end() ? 0 : it->second.tiles;
+    const auto it = gTiles.find(binding);
+    return it == gTiles.end() ? 0 : it->second;
 }
-
 
 } // namespace slideio::processor::testing_support
