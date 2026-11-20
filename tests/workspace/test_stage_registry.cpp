@@ -218,6 +218,11 @@ TEST(StageRegistry, LateDeclaredDependencyResolves) {
     EXPECT_NE(message.find("\"c\""), std::string::npos) << message;
     StageId unused;
     EXPECT_FALSE(f.stages().find("c", unused));
+    EXPECT_EQ(f.stages().unresolvedDependencyCount(bid), 0);
+    EXPECT_EQ(f.stages().dependencyCount(aid), 0);
+    ASSERT_EQ(f.stages().dependencyCount(bid), 1);
+    EXPECT_EQ(f.workspace->store()->stageStates().dependencyCount(aid), 0);
+    EXPECT_EQ(f.workspace->store()->stageStates().dependencyCount(bid), 1);
 }
 
 TEST(StageRegistry, LateDeclarationClosingACycleThroughAnUnresolvedNameIsRefused) {
@@ -231,6 +236,32 @@ TEST(StageRegistry, LateDeclarationClosingACycleThroughAnUnresolvedNameIsRefused
     EXPECT_NE(message.find("\"a\""), std::string::npos) << message;
     EXPECT_NE(message.find("\"b\""), std::string::npos) << message;
     EXPECT_EQ(f.stages().count(), 1);
+    StageId aid;
+    ASSERT_TRUE(f.stages().find("a", aid));
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(aid), 1);
+    EXPECT_STREQ(f.stages().unresolvedDependencyAt(aid, 0), "b");
+    EXPECT_EQ(f.stages().dependencyCount(aid), 0);
+    EXPECT_EQ(f.workspace->store()->stageStates().dependencyCount(aid), 0);
+}
+
+TEST(StageRegistry, UnresolvedNameSurvivesRedeclare) {
+    Fixture f;
+    StageDefinition b("b");
+    b.dependsOn("ghost-with-a-name-long-enough-to-leave-the-small-buffer").writesLayer(f.y);
+    const StageId id = f.stages().declare(b);
+    const char* old = f.stages().unresolvedDependencyAt(id, 0);
+    const StageDefinition& held = f.stages().definition(id);
+    ASSERT_EQ(held.explicitDependencyCount(), 1);
+
+    StageDefinition changed("b");
+    changed.dependsOn("other").writesLayer(f.y);
+    f.stages().declare(changed);
+    // Overwrite freed memory, if any, so a dangling read is visible.
+    std::vector<std::string> noise(64, std::string(80, 'x'));
+    EXPECT_STREQ(old, "ghost-with-a-name-long-enough-to-leave-the-small-buffer");
+    EXPECT_STREQ(held.explicitDependencyAt(0), "ghost-with-a-name-long-enough-to-leave-the-small-buffer");
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(id), 1);
+    EXPECT_STREQ(f.stages().unresolvedDependencyAt(id, 0), "other");
 }
 
 TEST(StageRegistry, UnresolvedDependencySurvivesReopen) {

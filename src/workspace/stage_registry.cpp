@@ -485,11 +485,15 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
             }
             return existing;
         }
+        // The replaced definition is retired, not destroyed, so references and strings
+        // handed out from it stay valid; reserve now so nothing throws after the swap.
+        impl_->retired.reserve(impl_->retired.size() + 1);
         // Stale first, along the old dependents: if a later write fails the stage is
         // still marked, never silently current with a new record.
         impl_->markStaleLocked(existing);
         writer.setConfiguration(existing, record.c_str());
         held->second.swap(copy);
+        impl_->retired.push_back(std::move(copy));  // capacity reserved above: cannot throw
         impl_->unreadable.erase(existing.value());
         impl_->pins = std::move(candidatePins);
         for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
