@@ -28,7 +28,7 @@ target_compile_definitions(slideio_processor_config_tests PRIVATE
     SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_VERSION="${PINNED_OPENCV_VERSION}"
     SLIDEIO_PROCESSOR_TEST_PINNED_OPENCV_MAJOR=${PINNED_OPENCV_MAJOR})
 # A hung waiter fails after 60 s instead of blocking the run.
-gtest_discover_tests(slideio_processor_config_tests TEST_PREFIX "config." PROPERTIES TIMEOUT 60)
+gtest_discover_tests(slideio_processor_config_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "config." PROPERTIES TIMEOUT 60)
 
 # Every public header must compile on its own.
 file(GLOB CONFIG_PUBLIC_HEADERS CONFIGURE_DEPENDS

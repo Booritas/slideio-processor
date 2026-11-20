@@ -69,7 +69,7 @@ target_compile_definitions(slideio_processor_storage_tests PRIVATE
     SLIDEIO_PROCESSOR_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
     SLIDEIO_PROCESSOR_TEST_BUILD_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 # A hung waiter fails after 60 s instead of blocking the run.
-gtest_discover_tests(slideio_processor_storage_tests TEST_PREFIX "storage." PROPERTIES TIMEOUT 60)
+gtest_discover_tests(slideio_processor_storage_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "storage." PROPERTIES TIMEOUT 60)
 
 # Every public header must compile on its own.
 file(GLOB STORAGE_PUBLIC_HEADERS CONFIGURE_DEPENDS

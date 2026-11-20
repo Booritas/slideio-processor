@@ -111,7 +111,7 @@ if(WIN32)
         ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
 endif()
 # A hung waiter fails after 60 s instead of blocking the run.
-gtest_discover_tests(slideio_processor_pipeline_tests TEST_PREFIX "pipeline."
+gtest_discover_tests(slideio_processor_pipeline_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "pipeline."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${PIPELINE_TEST_PROPERTIES})
 

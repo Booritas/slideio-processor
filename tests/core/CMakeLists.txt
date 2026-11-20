@@ -25,7 +25,7 @@ add_executable(slideio_processor_core_tests
 target_link_libraries(slideio_processor_core_tests PRIVATE
     slideio-processor-data GTest::gtest_main)
 # A hung waiter fails after 60 s instead of blocking the run.
-gtest_discover_tests(slideio_processor_core_tests PROPERTIES TIMEOUT 60)
+gtest_discover_tests(slideio_processor_core_tests DISCOVERY_TIMEOUT 60 PROPERTIES TIMEOUT 60)
 
 # Every public header must compile on its own.
 file(GLOB PUBLIC_HEADERS CONFIGURE_DEPENDS

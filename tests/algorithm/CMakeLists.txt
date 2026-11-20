@@ -69,7 +69,7 @@ if(WIN32)
     set_property(TARGET slideio_processor_algorithm_tests PROPERTY TEST_LAUNCHER
         ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
 endif()
-gtest_discover_tests(slideio_processor_algorithm_tests TEST_PREFIX "algorithm."
+gtest_discover_tests(slideio_processor_algorithm_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${ALGORITHM_TEST_PROPERTIES})
 
@@ -128,6 +128,6 @@ if(WIN32)
     set_property(TARGET slideio_processor_working_set_tests PROPERTY TEST_LAUNCHER
         ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
 endif()
-gtest_discover_tests(slideio_processor_working_set_tests TEST_PREFIX "algorithm.ws."
+gtest_discover_tests(slideio_processor_working_set_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm.ws."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${ALGORITHM_TEST_PROPERTIES})

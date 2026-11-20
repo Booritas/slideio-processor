@@ -40,6 +40,6 @@ if(WIN32)
     set_property(TARGET slideio_processor_workspace_tests PROPERTY TEST_LAUNCHER
         ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
 endif()
-gtest_discover_tests(slideio_processor_workspace_tests TEST_PREFIX "workspace."
+gtest_discover_tests(slideio_processor_workspace_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "workspace."
     DISCOVERY_MODE PRE_TEST
     PROPERTIES ${WORKSPACE_TEST_PROPERTIES})

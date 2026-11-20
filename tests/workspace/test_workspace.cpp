@@ -358,9 +358,13 @@ TEST(Workspace, RelativeSlidePathIsStoredAbsolute) {
     const Prepared t;
     const fs::path sub = t.dir.path() / "sub";
     fs::create_directories(sub);
-    const std::string expected = fs::absolute(t.slide).lexically_normal().u8string();
+    std::string expected;
     {
         const CurrentDirectory cd(sub);
+        // Built from the working directory the process reports, as the binding is: on macOS
+        // the temporary directory is reached through the /var -> /private/var symlink.
+        expected = (fs::current_path() / "../slide.tif").lexically_normal().u8string();
+        EXPECT_TRUE(fs::equivalent(fs::u8path(expected), t.slide));
         WorkspacePtr ws = Workspace::create(t.workspaceUtf8().c_str(), "../slide.tif", 0, t.config);
         EXPECT_EQ(std::string(ws->slidePath()), expected);
         EXPECT_TRUE(fs::u8path(ws->slidePath()).is_absolute());
