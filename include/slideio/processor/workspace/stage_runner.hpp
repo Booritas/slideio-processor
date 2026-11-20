@@ -96,8 +96,10 @@ public:
      * @throws IoError When the workspace is read-only, or as the pipeline and the store
      * raise it.
      * @throws StageError When the stage's record is unreadable, a dependency is not
-     * Complete or is stale, or another runner of the workspace is inside run(); it names
-     * the stage in its context and message.
+     * Complete or is stale, another runner of the workspace is inside run(), or an operation
+     * that produces objects names no layer the stage writes (or none, with the stage
+     * writing other than one layer); it names the stage in its context and message, and
+     * for the last case the operation too.
      * @throws InvalidArgumentError, UnsupportedDataTypeError, ChannelArityError,
      * TileError, CancelledError, InternalError As Pipeline::validate() and
      * Pipeline::runInto() raise them; the stage is left Failed.

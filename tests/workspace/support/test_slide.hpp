@@ -17,7 +17,17 @@ std::filesystem::path writeTestSlide(const std::filesystem::path& file, int32_t 
 // radius 20 on a 3x3 grid, their centres at 1/6, 3/6 and 5/6 of each side. Colour
 // conversion to grey, an inverted fixed threshold and connected components find
 // exactly nine objects in it, given a slide large enough to hold the discs apart.
-std::filesystem::path writeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height);
+// `levels` > 1 appends reduced-resolution pages, each half the size of the one before, and an
+// Aperio-style description; name the file `*.svs` and the SVS driver exposes the pages as
+// pyramid levels (any other extension opens one level).
+std::filesystem::path writeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height,
+                                     int32_t levels = 1);
+
+// A blob slide whose left half (x < width / 2) is white and whose right half is light grey
+// (200), with the nine discs but the middle column of them: three dark discs on the left, three
+// on the right. Thresholding above 230 selects the left half alone (its discs are holes, so
+// extractHoles = false), and below 128 selects all six discs.
+std::filesystem::path writeHalfBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height);
 
 // A unique path in the temp directory, not created; remove_all on destruction, so a
 // failing test leaves nothing behind.

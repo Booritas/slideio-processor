@@ -1,10 +1,15 @@
-// Requirements: UR-STG-10, UR-EXE-1, UR-EXE-4
+// Requirements: UR-STG-3, UR-STG-10, UR-EXE-1, UR-EXE-4
 #include <slideio/processor/workspace/stage_runner.hpp>
 
 #include <workspace/detail/run_slot.hpp>
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
+#include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
+#include <slideio/processor/pipeline/pipeline_spec.hpp>
+#include <slideio/processor/pipeline/tile_grid.hpp>
 #include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
@@ -15,6 +20,7 @@
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/stage_registry.hpp>
 
+#include <cstring>
 #include <string>
 
 namespace slideio::processor {
@@ -77,8 +83,46 @@ public:
         }
     }
 
+    // Decision 6: every operation that produces objects names one of the stage's written
+    // layers, or leaves it out when the stage writes exactly one. Raster-only operations are
+    // not consulted. Run before Pipeline::validate(), so the refusal names the stage.
+    void checkLayerBinding(const StageDefinition& definition) const {
+        const PipelineSpec spec = definition.pipeline();
+        const LayerRegistry& layers = workspace.layers();
+        for (int32_t i = 0; i < spec.operationCount(); ++i) {
+            const char* operation = spec.operationName(i);
+            if (!OperationCatalog::instance().producesObjects(operation)) continue;
+            const OperationParameters& parameters = spec.operationParameters(i);
+            bool present = false;
+            for (int32_t k = 0; k < parameters.count(); ++k) {
+                present = present || std::strcmp(parameters.keyAt(k), "targetLayer") == 0;
+            }
+            const std::string target = present ? parameters.getString("targetLayer", "") : "";
+            if (!target.empty()) {
+                bool declared = false;
+                for (int32_t k = 0; k < definition.writtenLayerCount(); ++k) {
+                    declared = declared || target == layers.name(definition.writtenLayerAt(k));
+                }
+                if (!declared) {
+                    throwBinding(operation, "targets layer \"" + target + "\", which the stage does not write");
+                }
+            } else if (definition.writtenLayerCount() != 1) {
+                throwBinding(operation, "has no target layer and the stage writes " +
+                                            std::to_string(definition.writtenLayerCount()) +
+                                            " layers; name one with its \"targetLayer\" parameter");
+            }
+        }
+    }
+
+    [[noreturn]] void throwBinding(const char* operation, const std::string& what) const {
+        ErrorContext context;
+        context.stageName = name.c_str();
+        context.operationName = operation;
+        throw StageError(("stage \"" + name + "\": operation " + operation + " " + what).c_str(), context);
+    }
+
     // Everything after the run slot is taken: the run proper, §4.4's listing without the
-    // layer restriction and the rasters.
+    // rasters.
     void execute() {
         StageRegistry& registry = workspace.stages();
         const StageDefinition definition = registry.definition(stage);
@@ -94,14 +138,26 @@ public:
             const EdgeWriterPtr edgeWriter = store->edges().writerForStage(stage);
             const AnnotationWriterPtr notes = store->annotations().writerForStage(stage);
 
+            // The restriction is resolved per tile by the mask source, which therefore lives
+            // as long as the run; null when the stage is unrestricted.
+            TileMaskSourcePtr mask;
+            if (definition.hasLayerRestriction()) {
+                const LayerId source = definition.layerRestriction();
+                const double halfStep =
+                    LevelSelector(workspace.scene()).scaleOfLevel(layers.coarsestAnalysisLevel(source)) / 2.0;
+                mask = makeLayerMaskSource(store->objects(), source, halfStep);
+            }
+
             Pipeline pipeline(workspace.scene(), workspace.scratchConfiguration(), definition.pipeline());
             pipeline.memoryBudget(workspace.memoryBudget())
                 .edgeSink(edgeWriter.get())
                 .stageName(name.c_str())
-                .annotationSink(notes.get());
+                .annotationSink(notes.get())
+                .maskSource(mask.get());
             for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
                 pipeline.bindLayer(layers.name(definition.writtenLayerAt(i)), definition.writtenLayerAt(i));
             }
+            checkLayerBinding(definition);
             pipeline.validate();
 
             pipeline.runInto(*sink, progress, cancel);

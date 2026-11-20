@@ -798,6 +798,32 @@ which was the signal that the case had not been thought through. It is not
 needed and does not exist. `core::dilate(Polygon, double)` was its only other
 caller and is gone too (`01-core.md` 1.3).
 
+**Layer binding.** Before `validate()`, and after the stage is marked `Running`,
+the runner checks every operation for which
+`OperationCatalog::producesObjects(name)` is true; raster-only operations are
+not consulted. Its `targetLayer`, when present and non-empty, must name one of
+the stage's written layers; when absent or empty, the stage must declare exactly
+one written layer. Otherwise `run()` throws `StageError` naming the stage, the
+operation and the layer (the `ErrorContext` carries both `stageName` and
+`operationName`), and the stage ends `Failed` with nothing written. The check is
+the runner's so that its message names the stage; `Pipeline::validate()` repeats
+the resolution for callers that use a pipeline directly. An empty `targetLayer`
+that does reach `validate()` (a hand-built parameter bag; the typed parameter
+classes drop an empty name) is still refused there as an unbound layer, so a
+single-layer stage with an empty name fails, in the pipeline's words.
+
+**Annotation targets are not checked here yet.** No operation in the catalog
+names an annotation target layer today, and `storage` refuses an undeclared
+layer at emit, which is where the invariant lives. The runner check arrives with
+the first operation that takes such a parameter.
+
+**The mask source outlives the run.** `makeLayerMaskSource` borrows the object
+store, and the `Pipeline` borrows the mask source, so the runner holds it in
+`run()`'s scope across `runInto`. The half-step comes from
+`coarsestAnalysisLevel(src)`, which is 0 for a layer written only at full
+resolution; a stage that was never run contributes no level, and in that case
+the stage is not runnable anyway, as its dependency is incomplete.
+
 **The mask over-includes, never under-includes.** A layer analysed at level 4
 has a boundary good to ±16 level-0 pixels (`03-storage.md` 3.3), so masking to
 its geometry verbatim would silently drop objects that genuinely lie inside the
