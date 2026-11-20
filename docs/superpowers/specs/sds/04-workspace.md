@@ -524,6 +524,12 @@ public:
     /// failure — a dependent left current whose parents have been replaced.
     void markStale(StageId);
 
+    /// Marks every stage a re-run of `stage` would invalidate, by the five
+    /// paths of 4.5, each once, in one locked pass; `stage` itself only when a
+    /// cycle leads back to it. Transitive. `IoError` when the workspace is
+    /// read-only, before the stage is resolved. This is step 1 of a re-run (4.4).
+    void markAffectedStale(StageId);
+
     /// Clears the flag on `stage` alone. **Not** transitive. A stage becomes
     /// current by being re-run, which is `StageRunner`'s business; clearing a
     /// dependent's flag without re-running it would assert a coherence
@@ -608,6 +614,13 @@ from the held definitions and never from `LayerRegistry::writerStageAt`, which
 keeps a writer a redeclaration dropped. They are not persisted: the dependency
 rows, `isRunnable` and the cycle check are unchanged, because `LayerOrdering`
 and `DerivedFrom` do not gate running.
+
+`markAffectedStale` is the same walk without the stage itself: it sets the flag
+on every stage the forward answer lists, each once, under one hold of the
+registry mutex (PR #16 finding 7), and on the stage only when a cycle reaches
+it. `StageRunner` calls it at re-run step 1 instead of scanning the stages for
+direct dependents. On a read-only registry it throws `IoError` before it
+resolves the stage. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
 
 **Plan A: persisted dependencies and restore (decision 7).** Every `declare`
 rewrites the dependency rows of every stage (`clearDependencies`, then
@@ -1033,11 +1046,10 @@ level is the coarsest any writer used, so keeping it errs on the side of the coa
 edges it previously asserted and the annotations it previously made are all
 replaced, not duplicated (UR-STG-6). The order is fixed:
 
-1. call `StageRegistry::markStale` on every stage that depends directly on this
-   one (found by scanning the stages' `dependencyAt`), because its inputs are
-   about to be replaced whatever this run's outcome; `markStale` is a locking
-   public call of the registry and the runner is outside it, so there is no
-   re-entrancy;
+1. call `StageRegistry::markAffectedStale` on this stage: every stage the staleness
+   graph reaches from it (4.5) is marked stale, whatever this run's outcome,
+   because its inputs are about to be replaced; it is one locking public call
+   of the registry and the runner is outside it, so there is no re-entrancy;
 2. set the stage `Running`;
 3. only then discard the prior output with `discardStage`,
    `discardEdgesOfStage`, `discardAnnotationsOfStage` and
@@ -1110,7 +1122,7 @@ public:
     StalenessReason reasonAt(StageId, int32_t index) const;
     const char*     reasonDetailAt(StageId, int32_t index) const;
 
-    /// Reverse: why `stage` is stale now. Zero when it is not stale. For a
+    /// Reverse: why `stage` is stale now (durable data only). Zero when it is not stale. For a
     /// `Reconfigured` cause the stage is its own cause, which is reported as
     /// such rather than omitted.
     int32_t         causeCount(StageId) const;
@@ -1176,6 +1188,19 @@ follows a live writer. An unknown stage or an index out of range is an
 rebuilt with the edges, and stay valid until the next `declare()` on this
 registry, or a read-only refresh that re-reads a writer's changes (every
 declare rebuilds them, changed or not); a caller holding one longer copies it.
+
+**The reverse answer (plan C, decision 3).** `causeCount`, `causeAt`,
+`causeReasonAt` and `causeReasonDetailAt` answer from durable data alone (the
+stored stale flag, status and `completedAtUnixMs`), so they are identical after
+a reopen. A stage that is not stale has no causes. For a stale stage S the
+causes are the source stages U with an edge U → S where U has changed since S:
+U is stale, or is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`.
+A source joined to S by several reasons is reported once, with the first
+reason in enum order, and the causes are ordered by source stage. When no edge
+qualifies, S is its own single cause with reason `Reconfigured` and detail
+`the stage was redeclared or marked stale directly`: it was redeclared, or
+marked stale directly. `None` is never reported. Causes need no storage of
+their own. They take the same errors as the forward answer.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

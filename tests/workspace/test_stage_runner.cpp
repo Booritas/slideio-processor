@@ -1,4 +1,4 @@
-// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
+// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-8, UR-STG-10, UR-STG-11, UR-EXE-1, UR-EXE-4, UR-EXE-5
 #include "pipeline/test_support/executor_support.hpp"
 #include "pipeline/test_support/test_operations.hpp"
 #include "storage/raster_test_util.hpp"
@@ -31,6 +31,7 @@
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/stage_registry.hpp>
 #include <slideio/processor/workspace/stage_runner.hpp>
+#include <slideio/processor/workspace/staleness_graph.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <workspace/detail/run_fault.hpp>
@@ -1017,6 +1018,26 @@ TEST(StageRunner, RerunOfDependencyStalesAndThenReleasesDependent) {
     StageRunner(*f.workspace, nuclei).run();
     EXPECT_EQ(f.stages().status(nuclei), StageStatus::Complete);
     EXPECT_FALSE(f.stages().isStale(nuclei));
+}
+
+// nuclei writes a layer below the one background writes and reads nothing: only the
+// LayerOrdering edge reaches it, and the re-run still marks it stale.
+TEST(StageRunner, RerunMarksLayerOrderingDependentsStale) {
+    Fixture f;
+    const StageId tissueStage = f.stages().declare(blobStage("tissueStage", f.tissue));
+    const StageId nuclei = f.stages().declare(blobStage("nuclei", f.nuclei));
+    ASSERT_EQ(f.stages().dependencyCount(nuclei), 0);
+
+    StageRunner(*f.workspace, tissueStage).run();
+    StageRunner(*f.workspace, nuclei).run();
+    ASSERT_FALSE(f.stages().isStale(nuclei));
+
+    StageRunner(*f.workspace, tissueStage).run();
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+    EXPECT_FALSE(f.stages().isStale(tissueStage));
+    EXPECT_EQ(f.stages().staleness().causeCount(nuclei), 1);
+    EXPECT_EQ(f.stages().staleness().causeAt(nuclei, 0), tissueStage);
+    EXPECT_EQ(f.stages().staleness().causeReasonAt(nuclei, 0), StalenessReason::LayerOrdering);
 }
 
 TEST(StageRunner, RerunOfCellsLeavesAttachedNucleiUntouched) {

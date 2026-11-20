@@ -43,6 +43,8 @@ public:
     bool knows(int32_t stage) const;
     // The forward answer from a stage: the edges in breadth-first order, each source once.
     std::vector<const StaleEdge*> forward(int32_t stage) const;
+    // The edges that end at a stage, ordered by source, then reason.
+    std::vector<const StaleEdge*> incoming(int32_t stage) const;
 
 private:
     std::set<int32_t> stages_;

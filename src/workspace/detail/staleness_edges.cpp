@@ -116,4 +116,12 @@ std::vector<const StaleEdge*> StalenessEdges::forward(int32_t stage) const {
     return result;
 }
 
+std::vector<const StaleEdge*> StalenessEdges::incoming(int32_t stage) const {
+    std::vector<const StaleEdge*> result;
+    for (const StaleEdge& edge : edges_) {
+        if (edge.to == stage) result.push_back(&edge);
+    }
+    return result;
+}
+
 } // namespace slideio::processor::detail

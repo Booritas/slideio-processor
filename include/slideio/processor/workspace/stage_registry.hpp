@@ -126,6 +126,23 @@ public:
      */
     void markStale(StageId stage);
     /**
+     * @brief Marks every stage a re-run of the stage would invalidate as stale, not the
+     * stage itself.
+     *
+     * The stages are those of the stage's forward answer in staleness(), along all five
+     * paths, each set once in one locked pass; the stage itself is set only when a cycle
+     * leads back to it. This is what StageRunner does first when it re-runs a stage.
+     * @param stage The stage being re-run.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the workspace is read-only (before the stage is resolved) or
+     * closed, or when SQLite fails.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    void markAffectedStale(StageId stage);
+    /**
      * @brief Returns the staleness graph: what re-running a stage invalidates, and why.
      *
      * The view lives as long as the registry and its members follow every declaration;

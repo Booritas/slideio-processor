@@ -132,6 +132,73 @@ public:
      */
     const char* reasonDetailAt(StageId stage, int32_t index) const;
 
+    /**
+     * @brief Counts the causes of a stage's staleness.
+     *
+     * A stage that is not stale has none. For a stale stage the causes are one per source
+     * stage U with an edge U to S, where U changed since S: U is stale, or is not Complete, or
+     * completed after S did (StageStateReader::completedAtUnixMs). A source joined to S by
+     * several reasons is reported once, with the first reason in enum order. When no source
+     * qualifies, the stage is its own single cause, reported as Reconfigured: it was
+     * redeclared or marked stale directly. The causes come from the stored flags, status
+     * and completion times, so they are the same after a reopen. They are ordered by
+     * source stage, then reason.
+     * @param stage The stage.
+     * @return The number of causes; 0 for a stage that is not stale.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the store is closed, or in a read-only workspace when
+     * re-reading the changed stages fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    int32_t causeCount(StageId stage) const;
+    /**
+     * @brief Returns the stage that caused one entry of a stage's staleness.
+     * @param stage The stale stage.
+     * @param index Zero-based position, below causeCount().
+     * @return The source stage; the stage itself for a Reconfigured cause.
+     * @throws InvalidArgumentError When the stage is unknown or index is out of range.
+     * @throws IoError As causeCount().
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    StageId causeAt(StageId stage, int32_t index) const;
+    /**
+     * @brief Returns the reason of one cause; never None.
+     * @param stage The stale stage.
+     * @param index Zero-based position, below causeCount().
+     * @return The reason of the edge, or Reconfigured.
+     * @throws InvalidArgumentError When the stage is unknown or index is out of range.
+     * @throws IoError As causeCount().
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    StalenessReason causeReasonAt(StageId stage, int32_t index) const;
+    /**
+     * @brief Returns the detail of one cause: the edge's detail (see reasonDetailAt()), or
+     * `the stage was redeclared or marked stale directly`.
+     * @param stage The stale stage.
+     * @param index Zero-based position, below causeCount().
+     * @return A null-terminated UTF-8 string; stays valid as the class describes.
+     * @throws InvalidArgumentError When the stage is unknown or index is out of range.
+     * @throws IoError As causeCount().
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-8, UR-STG-11
+     */
+    const char* causeReasonDetailAt(StageId stage, int32_t index) const;
+
 private:
     friend class StageRegistry;
     class Impl;

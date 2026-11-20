@@ -1,4 +1,4 @@
-// Requirements: UR-STG-8, UR-STG-11
+// Requirements: UR-STG-8, UR-STG-11, UR-STG-12
 #include "workspace/support/test_slide.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
@@ -6,6 +6,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/workspace/stage_definition.hpp>
@@ -16,10 +17,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -302,4 +304,132 @@ TEST(StalenessGraph, PinnedEdgesAreStageDependency) {
     ws->stages().markStale(w);
     EXPECT_TRUE(ws->stages().isStale(r));
     ws->close();
+}
+
+namespace {
+
+// Marks a stage Complete a few milliseconds after the previous completion, so the
+// completion times of two stages are never equal.
+void complete(Fixture& f, StageId stage) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    f.workspace->store()->stageStateWriter().setStatus(stage, StageStatus::Complete);
+}
+
+// What StageRunner does for a re-run of the stage: its dependents go stale, it runs, it completes.
+void rerun(Fixture& f, StageId stage) {
+    f.stages().markAffectedStale(stage);
+    f.workspace->store()->stageStateWriter().setStatus(stage, StageStatus::Running);
+    complete(f, stage);
+}
+
+struct Cause {
+    StageId stage;
+    StalenessReason reason;
+    std::string detail;
+    bool operator==(const Cause& other) const {
+        return stage == other.stage && reason == other.reason && detail == other.detail;
+    }
+};
+
+std::vector<Cause> causesOf(const StageRegistry& registry, StageId stage) {
+    std::vector<Cause> result;
+    const StalenessGraph& graph = registry.staleness();
+    for (int32_t i = 0; i < graph.causeCount(stage); ++i) {
+        result.push_back({graph.causeAt(stage, i), graph.causeReasonAt(stage, i), graph.causeReasonDetailAt(stage, i)});
+    }
+    return result;
+}
+
+} // namespace
+
+TEST(StalenessGraph, CausesNameTheChangedUpstream) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.restrictToLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, background);
+    complete(f, cells);
+    EXPECT_EQ(f.stages().staleness().causeCount(cells), 0);
+
+    rerun(f, background);
+    ASSERT_TRUE(f.stages().isStale(cells));
+    const std::vector<Cause> causes = causesOf(f.stages(), cells);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].stage, background);
+    EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
+    EXPECT_EQ(causes[0].detail, "reads layer \"tissue\" written by stage \"background\"");
+}
+
+TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.restrictToLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    const StageId nuclei = f.stages().declare(writerOf("nuclei", f.nuclei));
+    complete(f, background);
+    complete(f, cells);
+    complete(f, nuclei);
+    rerun(f, background);
+    ASSERT_TRUE(f.stages().isStale(nuclei));
+
+    const std::vector<Cause> nucleiBefore = causesOf(f.stages(), nuclei);
+    const std::vector<Cause> cellsBefore = causesOf(f.stages(), cells);
+    ASSERT_FALSE(nucleiBefore.empty());
+    ASSERT_EQ(cellsBefore.size(), 1u);
+    // nuclei is reached from the changed background by LayerOrdering, and from the stale cells.
+    EXPECT_EQ(nucleiBefore[0].stage, background);
+    EXPECT_EQ(nucleiBefore[0].reason, StalenessReason::LayerOrdering);
+
+    f.workspace->close();
+    WorkspacePtr ro = Workspace::openReadOnly(f.path().c_str(), Configuration::defaults());
+    EXPECT_EQ(causesOf(ro->stages(), nuclei), nucleiBefore);
+    EXPECT_EQ(causesOf(ro->stages(), cells), cellsBefore);
+    ro->close();
+    f.workspace = Workspace::open(f.path().c_str(), Configuration::defaults());
+}
+
+TEST(StalenessGraph, ReconfiguredStageIsItsOwnCause) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    StageDefinition c("cells");
+    c.restrictToLayer(f.tissue).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, background);
+    complete(f, cells);
+
+    StageDefinition changed("cells");
+    changed.restrictToLayer(f.tissue).writesLayer(f.cells).writesLayer(f.labels);
+    ASSERT_EQ(f.stages().declare(changed), cells);
+    ASSERT_TRUE(f.stages().isStale(cells));
+    const std::vector<Cause> causes = causesOf(f.stages(), cells);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].stage, cells);
+    EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+    EXPECT_EQ(causes[0].detail, "the stage was redeclared or marked stale directly");
+}
+
+TEST(StalenessGraph, CurrentStageHasNoCauses) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    complete(f, background);
+    EXPECT_EQ(f.stages().staleness().causeCount(background), 0);
+    EXPECT_THROW(f.stages().staleness().causeAt(background, 0), InvalidArgumentError);
+    EXPECT_THROW(f.stages().staleness().causeCount(StageId(9999)), InvalidArgumentError);
+}
+
+TEST(StalenessGraph, DroppingAPrimitiveLayerMarksNothing) {
+    Fixture f;
+    const StageId sp = f.stages().declare(writerOf("sp", f.superpixels));
+    StageDefinition c("cells");
+    c.readsLayer(f.superpixels).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+    complete(f, sp);
+    complete(f, cells);
+
+    f.workspace->layerLifecycle().drop(f.superpixels);
+    EXPECT_FALSE(f.stages().isStale(sp));
+    EXPECT_FALSE(f.stages().isStale(cells));
+    EXPECT_EQ(f.stages().staleness().causeCount(cells), 0);
 }

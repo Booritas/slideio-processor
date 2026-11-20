@@ -276,6 +276,17 @@ public:
         }
     }
 
+    // Sets the stale flag on every stage the forward answer of `stage` lists, each once,
+    // and not on the stage itself unless a cycle leads back to it. Caller holds the mutex.
+    void markAffectedLocked(StageId stage) {
+        edgesOf(stage);
+        StageStateWriter& writer = store.stageStateWriter();
+        std::set<int32_t> seen;
+        for (const detail::StaleEdge* edge : stalenessEdges.forward(stage.value())) {
+            if (seen.insert(edge->to).second) writer.setStale(StageId(edge->to), true);
+        }
+    }
+
     // Rebuilds the definitions and the graph from the stored rows. A row whose record does
     // not parse, or whose explicit dependsOn names a stage that is not stored (or itself),
     // is kept by name only: an empty definition, so no reads, no writes and no edges of
@@ -405,7 +416,8 @@ StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {
     Impl* impl = impl_.get();
     impl->staleness.reset(new StalenessGraph(std::make_unique<StalenessGraph::Impl>(
         impl->mutex, [impl] { impl->refreshIfReadOnly(); },
-        [impl]() -> const detail::StalenessEdges& { return impl->stalenessEdges; })));
+        [impl]() -> const detail::StalenessEdges& { return impl->stalenessEdges; },
+        [impl]() -> const StageStateReader& { return impl->store.stageStates(); })));
     impl_->restore();
 }
 
@@ -496,6 +508,13 @@ void StageRegistry::markStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::markStale");
     impl_->markStaleLocked(stage);
+}
+
+void StageRegistry::markAffectedStale(StageId stage) {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->requireOpen("StageRegistry::markAffectedStale");
+    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::markAffectedStale: the workspace is read-only");
+    impl_->markAffectedLocked(stage);
 }
 
 const StalenessGraph& StageRegistry::staleness() const noexcept { return *impl_->staleness; }

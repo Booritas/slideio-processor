@@ -1,4 +1,4 @@
-// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-OBS-1
+// Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #include "workspace/support/test_slide.hpp"
 
 #include <workspace/detail/stage_record.hpp>
@@ -358,6 +358,36 @@ TEST(StageRegistry, MarkStaleIsTransitive) {
     EXPECT_TRUE(reader.isStale(c.cells));
     EXPECT_FALSE(reader.isStale(c.other));
     EXPECT_THROW(f.stages().markStale(StageId(9999)), InvalidArgumentError);
+}
+
+// A diamond a -> {b, c} -> d. The journal records no staleness writes and setStale has no
+// seam, so "each stage once" is not observable; the test asserts the final flags (d is
+// reached down two paths, a is not marked: it is the stage being re-run).
+TEST(StageRegistry, MarkAffectedStaleMarksEveryPathOnce) {
+    Fixture f;
+    const StageId a = f.stages().declare(writer("a", f.x));
+    StageDefinition bDef("b");
+    bDef.readsLayer(f.x).writesLayer(f.y);
+    const StageId b = f.stages().declare(bDef);
+    StageDefinition cDef("c");
+    cDef.readsLayer(f.x).writesLayer(f.background);
+    const StageId c = f.stages().declare(cDef);
+    StageDefinition dDef("d");
+    dDef.readsLayer(f.y).readsLayer(f.background).writesLayer(f.nuclei);
+    const StageId d = f.stages().declare(dDef);
+    ASSERT_EQ(f.stages().staleness().affectedCount(a), 4);  // b, c, then d down both paths
+
+    f.stages().markAffectedStale(a);
+    EXPECT_FALSE(f.stages().isStale(a));
+    EXPECT_TRUE(f.stages().isStale(b));
+    EXPECT_TRUE(f.stages().isStale(c));
+    EXPECT_TRUE(f.stages().isStale(d));
+    EXPECT_THROW(f.stages().markAffectedStale(StageId(9999)), InvalidArgumentError);
+
+    WorkspacePtr ro = Workspace::openReadOnly((f.dir.path() / "ws").u8string().c_str(), Configuration::defaults());
+    EXPECT_THROW(ro->stages().markAffectedStale(a), IoError);
+    EXPECT_THROW(ro->stages().markAffectedStale(StageId(9999)), IoError);
+    ro->close();
 }
 
 TEST(StageRegistry, ClearStaleIsNotTransitive) {

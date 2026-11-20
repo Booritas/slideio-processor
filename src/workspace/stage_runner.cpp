@@ -192,21 +192,6 @@ public:
         }
     }
 
-    // Decision 3, first step of a re-run: every stage that depends directly on this one is
-    // marked stale, whatever this run's outcome, before anything of this stage changes.
-    void markDependentsStale(StageRegistry& registry) {
-        for (int32_t i = 0; i < registry.count(); ++i) {
-            const StageId other = registry.at(i);
-            const int32_t dependencies = registry.dependencyCount(other);
-            for (int32_t k = 0; k < dependencies; ++k) {
-                if (registry.dependencyAt(other, k) == stage) {
-                    registry.markStale(other);
-                    break;
-                }
-            }
-        }
-    }
-
     // Decision 3, last step of a re-run, after the stage is set Running: the prior output
     // goes. A crash part-way leaves the stage Running, which the next run treats as a re-run.
     void discardPriorOutput(Store& store) {
@@ -337,8 +322,9 @@ public:
         try {
             // Decision 3's order: dependents stale, then Running, then the discards, so a
             // crash between any two steps never leaves the stage Complete with part of its
-            // output gone, nor its dependents looking current.
-            if (rerun) markDependentsStale(registry);
+            // output gone, nor its dependents looking current. Step 1 marks every stage the
+            // staleness graph reaches from this one (SDS 04 4.5), whatever this run's outcome.
+            if (rerun) registry.markAffectedStale(stage);
             store->stageStateWriter().setStatus(stage, StageStatus::Running);
             if (rerun) {
                 releaseSelfReads(prepared);  // first: an open source would keep the file
