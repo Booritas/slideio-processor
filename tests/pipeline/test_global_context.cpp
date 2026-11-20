@@ -357,6 +357,32 @@ TEST(GlobalContext, SkippedTilesDoNotStallTheFold) {
         << "skipped tiles are counted once, in the final pass";
 }
 
+// An ROI run producing objects tiles the level, but an accumulation pass still sees the
+// region alone: an accumulator that ignores mask() and sums its whole tile rect counts the
+// ROI's pixels, though the ROI's edges cut tiles.
+TEST(GlobalContext, RoiAccumulationSeesOnlyTheRegion) {
+    auto s = scene();
+    const Rect64 roi{70, 45, 230, 150};
+    ASSERT_NE(roi.x % kTile, 0);
+    ASSERT_NE((roi.y + roi.height) % kTile, 0);
+    PipelineSpec spec;
+    spec.operation("test.floatSum", offset(0));
+    spec.operation("test.threshold", OperationParameters());
+    spec.operation("test.components", OperationParameters());
+    spec.restrictTo(roi);
+    Pipeline p(s, config(4), spec);
+    p.bindLayer("objects", LayerId(3));
+    p.validate();
+    ASSERT_EQ(detail::PipelineAccess::plan(p).grid.tileCount(), (kSide / kTile) * (kSide / kTile));
+
+    ts::CollectingObjectSink sink;
+    p.runInto(sink, nullptr, CancellationToken());
+    const auto op = runInstance<ts::FloatSumOperation>(p, 0);
+    EXPECT_TRUE(op->finalised());
+    EXPECT_EQ(op->count(), roi.width * roi.height);
+    EXPECT_EQ(op->sum(), sampleSum(roi));
+}
+
 namespace {
 
 // Cancels its source once `after` tiles have completed.

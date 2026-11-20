@@ -106,7 +106,9 @@ struct Bindings {
 
 /// What evaluating one tile did.
 struct TileOutcome {
-    bool skipped;       ///< The restriction excludes the whole tile; no pixel was read.
+    /// The restriction excludes the whole tile, or an accumulation pass finds no part
+    /// of it inside the region; no pixel was read.
+    bool skipped;
     int64_t bytesUsed;  ///< Bytes of every buffer the tile allocated (source, intermediates, auxiliaries, mask).
 };
 
@@ -134,7 +136,8 @@ struct Accumulation {
 /// Evaluates the chain on one tile: builds the tile's mask,
 /// reads the source over the tile grown by the chain's halo, applies each
 /// operation on its own region, filters emitted objects by anchor and
-/// hands the final output to the raster sink. Pure per tile: evaluate() may run
+/// hands the final output's part inside the plan's region to the raster sink
+/// (nothing when the tile has none). Pure per tile: evaluate() may run
 /// concurrently on different tiles, as far as the operations and sinks allow.
 class TileEvaluator {
 public:
@@ -154,8 +157,10 @@ public:
     /// catches can tell which operation threw (null: none did).
     /// When `accumulation` is not null, the tile is evaluated for that accumulation
     /// pass instead of the final one: same mask, reads and rects as a chain ending
-    /// at `accumulation->position`, no sink is written, and a skipped tile is not
-    /// counted in RunCounters::tilesSkipped (the final pass counts it).
+    /// at `accumulation->position` applied over the tile's part inside the plan's
+    /// region (the final pass applies over the whole tile), no sink is written, and
+    /// a skipped tile, or one with no part inside the region, is reported skipped
+    /// and not counted in RunCounters::tilesSkipped (the final pass counts it).
     /// With EvaluationMode::OnDemand, the final-pass tile is evaluated as that
     /// mode says; its owned objects still pass the tile's mask.
     /// Throws InvalidArgumentError when `accumulation` names no operation or has a

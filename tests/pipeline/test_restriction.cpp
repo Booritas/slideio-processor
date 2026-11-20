@@ -187,17 +187,105 @@ void registerMaskReading() {
 
 } // namespace
 
-// The grid of a polygon run spans the polygon's bounding box, not the scene.
-TEST(Restriction, PolygonGridSpansItsBoundingBox) {
-    auto scene = ts::makeSyntheticScene(source(texture));
-    PipelineSpec spec = spec1("test.threshold");
-    spec.restrictToPolygon(triangle(70, 70, 330, 200));  // bbox 260 x 130 -> 5 x 3 tiles of 64
-    Pipeline p(scene, config(), spec);
-    const auto calls = progressOf(p);
+// The grid of a polygon run producing objects spans the level, so the polygon's edge is no
+// grid edge; a run producing none keeps the grid over the polygon's bounding box. rect()
+// stays the bounding box either way.
+TEST(Restriction, PolygonObjectRunGridSpansTheLevel) {
+    registerMaskReading();
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Polygon polygon = triangle(70, 70, 330, 200);  // bbox 260 x 130 -> 5 x 3 tiles of 64
+    const Rect64 box{70, 70, 260, 130};
+
+    PipelineSpec objectSpec = spec1("test.maskComponents");
+    objectSpec.restrictToPolygon(polygon);
+    Pipeline objects(scene, config(), objectSpec);
+    objects.bindLayer("objects", LayerId(3));
+    RecordingObserver observer;
+    ts::CollectingObjectSink sink;
+    objects.runInto(sink, &observer, CancellationToken());
+    const int64_t whole = (kSide / kTile) * (kSide / kTile);
+    ASSERT_FALSE(observer.calls.empty());
+    EXPECT_EQ(observer.calls.back().second, whole);
+    EXPECT_EQ(observer.calls.back().first, whole);
+    EXPECT_EQ(objects.rect(0), box);
+
+    PipelineSpec rasterSpec = spec1("test.threshold");
+    rasterSpec.restrictToPolygon(polygon);
+    Pipeline raster(scene, config(), rasterSpec);
+    const auto calls = progressOf(raster);
     ASSERT_FALSE(calls.empty());
     EXPECT_EQ(calls.back().second, 15);
     EXPECT_EQ(calls.back().first, 15);
-    EXPECT_LT(calls.back().second, (kSide / kTile) * (kSide / kTile));
+    EXPECT_EQ(raster.rect(0), box);
+}
+
+namespace {
+
+// Records the level-0 rect of every raster tile written.
+class RectRecordingRasterSink : public RasterSink {
+public:
+    void writeTile(const BlockView& tile) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rects_.push_back(tile.slideRect());
+    }
+    void flush() override {}
+    int64_t tilesWritten() const override { return static_cast<int64_t>(rects().size()); }
+    std::vector<Rect64> rects() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return rects_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<Rect64> rects_;
+};
+
+// The pixels of the scene that `rects` cover, one flag per pixel.
+std::vector<bool> coverage(const std::vector<Rect64>& rects) {
+    std::vector<bool> covered(static_cast<size_t>(kSide * kSide), false);
+    for (const Rect64& r : rects) {
+        for (int64_t y = r.y; y < r.y + r.height; ++y) {
+            for (int64_t x = r.x; x < r.x + r.width; ++x) {
+                covered[static_cast<size_t>(y * kSide + x)] = true;
+            }
+        }
+    }
+    return covered;
+}
+
+} // namespace
+
+// An ROI run producing objects tiles the level, yet writes raster pixels only inside its
+// region, and exactly the pixels a run producing none writes over its region grid.
+TEST(Restriction, RoiObjectRunWritesRasterOnlyInsideTheRegion) {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Rect64 roi{70, 70, 260, 130};
+
+    PipelineSpec objectSpec = spec1("test.components");
+    objectSpec.restrictTo(roi);
+    RectRecordingRasterSink objectRaster;
+    Pipeline objects(scene, config(), objectSpec);
+    objects.bindLayer("objects", LayerId(3)).rasterSink(&objectRaster);
+    ts::CollectingObjectSink sink;
+    objects.runInto(sink, nullptr, CancellationToken());
+    const Rect64 region = objects.rect(0);
+    EXPECT_EQ(region, roi);
+    EXPECT_EQ(detail::PipelineAccess::plan(objects).grid.tileCount(), (kSide / kTile) * (kSide / kTile));
+
+    PipelineSpec rasterSpec = spec1("test.threshold");
+    rasterSpec.restrictTo(roi);
+    RectRecordingRasterSink regionRaster;
+    Pipeline raster(scene, config(), rasterSpec);
+    raster.rasterSink(&regionRaster);
+    raster.run(nullptr, CancellationToken());
+
+    const std::vector<Rect64> written = objectRaster.rects();
+    ASSERT_FALSE(written.empty());
+    for (const Rect64& r : written) {
+        EXPECT_FALSE(r.isEmpty());
+        EXPECT_EQ(r.intersected(region), r) << "a raster tile reaches beyond the region";
+    }
+    EXPECT_TRUE(coverage(written) == coverage(regionRaster.rects()));
 }
 
 // Tiles whose restriction mask is empty read no pixel but still count as complete.

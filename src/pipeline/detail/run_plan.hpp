@@ -25,7 +25,10 @@ namespace slideio::processor::detail {
 struct RunPlan {
     int32_t level;                                 ///< The analysis level.
     double levelScale;                             ///< LevelSelector::scaleOfLevel(level).
-    TileGrid grid;                                 ///< One tile when the chain has a WholeLevel operation.
+    /// One tile when the chain has a WholeLevel operation. A chain producing objects
+    /// without one tiles levelRect, so a restriction's edge is no grid edge and its
+    /// objects carry across it; every other chain tiles region.
+    TileGrid grid;
     std::vector<OperationPtr> operations;          ///< Created from the spec through the catalog, in chain order.
     /// Plane types per step: [0] the source planes (the selected channels' types),
     /// [k + 1] the output of operation k. A PerChannel operation maps each plane
@@ -40,7 +43,7 @@ struct RunPlan {
     /// its input step's plane count, a negative figure as 0.
     std::vector<int64_t> accumulatedStateBytes;
     bool restricted;                               ///< A ROI, a polygon or a mask source is bound.
-    /// Upper bound on one tile's buffers: the largest tile grown by chainHalo,
+    /// Upper bound on one tile's buffers: the largest tile of the grid grown by chainHalo,
     /// times the bytes per pixel of every step's planes, the reader's interleave
     /// buffer, every auxiliary's planes and the restriction masks (one byte,
     /// two with a polygon or a mask source).
@@ -48,6 +51,11 @@ struct RunPlan {
     /// The analysis level's extent, {0, 0, width, height}: what lies outside it reads
     /// as zeros at every step of the chain.
     Rect64 levelRect;
+    /// The region at the level, in level pixels: the scene, the ROI and the polygon's
+    /// bounding box intersected at level 0, mapped outward and clipped to the level. It
+    /// bounds Pipeline::rect(), the raster tiles written and what an accumulation pass
+    /// sees; it equals the grid's rect unless the grid tiles levelRect.
+    Rect64 region;
 };
 
 /// What buildRunPlan validates against. Every pointer and reference is borrowed

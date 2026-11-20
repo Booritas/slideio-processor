@@ -472,7 +472,14 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         }
     }
 
-    // The grid, one tile for a whole-level chain.
+    // The grid, one tile for a whole-level chain. A tiled chain producing objects tiles the
+    // whole level, so the region's edge is a seam and an object crossing it is carried
+    // whole; any other tiles the region.
+    const LevelDims& dims = levels[static_cast<size_t>(level)];
+    const Rect64 levelRect{0, 0, dims.width, dims.height};
+    const bool producesObjects =
+        std::any_of(targetLayers.begin(), targetLayers.end(), [](LayerId layer) { return layer.isValid(); });
+    const Rect64 gridRect = producesObjects && !wholeLevel ? levelRect : region;
     int32_t tileWidth = 0;
     int32_t tileHeight = 0;
     if (wholeLevel) {
@@ -486,11 +493,11 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     } else {
         tileSizeOfLevel(levels[static_cast<size_t>(level)], *inputs.config, tileWidth, tileHeight);
     }
-    TileGrid grid(region, level, tileWidth, tileHeight, selector);
+    TileGrid grid(gridRect, level, tileWidth, tileHeight, selector);
 
-    // One tile's buffers and working set against the ceiling.
-    const int64_t tileW = std::min<int64_t>(tileWidth, region.width);
-    const int64_t tileH = std::min<int64_t>(tileHeight, region.height);
+    // One tile's buffers and working set against the ceiling: the grid's largest tile.
+    const int64_t tileW = std::min<int64_t>(tileWidth, gridRect.width);
+    const int64_t tileH = std::min<int64_t>(tileHeight, gridRect.height);
     const int64_t tileBytes = tileNeed(tileW, tileH);
     if (tileBytes > inputs.ceilingBytes) {
         const int64_t area = haloArea(tileW, tileH);
@@ -543,7 +550,8 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                    std::move(accumulatedStateBytes),
                    restricted,
                    tileBytes,
-                   Rect64{0, 0, levels[static_cast<size_t>(level)].width, levels[static_cast<size_t>(level)].height}};
+                   levelRect,
+                   region};
 }
 
 } // namespace slideio::processor::detail

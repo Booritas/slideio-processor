@@ -72,7 +72,7 @@ public:
 private:
     struct Level {
         std::shared_ptr<const RunPlan> plan;
-        Rect64 region;  ///< The grid region, in the level's pixels.
+        Rect64 region;  ///< The plan's region, in the level's pixels.
     };
 
     const Level& levelAt(int32_t level, const char* where) const;
