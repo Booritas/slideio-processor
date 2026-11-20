@@ -57,7 +57,7 @@
    - a stage reached down two paths appears twice;
    - S itself appears only when a cycle leads back to it.
 
-   Each detail names the source stage and the artifact, e.g. `reads layer "tissue" written by stage "background"` or `writes layer "nuclei" below layer "tissue" written by stage "background"`.
+   Each detail names the source stage and the artifact, e.g. `reads layer "tissue" written by stage "background"` or `writes layer "nuclei" above layer "tissue" written by stage "background"`.
 
 3. **Reverse answer, from durable data.** For a stale stage S, the causes are its incoming edges U → S whose U is "changed since S": U is stale, or U is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`. When no incoming edge qualifies, S is its own cause, with reason `Reconfigured` and detail `the stage was redeclared or marked stale directly`. A stage that is not stale has 0 causes.
    - Causes need no extra storage, and they are the same after a reopen.

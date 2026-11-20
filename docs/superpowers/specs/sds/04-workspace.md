@@ -1142,7 +1142,9 @@ an edge U → V, one per reason, when:
   `tissue` writer reaches the `cells` and `nuclei` writers;
 - `DerivedFrom`: V reads a *primitive* layer U writes and V writes at least
   one semantic layer; such a pair is reported as `DerivedFrom` instead of
-  `LayerRead`. A stage can only assert derived-from edges onto objects it has
+  `LayerRead`, per pair: when V also reads a semantic layer U writes, only
+  `DerivedFrom` is reported for U → V. A stage can only assert derived-from
+  edges onto objects it has
   read, so a reads-based relation finds every derivation a run can produce;
   storage has no layer-level derived-from relation, and object-level edges
   are not consulted;
@@ -1167,13 +1169,13 @@ the edges of one source ordered by ascending V and then by reason; a stage
 reached down two paths appears twice, and S itself appears only when a cycle
 leads back to it. Each detail names the source stage and the artifact, for
 example `reads layer "tissue" written by stage "background"` or
-`writes layer "nuclei" below layer "tissue" written by stage "background"`.
+`writes layer "nuclei" above layer "tissue" written by stage "background"`.
 The accessors take the registry's mutex, and a read-only registry first
 follows a live writer. An unknown stage or an index out of range is an
 `InvalidArgumentError`. The detail strings live in storage the graph owns,
-rebuilt with the edges, and stay valid until the registry next declares a
-stage whose declaration changed or a read-only registry restores after a
-writer's change; a caller holding one longer copies it.
+rebuilt with the edges, and stay valid until the next `declare()` on this
+registry, or a read-only refresh that re-reads a writer's changes (every
+declare rebuilds them, changed or not); a caller holding one longer copies it.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

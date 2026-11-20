@@ -133,7 +133,7 @@ TEST(StalenessGraph, LayerOrderingReachesUndeclaredDependents) {
     ASSERT_EQ(list.size(), 1u);
     EXPECT_EQ(list[0], Entry(nuclei, StalenessReason::LayerOrdering));
     EXPECT_STREQ(f.stages().staleness().reasonDetailAt(background, 0),
-                 "writes layer \"nuclei\" below layer \"tissue\" written by stage \"background\"");
+                 "writes layer \"nuclei\" above layer \"tissue\" written by stage \"background\"");
     // The ordering runs one way only.
     EXPECT_TRUE(affected(f.stages(), nuclei).empty());
 }
@@ -264,5 +264,42 @@ TEST(StalenessGraph, ReadOnlyViewFollowsLiveWriter) {
     EXPECT_EQ(graph.affectedAt(background, 0), nuclei);
     EXPECT_EQ(graph.reasonAt(background, 0), StalenessReason::LayerOrdering);
     EXPECT_STREQ(graph.reasonDetailAt(background, 0),
-                 "writes layer \"nuclei\" below layer \"tissue\" written by stage \"background\"");
+                 "writes layer \"nuclei\" above layer \"tissue\" written by stage \"background\"");
+}
+
+TEST(StalenessGraph, DerivedFromWinsPerPair) {
+    Fixture f;
+    StageDefinition sp("sp");
+    sp.writesLayer(f.superpixels).writesLayer(f.labels);
+    const StageId spId = f.stages().declare(sp);
+    StageDefinition c("cells");
+    c.readsLayer(f.superpixels).readsLayer(f.labels).writesLayer(f.cells);
+    const StageId cells = f.stages().declare(c);
+
+    // V reads a primitive and a semantic layer U writes: only DerivedFrom is reported.
+    const std::vector<Entry> list = affected(f.stages(), spId);
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0], Entry(cells, StalenessReason::DerivedFrom));
+}
+
+TEST(StalenessGraph, PinnedEdgesAreStageDependency) {
+    Fixture f;
+    const StageId w = f.stages().declare(writerOf("w", f.labels));
+    StageDefinition rd("r");
+    rd.readsLayer(f.labels).writesLayer(f.other);
+    const StageId r = f.stages().declare(rd);
+    EXPECT_TRUE(has(affected(f.stages(), w), r, StalenessReason::LayerRead));
+    f.workspace->store()->stageStateWriter().setConfiguration(w, "this is not a record");
+    f.workspace->close();
+
+    // The unreadable writer has an empty definition, so only the pinned edge reaches r.
+    WorkspacePtr ws = Workspace::open(f.path().c_str(), Configuration::defaults());
+    ASSERT_TRUE(ws->stages().isUnreadable(w));
+    const std::vector<Entry> list = affected(ws->stages(), w);
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_EQ(list[0], Entry(r, StalenessReason::StageDependency));
+    EXPECT_STREQ(ws->stages().staleness().reasonDetailAt(w, 0), "depends on stage \"w\"");
+    ws->stages().markStale(w);
+    EXPECT_TRUE(ws->stages().isStale(r));
+    ws->close();
 }

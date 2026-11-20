@@ -57,10 +57,9 @@ class StageRegistry;
  * reasons, appears twice. S itself appears only when a cycle leads back to it.
  *
  * The strings returned are copied into storage the graph owns. They stay valid until
- * the registry next declares a stage whose declaration changed, or a read-only registry
- * restores after a live writer changed the stages; a caller keeps its own copy to hold
- * one longer. Positions are into one answer, so a declaration between two calls can
- * change it.
+ * the next declare() on this registry, or a read-only refresh that re-reads a writer's
+ * changes; a caller keeps its own copy to hold one longer. Positions are into one
+ * answer, so a declaration between two calls can change it.
  * @par Thread-safety
  * ThreadSafe: every member takes the registry's mutex; the view is not an independent
  * object. The reference StageRegistry::staleness() returns stays valid across declare().

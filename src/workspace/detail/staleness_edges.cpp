@@ -66,7 +66,7 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
                 for (int32_t b = 0; b < u.writtenLayerCount(); ++b) {
                     const LayerId lower = u.writtenLayerAt(b);
                     if (semantic(lower) && layers.isAbove(upper, lower)) {
-                        ordering = "writes layer " + quoted(layers.name(upper)) + " below layer " +
+                        ordering = "writes layer " + quoted(layers.name(upper)) + " above layer " +
                                    quoted(layers.name(lower)) + by;
                         break;
                     }
@@ -79,6 +79,8 @@ StalenessEdges::StalenessEdges(const std::vector<StageRef>& stages, const Depend
             const auto add = [&](StalenessReason reason, std::string& text) {
                 if (!text.empty()) edges_.push_back({source.id, target.id, reason, std::move(text)});
             };
+            // DerivedFrom replaces LayerRead for the whole pair, not layer by layer.
+            if (!derivedFrom.empty()) layerRead.clear();
             add(StalenessReason::LayerRead, layerRead);
             add(StalenessReason::RasterRead, rasterRead);
             add(StalenessReason::LayerOrdering, ordering);
