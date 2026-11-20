@@ -924,14 +924,6 @@ read. A level that does not fit surfaces as an `InvalidArgumentError` from
 `p.validate()`, ahead of `runInto`, so the stage has written nothing and is
 recorded failed like any other fault.
 
-Annotation targets are checked the same way and at the same time: an operation
-that asserts a label or a measurement against a layer the stage did not name in
-`annotatesLayer` throws `StageError` naming the stage, the operation and the
-layer. As with `writesLayer`, the invariant itself lives in `storage` — the
-annotation writer refuses an undeclared layer regardless of who called it
-(`03-storage.md` 3.7) — and this check exists so the failure arrives before an
-hour of tiles rather than after.
-
 `Pipeline::validate()` then rejects any operation whose target resolves to
 nothing, which covers the direct-pipeline path where no stage performed step 1.
 
@@ -941,32 +933,74 @@ against the registry (`03-storage.md` 3.3). The second is the invariant — it
 holds for GeoJSON import and any future writer — and this one exists to make the
 failure arrive before the work does.
 
-**On failure or cancellation** the stage is recorded `Failed`, its objects are
-discarded and a `StageDiscarded` event is appended. The workspace is left in
-its prior consistent state and no partial objects are visible to later stages
-(UR-STG-5). An observer that had opted into in-flight objects sees the discard
-event and retracts them (UR-OBS-4).
+**On failure or cancellation** the stage is recorded `Failed`, its objects,
+edges, annotations and raster are discarded, and a `StageDiscarded` event is
+appended by each discard. The workspace is left in its prior consistent state
+and no partial objects are visible to later stages (UR-STG-5). An observer that
+had opted into in-flight objects sees the discard event and retracts them
+(UR-OBS-4). The exceptions the run can raise, from validation, the tile run or
+the flushes, leave `run()` as follows:
+
+- `CancelledError` is re-thrown as a `CancelledError` carrying the stage name
+  (UR-EXE-4).
+- A `StageError` the runner raised itself (gating after the slot, the layer
+  binding checks) passes through unchanged: it already names the stage and is
+  not wrapped again.
+- `std::bad_alloc` is re-thrown unchanged (C-6).
+- Every other `ProcessorError` or `std::exception` becomes a `StageError` with
+  `stageName` the stage and `cause` the original's `what()`; the original's
+  operation name and tile (`hasTile`, `tileX`, `tileY`) are copied when it has
+  them, so a tile fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5).
+
+Before any of these leaves `run()` the runner records the failure, best effort:
+it abandons the raster writer (dropping it, which abandons its unflushed tiles;
+the writers of objects, edges and annotations are already gone by then, and
+flush what they hold as they are destroyed, which is why the discards come
+after), runs the four discards, and sets the stage `Failed`. Each step is tried
+whatever the one before did. A step that itself throws is logged at `Error`,
+naming the stage, and the original exception is the one that propagates: a
+failure while recording a failure never replaces the failure being reported.
+The analysis level is never recorded on failure, and the run slot is released
+on every path, so a later `run()` of a runnable stage proceeds. Failures of the
+re-run preparation below, which happen before the stage is `Running`, are
+raised as they are and leave the stage's status untouched.
 
 **On re-run** — `isRerun()` true — the objects the stage previously wrote, the
 edges it previously asserted and the annotations it previously made are all
-replaced, not duplicated (UR-STG-6). The three discards are separate calls
-against separate tables — `discardStage`, `discardEdgesOfStage`,
-`discardAnnotationsOfStage`, `discardRasterOfStage` — because they delete by
-different ownership: the
-first takes this stage's objects *and* every annotation any stage hung on them,
-while the third takes this stage's claims about objects it does not own and
-leaves those objects untouched.
-Objects written by other stages are untouched, including objects this stage had
+replaced, not duplicated (UR-STG-6). The order is fixed:
+
+1. discard the prior output with `discardStage`, `discardEdgesOfStage`,
+   `discardAnnotationsOfStage` and `discardRasterOfStage`;
+2. call `StageRegistry::markStale` on every stage that depends directly on this
+   one (found by scanning the stages' `dependencyAt`), because its inputs are
+   gone or about to be replaced whatever this run's outcome; `markStale` is a
+   locking public call of the registry and the runner is outside it, so there is
+   no re-entrancy;
+3. only then set the stage `Running`.
+
+A stage left `Running` by a dead process is a re-run too (decision 2), so what
+that process had flushed is discarded and the next run ends with exactly the
+objects of a clean run. A dependent made stale here is refused (`StageError`
+naming the dependency) until the dependency completes again; it then runs, and
+`clearStale` makes it current.
+
+The discards are separate calls against separate tables because they delete by
+different ownership: the first takes this stage's objects *and* every
+annotation any stage hung on them, while the third takes this stage's claims
+about objects it does not own and leaves those objects untouched. Objects
+written by other stages are untouched, including objects this stage had
 attached: re-running a `cells` stage that had attached existing nuclei leaves
 those nuclei unchanged, and leaves them unattached until the re-run asserts its
 edges. Because identifiers derive from geometry (decision 8), a re-run over
 unchanged input reproduces the same identifiers, so the replacement is exact.
 
 **On resumability** — v1 resumes only at stage granularity, but execution is
-structured around a resumable unit of work and the stage record reserves
-representation for per-tile completion (UR-STG-7). No signature here would need
-to change to add tile-level checkpointing; `run()` would consult the reserved
-per-tile state and skip completed units.
+structured around a resumable unit of work: the runner passes everything
+through `Pipeline::runInto`, whose unit is the tile, and keeps no per-tile state
+of its own in v1 (UR-STG-7). The stage record reserves representation for
+per-tile completion, and no signature here would need to change to add
+tile-level checkpointing; `run()` would consult the reserved per-tile state and
+skip completed units. No schema is added for it now.
 
 Cancellation takes effect promptly, at the next tile boundary, and leaves the
 workspace in the state UR-STG-5 requires.

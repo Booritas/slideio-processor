@@ -1,4 +1,5 @@
-// Requirements: UR-STG-3, UR-STG-10, UR-EXE-1, UR-EXE-4
+// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
+#include "pipeline/test_support/executor_support.hpp"
 #include "storage/raster_test_util.hpp"
 #include "workspace/support/aux_probe.hpp"
 #include "workspace/support/test_slide.hpp"
@@ -8,12 +9,14 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/log.hpp>
 #include <slideio/processor/core/object_query.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
+#include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
@@ -28,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -68,7 +72,8 @@ enum class SlideKind { Blobs, HalfBlobs, Edge };
 
 // A 600 x 600 blob slide in a workspace with the layers the tests name.
 struct Fixture {
-    explicit Fixture(SlideKind kind = SlideKind::Blobs, int32_t levels = 1) {
+    explicit Fixture(SlideKind kind = SlideKind::Blobs, int32_t levels = 1,
+                     const Configuration& config = Configuration::defaults()) {
         fs::create_directories(dir.path());
         // A pyramid needs the SVS driver, which the extension selects.
         const fs::path file = dir.path() / (levels > 1 ? "slide.svs" : "slide.tif");
@@ -79,7 +84,7 @@ struct Fixture {
         case SlideKind::Edge: slide = writeEdgeBlobSlide(file, 600, 600, levels); break;
         }
         workspacePath = (dir.path() / "ws").u8string();
-        workspace = Workspace::create(workspacePath.c_str(), slide.u8string().c_str(), 0, Configuration::defaults());
+        workspace = Workspace::create(workspacePath.c_str(), slide.u8string().c_str(), 0, config);
         LayerLifecycle& l = workspace->layerLifecycle();
         tissue = l.declareSemantic("tissue", workspace->layers().pixelLayer());
         background = l.declareSemantic("background", workspace->layers().pixelLayer());
@@ -662,4 +667,392 @@ TEST(StageRunner, FlushOrderObjectsEdgesAnnotationsRaster) {
     ASSERT_GE(raster, 0);
     EXPECT_LT(objects, raster);
     EXPECT_EQ(f.objectsOf(f.nuclei), 9);
+}
+
+namespace {
+
+namespace ts = slideio::processor::testing_support;
+
+// 256-pixel tiles over the 600 x 600 slide: three tile rows, so a fault can sit in the second.
+Configuration smallTiles() {
+    return ConfigurationBuilder(Configuration::defaults()).tileSize(256, 256).tileSizeFromSlide(false).build();
+}
+
+// The blob chain with a pass-through probe after the grey conversion; the probe fails at
+// level pixel (10, 300), a tile of the second row, while failures are armed.
+PipelineSpec probedChain(int64_t failKind) {
+    PipelineSpec spec;
+    spec.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    spec.operation("test.probe", OperationParameters()
+                                     .setInt("failX", 10)
+                                     .setInt("failY", 300)
+                                     .setInt("failKind", failKind)
+                                     .setInt("copy", 1));
+    spec.operation("pixel.threshold_fixed",
+                   OperationParameters().setDouble("value", 128.0).setString("direction", "Below"));
+    spec.operation("segment.connected_components", OperationParameters());
+    return spec;
+}
+
+// Registers the probe and restores its arming however the test ends.
+struct ProbeGuard {
+    ProbeGuard() {
+        ts::registerProbeOperation();
+        ts::ProbeOperation::resetCounters();
+        ts::ProbeOperation::setFailuresArmed(true);
+    }
+    ~ProbeGuard() { ts::ProbeOperation::setFailuresArmed(true); }
+};
+
+// Captures the library's log for the life of the object; the sink is process-global.
+class CaptureLog : public LogSink {
+public:
+    CaptureLog() { setLogSink(std::shared_ptr<LogSink>(this, [](LogSink*) {})); }
+    ~CaptureLog() override { setLogSink(nullptr); }
+    void write(LogLevel level, const char* message) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        entries_.emplace_back(level, message);
+    }
+    std::vector<std::pair<LogLevel, std::string>> entries() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entries_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<std::pair<LogLevel, std::string>> entries_;
+};
+
+// Cancels the source on the first progress report.
+class CancelOnFirst : public ProgressObserver {
+public:
+    explicit CancelOnFirst(CancellationSource& source) : source_(source) {}
+    void onProgress(const char*, double, int64_t, int64_t) override { source_.cancel(); }
+
+private:
+    CancellationSource& source_;
+};
+
+// Closes the workspace from the first progress report.
+class CloseOnFirst : public ProgressObserver {
+public:
+    explicit CloseOnFirst(Workspace& workspace) : workspace_(workspace) {}
+    void onProgress(const char*, double, int64_t, int64_t) override {
+        if (!done_.exchange(true)) workspace_.close();
+    }
+
+private:
+    Workspace& workspace_;
+    std::atomic<bool> done_{false};
+};
+
+ObjectRecord unitSquare(LayerId layer, int64_t x, int64_t y) {
+    const Point64 points[] = {{x, y}, {x + 1, y}, {x + 1, y + 1}, {x, y + 1}};
+    Polygon polygon;
+    polygon.addRing(points, 4, false);
+    ObjectRecord record;
+    record.setLayer(layer);
+    record.setGeometry(polygon);
+    return record;
+}
+
+// The identifiers of the objects of a layer, sorted.
+std::vector<ObjectId> idsOf(Fixture& f, LayerId layer) {
+    std::vector<ObjectId> ids;
+    const CursorPtr cursor = f.workspace->store()->objects().query(ObjectQuery().layer(layer));
+    while (cursor->next()) ids.push_back(cursor->current().id());
+    std::sort(ids.begin(), ids.end(), [](ObjectId a, ObjectId b) { return a.anchorPacked() < b.anchorPacked(); });
+    return ids;
+}
+
+int64_t discardEventsOf(Fixture& f, StageId stage) {
+    int64_t count = 0;
+    const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
+    while (cursor->next(0)) {
+        if (cursor->current().kind() == EventKind::StageDiscarded && cursor->current().stage() == stage) ++count;
+    }
+    return count;
+}
+
+StageId declareProbed(Fixture& f, int64_t failKind) {
+    StageDefinition def("nuclei");
+    def.writesLayer(f.nuclei).pipeline(probedChain(failKind));
+    return f.stages().declare(def);
+}
+
+} // namespace
+
+TEST(StageRunner, TileFaultFailsStageAndLeavesPriorStateIntact) {
+    ProbeGuard guard;
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId background = f.stages().declare(blobStage("background", f.background));
+    StageRunner(*f.workspace, background).run();
+    const int64_t backgroundObjects = f.objectsOf(f.background);
+    ASSERT_EQ(backgroundObjects, 9);
+    const StageId nuclei = declareProbed(f, 0);
+
+    StageRunner runner(*f.workspace, nuclei);
+    try {
+        runner.run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "nuclei");
+        EXPECT_TRUE(e.hasTile());
+        EXPECT_EQ(e.tileX(), 0);
+        EXPECT_EQ(e.tileY(), 1);
+        EXPECT_NE(std::string(e.cause()).find("deliberate failure"), std::string::npos);
+    }
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Failed);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+    EXPECT_EQ(f.workspace->store()->edges().parentEdgeCount(), 0);
+    EXPECT_EQ(f.workspace->store()->edges().derivedFromEdgeCount(), 0);
+    EXPECT_GE(discardEventsOf(f, nuclei), 1);
+    EXPECT_EQ(f.stages().status(background), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.background), backgroundObjects);
+    EXPECT_EQ(runner.objectsWritten(), 0);
+    EXPECT_EQ(runner.edgesAsserted(), 0);
+}
+
+TEST(StageRunner, IoErrorBecomesStageError) {
+    ProbeGuard guard;
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId nuclei = declareProbed(f, 1);
+    try {
+        StageRunner(*f.workspace, nuclei).run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "nuclei");
+        EXPECT_NE(std::string(e.cause()).find("deliberate failure"), std::string::npos);
+    }
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Failed);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+}
+
+TEST(StageRunner, CancellationFailsStageAndRethrowsCancelled) {
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId nuclei = f.stages().declare(blobStage("nuclei", f.nuclei));
+    CancellationSource source;
+    CancelOnFirst observer(source);
+    StageRunner runner(*f.workspace, nuclei);
+    runner.progress(&observer).cancellation(source.token());
+    try {
+        runner.run();
+        FAIL() << "no CancelledError";
+    } catch (const CancelledError& e) {
+        EXPECT_STREQ(e.stageName(), "nuclei");
+    }
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Failed);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+    EXPECT_EQ(runner.objectsWritten(), 0);
+}
+
+TEST(StageRunner, RerunReplacesNotDuplicates) {
+    Fixture f;
+    const StageId id = f.stages().declare(blobStage("nuclei", f.nuclei));
+    StageRunner first(*f.workspace, id);
+    first.run();
+    const std::vector<ObjectId> before = idsOf(f, f.nuclei);
+    const int64_t edgesBefore = f.workspace->store()->edges().parentEdgeCount();
+
+    StageRunner second(*f.workspace, id);
+    EXPECT_TRUE(second.isRerun());
+    second.run();
+    EXPECT_TRUE(second.isRerun());
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 9);
+    EXPECT_EQ(idsOf(f, f.nuclei), before);
+    EXPECT_EQ(f.workspace->store()->edges().parentEdgeCount(), edgesBefore);
+    EXPECT_EQ(second.objectsWritten(), 9);
+}
+
+TEST(StageRunner, FailedStageReruns) {
+    ProbeGuard guard;
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId id = declareProbed(f, 0);
+    EXPECT_THROW(StageRunner(*f.workspace, id).run(), StageError);
+    ASSERT_EQ(f.stages().status(id), StageStatus::Failed);
+
+    ts::ProbeOperation::setFailuresArmed(false);
+    StageRunner again(*f.workspace, id);
+    EXPECT_TRUE(again.isRerun());
+    again.run();
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 9);
+}
+
+TEST(StageRunner, RunningLeftByDeadProcessIsRerun) {
+    Fixture f;
+    const StageId id = f.stages().declare(blobStage("nuclei", f.nuclei));
+    {
+        // What a killed process leaves: the stage Running and some of its objects flushed.
+        const StorePtr store = f.workspace->store();
+        store->stageStateWriter().setStatus(id, StageStatus::Running);
+        const ObjectWriterPtr writer = store->objects().writerForStage(id);
+        for (int64_t i = 0; i < 3; ++i) writer->emit(unitSquare(f.nuclei, 1000 + 2 * i, 1000));
+        writer->flush();
+    }
+    f.workspace->close();
+    f.workspace = Workspace::open(f.workspacePath.c_str(), Configuration::defaults());
+    ASSERT_EQ(f.stages().status(id), StageStatus::Running);
+
+    StageRunner runner(*f.workspace, id);
+    EXPECT_TRUE(runner.isRerun());
+    runner.run();
+    EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 9);
+}
+
+TEST(StageRunner, RerunOfDependencyStalesAndThenReleasesDependent) {
+    Fixture f;
+    const StageId background = f.stages().declare(blobStage("background", f.background));
+    StageDefinition def("nuclei");
+    def.readsLayer(f.background).writesLayer(f.nuclei).pipeline(blobChain());
+    const StageId nuclei = f.stages().declare(def);
+
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    ASSERT_FALSE(f.stages().isStale(nuclei));
+
+    StageRunner(*f.workspace, background).run();
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+
+    f.stages().markStale(background);
+    StageRunner refused(*f.workspace, nuclei);
+    std::string stage;
+    const std::string message = messageOf(refused, &stage);
+    EXPECT_NE(message.find("background"), std::string::npos);
+    EXPECT_EQ(stage, "nuclei");
+
+    StageRunner(*f.workspace, background).run();
+    StageRunner(*f.workspace, nuclei).run();
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Complete);
+    EXPECT_FALSE(f.stages().isStale(nuclei));
+}
+
+TEST(StageRunner, RerunOfCellsLeavesAttachedNucleiUntouched) {
+    Fixture f;
+    LayerLifecycle& life = f.workspace->layerLifecycle();
+    const LayerId outer = life.declareSemantic("outer", f.tissue);
+    const LayerId inner = life.declareSemantic("inner", outer);
+    const StageId nucleiStage = f.stages().declare(blobStage("nuclei", inner));
+    StageDefinition def("cells");
+    def.readsLayer(inner).writesLayer(outer).pipeline(blobChain());
+    const StageId cellsStage = f.stages().declare(def);
+
+    StageRunner(*f.workspace, nucleiStage).run();
+    StageRunner(*f.workspace, cellsStage).run();
+    ASSERT_EQ(f.objectsOf(inner), 9);
+    ASSERT_EQ(f.objectsOf(outer), 9);
+
+    // No catalog operation asserts parents, so the test does it as the cells stage: each
+    // nucleus sits in the cell found at the same place.
+    const std::vector<ObjectId> nuclei = idsOf(f, inner);
+    const std::vector<ObjectId> cells = idsOf(f, outer);
+    ASSERT_EQ(nuclei.size(), cells.size());
+    {
+        const EdgeWriterPtr edges = f.workspace->store()->edges().writerForStage(cellsStage);
+        for (size_t i = 0; i < nuclei.size(); ++i) edges->assertParent(nuclei[i], cells[i]);
+        edges->flush();
+    }
+    ASSERT_EQ(f.workspace->store()->edges().parentEdgeCount(), 9);
+
+    StageRunner again(*f.workspace, cellsStage);
+    again.run();
+    EXPECT_TRUE(again.isRerun());
+    EXPECT_EQ(f.objectsOf(inner), 9);
+    EXPECT_EQ(idsOf(f, inner), nuclei);
+    EXPECT_EQ(f.workspace->store()->edges().parentEdgeCount(), 0) << "the discard removed the cells stage's edges";
+    EXPECT_EQ(f.objectsOf(outer), 9);
+}
+
+TEST(StageRunner, RunSlotIsReleasedAfterFailureAndCancellation) {
+    ProbeGuard guard;
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId failing = declareProbed(f, 0);
+    StageDefinition other("other");
+    other.writesLayer(f.background).pipeline(blobChain());
+    const StageId later = f.stages().declare(other);
+
+    EXPECT_THROW(StageRunner(*f.workspace, failing).run(), StageError);
+    StageRunner(*f.workspace, later).run();
+    EXPECT_EQ(f.stages().status(later), StageStatus::Complete);
+
+    CancellationSource source;
+    CancelOnFirst observer(source);
+    StageRunner cancelled(*f.workspace, later);
+    cancelled.progress(&observer).cancellation(source.token());
+    EXPECT_THROW(cancelled.run(), CancelledError);
+    EXPECT_EQ(f.stages().status(later), StageStatus::Failed);
+
+    StageRunner(*f.workspace, later).run();
+    EXPECT_EQ(f.stages().status(later), StageStatus::Complete);
+    EXPECT_EQ(f.objectsOf(f.background), 9);
+}
+
+TEST(StageRunner, RunnerStageErrorPassesThroughUnchanged) {
+    Fixture f;
+    StageDefinition def("two");
+    def.writesLayer(f.nuclei).writesLayer(f.cells).pipeline(blobChain());
+    const StageId id = f.stages().declare(def);
+    try {
+        StageRunner(*f.workspace, id).run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "two");
+        EXPECT_STREQ(e.operationName(), "segment.connected_components");
+        EXPECT_STREQ(e.cause(), "") << "the runner's own error is not wrapped";
+    }
+    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+}
+
+TEST(StageRunner, FailureAfterObjectsReachedTheStoreDiscardsThem) {
+    Fixture f;
+    // The blob chain ends in an Int32 plane; a Float32 raster cannot take it, so the run
+    // fails while the objects are still pending in the writer, which flushes them as it is
+    // destroyed. The failure path must take them out again.
+    const RasterId mask = f.workspace->store()->rasters().declare(RasterDeclaration("mask", DataType::Float32, 1));
+    StageDefinition def("both");
+    def.writesLayer(f.nuclei).writesRaster(mask).pipeline(blobChain());
+    const StageId id = f.stages().declare(def);
+    EXPECT_THROW(StageRunner(*f.workspace, id).run(), StageError);
+    EXPECT_EQ(f.stages().status(id), StageStatus::Failed);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+    EXPECT_FALSE(f.workspace->store()->rasters().isPopulated(mask));
+
+    const std::vector<EventKind> kinds = eventKinds(f);
+    ASSERT_GE(firstOf(kinds, EventKind::ObjectsAdded), 0) << "the objects reached the store";
+    EXPECT_LT(firstOf(kinds, EventKind::ObjectsAdded), firstOf(kinds, EventKind::StageDiscarded));
+    int64_t removed = 0;
+    const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
+    while (cursor->next(0)) {
+        if (cursor->current().kind() == EventKind::StageDiscarded && cursor->current().stage() == id) {
+            removed = std::max(removed, cursor->current().objectCount());
+        }
+    }
+    EXPECT_EQ(removed, 9) << "the discard removed the nine stored objects";
+}
+
+TEST(StageRunner, FailedRecordingIsLoggedAndTheOriginalPropagates) {
+    ProbeGuard guard;
+    Fixture f(SlideKind::Blobs, 1, smallTiles());
+    const StageId id = declareProbed(f, 0);
+    CaptureLog log;
+    // Closing the workspace from the first progress report makes the run fail, and the
+    // recording of the failure with it.
+    CloseOnFirst closer(*f.workspace);
+    StageRunner runner(*f.workspace, id);
+    runner.progress(&closer);
+    try {
+        runner.run();
+        FAIL() << "no StageError";
+    } catch (const StageError& e) {
+        EXPECT_STREQ(e.stageName(), "nuclei") << "the run's own failure, not one of the recording's";
+        EXPECT_NE(std::string(e.cause()).find("closed"), std::string::npos);
+    }
+    bool named = false;
+    for (const auto& entry : log.entries()) {
+        named = named || (entry.first == LogLevel::Error && entry.second.find("nuclei") != std::string::npos &&
+                          entry.second.find("StageRunner") != std::string::npos);
+    }
+    EXPECT_TRUE(named);
 }

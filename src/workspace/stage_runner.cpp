@@ -5,6 +5,7 @@
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/log.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
@@ -22,6 +23,8 @@
 #include <slideio/processor/workspace/stage_registry.hpp>
 
 #include <cstring>
+#include <exception>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -123,6 +126,62 @@ public:
         throw StageError(("stage \"" + name + "\": operation " + operation + " " + what).c_str(), context);
     }
 
+    // Decision 3, before the stage is set Running: the prior output goes, and every stage
+    // that depends directly on this one is marked stale, whatever this run's outcome.
+    void prepareRerun(StageRegistry& registry, Store& store) {
+        store.objects().discardStage(stage);
+        store.edges().discardEdgesOfStage(stage);
+        store.annotations().discardAnnotationsOfStage(stage);
+        store.rasters().discardRasterOfStage(stage);
+        for (int32_t i = 0; i < registry.count(); ++i) {
+            const StageId other = registry.at(i);
+            const int32_t dependencies = registry.dependencyCount(other);
+            for (int32_t k = 0; k < dependencies; ++k) {
+                if (registry.dependencyAt(other, k) == stage) {
+                    registry.markStale(other);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Decision 5, best effort: each step is tried whatever the one before did, and a step
+    // that throws is logged naming the stage. Nothing here throws, so the exception being
+    // handled stays the one that propagates.
+    void recordFailure(Store& store, RasterWriterPtr& rasterWriter) noexcept {
+        objects = 0;
+        edges = 0;
+        guarded("abandoning the raster writer", [&] { rasterWriter.reset(); });
+        guarded("discarding its objects", [&] { store.objects().discardStage(stage); });
+        guarded("discarding its edges", [&] { store.edges().discardEdgesOfStage(stage); });
+        guarded("discarding its annotations", [&] { store.annotations().discardAnnotationsOfStage(stage); });
+        guarded("discarding its raster", [&] { store.rasters().discardRasterOfStage(stage); });
+        guarded("marking it Failed", [&] { store.stageStateWriter().setStatus(stage, StageStatus::Failed); });
+    }
+
+    template <class Step> void guarded(const char* what, Step step) noexcept {
+        try {
+            step();
+        } catch (const std::exception& e) {
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what, e.what());
+        } catch (...) {
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed", name.c_str(), what);
+        }
+    }
+
+    // The context of a StageError built from `original`: this stage, and the operation
+    // and tile the original names.
+    ErrorContext contextOf(const ProcessorError& original) const {
+        ErrorContext context;
+        context.stageName = name.c_str();
+        if (original.operationName()[0] != '\0') context.operationName = original.operationName();
+        context.cause = original.what();
+        context.hasTile = original.hasTile();
+        context.tileX = original.tileX();
+        context.tileY = original.tileY();
+        return context;
+    }
+
     // Everything after the run slot is taken: the run proper, §4.4's listing without the
     // rasters.
     void execute() {
@@ -134,7 +193,9 @@ public:
         rerun = registry.status(stage) != StageStatus::Pending;
         objects = 0;
         edges = 0;
+        if (rerun) prepareRerun(registry, *store);
         store->stageStateWriter().setStatus(stage, StageStatus::Running);
+        RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
         try {
             const ObjectWriterPtr sink = store->objects().writerForStage(stage);
             const EdgeWriterPtr edgeWriter = store->edges().writerForStage(stage);
@@ -161,7 +222,6 @@ public:
             for (int32_t i = 0; i < definition.readRasterCount(); ++i) {
                 sources.push_back(store->rasters().sourceFor(definition.readRasterAt(i)));
             }
-            RasterWriterPtr rasterWriter;
             if (definition.writesAnyRaster()) {
                 rasterWriter = store->rasters().writerForStage(stage, definition.writtenRaster());
             }
@@ -201,12 +261,27 @@ public:
             }
             store->stageStateWriter().setStatus(stage, StageStatus::Complete);
             registry.clearStale(stage);
+        } catch (const CancelledError& e) {
+            recordFailure(*store, rasterWriter);
+            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e));
+        } catch (const StageError&) {
+            // Raised by the runner itself or by a nested stage: already names its stage.
+            recordFailure(*store, rasterWriter);
+            throw;
+        } catch (const ProcessorError& e) {
+            recordFailure(*store, rasterWriter);
+            throw StageError(("stage \"" + name + "\" failed").c_str(), contextOf(e));
+        } catch (const std::bad_alloc&) {
+            recordFailure(*store, rasterWriter);
+            throw;
+        } catch (const std::exception& e) {
+            recordFailure(*store, rasterWriter);
+            ErrorContext context;
+            context.stageName = name.c_str();
+            context.cause = e.what();
+            throw StageError(("stage \"" + name + "\" failed").c_str(), context);
         } catch (...) {
-            objects = 0;
-            edges = 0;
-            // Failure handling proper (discards, wrapping) is the next step; for now the
-            // stage is only marked and the exception propagates.
-            store->stageStateWriter().setStatus(stage, StageStatus::Failed);
+            recordFailure(*store, rasterWriter);
             throw;
         }
     }

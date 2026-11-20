@@ -1093,6 +1093,7 @@ classDiagram
         +dependencyAt(StageId, int32_t) StageId
         +isExplicitDependency(StageId, int32_t) bool
         +isRunnable(StageId) bool
+        +isUnreadable(StageId) bool
         +definition(StageId) StageDefinition
         +markStale(StageId) void
         +clearStale(StageId) void
@@ -1172,7 +1173,12 @@ classDiagram
     StageRunner ..> AnnotationWriter : then flush third
     StageRunner ..> TileMaskSource : makeLayerMaskSource, binds
     StageRunner ..> TileRasterSource : makeLayerRasterSource, binds
-    StageRunner ..> RasterWriter : writerForStage, flush last
+    StageRunner ..> RasterWriter : writerForStage, flush last, abandon on failure
+    StageRunner ..> StageRegistry : markStale of dependents on re-run, clearStale on success
+    StageRunner ..> ObjectStore : discardStage on re-run and on failure
+    StageRunner ..> EdgeStore : discardEdgesOfStage
+    StageRunner ..> AnnotationStore : discardAnnotationsOfStage
+    StageRunner ..> RasterRegistry : discardRasterOfStage
     StageRegistry *-- StalenessGraph : derives, owns, exposes
     StalenessGraph ..> LayerRegistry : layer ordering and derived-from
     LayerLifecycle ..> LayerRegistry : delegates
@@ -1209,6 +1215,15 @@ recorded on `StageDefinition` by layer name and bound here as a live object
 (`05-pipeline.md` 5.4). It is also the one `MemoryBudget` instance
 reaching both `pipeline` and `storage`, which is the only way UR-EXE-2's
 ceiling can span raster tiles, object accumulation and store buffers at once.
+
+`StageRunner`'s failure and re-run paths are what call the four
+`discard...` calls, and `markStale` on a stage's direct dependents. On a
+re-run it discards, then marks the dependents stale, then sets the stage
+`Running`; on a failure it abandons the raster writer, discards, and sets
+`Failed`, with each step best effort so that the exception that propagates is
+the run's own (`04-workspace.md` 4.4). The run slot that keeps a second runner
+out of the workspace is an implementation detail of `Workspace` and is not a
+class in this diagram.
 
 **`StalenessGraph` is owned by `StageRegistry`, which resolves a gap this
 drawing found.** It previously floated unconnected: 04 §4.5 specified the class
