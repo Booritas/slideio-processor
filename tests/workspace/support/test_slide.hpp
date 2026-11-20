@@ -30,12 +30,15 @@ std::filesystem::path writeBlobSlide(const std::filesystem::path& file, int32_t 
 std::filesystem::path writeHalfBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height);
 
 // The column where the white region of writeEdgeBlobSlide ends and the grey begins.
-// Deliberately not a multiple of 4, so a level-2 analysis puts the region's edge past it.
-constexpr int64_t kEdgeX = 302;
+// Deliberately not a multiple of 4, so a level-2 analysis puts the region's edge past it, and chosen so
+// that disc D lies inside one 64 px tile of the slide: an object that straddles a tile seam beside the
+// mask edge can lose the fragment whose anchor falls outside the mask.
+constexpr int64_t kEdgeX = 290;
 
-// A slide with a white region (x < kEdgeX) beside a grey one (200), and three dark discs of
-// radius 20: A centred 25 px inside the edge (150 down), B 60 px outside it, and C deep
-// inside the white region at (100, 450). Thresholding above 230 selects the white region
+// A slide with a white region (x < kEdgeX) beside a grey one (200), and four dark discs of
+// radius 20: A centred 25 px inside the edge (150 down), B 60 px outside it, C deep
+// inside the white region at (100, 450), and D centred 3 px outside the edge (300 down), in the band
+// a level-2 analysis dilates the region by. Thresholding above 230 selects the white region
 // (disc A is a hole in it, so extractHoles = false); below 128 selects the discs. `levels` and the
 // `*.svs` naming are as for writeBlobSlide.
 std::filesystem::path writeEdgeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height,

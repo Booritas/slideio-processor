@@ -203,7 +203,19 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   including a stage left `Running` by a dead process, it marks the direct
   dependents stale, sets the stage `Running`, and only then discards the prior
   output. Annotation-target checks are deferred (decision 7).
-  **Implemented** on `feat/workspace-b`, awaiting review and merge.
+  **Implemented**; merged to `main` (merge commit 491e2a9).
+- [Workspace implementation plan C](superpowers/plans/2026-11-20-workspace-c.md) —
+  plan C of three for the `workspace` module: `StalenessGraph` (SDS 04 §4.5) over
+  five edge paths (layer read, raster read, layer ordering, derived-from, explicit
+  dependency) with forward answers and durable reverse causes,
+  `StageRegistry::staleness()` and `markAffectedStale` (re-run step 1 now follows
+  all five paths), a `dependsOn` that may name a stage declared later
+  (`unresolvedDependencyCount/At`), `declareCoarseToFine`, and the follow-ups of
+  plans A and B (a read-only refresh never shrinks to empty and keeps the pins of a
+  still-unreadable stage, `IoError` from `markStale` and `clearStale` on a
+  read-only registry, the operation name on type and arity errors, a disc in the
+  dilation band of the coarse-restriction test).
+  **Implemented** on `feat/workspace-c`, awaiting review and merge.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

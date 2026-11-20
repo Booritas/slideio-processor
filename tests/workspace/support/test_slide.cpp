@@ -129,7 +129,7 @@ std::filesystem::path writeHalfBlobSlide(const std::filesystem::path& file, int3
 std::filesystem::path writeEdgeBlobSlide(const std::filesystem::path& file, int32_t width, int32_t height,
                                          int32_t levels) {
     return writeSlide("writeEdgeBlobSlide", file, width, height, levels, [=](uint32_t x, uint32_t y, uint8_t* px) {
-        const int64_t centres[][2] = {{kEdgeX - 25, 150}, {kEdgeX + 60, 150}, {100, 450}};
+        const int64_t centres[][2] = {{kEdgeX - 25, 150}, {kEdgeX + 60, 150}, {100, 450}, {kEdgeX + 3, 300}};
         bool inside = false;
         for (const auto& c : centres) {
             const int64_t dx = static_cast<int64_t>(x) - c[0];

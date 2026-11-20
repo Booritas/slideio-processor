@@ -9,11 +9,13 @@
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
+#include <workspace/detail/refresh_fault.hpp>
 #include <workspace/detail/stage_record.hpp>
 #include <workspace/detail/staleness_edges.hpp>
 #include <workspace/staleness_graph_impl.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -28,6 +30,8 @@
 namespace slideio::processor {
 
 namespace {
+
+std::atomic<bool> gReadStoredCountAsZero{false};
 
 struct Entry {
     int32_t id;
@@ -163,6 +167,8 @@ std::vector<Entry> entriesOf(const Definitions& definitions) {
 }
 
 } // namespace
+
+void detail::readNextStoredStageCountAsZeroForTesting() noexcept { gReadStoredCountAsZero.store(true); }
 
 class StageRegistry::Impl {
 public:
@@ -316,7 +322,10 @@ public:
             nextDefinitions[id.value()] = std::make_unique<StageDefinition>(name);
             nextUnreadable.insert(id.value());
         };
-        const int32_t stored = reader.count();
+        const int32_t stored = gReadStoredCountAsZero.exchange(false) ? 0 : reader.count();
+        // Stages are never removed, so fewer than the snapshot holds means the store cannot
+        // be read (count() answers 0 once it is closed): the snapshot stands.
+        if (stored < static_cast<int32_t>(snapshot.size())) return;
         for (int32_t i = 0; i < stored; ++i) {
             const StageId id = reader.at(i);
             const char* name = reader.name(id);
@@ -365,6 +374,14 @@ public:
                 if (nextUnreadable.count(d.first) != 0 || nextUnreadable.count(dependency) != 0) {
                     nextPins.insert({d.first, dependency});
                 }
+            }
+        }
+        // A writer mid-rewrite can leave an unreadable stage's rows empty for a moment; the
+        // pins already held for a stage that is still unreadable stand, until it is redeclared.
+        for (const auto& p : pins) {
+            const bool known = nextDefinitions.count(p.first) != 0 && nextDefinitions.count(p.second) != 0;
+            if (known && (nextUnreadable.count(p.first) != 0 || nextUnreadable.count(p.second) != 0)) {
+                nextPins.insert(p);
             }
         }
         // No explicit dependency names its own stage now, so derivation cannot throw.
@@ -522,6 +539,7 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
 void StageRegistry::markStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::markStale");
+    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::markStale: the workspace is read-only");
     impl_->markStaleLocked(stage);
 }
 
@@ -537,6 +555,7 @@ const StalenessGraph& StageRegistry::staleness() const noexcept { return *impl_-
 void StageRegistry::clearStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::clearStale");
+    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::clearStale: the workspace is read-only");
     impl_->edgesOf(stage);
     impl_->store.stageStateWriter().setStale(stage, false);
 }

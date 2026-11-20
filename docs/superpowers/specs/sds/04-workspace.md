@@ -542,6 +542,7 @@ public:
     /// paths of 4.5, each once. **Transitive**, and there is no non-propagating form:
     /// a caller who wanted one would be asking for exactly the UR-STG-8
     /// failure — a dependent left current whose parents have been replaced.
+    /// `IoError` when the workspace is read-only, before the stage is resolved.
     void markStale(StageId);
 
     /// Marks every stage a re-run of `stage` would invalidate, by the five
@@ -553,7 +554,8 @@ public:
     /// Clears the flag on `stage` alone. **Not** transitive. A stage becomes
     /// current by being re-run, which is `StageRunner`'s business; clearing a
     /// dependent's flag without re-running it would assert a coherence
-    /// nothing established.
+    /// nothing established. `IoError` when the workspace is read-only, before the
+    /// stage is resolved.
     void clearStale(StageId);
 
     /// The derived graph
@@ -650,7 +652,9 @@ on every stage the forward answer lists, each once, under one hold of the
 registry mutex (PR #16 finding 7), and on the stage only when a cycle reaches
 it. `StageRunner` calls it at re-run step 1 instead of scanning the stages for
 direct dependents. On a read-only registry it throws `IoError` before it
-resolves the stage. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
+resolves the stage, as do `markStale` and `clearStale`, so an observer asking about
+a stage the writer declared after it opened gets `IoError`, not an unknown-stage
+error. `LayerLifecycle::drop` still marks nothing (UR-STG-12).
 
 **Plan A: persisted dependencies and restore (decision 7).** Every `declare`
 rewrites the dependency rows of every stage (`clearDependencies`, then
@@ -686,7 +690,9 @@ on it — are pinned into the graph as non-explicit edges (storage records no
 explicit flag), and every later `declare` carries the pins, so a reader of a
 broken writer's layer stays blocked, the writer never being runnable, instead of
 becoming runnable. Redeclaring the stage successfully drops its pins and normal
-derivation resumes. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
+derivation resumes. A refresh keeps the pins it already holds for a stage that is
+still unreadable, because a writer that is rewriting the rows can leave them
+empty for a moment. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
 and `isRunnable` all read this one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
 
@@ -701,7 +707,9 @@ or redeclare changes one of them. When either differs it restores again, under
 its mutex, building aside and swapping in, so a failure leaves the previous
 state. Storage offers no cheaper change signal through its API. Stages are
 never removed, so a stored count below the one restored means the store
-cannot be read (it is closed): the registry then answers from what it last
+cannot be read (it is closed), also when it closes between the comparison and
+the restore: a restore that reads fewer stages than it holds keeps the snapshot, and
+the registry then answers from what it last
 read. A definition a refresh replaces is kept for the life of the registry,
 so a reference from `definition()` never dangles. The writer registry is the
 only writer, so it never re-reads.
@@ -1094,8 +1102,8 @@ stage `Complete` with its output intact and its dependents merely stale, which
 a re-run of them fixes; a crash after step 2 or during step 3 leaves the stage
 `Running`, which the next run treats as a re-run. No point leaves the stage
 `Complete` with part of its output gone, or its dependents looking current.
-`isRerun()` is decided before step 1. Steps 2 and 3 sit inside the run's guarded
-region, so a failure in either is recorded `Failed` as above.
+`isRerun()` is decided before step 1. All three steps sit inside the run's guarded
+region, so a failure in any of them is recorded `Failed` as above.
 
 **A stage may read the raster it writes** (`readsRaster` and `writesRaster`
 naming one raster); the declaration is legal. The gate opened that raster's

@@ -1,6 +1,7 @@
 // Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #include "workspace/support/test_slide.hpp"
 
+#include <workspace/detail/refresh_fault.hpp>
 #include <workspace/detail/stage_record.hpp>
 
 #include <slideio/processor/config/configuration.hpp>
@@ -966,4 +967,73 @@ TEST(StageRegistry, IsUnreadableReportsRestoredNameOnlyStages) {
     r.declare(writer("broken", f.y));
     EXPECT_FALSE(r.isUnreadable(broken));
     ws->close();
+}
+
+// A read-only refresh whose store reads as empty (the writer closed between the change
+// check and the restore) keeps the snapshot: it never swaps in a state without stages.
+TEST(StageRegistry, RefreshNeverShrinksToEmpty) {
+    Fixture f;
+    const StageId a = f.stages().declare(writer("a", f.x));
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    ASSERT_EQ(r.dependencyCount(a), 0);
+
+    // The writer declares a stage, so the observer's next graph accessor restores, and
+    // that restore reads no stages.
+    const StageId b = f.stages().declare(writer("b", f.y));
+    detail::readNextStoredStageCountAsZeroForTesting();
+    try {
+        EXPECT_EQ(r.dependencyCount(a), 0);
+        EXPECT_FALSE(r.isUnreadable(a));
+        EXPECT_STREQ(r.definition(a).name(), "a");
+    } catch (const IoError&) {
+        // Also acceptable: the snapshot is kept or the call says the store cannot be read.
+    }
+
+    // The next refresh reads the store again and follows the writer.
+    EXPECT_EQ(r.dependencyCount(b), 0);
+    EXPECT_STREQ(r.definition(b).name(), "b");
+    ro->close();
+}
+
+// A refresh that finds the stored dependency rows of an unreadable stage empty (a writer
+// mid-rewrite) keeps the pins it already held, so a reader of its layers never runs.
+TEST(StageRegistry, RefreshKeepsPinsOfAStillUnreadableStage) {
+    Fixture f;
+    const StageId w = f.stages().declare(writer("w", f.x));
+    StageDefinition rd("r");
+    rd.readsLayer(f.x).writesLayer(f.y);
+    const StageId r = f.stages().declare(rd);
+    StageStateWriter& raw = f.workspace->store()->stageStateWriter();
+    raw.setConfiguration(w, "this is not a record");
+
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ro->stages();
+    ASSERT_TRUE(s.isUnreadable(w));
+    ASSERT_EQ(s.dependencyCount(r), 1);
+
+    // The writer is between clearing the rows of r and adding them back, and declares
+    // another stage meanwhile.
+    raw.clearDependencies(r);
+    raw.declare("z", "this is not a record");
+    ASSERT_EQ(s.count(), 3);
+    ASSERT_EQ(s.dependencyCount(r), 1);
+    EXPECT_EQ(s.dependencyAt(r, 0), w);
+    EXPECT_TRUE(s.isUnreadable(w));
+    EXPECT_FALSE(s.isRunnable(r));
+    ro->close();
+}
+
+// markStale and clearStale on a read-only registry refuse with IoError, also for a
+// stage the writer declared after the observer opened.
+TEST(StageRegistry, ReadOnlyMarkStaleOfALaterStageIsIoError) {
+    Fixture f;
+    f.stages().declare(writer("a", f.x));
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    const StageId later = f.stages().declare(writer("later", f.y));
+    EXPECT_THROW(r.markStale(later), IoError);
+    EXPECT_THROW(r.clearStale(later), IoError);
+    EXPECT_FALSE(f.stages().isStale(later));
+    ro->close();
 }

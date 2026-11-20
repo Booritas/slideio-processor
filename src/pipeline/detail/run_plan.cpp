@@ -126,7 +126,9 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
             if (!operationAccepts(supported, type)) {
                 const std::string message =
                     std::string(kWhere) + op.name() + " does not accept " + dataTypeName(type) + " input";
-                throw UnsupportedDataTypeError(message.c_str(), type, supported);
+                ErrorContext context;
+                context.operationName = op.name();
+                throw UnsupportedDataTypeError(message.c_str(), type, supported, context);
             }
         }
         std::vector<DataType> out;
@@ -139,7 +141,9 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
                     message += (plane == 0 ? " " : ", ") + planeLabel(k, plane, channels) + " (" +
                                dataTypeName(in[plane]) + ")";
                 }
-                throw ChannelArityError(message.c_str(), static_cast<int32_t>(in.size()));
+                ErrorContext context;
+                context.operationName = op.name();
+                throw ChannelArityError(message.c_str(), static_cast<int32_t>(in.size()), context);
             }
             const int32_t count = op.outputPlaneCount(static_cast<int32_t>(in.size()));
             if (count < 1) {

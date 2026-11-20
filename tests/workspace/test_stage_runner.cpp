@@ -503,7 +503,7 @@ TEST(StageRunner, RestrictionKeepsObjectsInsideTheLayer) {
 TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     Fixture f(SlideKind::Edge, 3);
 
-    // The background layer is the white region, found at level 2: its edge, at 302, is
+    // The background layer is the white region, found at level 2: its edge, at 290, is
     // rounded out to the level-2 pixel grid.
     PipelineSpec coarse;
     coarse.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
@@ -527,29 +527,35 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     StageRunner(*f.workspace, id).run();
     EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
 
-    // Discs A, B, C of writeEdgeBlobSlide, by their level-0 centres.
+    // Discs A, B, C, D of writeEdgeBlobSlide, by their level-0 centres.
     const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(level) / 2.0;
     const int64_t centreA = testing_support::kEdgeX - 25;
     const int64_t centreB = testing_support::kEdgeX + 60;
+    const int64_t centreD = testing_support::kEdgeX + 3;
     // B lies wholly outside the region dilated by the half-step, A and C have their centres inside.
     ASSERT_GT(static_cast<double>(centreB - 20), static_cast<double>(region.right()) + halfStep);
     ASSERT_LT(centreA, region.right());
+    // D sits in the dilation band: outside the undilated region, within the half-step of it.
+    ASSERT_GT(centreD, region.right());
+    ASSERT_LE(static_cast<double>(centreD), static_cast<double>(region.right()) + halfStep);
 
     const std::vector<Rect64> nuclei = boundsOf(f, f.nuclei);
-    bool foundA = false, foundB = false, foundC = false;
+    bool foundA = false, foundB = false, foundC = false, foundD = false;
     for (const Rect64& box : nuclei) {
         const int64_t cx = box.x + box.width / 2;
         const int64_t cy = box.y + box.height / 2;
         foundA = foundA || (cx == centreA && cy == 150);
         foundB = foundB || cx == centreB;
         foundC = foundC || (cx == 100 && cy == 450);
+        foundD = foundD || (cx == centreD && cy == 300);
         // No object lies outside the dilated region (by its centre: the anchor decides).
         EXPECT_LE(static_cast<double>(cx), static_cast<double>(region.right()) + halfStep);
     }
     EXPECT_TRUE(foundA) << "the disc 25 px inside the edge was missed";
     EXPECT_TRUE(foundC) << "the disc inside the region was missed";
+    EXPECT_TRUE(foundD) << "the disc in the dilation band was missed";
     EXPECT_FALSE(foundB) << "the disc outside the dilated region was found";
-    EXPECT_EQ(nuclei.size(), 2u);
+    EXPECT_EQ(nuclei.size(), 3u);
 }
 
 namespace {

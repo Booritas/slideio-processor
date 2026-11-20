@@ -561,3 +561,25 @@ TEST(PipelineValidate, PerChannelMixedTypesRunEndToEnd) {
     }
     EXPECT_EQ(mismatches, 0);
 }
+
+// A caller that wraps the error (StageRunner) copies ErrorContext::operationName, so a
+// refusal of one operation names it there, not only in the message.
+TEST(PipelineValidate, TypeAndArityErrorsNameTheOperation) {
+    auto bytes = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_UInt16});
+    Pipeline unsupported(ts::makeSyntheticScene(bytes), config(), specOf("test.threshold"));
+    try {
+        unsupported.validate();
+        FAIL() << "validate must refuse the type";
+    } catch (const UnsupportedDataTypeError& e) {
+        EXPECT_STREQ(e.operationName(), "test.threshold");
+    }
+
+    auto mixed = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
+    Pipeline arity(ts::makeSyntheticScene(mixed), config(), specOf("test.jointUniform"));
+    try {
+        arity.validate();
+        FAIL() << "validate must refuse the mixed types";
+    } catch (const ChannelArityError& e) {
+        EXPECT_STREQ(e.operationName(), "test.jointUniform");
+    }
+}
