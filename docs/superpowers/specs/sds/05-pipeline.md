@@ -942,7 +942,7 @@ applied at three points, and it matters that they are three rather than one:
 
 | Point | What it does | Why there |
 |---|---|---|
-| Grid construction | The grid spans the restriction's bounding box, not the scene (5.6) | Whole rows and columns of tiles never exist |
+| Grid construction | An object-producing tiled run's grid spans the level, others span the restriction's bounding box (5.6); tiles outside the region are skipped without a mask | Whole rows and columns of tiles never exist for a run that cannot produce objects; objects crossing the region edge meet real tiles beyond it |
 | Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels; an object reaching into a skipped tile gets it evaluated on demand (5.5) | UR-IMG-5: "reads only tiles intersecting it", as a strong tendency |
 | Object emission | Each object is kept only if the mask is set at its **anchor** | UR-STG-3: "produces no objects outside those regions" |
 
@@ -1340,15 +1340,21 @@ anchor, and hence a fragment there. An anchor defined any other way, such as a
 centroid or a bounding-box corner, could lie in a skipped tile the object has no
 fragment in, and this pruning would lose the object.
 
-**Limitation: the grid-region edge.** The outer boundary of the grid region is
-not a seam (5.7), and the grid spans the ROI's or the polygon's bounding box
-(5.6). An object anchored inside an ROI rectangle that crosses the ROI's right or
-bottom edge is therefore still stored cut at that edge; for a polygon the same
-holds at its bounding box. Mask-source restrictions, such as the workspace
-restrict-to-layer path, are not affected: their grid spans the scene. This is a
-known, unfixed route, tracked under "Must fix before release" in
-`docs/project.md`; the disabled reproducer is
-`SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`.
+**The region edge.** An ROI's or a polygon's region is not the grid of an
+object-producing tiled run: that grid spans the level, so a tile straddling the
+region edge is a full tile and its seams to the tiles beyond are real seams
+(5.7). Tiles whose owned rect misses the region are skipped without building a
+mask, and an object anchored inside the region that reaches into one gets it
+evaluated on demand, as for a mask-source restriction. The skip tests the owned
+rect against the region, widened by one level pixel on every side at a
+non-integer level scale (at an integer scale it is not widened): the polygon's
+conservative raster can set the pixel just past its bounding box's outward
+mapping, and an anchor floors to the level pixel before the region. The test is
+only a shortcut; the anchor filter decides what is stored, so an object
+crossing the ROI or bounding-box edge is stored whole when its anchor is
+admitted and not at all otherwise. A chain with a WholeLevel operation is out of
+this rule: it analyses the region as one image, so its objects stop at the
+region edge, because the chain never sees beyond the region.
 
 **Effect on stored results.** Objects of a restricted run that cross into a
 skipped tile are now stored whole, so against results stored before the fix:
@@ -1589,10 +1595,17 @@ stalling at an unexplained count. `tilesCompleted` reaching `tilesTotal`
 does not mean the run is done: tiles demanded by the seam merger (5.5) and the
 merging run after the last progress call, possibly in several rounds.
 
-The grid spans the ROI's or the polygon's bounding box, so the grid region's
-outer boundary is not a seam (5.7): an object anchored inside an ROI that
-crosses the ROI's right or bottom edge is stored cut there (see the limitation
-in 5.5; reproducer `SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`).
+The grid of an object-producing tiled run spans the level; any other run's grid
+spans the ROI's or the polygon's bounding box. The region (the ROI, or the
+polygon's bounding box, at the level) is a `RunPlan` field and still bounds
+`rect(k)`, the raster tiles written (a tile writes only its part inside the
+region), and the pixels an accumulation pass applies to (a straddling tile
+applies over its part in the region, so a reduction that ignores the mask
+counts exactly the region's pixels). A final-pass tile applies over its whole
+rect. `tilesTotal` counts the level grid for such a run, so an ROI- or
+polygon-restricted object run reports more tiles than before, the out-of-region
+ones as fast progress. The per-tile memory check uses a full tile
+(`min(tile, level)` per side), because a straddling tile is full size.
 
 Halo is declared, supplied and applied in **level** pixels. An operation's
 neighbourhood is a property of its kernel, which works on the pixels it is
@@ -1741,7 +1754,7 @@ splitting one object into two, each plausible, with no error raised.
 
 A fragment's **seam contacts** are the maximal stretches of its rings lying on a
 seam line of the grid — the level-0 edge `tileRect(c).x` of an interior column
-boundary, likewise `y` for a row boundary; the outer boundary of the grid region
+boundary, likewise `y` for a row boundary; the outer boundary of the grid
 is not a seam — recorded as a line and a half-open interval in level-0
 integers. Two fragments of the same layer **and the same join key** (5.1), in
 the tiles on either side of one seam line, join when they have contacts on

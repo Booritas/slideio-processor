@@ -285,41 +285,181 @@ TEST(SeamRun, RestrictionAppliesToMergedObjects) {
     }
 }
 
-// Known limitation, not fixed (SDS 05, 5.5 and 5.6; docs/project.md, "Must fix
-// before release"): the outer boundary of the grid region is not a seam, so an
-// object anchored inside an ROI that crosses the ROI's right or bottom edge is
-// stored cut at that edge, with the same id (the anchor is the top-left corner)
-// but a smaller ring. Run: --gtest_also_run_disabled_tests
-// --gtest_filter=SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated
-TEST(SeamRun, DISABLED_RoiEdgeObjectIsNotTruncated) {
-    auto scene = blobScene();
-    const Rect64 roi{64, 64, 316, 316}; // right and bottom edges at 380, inside blobs
+namespace {
 
+// The objects of an unrestricted single-tile run of `components`.
+std::vector<ObjectRecord> unrestrictedObjects(const std::shared_ptr<slideio::Scene>& scene) {
     ts::CollectingObjectSink all;
     Pipeline open(scene, config(static_cast<int32_t>(kSide), 1), components(false));
     open.bindLayer("objects", LayerId(3));
     open.runInto(all, nullptr, CancellationToken());
+    return all.records();
+}
+
+bool insideRect(const Rect64& r, const Point64& p) {
+    return p.x >= r.x && p.y >= r.y && p.x < r.x + r.width && p.y < r.y + r.height;
+}
+
+// What a restricted run stored, and the tiles it evaluated on demand.
+struct StoredRun {
+    std::vector<ObjectRecord> records;
+    int64_t onDemand = 0;
+};
+
+StoredRun runRestrictedBy(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec, int32_t workers,
+                          ts::DiscMaskSource* disc = nullptr) {
+    ts::CollectingObjectSink stored;
+    Pipeline p(scene, config(64, workers), spec);
+    if (disc != nullptr) {
+        p.maskSource(disc);
+    }
+    p.bindLayer("objects", LayerId(3));
+    p.runInto(stored, nullptr, CancellationToken());
+    return StoredRun{stored.records(), detail::PipelineAccess::impl(p).counters.tilesEvaluatedOnDemand.load()};
+}
+
+std::vector<ObjectRecord> filtered(const std::vector<ObjectRecord>& records,
+                                   const std::function<bool(const ObjectRecord&)>& keep) {
+    std::vector<ObjectRecord> kept;
+    for (const ObjectRecord& r : records) {
+        if (keep(r)) {
+            kept.push_back(r);
+        }
+    }
+    return kept;
+}
+
+} // namespace
+
+// An ROI whose edges cut blobs: every object anchored inside is stored whole, on
+// all four edges, and one anchored outside is not stored, though a cut part of
+// it lies inside. (The fixture's blobs are rectangles, so one crossing the left
+// edge has its anchor, the top-left corner, outside.)
+TEST(SeamRun, RoiEdgeObjectIsNotTruncated) {
+    auto scene = blobScene();
+    const Rect64 roi{70, 80, 311, 298}; // edges at 70, 80, 381, 378, inside blobs
+    const std::vector<ObjectRecord> all = unrestrictedObjects(scene);
+    const std::vector<ObjectRecord> expected =
+        filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
+
+    int64_t crossingRightOrBottom = 0;
+    int64_t crossingLeftAnchoredOutside = 0;
+    int64_t crossingTopWithCornerInside = 0;
+    for (const ObjectRecord& r : all) {
+        const Point64 a = r.geometry().anchor();
+        const Rect64 box = r.geometry().boundingBox();
+        if (insideRect(roi, a)) {
+            crossingRightOrBottom +=
+                box.x + box.width > roi.x + roi.width || box.y + box.height > roi.y + roi.height ? 1 : 0;
+        }
+        // Cut at the left edge, the part inside would start at the ROI's edge, in the anchor's row.
+        crossingLeftAnchoredOutside +=
+            box.x < roi.x && box.x + box.width > roi.x && a.y >= roi.y && a.y < roi.y + roi.height ? 1 : 0;
+        crossingTopWithCornerInside += box.y < roi.y && box.y + box.height > roi.y && box.x >= roi.x &&
+                                               box.x < roi.x + roi.width
+                                           ? 1
+                                           : 0;
+    }
+    ASSERT_GT(crossingRightOrBottom, 5) << "the fixture should have objects crossing the right or bottom edge";
+    ASSERT_GT(crossingLeftAnchoredOutside, 5) << "the fixture should have objects crossing the left edge";
+    ASSERT_GT(crossingTopWithCornerInside, 5) << "the fixture should have objects crossing the top edge";
 
     PipelineSpec spec = components(true);
     spec.restrictTo(roi);
-    ts::CollectingObjectSink stored;
-    Pipeline restricted(scene, config(64, 4), spec);
-    restricted.bindLayer("objects", LayerId(3));
-    restricted.runInto(stored, nullptr, CancellationToken());
+    for (const int32_t workers : {1, 4, 8}) {
+        const StoredRun run = runRestrictedBy(scene, spec, workers);
+        EXPECT_EQ(sortedIds(run.records), sortedIds(expected)) << workers << " workers: the same objects are stored";
+        EXPECT_TRUE(sortedKeys(run.records) == sortedKeys(expected))
+            << workers << " workers: an object crossing the edge is stored cut";
+        EXPECT_GT(run.onDemand, 0) << workers << " workers: tiles outside the ROI are evaluated for crossing objects";
+    }
+}
 
-    std::vector<ObjectRecord> expected;
-    int64_t crossingTheEdge = 0;
-    for (const ObjectRecord& r : all.records()) {
-        const Point64 a = r.geometry().anchor();
-        if (a.x >= roi.x && a.y >= roi.y && a.x < roi.x + roi.width && a.y < roi.y + roi.height) {
-            expected.push_back(r);
-            const Rect64 box = r.geometry().boundingBox();
-            crossingTheEdge += box.x + box.width > roi.x + roi.width || box.y + box.height > roi.y + roi.height ? 1 : 0;
+// A polygon whose bounding-box edges cut blobs: the objects stored are those of
+// the unrestricted run whose anchor the polygon's mask admits, whole.
+TEST(SeamRun, PolygonEdgeObjectIsNotTruncated) {
+    auto scene = blobScene();
+    const Point64 corners[] = {{70, 70}, {380, 90}, {400, 380}, {90, 410}};
+    Polygon quad;
+    quad.addRing(corners, 4, false);
+    const Rect64 bounds = quad.boundingBox();
+    RasterMask mask(Rect64{0, 0, kSide, kSide}, 0, 1.0);
+    rasteriseInto(mask, quad);
+
+    const std::vector<ObjectRecord> all = unrestrictedObjects(scene);
+    const std::vector<ObjectRecord> expected =
+        filtered(all, [&](const ObjectRecord& r) { return mask.testLevel0(r.geometry().anchor()); });
+    int64_t admittedCrossingBounds = 0;
+    int64_t droppedCrossingIn = 0;
+    for (const ObjectRecord& r : all) {
+        const Rect64 box = r.geometry().boundingBox();
+        const bool crossesBounds = box.x < bounds.x || box.y < bounds.y ||
+                                   box.x + box.width > bounds.x + bounds.width ||
+                                   box.y + box.height > bounds.y + bounds.height;
+        const bool touchesBounds = box.x + box.width > bounds.x && box.y + box.height > bounds.y &&
+                                   box.x < bounds.x + bounds.width && box.y < bounds.y + bounds.height;
+        if (mask.testLevel0(r.geometry().anchor())) {
+            admittedCrossingBounds += crossesBounds ? 1 : 0;
+        } else {
+            droppedCrossingIn += crossesBounds && touchesBounds ? 1 : 0;
         }
     }
-    ASSERT_GT(crossingTheEdge, 5) << "the fixture should have objects crossing the ROI edge";
-    EXPECT_EQ(sortedIds(stored.records()), sortedIds(expected)) << "the same objects are stored";
-    EXPECT_TRUE(sortedKeys(stored.records()) == sortedKeys(expected)) << "an object crossing the edge is stored cut";
+    ASSERT_GT(admittedCrossingBounds, 0) << "the fixture should keep objects crossing the bounding box";
+    ASSERT_GT(droppedCrossingIn, 5) << "the fixture should drop objects crossing into the bounding box";
+
+    PipelineSpec spec = components(true);
+    spec.restrictToPolygon(quad);
+    for (const int32_t workers : {1, 4, 8}) {
+        const StoredRun run = runRestrictedBy(scene, spec, workers);
+        EXPECT_EQ(sortedIds(run.records), sortedIds(expected)) << workers << " workers: the same objects are stored";
+        EXPECT_TRUE(sortedKeys(run.records) == sortedKeys(expected)) << workers << " workers: objects differ";
+        EXPECT_GT(run.onDemand, 0) << workers << " workers";
+    }
+}
+
+// An ROI reaching the scene's right and bottom edges has no tile beyond it, and
+// objects there are stored as in the unrestricted run.
+TEST(SeamRun, RoiAtTheSceneEdgeMatchesTheUnrestrictedRun) {
+    auto scene = blobScene();
+    const Rect64 roi{256, 256, kSide - 256, kSide - 256};
+    const std::vector<ObjectRecord> all = unrestrictedObjects(scene);
+    const std::vector<ObjectRecord> expected =
+        filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
+    ASSERT_GT(expected.size(), 100u);
+
+    PipelineSpec spec = components(true);
+    spec.restrictTo(roi);
+    for (const int32_t workers : {1, 4}) {
+        const StoredRun run = runRestrictedBy(scene, spec, workers);
+        EXPECT_TRUE(sortedKeys(run.records) == sortedKeys(expected)) << workers << " workers";
+        EXPECT_GT(run.onDemand, 0) << workers << " workers: objects cross the ROI's left and top edges";
+    }
+}
+
+// An ROI and a mask source together: an object is stored when its anchor is in
+// both, and whole.
+TEST(SeamRun, RoiWithAMaskSourceStoresWholeObjects) {
+    auto scene = blobScene();
+    const Rect64 roi{70, 70, 316, 316};
+    ts::DiscMaskSource disc(250.0, 230.0, 150.0);
+    const std::vector<ObjectRecord> all = unrestrictedObjects(scene);
+    const std::vector<ObjectRecord> inRoi =
+        filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
+    const std::vector<ObjectRecord> expected = filtered(inRoi, [&](const ObjectRecord& r) {
+        const Point64 a = r.geometry().anchor();
+        return disc.contains(static_cast<double>(a.x) + 0.5, static_cast<double>(a.y) + 0.5);
+    });
+    ASSERT_GT(expected.size(), 100u);
+    ASSERT_LT(expected.size(), inRoi.size()) << "the mask should exclude some objects the ROI admits";
+
+    PipelineSpec spec = components(true);
+    spec.restrictTo(roi);
+    for (const int32_t workers : {1, 4}) {
+        const StoredRun run = runRestrictedBy(scene, spec, workers, &disc);
+        EXPECT_EQ(sortedIds(run.records), sortedIds(expected)) << workers << " workers";
+        EXPECT_TRUE(sortedKeys(run.records) == sortedKeys(expected)) << workers << " workers";
+        EXPECT_GT(run.onDemand, 0) << workers << " workers";
+    }
 }
 
 // A run with an object-producing chain works in a directory of its own under the

@@ -227,8 +227,8 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     [restricted-object truncation plan](superpowers/plans/2026-11-20-restriction-truncation.md):
     a skipped tile is deferred, and after the final pass each deferred tile an
     open object reaching out of an evaluated tile expects is evaluated on demand
-    (SDS 05 §5.5, "The tile mask"). The ROI and polygon edge route is not fixed:
-    see the open entry below. Cost: UR-IMG-5's "reads only intersecting tiles"
+    (SDS 05 §5.5, "The tile mask"). The ROI and polygon edge route was fixed afterwards:
+    see the next entry. Cost: UR-IMG-5's "reads only intersecting tiles"
     is now a strong tendency, not a guarantee. Reproducer
     `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated` is
     enabled. **Effect on stored results (QA/regulatory):** the object
@@ -238,15 +238,29 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     lies in a skipped tile; and results previously stored by restricted stages
     are affected and are not marked stale. Re-run restricted stages and record
     the change in the verification evidence.
-  - **Must fix before release: an object crossing the ROI or polygon
-    grid-region edge is still stored truncated.** Pre-existing and documented
-    only. The tile grid spans the ROI's or the polygon's bounding box
-    (`src/pipeline/detail/run_plan.cpp`, `regionAtLevel0`), and the outer
-    boundary of the grid region is not a seam, so an object anchored inside an
-    ROI rectangle that crosses the ROI's right or bottom edge is stored cut at
-    that edge (for a polygon, at the bounding-box edge). Mask-source
-    restrictions are not affected. See the limitation note in SDS 05 §5.5 and
-    the disabled reproducer `SeamRun.DISABLED_RoiEdgeObjectIsNotTruncated`.
+  - **Resolved (ROI and polygon restrictions): an object crossing the ROI or
+    polygon grid-region edge was stored truncated.** The same defect as the
+    mask-source one, on the route the first fix left open: the tile grid spanned
+    the ROI's or the polygon's bounding box, so the region's outer boundary was
+    not a seam and an object anchored inside that crossed the edge was stored
+    cut there, or an object whose true anchor lay outside was stored with the
+    cut part's anchor. Fixed by the
+    [ROI and polygon edge truncation plan](superpowers/plans/2026-11-20-roi-edge-truncation.md):
+    an object-producing tiled run's grid spans the level, the region becomes a
+    `RunPlan` field bounding `rect`, the raster written and accumulation, tiles
+    outside the region are skipped without a mask, and the deferred-tile
+    machinery above carries objects across the edge (SDS 05 §5.5, "The region
+    edge"). Chains with a WholeLevel operation still stop at the region edge by
+    design. Reproducer `SeamRun.RoiEdgeObjectIsNotTruncated` is enabled, with
+    polygon, scene-edge and ROI-plus-mask-source cases. **Effect on stored
+    results (QA/regulatory):** the identifiers of affected objects change,
+    because a whole object's anchor differs from the truncated one's; objects
+    previously stored cut become whole; objects whose true anchor is outside
+    the ROI or polygon are no longer stored, so counts can fall; `tilesTotal`
+    grows for ROI and polygon object runs, because it counts the level grid;
+    and results previously stored by ROI- or polygon-restricted stages are
+    affected and are not marked stale. Re-run those stages and record the
+    change in the verification evidence.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
