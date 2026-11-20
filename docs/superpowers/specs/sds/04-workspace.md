@@ -506,7 +506,14 @@ public:
     StageId dependencyAt(StageId, int32_t index) const;
     bool    isExplicitDependency(StageId, int32_t index) const;
 
-    /// True when every effective dependency is complete and not stale.
+    /// The explicit `dependsOn` names no declared stage carries yet, in
+    /// declaration order. Not counted in `dependencyCount`; the stage is not
+    /// runnable until each is declared (4.3).
+    int32_t     unresolvedDependencyCount(StageId) const;
+    const char* unresolvedDependencyAt(StageId, int32_t index) const;
+
+    /// True when every effective dependency is complete and not stale and no
+    /// `dependsOn` name is unresolved.
     bool isRunnable(StageId) const;
 
     /// True for a stage kept by name only at restore, because its record could
@@ -563,6 +570,16 @@ Derivation is order-independent: dependencies are recomputed on every
 the writer appears. That matters because a script does not always declare
 stages in execution order, and requiring it to would reintroduce by convention
 the ordering the derivation exists to remove.
+
+An explicit `dependsOn` may name a stage that is not declared yet. Until a stage
+of that name exists the name is **unresolved**: it gives no dependency row and no
+edge, so it is not counted in `dependencyCount`; `isRunnable` is false while any
+name is unresolved, `StageRunner` refuses the stage with a `StageError` naming the
+missing stage, and `unresolvedDependencyCount` / `unresolvedDependencyAt` list the
+names. The declaration that adds the named stage triggers the next derivation,
+which resolves the name, and the cycle check then includes it, so a declaration
+that closes a cycle through an earlier unresolved name is refused there. A stage
+that names itself is still a `StageError` at `declare`.
 
 `declare` rejects two things it previously could not see:
 
@@ -641,12 +658,14 @@ anything, so `openReadOnly` works. A declare in a reopened workspace therefore
 derives from, and cycle-checks against, the stages persisted earlier. A row
 whose record does not parse (an `InvalidArgumentError` or `InternalError` from
 `stageFromRecord`; any other failure, an `IoError` in particular, propagates),
-or whose explicit `dependsOn` names a stage that is not stored or the stage
+or whose explicit `dependsOn` names the stage
 itself, is kept by name only: a warning naming the stage is logged, the stage
 has an empty definition, so it derives no reads or writes of its own, and it is
 never runnable. Redeclaring it with a real definition repairs it and marks it
 stale. Layers a stage wrote under an earlier declaration stay recorded as its
-written layers, because storage has no way to remove one.
+written layers, because storage has no way to remove one. A stored `dependsOn`
+naming a stage that is not stored is not damage: it stays unresolved, as at
+`declare`.
 
 The edges around an unreadable stage are not lost. At restore the stored
 dependency rows on either side of it — its own and other stages' dependencies
@@ -910,17 +929,19 @@ annotation writers write nothing until given something.
 **Gating comes before anything is written.** `run()` first throws `IoError`
 when the workspace is read-only; that check needs no run slot. It then throws
 `StageError`, with the stage's name in `ErrorContext.stageName` and in the
-message, in five cases, checked in this order:
+message, in six cases, checked in this order:
 
 1. another `StageRunner` of the same workspace is inside `run()`;
 2. the stage's record is unreadable (`StageRegistry::isUnreadable`);
-3. a dependency is not `Complete`, or is stale: the message names the first
+3. a `dependsOn` name is unresolved, the stage not being declared yet
+   (`unresolvedDependencyCount`): the message names the first missing stage;
+4. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
-4. the stage writes a raster that another stage populated
+5. the stage writes a raster that another stage populated
    (`RasterRegistry::isPopulated` and `writerStage`, reads only): the message
    names the raster and that stage, which alone may write it until it is
    discarded (ruling S47);
-5. the stage's bound pipeline cannot be built (an auxiliary source that cannot
+6. the stage's bound pipeline cannot be built (an auxiliary source that cannot
    be opened, say) or fails `Pipeline::validate()` (the layer binding below
    among others): the `cause` is the original error, the pipeline's naming the
    operation and the layer, and `ErrorContext.operationName` is copied when the

@@ -73,6 +73,8 @@ std::string messageOf(const std::function<void()>& call) {
     return std::string();
 }
 
+std::string workspacePath(const Fixture& f) { return (f.dir.path() / "ws").u8string(); }
+
 StageDefinition writer(const char* name, LayerId layer) {
     StageDefinition def(name);
     def.writesLayer(layer);
@@ -167,14 +169,106 @@ TEST(StageRegistry, ExplicitDependencyFlagged) {
     EXPECT_TRUE(f.stages().isExplicitDependency(cid, 0));
 }
 
-TEST(StageRegistry, UnknownExplicitDependencyIsStageError) {
+TEST(StageRegistry, UnknownExplicitDependencyStaysUnresolved) {
     Fixture f;
     StageDefinition b("b");
     b.dependsOn("ghost");
+    const StageId id = f.stages().declare(b);
+    EXPECT_EQ(f.stages().count(), 1);
+    EXPECT_EQ(f.stages().dependencyCount(id), 0);
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(id), 1);
+    EXPECT_STREQ(f.stages().unresolvedDependencyAt(id, 0), "ghost");
+    EXPECT_THROW(f.stages().unresolvedDependencyAt(id, 1), InvalidArgumentError);
+    EXPECT_THROW(f.stages().unresolvedDependencyAt(id, -1), InvalidArgumentError);
+    EXPECT_FALSE(f.stages().isRunnable(id));
+    EXPECT_EQ(f.workspace->store()->stageStates().dependencyCount(id), 0);
+    EXPECT_THROW(f.stages().unresolvedDependencyCount(StageId(9999)), InvalidArgumentError);
+}
+
+TEST(StageRegistry, LateDeclaredDependencyResolves) {
+    Fixture f;
+    // a reads `tissue`, which nothing writes yet, so a has no dependency of its own.
+    StageDefinition a("a");
+    a.readsLayer(f.tissue).writesLayer(f.x);
+    StageDefinition b("b");
+    b.dependsOn("a").writesLayer(f.y);
+    const StageId bid = f.stages().declare(b);
+    EXPECT_FALSE(f.stages().isRunnable(bid));
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(bid), 1);
+    EXPECT_STREQ(f.stages().unresolvedDependencyAt(bid, 0), "a");
+    EXPECT_EQ(f.stages().dependencyCount(bid), 0);
+
+    const StageId aid = f.stages().declare(a);
+    ASSERT_EQ(f.stages().dependencyCount(bid), 1);
+    EXPECT_EQ(f.stages().dependencyAt(bid, 0), aid);
+    EXPECT_TRUE(f.stages().isExplicitDependency(bid, 0));
+    EXPECT_EQ(f.stages().unresolvedDependencyCount(bid), 0);
+    EXPECT_FALSE(f.stages().isRunnable(bid)) << "a is declared but not complete";
+    f.workspace->store()->stageStateWriter().setStatus(aid, StageStatus::Complete);
+    EXPECT_TRUE(f.stages().isRunnable(bid));
+    ASSERT_EQ(f.workspace->store()->stageStates().dependencyCount(bid), 1);
+    EXPECT_EQ(f.workspace->store()->stageStates().dependencyAt(bid, 0), aid);
+
+    // c depends on b and writes what a reads: a -> c -> b -> a.
+    StageDefinition c("c");
+    c.dependsOn("b").writesLayer(f.tissue);
+    const std::string message = messageOf([&] { f.stages().declare(c); });
+    EXPECT_NE(message.find("\"a\""), std::string::npos) << message;
+    EXPECT_NE(message.find("\"b\""), std::string::npos) << message;
+    EXPECT_NE(message.find("\"c\""), std::string::npos) << message;
+    StageId unused;
+    EXPECT_FALSE(f.stages().find("c", unused));
+}
+
+TEST(StageRegistry, LateDeclarationClosingACycleThroughAnUnresolvedNameIsRefused) {
+    Fixture f;
+    StageDefinition a("a");
+    a.dependsOn("b").writesLayer(f.x);
+    f.stages().declare(a);
+    StageDefinition b("b");
+    b.dependsOn("a").writesLayer(f.y);
     const std::string message = messageOf([&] { f.stages().declare(b); });
-    EXPECT_NE(message.find("\"b\""), std::string::npos);
-    EXPECT_NE(message.find("\"ghost\""), std::string::npos);
-    EXPECT_THROW(f.stages().declare(b), StageError);
+    EXPECT_NE(message.find("\"a\""), std::string::npos) << message;
+    EXPECT_NE(message.find("\"b\""), std::string::npos) << message;
+    EXPECT_EQ(f.stages().count(), 1);
+}
+
+TEST(StageRegistry, UnresolvedDependencySurvivesReopen) {
+    Fixture f;
+    StageDefinition b("b");
+    b.dependsOn("a").writesLayer(f.y);
+    const StageId bid = f.stages().declare(b);
+    f.workspace->close();
+
+    {
+        WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+        ASSERT_EQ(ro->stages().unresolvedDependencyCount(bid), 1);
+        EXPECT_STREQ(ro->stages().unresolvedDependencyAt(bid, 0), "a");
+        EXPECT_EQ(ro->stages().dependencyCount(bid), 0);
+        EXPECT_FALSE(ro->stages().isRunnable(bid));
+        EXPECT_FALSE(ro->stages().isUnreadable(bid));
+        ro->close();
+    }
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ws->stages();
+    ASSERT_EQ(s.unresolvedDependencyCount(bid), 1);
+    EXPECT_FALSE(s.isUnreadable(bid));
+    EXPECT_FALSE(s.isRunnable(bid));
+    const StageId aid = s.declare(writer("a", f.x));
+    EXPECT_EQ(s.unresolvedDependencyCount(bid), 0);
+    ASSERT_EQ(s.dependencyCount(bid), 1);
+    EXPECT_EQ(s.dependencyAt(bid, 0), aid);
+    ws->close();
+}
+
+TEST(StageRegistry, SelfDependencyIsStillRefused) {
+    Fixture f;
+    StageDefinition s("s");
+    s.dependsOn("s").writesLayer(f.x);
+    const std::string message = messageOf([&] { f.stages().declare(s); });
+    EXPECT_NE(message.find("\"s\""), std::string::npos) << message;
+    EXPECT_NE(message.find("itself"), std::string::npos) << message;
+    EXPECT_THROW(f.stages().declare(s), StageError);
     EXPECT_EQ(f.stages().count(), 0);
 }
 
@@ -276,16 +370,6 @@ TEST(StageRegistry, ReadOnlyWorkspaceRefusesDeclare) {
     ro->close();
 }
 
-TEST(StageRegistry, ExplicitDependencyOnItselfIsStageError) {
-    Fixture f;
-    StageDefinition s("selfish");
-    s.dependsOn("selfish");
-    const std::string message = messageOf([&] { f.stages().declare(s); });
-    EXPECT_NE(message.find("\"selfish\""), std::string::npos);
-    EXPECT_THROW(f.stages().declare(s), StageError);
-    EXPECT_EQ(f.stages().count(), 0);
-}
-
 namespace {
 
 // Four stages: background -> nuclei -> cells, and an unrelated one.
@@ -340,8 +424,6 @@ public:
 private:
     std::shared_ptr<CaptureSink> sink_;
 };
-
-std::string workspacePath(const Fixture& f) { return (f.dir.path() / "ws").u8string(); }
 
 } // namespace
 
@@ -638,10 +720,10 @@ TEST(StageRegistry, RestoreFallsBackToPersistedDependenciesWhenRederivationFails
     StageDefinition rd("r");
     rd.readsLayer(f.x).writesLayer(f.y);
     const StageId r = f.stages().declare(rd);
-    // A record whose explicit dependency names a stage that does not exist, with a stored
+    // A record whose explicit dependency names the stage itself, with a stored
     // dependency row on w.
     StageDefinition ghost("orphan");
-    ghost.readsLayer(f.x).dependsOn("ghost");
+    ghost.readsLayer(f.x).dependsOn("orphan");
     const std::string ghostRecord =
         detail::stageRecordJson(ghost, f.workspace->layers(), f.workspace->store()->rasters());
     StageStateWriter& raw = f.workspace->store()->stageStateWriter();
@@ -674,6 +756,27 @@ TEST(StageRegistry, RestoreFallsBackToPersistedDependenciesWhenRederivationFails
     s.declare(writer("other", f.tissue));
     ASSERT_EQ(ws->store()->stageStates().dependencyCount(orphan), 1);
     EXPECT_EQ(ws->store()->stageStates().dependencyAt(orphan, 0), w);
+    ws->close();
+}
+
+TEST(StageRegistry, DanglingNameInRecordStaysUnresolvedNotUnreadable) {
+    Fixture f;
+    StageDefinition dangling("dangling");
+    dangling.writesLayer(f.y).dependsOn("ghost");
+    const std::string record =
+        detail::stageRecordJson(dangling, f.workspace->layers(), f.workspace->store()->rasters());
+    const StageId id = f.workspace->store()->stageStateWriter().declare("dangling", record.c_str());
+    f.workspace->close();
+
+    const LogCapture log;
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ws->stages();
+    EXPECT_FALSE(s.isUnreadable(id));
+    EXPECT_EQ(s.definition(id).explicitDependencyCount(), 1);
+    ASSERT_EQ(s.unresolvedDependencyCount(id), 1);
+    EXPECT_STREQ(s.unresolvedDependencyAt(id, 0), "ghost");
+    EXPECT_FALSE(s.isRunnable(id));
+    for (const auto& m : log.messages()) EXPECT_NE(m.first, LogLevel::Warning) << m.second;
     ws->close();
 }
 

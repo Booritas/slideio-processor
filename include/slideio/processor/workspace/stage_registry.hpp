@@ -34,8 +34,8 @@ namespace slideio::processor {
  * (definition and dependencies) so a reopened workspace is complete before any declare;
  * nothing is written, so a read-only open works.
  *
- * A row whose record does not parse, or whose explicit dependsOn names a stage that is
- * not stored (or the stage itself), is kept by name only: a warning naming the stage is
+ * A row whose record does not parse, or whose explicit dependsOn names the stage
+ * itself, is kept by name only: a warning naming the stage is
  * logged and the stage has an empty definition, which derives no reads or writes. It is
  * never runnable. Its stored edges, its own dependencies and the dependencies of other
  * stages on it, are pinned into the graph as non-explicit edges and carried by every
@@ -46,6 +46,11 @@ namespace slideio::processor {
  * layer-ordering and derived-from paths join the dependencies, and an unreadable stage
  * contributes its pinned edges as StageDependency edges. It is rebuilt from the held
  * definitions with the dependency graph, and may contain cycles the dependencies cannot.
+ *
+ * A dependsOn may name a stage declared later. Until a stage of that name exists the
+ * name is unresolved: it gives no dependency and no edge, the stage is not runnable, and
+ * the declaration that adds the named stage resolves it (and is cycle-checked with it).
+ * A stage naming itself is refused at declare.
  *
  * In a read-only workspace (Workspace::openReadOnly) a writer in another process may
  * declare stages while the registry is open. Before answering, declare(),
@@ -312,7 +317,42 @@ public:
      */
     bool isExplicitDependency(StageId stage, int32_t index) const;
     /**
-     * @brief Tells whether every effective dependency is Complete and not stale.
+     * @brief Returns the number of explicit dependsOn names of a stage that no declared
+     * stage carries yet.
+     *
+     * Such a name gives no dependency and no edge: it is not counted in dependencyCount()
+     * until a stage of that name is declared, when that declaration's derivation resolves
+     * it (and the cycle check then includes it). While any is unresolved the stage is not
+     * runnable and StageRunner refuses it, naming the missing stage.
+     * @param stage The stage.
+     * @return The count.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError In a read-only workspace, when re-reading the changed stages fails.
+     * Never for a closed store, which answers from memory.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-2, UR-STG-4
+     */
+    int32_t unresolvedDependencyCount(StageId stage) const;
+    /**
+     * @brief Returns one unresolved dependsOn name, in declaration order. Owned by the
+     * registry; valid for its life.
+     * @param stage The stage.
+     * @param index Zero-based position, below unresolvedDependencyCount().
+     * @return The name of the stage not declared yet.
+     * @throws InvalidArgumentError When the stage is unknown or index is out of range.
+     * @throws IoError In a read-only workspace, when re-reading the changed stages fails.
+     * Never for a closed store, which answers from memory.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-2, UR-STG-4
+     */
+    const char* unresolvedDependencyAt(StageId stage, int32_t index) const;
+    /**
+     * @brief Tells whether every effective dependency is Complete and not stale and no
+     * dependsOn name is unresolved.
      * @param stage The stage.
      * @return True when so; true for a stage with no dependencies, except one whose
      * record could not be restored, which is never runnable, so a stage depending on it

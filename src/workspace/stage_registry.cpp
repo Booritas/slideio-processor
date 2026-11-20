@@ -60,8 +60,9 @@ bool writesAnyOf(const StageDefinition& writer, const StageDefinition& reader) {
 }
 
 // Derives the effective dependencies of every entry: writers of what it reads, and
-// its explicit dependsOn names. Throws StageError for an unknown or self-named
-// explicit dependency.
+// its explicit dependsOn names. A name no entry carries gives no edge until a stage of
+// that name is declared (the next derivation resolves it). Throws StageError for a
+// self-named explicit dependency.
 Graph deriveGraph(const std::vector<Entry>& entries) {
     std::map<std::string, int32_t> byName;
     for (const Entry& e : entries) byName[e.definition->name()] = e.id;
@@ -75,11 +76,7 @@ Graph deriveGraph(const std::vector<Entry>& entries) {
         for (int32_t i = 0; i < stage.definition->explicitDependencyCount(); ++i) {
             const char* target = stage.definition->explicitDependencyAt(i);
             const auto found = byName.find(target);
-            if (found == byName.end()) {
-                throw StageError(("stage " + quoted(stage.definition->name()) + " depends on stage " +
-                                  quoted(target) + ", which is not declared")
-                                     .c_str());
-            }
+            if (found == byName.end()) continue;  // unresolved: no edge until declared
             if (found->second == stage.id) {
                 throw StageError(("stage " + quoted(stage.definition->name()) + " depends on itself").c_str());
             }
@@ -263,6 +260,22 @@ public:
         return found->second;
     }
 
+    // The explicit dependsOn names of a held stage that no held stage carries yet, in
+    // declaration order. The strings live in the held definition, which is never freed
+    // (a replaced one is retired). Caller holds the mutex.
+    std::vector<const char*> unresolvedOf(StageId stage) const {
+        const auto found = definitions.find(stage.value());
+        if (found == definitions.end()) throw InvalidArgumentError("the stage is not known to the registry");
+        std::set<std::string> names;
+        for (const auto& d : definitions) names.insert(d.second->name());
+        std::vector<const char*> result;
+        const StageDefinition& def = *found->second;
+        for (int32_t i = 0; i < def.explicitDependencyCount(); ++i) {
+            if (names.count(def.explicitDependencyAt(i)) == 0) result.push_back(def.explicitDependencyAt(i));
+        }
+        return result;
+    }
+
     // Sets the stale flag on the stage and on every stage its forward answer lists, along
     // all five paths of the staleness graph. A cycle is walked once: each stage is set once.
     // Caller holds the mutex.
@@ -288,7 +301,7 @@ public:
     }
 
     // Rebuilds the definitions and the graph from the stored rows. A row whose record does
-    // not parse, or whose explicit dependsOn names a stage that is not stored (or itself),
+    // not parse, or whose explicit dependsOn names the stage itself,
     // is kept by name only: an empty definition, so no reads, no writes and no edges of
     // its own, listed in `unreadable` so it is never runnable. Everything is built aside
     // and swapped in at the end, so a failure leaves the registry as it was. Writes
@@ -324,20 +337,18 @@ public:
                 keepByName(id, name);
             }
         }
-        // A parsed record whose explicit dependency names no stored stage, or the stage
-        // itself, cannot be derived: only a damaged store holds one. It is kept by name
-        // only like an unreadable record, so its stored edges are pinned below.
-        std::set<std::string> names;
-        for (const auto& d : nextDefinitions) names.insert(d.second->name());
+        // A parsed record whose explicit dependency names the stage itself cannot be
+        // derived: only a damaged store holds one. It is kept by name only like an
+        // unreadable record, so its stored edges are pinned below. A name no stored stage
+        // carries stays unresolved, as at declare.
         for (auto& d : nextDefinitions) {
             const StageDefinition& def = *d.second;
             for (int32_t i = 0; i < def.explicitDependencyCount(); ++i) {
-                const std::string target = def.explicitDependencyAt(i);
-                if (names.count(target) == 0 || target == def.name()) {
+                if (std::string(def.explicitDependencyAt(i)) == def.name()) {
                     logMessage(LogLevel::Warning,
-                               "StageRegistry: stage %s depends on stage %s, which is not stored or is itself; "
-                               "the stage is kept by name only and is never runnable",
-                               quoted(def.name()).c_str(), quoted(target.c_str()).c_str());
+                               "StageRegistry: stage %s depends on itself; the stage is kept by name only and is "
+                               "never runnable",
+                               quoted(def.name()).c_str());
                     const std::string name = def.name();
                     keepByName(StageId(d.first), name.c_str());
                     break;
@@ -356,7 +367,7 @@ public:
                 }
             }
         }
-        // Every explicit dependency now resolves, so derivation cannot throw.
+        // No explicit dependency names its own stage now, so derivation cannot throw.
         const std::vector<Entry> nextEntries = entriesOf(nextDefinitions);
         Graph nextGraph = deriveWithPins(nextEntries, nextPins);
         detail::StalenessEdges nextEdges =
@@ -579,10 +590,27 @@ bool StageRegistry::isExplicitDependency(StageId stage, int32_t index) const {
     return edges[static_cast<size_t>(index)].isExplicit;
 }
 
+int32_t StageRegistry::unresolvedDependencyCount(StageId stage) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->refreshIfReadOnly();
+    return static_cast<int32_t>(impl_->unresolvedOf(stage).size());
+}
+
+const char* StageRegistry::unresolvedDependencyAt(StageId stage, int32_t index) const {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->refreshIfReadOnly();
+    const std::vector<const char*> names = impl_->unresolvedOf(stage);
+    if (index < 0 || static_cast<size_t>(index) >= names.size()) {
+        throw InvalidArgumentError("the unresolved dependency index is out of range");
+    }
+    return names[static_cast<size_t>(index)];
+}
+
 bool StageRegistry::isRunnable(StageId stage) const {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->refreshIfReadOnly();
     if (impl_->unreadable.count(stage.value()) != 0) return false;
+    if (!impl_->unresolvedOf(stage).empty()) return false;
     const StageStateReader& reader = impl_->store.stageStates();
     const std::vector<Edge>& edges = impl_->edgesOf(stage);
     for (const Edge& edge : edges) {

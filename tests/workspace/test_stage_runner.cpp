@@ -276,6 +276,27 @@ TEST(StageRunner, BlockedByStaleDependency) {
     EXPECT_TRUE(early.isRerun()) << "the refused run started from Complete";
 }
 
+TEST(StageRunner, UnresolvedDependencyIsRefusedAtTheGate) {
+    Fixture f;
+    StageDefinition def = blobStage("nuclei", f.nuclei);
+    def.dependsOn("a");
+    const StageId nuclei = f.stages().declare(def);
+    StageRunner runner(*f.workspace, nuclei);
+    std::string stageName;
+    const std::string message = messageOf(runner, &stageName);
+    EXPECT_NE(message.find("\"a\""), std::string::npos) << message;
+    EXPECT_NE(message.find("nuclei"), std::string::npos) << message;
+    EXPECT_EQ(stageName, "nuclei");
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Pending);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+
+    // Once the named stage is declared and complete, the stage runs.
+    const StageId a = f.stages().declare(blobStage("a", f.tissue));
+    StageRunner(*f.workspace, a).run();
+    StageRunner(*f.workspace, nuclei).run();
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Complete);
+}
+
 TEST(StageRunner, UnreadableStageIsRefused) {
     Fixture f;
     const StageId id = f.stages().declare(blobStage("nuclei", f.nuclei));

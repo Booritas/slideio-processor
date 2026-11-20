@@ -97,6 +97,10 @@ public:
             if (registry.isUnreadable(stage)) {
                 throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
             }
+            if (registry.unresolvedDependencyCount(stage) > 0) {
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" +
+                                     registry.unresolvedDependencyAt(stage, 0) + "\" is not declared");
+            }
             const int32_t count = registry.dependencyCount(stage);
             for (int32_t i = 0; i < count; ++i) {
                 const StageId dependency = registry.dependencyAt(stage, i);
