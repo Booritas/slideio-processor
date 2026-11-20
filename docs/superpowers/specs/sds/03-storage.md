@@ -93,11 +93,12 @@ public:
     Store(const Store&) = delete;
     Store& operator=(const Store&) = delete;
 
-    // These four still answer after close().
+    // These five still answer after close().
     const char* path() const noexcept;
     int32_t     formatVersion() const noexcept;
     OpenMode    mode() const noexcept;
     bool        isReadOnly() const noexcept;
+    bool        isOpen() const noexcept;     // false once close() has run
 
     Provenance provenance() const;
     void       setProvenance(const Provenance& provenance);

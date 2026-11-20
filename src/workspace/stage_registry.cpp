@@ -491,8 +491,10 @@ StageRegistry::StageRegistry(Store& store) : impl_(new Impl(store)) {
         [impl] { return impl->edgesGeneration; },
         [impl](StalenessGraph::Impl::CausesKey& key) {
             // The writer of a read-only store is another process, whose changes advance no
-            // revision here, so a read-only registry has no key that follows them.
-            if (impl->store.isReadOnly()) return false;
+            // revision here, so a read-only registry has no key that follows them. A closed
+            // store is not answered from the cache either: the read then throws IoError,
+            // as causeCount() documents.
+            if (impl->store.isReadOnly() || !impl->store.isOpen()) return false;
             key.edges = impl->edgesGeneration;
             key.states = impl->store.stageStateWriter().revision();
             return true;

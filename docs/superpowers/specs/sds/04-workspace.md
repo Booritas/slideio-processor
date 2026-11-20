@@ -1306,7 +1306,8 @@ histories look the same from durable data: S redeclared after U completed, and
 S marked by a re-run of U that has since completed. Blaming U would be wrong in
 the first; not blaming it is wrong in the second. The answer names no source,
 and the detail says only what is known: `the stage has not completed: it was
-redeclared or marked stale directly, or a stage it depends on re-ran`. While U
+redeclared or marked stale directly, or a source stage re-ran` (a stage with an
+edge to it, `LayerOrdering` included). While U
 is still `Running`, or stale, it is named. Telling the two apart exactly needs
 a durable record of when, or by what, a stale flag was set, which storage does
 not keep (PR #17 review).
@@ -1322,7 +1323,9 @@ lock makes that writer the only one of statuses, completion times and stale
 flags while it is open, so the key follows every change — the registry's,
 `StageRunner`'s, or a caller's straight through `StageStateWriter` — and reading
 it costs no query. A read-only registry does not cache causes: its writer is
-another process, whose changes advance no count it can see.
+another process, whose changes advance no count it can see. Nor does a closed
+store answer from the cache (`Store::isOpen`): its causes throw `IoError`, as
+documented.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

@@ -140,7 +140,7 @@ private:
                                                   "the stage was redeclared or marked stale directly"};
         static const detail::StaleEdge kNeverCompleted{
             0, 0, StalenessReason::Reconfigured,
-            "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+            "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
             "re-ran"};
         return completed ? kCompleted : kNeverCompleted;
     }

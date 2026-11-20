@@ -65,6 +65,8 @@ OpenMode Store::mode() const noexcept { return impl_->core.mode(); }
 
 bool Store::isReadOnly() const noexcept { return impl_->core.isReadOnly(); }
 
+bool Store::isOpen() const noexcept { return impl_->core.isOpen(); }
+
 Provenance Store::provenance() const {
     const detail::StoreImpl& core = impl_->core;
     return core.withReadConnection("Store::provenance", [&core](sqlite3* db) {

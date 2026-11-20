@@ -207,7 +207,7 @@ public:
      * @brief Returns the detail of one cause: the edge's detail (see reasonDetailAt()), or
      * for the stage itself `the stage was redeclared or marked stale directly` when it has
      * completed, and `the stage has not completed: it was redeclared or marked stale
-     * directly, or a stage it depends on re-ran` when it never has.
+     * directly, or a source stage re-ran` when it never has.
      * @param stage The stale stage.
      * @param index Zero-based position, below causeCount().
      * @return A null-terminated UTF-8 string; stays valid as the class describes.

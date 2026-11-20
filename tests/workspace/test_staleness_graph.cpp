@@ -482,7 +482,7 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
     EXPECT_EQ(causes[0].stage, cells);
     EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
     EXPECT_EQ(causes[0].detail,
-              "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+              "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
               "re-ran");
 
     // A stale source is still a cause of a stage that never completed: marking it stale
@@ -495,11 +495,11 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
     EXPECT_EQ(fromStale[0].reason, StalenessReason::LayerRead);
 }
 
-// A source that never ran, Pending or failed on its first run, did not change: a stage
-// it reaches only by LayerOrdering, which ran without it, marked stale directly is its own
-// cause (PR #17 finding 2). A Running source is replacing its output now, so it is a cause
-// even on its first run.
-TEST(StalenessGraph, SourceThatNeverRanIsNotACause) {
+// A source that never produced output, Pending or failed on its first run, did not change:
+// a stage it reaches only by LayerOrdering, which ran without it, marked stale directly is
+// its own cause (PR #17 finding 2). A Running source is replacing its output now, so it is
+// a cause even on its first run.
+TEST(StalenessGraph, SourceThatNeverProducedOutputIsNotACauseUnlessRunning) {
     for (const StageStatus left : {StageStatus::Pending, StageStatus::Failed, StageStatus::Running}) {
         Fixture f;
         const StageId background = f.stages().declare(writerOf("background", f.tissue));
@@ -550,7 +550,7 @@ TEST(StalenessGraph, NeverCompletedStageMarkedByAReRunSaysSo) {
     EXPECT_EQ(causes[0].stage, cells);
     EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
     EXPECT_EQ(causes[0].detail,
-              "the stage has not completed: it was redeclared or marked stale directly, or a stage it depends on "
+              "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
               "re-ran");
 }
 
@@ -591,6 +591,19 @@ TEST(StalenessGraph, CachedAnswersFollowEveryChange) {
     // is followed too: the writer's revision keys the cache.
     f.workspace->store()->stageStateWriter().setStale(cells, true);
     EXPECT_GT(f.stages().staleness().causeCount(cells), 0);
+}
+
+// A closed store is not answered from the cache: causeCount() throws IoError, as it
+// documents, for a stage whose causes were read before the close too.
+TEST(StalenessGraph, CausesOfAClosedStoreAreIoError) {
+    Fixture f;
+    const StageId background = f.stages().declare(writerOf("background", f.tissue));
+    complete(f, background);
+    f.stages().markStale(background);
+    ASSERT_EQ(f.stages().staleness().causeCount(background), 1);
+    f.workspace->close();
+    EXPECT_THROW(f.stages().staleness().causeCount(background), IoError);
+    EXPECT_THROW(f.stages().staleness().causeAt(background, 0), IoError);
 }
 
 // A detail string stays valid for the life of the registry: an identical redeclare and a
