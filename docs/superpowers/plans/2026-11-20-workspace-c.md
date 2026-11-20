@@ -59,7 +59,7 @@
 
    Each detail names the source stage and the artifact, e.g. `reads layer "tissue" written by stage "background"` or `writes layer "nuclei" above layer "tissue" written by stage "background"`.
 
-3. **Reverse answer, from durable data.** For a stale stage S, the causes are its incoming edges U → S whose U is "changed since S": U is stale, or U is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`. When no incoming edge qualifies, S is its own cause, with reason `Reconfigured` and detail `the stage was redeclared or marked stale directly`. A stage that is not stale has 0 causes.
+3. **Reverse answer, from durable data.** For a stale stage S, the causes are its incoming edges U → S whose U is "changed since S": U is stale, or U is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`, one entry per qualifying edge (a pair joined by two reasons appears twice), ordered by ascending U, then by reason enum. When no incoming edge qualifies, S is its own cause, with reason `Reconfigured` and detail `the stage was redeclared or marked stale directly`. A stage that is not stale has 0 causes.
    - Causes need no extra storage, and they are the same after a reopen.
    - `None` is never reported. It remains in the enum as §4.5 declares it.
 

@@ -355,10 +355,13 @@ TEST(StalenessGraph, CausesNameTheChangedUpstream) {
     rerun(f, background);
     ASSERT_TRUE(f.stages().isStale(cells));
     const std::vector<Cause> causes = causesOf(f.stages(), cells);
-    ASSERT_EQ(causes.size(), 1u);
+    // background reaches cells by LayerRead (it reads tissue) and by LayerOrdering (cells is below tissue).
+    ASSERT_EQ(causes.size(), 2u);
     EXPECT_EQ(causes[0].stage, background);
     EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
     EXPECT_EQ(causes[0].detail, "reads layer \"tissue\" written by stage \"background\"");
+    EXPECT_EQ(causes[1].stage, background);
+    EXPECT_EQ(causes[1].reason, StalenessReason::LayerOrdering);
 }
 
 TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
@@ -377,7 +380,9 @@ TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
     const std::vector<Cause> nucleiBefore = causesOf(f.stages(), nuclei);
     const std::vector<Cause> cellsBefore = causesOf(f.stages(), cells);
     ASSERT_FALSE(nucleiBefore.empty());
-    ASSERT_EQ(cellsBefore.size(), 1u);
+    ASSERT_EQ(cellsBefore.size(), 2u);
+    EXPECT_EQ(cellsBefore[1].stage, background);
+    EXPECT_EQ(cellsBefore[1].reason, StalenessReason::LayerOrdering);
     // nuclei is reached from the changed background by LayerOrdering, and from the stale cells.
     EXPECT_EQ(nucleiBefore[0].stage, background);
     EXPECT_EQ(nucleiBefore[0].reason, StalenessReason::LayerOrdering);
@@ -386,6 +391,9 @@ TEST(StalenessGraph, CausesAreTheSameAfterReopen) {
     WorkspacePtr ro = Workspace::openReadOnly(f.path().c_str(), Configuration::defaults());
     EXPECT_EQ(causesOf(ro->stages(), nuclei), nucleiBefore);
     EXPECT_EQ(causesOf(ro->stages(), cells), cellsBefore);
+    const std::vector<Cause> cellsAfter = causesOf(ro->stages(), cells);
+    ASSERT_EQ(cellsAfter.size(), 2u);
+    EXPECT_EQ(cellsAfter[1].reason, StalenessReason::LayerOrdering);
     ro->close();
     f.workspace = Workspace::open(f.path().c_str(), Configuration::defaults());
 }

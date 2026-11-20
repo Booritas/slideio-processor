@@ -42,7 +42,7 @@ public:
     }
 
     // The causes of a stage's staleness, from the durable flags, statuses and completion
-    // times (decision 3): one incoming edge per source that changed since the stage, or a
+    // times (decision 3): every incoming edge whose source changed since the stage, or a
     // single nullptr when the stage is its own cause. Empty when it is not stale. Caller
     // holds the mutex. Throws InvalidArgumentError for an unknown stage.
     std::vector<const detail::StaleEdge*> causes(StageId stage) const {
@@ -52,13 +52,10 @@ public:
         std::vector<const detail::StaleEdge*> result;
         if (!states.isStale(stage)) return result;
         const int64_t completed = states.completedAtUnixMs(stage);
-        std::set<int32_t> reported;  // one cause per source stage: its first reason (the edges are ordered)
         for (const detail::StaleEdge* edge : edges().incoming(stage.value())) {
             const StageId source(edge->from);
-            if (reported.count(edge->from) != 0) continue;
             if (states.isStale(source) || states.status(source) != StageStatus::Complete ||
                 states.completedAtUnixMs(source) > completed) {
-                reported.insert(edge->from);
                 result.push_back(edge);
             }
         }

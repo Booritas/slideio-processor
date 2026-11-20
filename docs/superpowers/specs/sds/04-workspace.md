@@ -1193,10 +1193,11 @@ declare rebuilds them, changed or not); a caller holding one longer copies it.
 `causeReasonAt` and `causeReasonDetailAt` answer from durable data alone (the
 stored stale flag, status and `completedAtUnixMs`), so they are identical after
 a reopen. A stage that is not stale has no causes. For a stale stage S the
-causes are the source stages U with an edge U → S where U has changed since S:
+causes are its incoming edges U → S where U has changed since S:
 U is stale, or is not `Complete`, or `completedAtUnixMs(U) > completedAtUnixMs(S)`.
-A source joined to S by several reasons is reported once, with the first
-reason in enum order, and the causes are ordered by source stage. When no edge
+There is one entry per qualifying edge, each with its own reason and detail, so a
+source joined to S by two reasons appears twice, as in the forward answer; they are
+ordered by ascending U, then by reason. When no edge
 qualifies, S is its own single cause with reason `Reconfigured` and detail
 `the stage was redeclared or marked stale directly`: it was redeclared, or
 marked stale directly. `None` is never reported. Causes need no storage of

@@ -135,12 +135,13 @@ public:
     /**
      * @brief Counts the causes of a stage's staleness.
      *
-     * A stage that is not stale has none. For a stale stage the causes are one per source
-     * stage U with an edge U to S, where U changed since S: U is stale, or is not Complete, or
-     * completed after S did (StageStateReader::completedAtUnixMs). A source joined to S by
-     * several reasons is reported once, with the first reason in enum order. When no source
-     * qualifies, the stage is its own single cause, reported as Reconfigured: it was
-     * redeclared or marked stale directly. The causes come from the stored flags, status
+     * A stage that is not stale has none. For a stale stage the causes are its incoming
+     * edges U to S whose source U changed since S: U is stale, or is not Complete, or
+     * completed after S did (StageStateReader::completedAtUnixMs); one entry per edge, so a
+     * source joined to S by several reasons appears once per reason, as in the forward
+     * answer. When no edge qualifies, the stage is its own single cause, reported as
+     * Reconfigured: it was redeclared or marked stale directly. The causes come from the
+     * stored flags, status
      * and completion times, so they are the same after a reopen. They are ordered by
      * source stage, then reason.
      * @param stage The stage.
