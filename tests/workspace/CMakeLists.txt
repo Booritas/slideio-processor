@@ -6,6 +6,10 @@ include(GoogleTest)
 add_executable(slideio_processor_workspace_tests
     support/aux_probe.cpp
     support/test_slide.cpp
+    # storage/raster_test_util.hpp's makeView() calls detail::floatToHalf. half_float.cpp
+    # lives in the slideio-processor-data shared library, which does not export it (no
+    # export macro, hidden visibility), so the test compiles its own copy, as the storage
+    # tests do; the library's copy stays internal to it and the two never meet.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/half_float.cpp
     test_layer_lifecycle.cpp
     test_stage_definition.cpp
