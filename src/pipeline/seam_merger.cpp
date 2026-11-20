@@ -38,7 +38,7 @@ void checkTile(const TileGrid& grid, int64_t tileIndex, const char* where) {
 
 SeamMerger::Impl::Impl(const TileGrid& grid_, MemoryBudgetPtr budget_, std::string scratchDirectory_)
     : grid(grid_), budget(std::move(budget_)), scratchDirectory(std::move(scratchDirectory_)),
-      completed_(static_cast<size_t>(grid_.tileCount()), 0) {}
+      tiles_(static_cast<size_t>(grid_.tileCount()), TileState::Pending) {}
 
 SeamMerger::Impl::~Impl() {
     int64_t held = 0;
@@ -145,18 +145,19 @@ void SeamMerger::Impl::add(std::unique_ptr<detail::SeamFragment> fragment, Layer
     const int64_t tile = fragment->tile;
 
     // A completed tile is re-examined no more, so only the tiles still to
-    // complete hold the fragment open and list it.
+    // complete hold the fragment open and list it. A deferred tile is among
+    // them: it may yet be evaluated for the fragment.
     detail::SeamComponent component;
     component.layer = layer;
     component.members.push_back(id);
     component.first = id;
     component.residentCount = 1;
-    if (completed_[static_cast<size_t>(tile)] == 0) {
+    if (tiles_[static_cast<size_t>(tile)] != TileState::Completed) {
         component.openTiles.insert(tile);
         touching_[tile].push_back(id);
     }
     for (int64_t neighbour : neighbours) {
-        if (completed_[static_cast<size_t>(neighbour)] == 0) {
+        if (tiles_[static_cast<size_t>(neighbour)] != TileState::Completed) {
             component.openTiles.insert(neighbour);
             touching_[neighbour].push_back(id);
         }
@@ -342,10 +343,62 @@ detail::ClosedComponent SeamMerger::Impl::takeComponent(int64_t root) {
 std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileIndex) {
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<detail::ClosedComponent> closed;
-    if (completed_[static_cast<size_t>(tileIndex)] != 0) {
-        return closed;
+    completeLocked(tileIndex, closed);
+    return closed;
+}
+
+void SeamMerger::Impl::defer(int64_t tileIndex) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (tiles_[static_cast<size_t>(tileIndex)] == TileState::Pending) {
+        tiles_[static_cast<size_t>(tileIndex)] = TileState::Deferred;
+        deferred_.insert(tileIndex);
     }
-    completed_[static_cast<size_t>(tileIndex)] = 1;
+}
+
+std::vector<int64_t> SeamMerger::Impl::takeAwaitedDeferred() {
+    std::lock_guard<std::mutex> lock(mutex);
+    // A fragment listed with a tile that has not completed belongs to a
+    // component still open on that tile, unless its object closed already.
+    std::vector<int64_t> awaited;
+    for (int64_t tile : deferred_) {
+        const auto touching = touching_.find(tile);
+        if (touching == touching_.end()) {
+            continue;
+        }
+        const bool expected = std::any_of(touching->second.begin(), touching->second.end(), [this](int64_t fragment) {
+            return !fragments_[static_cast<size_t>(fragment)].taken;
+        });
+        if (expected) {
+            awaited.push_back(tile);
+        }
+    }
+    for (int64_t tile : awaited) {
+        tiles_[static_cast<size_t>(tile)] = TileState::Demanded;
+        deferred_.erase(tile);
+    }
+    return awaited;
+}
+
+std::vector<detail::ClosedComponent> SeamMerger::Impl::completeDeferred() {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<detail::ClosedComponent> closed;
+    // Each completion takes its tile out of deferred_, in ascending order.
+    while (!deferred_.empty()) {
+        completeLocked(*deferred_.begin(), closed);
+    }
+    return closed;
+}
+
+void SeamMerger::Impl::completeLocked(int64_t tileIndex, std::vector<detail::ClosedComponent>& closed) {
+    if (tiles_[static_cast<size_t>(tileIndex)] == TileState::Completed) {
+        return;
+    }
+    if (tiles_[static_cast<size_t>(tileIndex)] == TileState::Deferred) {
+        // Completed without being demanded, by notifyTileComplete or
+        // completeDeferred.
+        deferred_.erase(tileIndex);
+    }
+    tiles_[static_cast<size_t>(tileIndex)] = TileState::Completed;
 
     // No fragment arrives any more on an edge or at a corner whose tiles have
     // both completed.
@@ -354,7 +407,7 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileInde
     for (int64_t r = std::max<int64_t>(row - 1, 0); r <= std::min(row + 1, grid.rows() - 1); ++r) {
         for (int64_t c = std::max<int64_t>(column - 1, 0); c <= std::min(column + 1, grid.columns() - 1); ++c) {
             const int64_t neighbour = grid.tileIndex(c, r);
-            if (neighbour != tileIndex && completed_[static_cast<size_t>(neighbour)] != 0) {
+            if (neighbour != tileIndex && tiles_[static_cast<size_t>(neighbour)] == TileState::Completed) {
                 edges_.erase(edgeKey(tileIndex, neighbour));
                 points_.erase(edgeKey(tileIndex, neighbour));
             }
@@ -363,7 +416,7 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileInde
 
     const auto touching = touching_.find(tileIndex);
     if (touching == touching_.end()) {
-        return closed;
+        return;
     }
     const std::vector<int64_t> fragments = std::move(touching->second);
     touching_.erase(touching);
@@ -382,7 +435,6 @@ std::vector<detail::ClosedComponent> SeamMerger::Impl::complete(int64_t tileInde
             closed.push_back(takeComponent(root));
         }
     }
-    return closed;
 }
 
 std::vector<detail::ClosedComponent> SeamMerger::Impl::takeRemaining() {
@@ -578,6 +630,22 @@ void SeamMerger::notifyTileComplete(int64_t tileIndex, ObjectSink& sink) {
     std::vector<detail::ClosedComponent> closed = impl_->complete(tileIndex);
     for (detail::ClosedComponent& component : closed) {
         impl_->emit(component, sink);
+    }
+}
+
+void detail::SeamMergerAccess::notifyTileSkipped(SeamMerger& merger, int64_t tileIndex) {
+    checkTile(merger.impl_->grid, tileIndex, "notifyTileSkipped");
+    merger.impl_->defer(tileIndex);
+}
+
+std::vector<int64_t> detail::SeamMergerAccess::takeAwaitedDeferred(SeamMerger& merger) {
+    return merger.impl_->takeAwaitedDeferred();
+}
+
+void detail::SeamMergerAccess::completeDeferred(SeamMerger& merger, ObjectSink& sink) {
+    std::vector<detail::ClosedComponent> closed = merger.impl_->completeDeferred();
+    for (detail::ClosedComponent& component : closed) {
+        merger.impl_->emit(component, sink);
     }
 }
 

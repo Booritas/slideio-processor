@@ -190,6 +190,19 @@ struct SeamMergerAccess {
     /// with mergeFragments(..., true). Called before the first fragment of the
     /// layer arrives; layers not declared stay 4-connected.
     static void setEightConnected(SeamMerger& merger, LayerId layer);
+    /// Marks a tile skipped by the restriction deferred rather than complete:
+    /// it holds no fragment yet, but fragments of other tiles still expect it,
+    /// so the objects reaching into it stay open. A tile already completed or
+    /// deferred is left as it is. Thread-safe, like notifyTileComplete.
+    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static void notifyTileSkipped(SeamMerger& merger, int64_t tileIndex);
+    /// Returns, in ascending order, the deferred tiles some open object
+    /// expects, and marks them demanded, so each is returned at most once. A
+    /// demanded tile is evaluated and then completed with notifyTileComplete.
+    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static std::vector<int64_t> takeAwaitedDeferred(SeamMerger& merger);
+    /// Completes every tile still deferred and not demanded, without
+    /// evaluation, and emits the objects that close with them, as
+    /// notifyTileComplete does.
+    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static void completeDeferred(SeamMerger& merger, ObjectSink& sink);
 };
 
 } // namespace slideio::processor::detail
@@ -218,6 +231,14 @@ public:
              int64_t bytes);
     // Marks a tile complete and takes out the components that close with it.
     std::vector<detail::ClosedComponent> complete(int64_t tileIndex);
+    // Marks a pending tile deferred.
+    void defer(int64_t tileIndex);
+    // The deferred tiles an open component expects, ascending; each is marked
+    // demanded.
+    std::vector<int64_t> takeAwaitedDeferred();
+    // Completes every deferred tile that is not demanded and takes out the
+    // components that close with them.
+    std::vector<detail::ClosedComponent> completeDeferred();
     // Takes out every remaining component; InternalError when one is still open.
     std::vector<detail::ClosedComponent> takeRemaining();
     // Merges, measures, filters and emits one closed component.
@@ -269,6 +290,17 @@ private:
     // short. Never waits: when nothing is left to spill, they are kept without
     // a reservation and counted in unreservedSeamBytes.
     void holdWaiting(detail::BudgetHold& held, int64_t bytes);
+    // complete() with the lock held: appends what closes to `closed`.
+    void completeLocked(int64_t tileIndex, std::vector<detail::ClosedComponent>& closed);
+
+    // Where a tile is. Only a completed tile is re-examined no more: a deferred
+    // or demanded tile is still expected by the fragments around it.
+    enum class TileState : char {
+        Pending,   // Not yet evaluated.
+        Deferred,  // Skipped by the restriction; completed later unless demanded.
+        Demanded,  // Deferred, then returned by takeAwaitedDeferred to be evaluated.
+        Completed, // No fragment arrives in it any more.
+    };
 
     std::vector<int64_t> parent_;                                  // Union-find over fragment ids.
     std::vector<detail::FragmentSlot> fragments_;                  // Indexed by fragment id.
@@ -278,7 +310,8 @@ private:
     std::unordered_map<int64_t, std::vector<int64_t>> touching_;   // Tile -> fragments holding or expecting it.
     std::unordered_map<int64_t, detail::SeamEdgesWaiting> edges_;  // Tile pair -> contacts.
     std::unordered_map<int64_t, detail::SeamPointsWaiting> points_; // Tile pair -> seam points.
-    std::vector<char> completed_;                                  // Per tile.
+    std::vector<TileState> tiles_;                                 // Per tile.
+    std::set<int64_t> deferred_;                                   // Tiles in TileState::Deferred.
 };
 
 } // namespace slideio::processor
