@@ -1283,6 +1283,23 @@ objects emitted outside a tile, such as merged objects (5.7), it exposes
 `admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
 from the same three sources. Filtering never alters pixels.
 
+**Known limitation — a restricted object crossing into a skipped tile is stored
+truncated (must fix before release).** Skipping a tile assumes no admitted
+object has pixels in it, and that does not hold: an object whose anchor is in
+the mask can reach past the mask's edge into a tile that holds no set mask
+pixel. `RestrictionFilter::skips` skips that tile, so it produces no fragments;
+the seam merger (5.7) still counts it complete, closes the component without
+the fragments it would have held, and admits the partial object by its anchor.
+The object is stored cut at the tile seam, with wrong geometry and
+measurements, and nothing reports it. The reproducer is
+`StageRunner.DISABLED_RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
+(`tests/workspace/test_stage_runner.cpp`): a disc spanning x = 285 to 325, whose
+anchor lies in a level-2 region dilated to x = 306, is stored 35 px wide
+instead of 41 because the tile beyond the seam at x = 320 is skipped. It is
+disabled until the pipeline is fixed (for example by skipping a tile only when
+no tile it borders holds an open fragment, or by reading a skipped tile that a
+held fragment expects); `docs/project.md` tracks it.
+
 ### The lazy mode: `levelCount`, `rect`, `readBlock`, `asScene`
 
 **The output pyramid mirrors the source from the analysis level down.**
