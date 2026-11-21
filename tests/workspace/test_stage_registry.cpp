@@ -1,6 +1,7 @@
 // Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #include "workspace/support/test_slide.hpp"
 
+#include <workspace/detail/declare_fault.hpp>
 #include <workspace/detail/refresh_fault.hpp>
 #include <workspace/detail/stage_record.hpp>
 
@@ -1108,4 +1109,134 @@ TEST(StageRegistry, ReadOnlyMarkStaleOfALaterStageIsIoError) {
     EXPECT_THROW(r.clearStale(later), IoError);
     EXPECT_FALSE(f.stages().isStale(later));
     ro->close();
+}
+
+namespace {
+
+// The reader registry a hookNextDeclareMidwayForTesting hook queries, and the stage.
+struct ReaderProbe {
+    StageRegistry* registry;
+    StageId stage;
+};
+
+void queryReader(void* context) {
+    auto* probe = static_cast<ReaderProbe*>(context);
+    (void)probe->registry->dependencyCount(probe->stage);
+}
+
+void throwInjected(void*) { throw IoError("injected"); }
+
+} // namespace
+
+// A reader that refreshes while a writer redeclares an unreadable stage sees the old
+// state or the new one, never the new configuration with the old rows: the redeclaration
+// is one transaction, so the reader keeps no pin the writer dropped.
+TEST(StageRegistry, RefreshMidRedeclareKeepsReaderAndWriterInAgreement) {
+    Fixture f;
+    const StageId u = f.stages().declare(writer("u", f.x));
+    StageDefinition xd("x");
+    xd.readsLayer(f.x).writesLayer(f.y);
+    const StageId x = f.stages().declare(xd);
+    ASSERT_EQ(f.workspace->store()->stageStates().dependencyCount(x), 1);
+    StageStateWriter& raw = f.workspace->store()->stageStateWriter();
+    raw.setConfiguration(u, "not json");
+    raw.setConfiguration(x, "not json");
+    f.workspace->close();
+
+    const LogCapture log;
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& w = ws->stages();
+    ASSERT_TRUE(w.isUnreadable(u));
+    ASSERT_TRUE(w.isUnreadable(x));
+    ASSERT_EQ(w.dependencyCount(x), 1);
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    ASSERT_EQ(r.dependencyCount(x), 1);
+    ASSERT_EQ(r.dependencyAt(x, 0), u);
+
+    ReaderProbe probe{&r, x};
+    detail::hookNextDeclareMidwayForTesting(&queryReader, &probe);
+    EXPECT_EQ(w.declare(writer("x", f.y)), x);
+
+    EXPECT_EQ(w.dependencyCount(x), 0);
+    EXPECT_EQ(r.dependencyCount(x), 0);
+    const char* writerName = nullptr;
+    const char* readerName = nullptr;
+    EXPECT_EQ(r.runBlocker(x, readerName), w.runBlocker(x, writerName));
+    ro->close();
+    ws->close();
+}
+
+// A redeclaration that fails part way leaves the store and the registry as they were:
+// no stale flag, no new configuration, no rewritten row.
+TEST(StageRegistry, FailedRedeclareChangesNothing) {
+    Fixture f;
+    StageDefinition ad("a");
+    ad.writesLayer(f.x).pipeline(blurSpec(1.0));
+    const StageId a = f.stages().declare(ad);
+    StageDefinition bd("b");
+    bd.readsLayer(f.x).writesLayer(f.y);
+    const StageId b = f.stages().declare(bd);
+    f.workspace->store()->stageStateWriter().setStatus(a, StageStatus::Complete);
+    const std::string before = f.stages().configuration(a);
+    const StageStateReader& states = f.workspace->store()->stageStates();
+    ASSERT_EQ(states.dependencyCount(b), 1);
+
+    detail::hookNextDeclareMidwayForTesting(&throwInjected, nullptr);
+    StageDefinition changed("a");
+    changed.writesLayer(f.x).pipeline(blurSpec(2.0));
+    bool threw = false;
+    try {
+        f.stages().declare(changed);
+    } catch (const IoError& e) {
+        threw = true;
+        EXPECT_STREQ(e.what(), "injected");
+    }
+    EXPECT_TRUE(threw);
+
+    EXPECT_EQ(std::string(f.stages().configuration(a)), before);
+    EXPECT_EQ(f.stages().status(a), StageStatus::Complete);
+    EXPECT_FALSE(f.stages().isStale(a));
+    EXPECT_FALSE(f.stages().isStale(b));
+    EXPECT_EQ(states.dependencyCount(a), 0);
+    ASSERT_EQ(states.dependencyCount(b), 1);
+    EXPECT_EQ(states.dependencyAt(b, 0), a);
+    EXPECT_TRUE(detail::sameDeclaration(f.stages().definition(a), ad));
+    ASSERT_EQ(f.stages().dependencyCount(b), 1);
+    EXPECT_EQ(f.stages().dependencyAt(b, 0), a);
+    f.workspace->close();
+
+    WorkspacePtr ws = Workspace::open(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& s = ws->stages();
+    EXPECT_EQ(std::string(s.configuration(a)), before);
+    EXPECT_FALSE(s.isStale(a));
+    EXPECT_FALSE(s.isStale(b));
+    EXPECT_TRUE(detail::sameDeclaration(s.definition(a), ad));
+    ASSERT_EQ(s.dependencyCount(b), 1);
+    EXPECT_EQ(s.dependencyAt(b, 0), a);
+    ws->close();
+}
+
+// A declaration of a new stage that fails part way leaves no stage row behind, so the
+// same declaration succeeds afterwards.
+TEST(StageRegistry, FailedDeclareOfANewStageLeavesNoRow) {
+    Fixture f;
+    f.stages().declare(writer("a", f.x));
+    const int32_t before = f.stages().count();
+
+    detail::hookNextDeclareMidwayForTesting(&throwInjected, nullptr);
+    EXPECT_THROW(f.stages().declare(writer("n", f.y)), IoError);
+    EXPECT_EQ(f.stages().count(), before);
+    StageId found;
+    EXPECT_FALSE(f.stages().find("n", found));
+    EXPECT_EQ(f.workspace->layers().writerStageCount(f.y), 0);
+
+    const StageId n = f.stages().declare(writer("n", f.y));
+    EXPECT_TRUE(n.isValid());
+    EXPECT_EQ(f.stages().count(), before + 1);
+    ASSERT_TRUE(f.stages().find("n", found));
+    EXPECT_EQ(found, n);
+    EXPECT_EQ(f.stages().dependencyCount(n), 0);
+    ASSERT_EQ(f.workspace->layers().writerStageCount(f.y), 1);
+    EXPECT_EQ(f.workspace->layers().writerStageAt(f.y, 0), n);
 }

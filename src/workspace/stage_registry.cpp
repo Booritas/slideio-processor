@@ -9,6 +9,7 @@
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 
+#include <workspace/detail/declare_fault.hpp>
 #include <workspace/detail/refresh_fault.hpp>
 #include <workspace/detail/stage_reads.hpp>
 #include <workspace/detail/stage_record.hpp>
@@ -23,8 +24,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -33,6 +36,22 @@ namespace slideio::processor {
 namespace {
 
 std::atomic<bool> gReadStoredCountAsZero{false};
+
+std::mutex gDeclareHookMutex;
+void (*gDeclareHook)(void*) = nullptr;
+void* gDeclareHookContext = nullptr;
+
+// Runs and clears the hook set by hookNextDeclareMidwayForTesting, if any.
+void runDeclareHook() {
+    void (*hook)(void*) = nullptr;
+    void* context = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(gDeclareHookMutex);
+        hook = std::exchange(gDeclareHook, nullptr);
+        context = std::exchange(gDeclareHookContext, nullptr);
+    }
+    if (hook != nullptr) hook(context);
+}
 
 using Entry = detail::StageRef;
 using detail::quoted;
@@ -171,6 +190,12 @@ std::vector<Entry> entriesOf(const Definitions& definitions) {
 
 void detail::readNextStoredStageCountAsZeroForTesting() noexcept { gReadStoredCountAsZero.store(true); }
 
+void detail::hookNextDeclareMidwayForTesting(void (*hook)(void*), void* context) noexcept {
+    std::lock_guard<std::mutex> guard(gDeclareHookMutex);
+    gDeclareHook = hook;
+    gDeclareHookContext = context;
+}
+
 class StageRegistry::Impl {
 public:
     explicit Impl(Store& storeIn) noexcept : store(storeIn) {}
@@ -244,25 +269,50 @@ public:
         for (int32_t i = 0; i < def.readRasterCount(); ++i) requireRaster(def.readRasterAt(i), "reads");
     }
 
-    // Derives the dependencies of every held stage and rewrites every stage's stored
-    // rows (clear, then add), so a partial failure of an earlier declare is repaired by
-    // the next. The in-memory graph changes only after the whole rewrite succeeds. One
-    // function, so redeclaring a stage can reuse it.
-    void deriveAndPersist() {
-        const std::vector<Entry> held = entries();
-        // A function of the held definitions alone, so it follows them even when the
-        // rewrite below fails.
-        unresolved = deriveUnresolved(held);
-        Graph next = deriveWithPins(held, pins);
-        detail::StalenessEdges nextEdges =
-            buildStalenessEdges(held, next, pins, store.layers(), store.rasters(), details);
+    // What a declare derives from its candidate stages and pins, aside, and adopts once its
+    // writes commit.
+    struct Derived {
+        Graph graph;
+        detail::StalenessEdges edges;
+        Unresolved unresolved;
+    };
+
+    // Derives the dependencies, staleness edges and unresolved names of the candidate.
+    // Touches neither the store nor the registry's state, except to intern detail strings
+    // into `details`, which only grows. Throws StageError for a cycle.
+    Derived derive(const std::vector<Entry>& candidate, const Pins& candidatePins) {
+        Derived next;
+        next.graph = deriveWithPins(candidate, candidatePins);
+        requireAcyclic(next.graph, candidate);
+        next.unresolved = deriveUnresolved(candidate);
+        next.edges =
+            buildStalenessEdges(candidate, next.graph, candidatePins, store.layers(), store.rasters(), details);
+        return next;
+    }
+
+    // Rewrites every stage's stored dependency rows (clear, then add) from a derived
+    // graph. Runs inside the caller's batch, so the rows change with the rest of the
+    // declare or not at all. Rewriting every stage also repairs the rows of a store
+    // written before declares were one transaction, which can hold partial rows.
+    void persist(const Graph& next) {
         StageStateWriter& writer = store.stageStateWriter();
         for (const auto& stage : next) {
             writer.clearDependencies(StageId(stage.first));
             for (const Edge& edge : stage.second) writer.addDependency(StageId(stage.first), StageId(edge.dependency));
         }
-        graph = std::move(next);
-        stalenessEdges = std::move(nextEdges);
+    }
+
+    // Swaps in what a declare derived, once its writes have committed. Moves alone, so it
+    // cannot throw and the registry never holds half of a declare.
+    static_assert(std::is_nothrow_move_assignable<Graph>::value && std::is_nothrow_move_assignable<Pins>::value &&
+                      std::is_nothrow_move_assignable<Unresolved>::value &&
+                      std::is_nothrow_move_assignable<detail::StalenessEdges>::value,
+                  "adopt swaps in by moves that cannot throw");
+    void adopt(Derived& next, Pins& nextPins) noexcept {
+        pins = std::move(nextPins);
+        graph = std::move(next.graph);
+        stalenessEdges = std::move(next.edges);
+        unresolved = std::move(next.unresolved);
         ++edgesGeneration;
     }
 
@@ -399,12 +449,14 @@ public:
                 }
             }
         }
-        // A writer mid-rewrite can leave an unreadable stage's rows empty for a moment; the
-        // pins already held for a stage that is still unreadable stand, until it is redeclared.
-        // A writer that redeclares an unreadable stage drops every pin around it, whatever
-        // the other end, so a held pin with an end that was unreadable and now parses is
-        // dropped too. A finished redeclaration so leaves reader and writer the same pins (one
-        // landing mid-redeclare can still re-pin a stored row: SDS 04 4.3).
+        // A store can hold an unreadable stage's rows empty (one written before declares
+        // were one transaction, by a writer stopped mid-rewrite); the pins already held for
+        // a stage that is still unreadable stand, until it is redeclared. A writer that
+        // redeclares an unreadable stage drops every pin around it, whatever the other end,
+        // so a held pin with an end that was unreadable and now parses is dropped too. A
+        // redeclaration commits its configuration and rows together, so reader and writer
+        // end with the same pins (a commit landing during this restore pairs at most an old
+        // configuration with new rows, and the next query restores again: SDS 04 4.3).
         const auto redeclared = [&](int32_t id) {
             return unreadable.count(id) != 0 && nextUnreadable.count(id) == 0;
         };
@@ -515,8 +567,11 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     impl_->validate(definition);
     const std::string record = detail::stageRecordJson(definition, store.layers(), store.rasters());
 
-    // Validate the candidate graph in memory; nothing is written until it passes. A
-    // redeclared stage takes the place of its held definition.
+    // A declare computes everything aside, writes its rows in one batch, and adopts what it
+    // computed once the batch commits: if anything throws before the commit returns, the
+    // batch rolls back and the registry is as it was, so a declare is all or nothing. The
+    // candidate graph is validated in memory, before anything is written. A redeclared
+    // stage takes the place of its held definition.
     std::vector<Entry> candidate = impl_->entries();
     if (redeclared) {
         for (Entry& e : candidate) {
@@ -533,63 +588,84 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
             it = around ? candidatePins.erase(it) : std::next(it);
         }
     }
-    requireAcyclic(deriveWithPins(candidate, candidatePins), candidate);
-    // Derived aside so a redeclared definition and its unresolved names are swapped in
-    // together; a new stage gets its own in deriveAndPersist.
-    Unresolved candidateUnresolved = redeclared ? deriveUnresolved(candidate) : Unresolved();
-
-    // Everything that can run out of memory is allocated before the store is touched:
-    // the copy, and for a new stage a map node parked under a placeholder key until the
-    // id is known.
-    auto copy = std::make_unique<StageDefinition>(definition);
     StageStateWriter& writer = store.stageStateWriter();
+    const auto addWrittenLayers = [&](StageId stage) {
+        for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
+            writer.addWrittenLayer(stage, definition.writtenLayerAt(i));
+        }
+    };
 
     if (redeclared) {
+        Impl::Derived next = impl_->derive(candidate, candidatePins);
         const auto held = impl_->definitions.find(existing.value());
         if (held == impl_->definitions.end()) throw InvalidArgumentError("the stage has no definition in the registry");
         if (impl_->unreadable.count(existing.value()) == 0 && detail::sameDeclaration(*held->second, definition)) {
-            // Nothing changes, but the rows of an earlier declare that failed part way
-            // are repaired: both writes repeat harmlessly. A read-only store writes nothing.
+            // Nothing changes, but the written layers and every stage's rows are written
+            // again, repeating harmlessly: a store written before declares were one
+            // transaction can hold the partial rows of a declare that failed part way, and
+            // this repairs them. A read-only store writes nothing.
             if (!store.isReadOnly()) {
-                for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
-                    writer.addWrittenLayer(existing, definition.writtenLayerAt(i));
-                }
-                impl_->deriveAndPersist();
+                StageStateWriter::Batch batch(writer);
+                addWrittenLayers(existing);
+                impl_->persist(next.graph);
+                batch.commit();
+                impl_->adopt(next, candidatePins);
             }
             return existing;
         }
-        // The replaced definition is retired, not destroyed, so references and strings
-        // handed out from it stay valid; reserve now so nothing throws after the swap.
+        // Stale: the stage itself, and every stage its forward answer lists under the held
+        // edges and under the candidate's, each once, so a dependent it drops goes stale as
+        // well as one it gains.
+        std::vector<int32_t> stale{existing.value()};
+        std::set<int32_t> marked{existing.value()};
+        for (const detail::StalenessEdges* edges : {&impl_->stalenessEdges, &next.edges}) {
+            for (const detail::StaleEdge* edge : edges->forward(existing.value())) {
+                if (marked.insert(edge->to).second) stale.push_back(edge->to);
+            }
+        }
+        // Allocated before the store is touched, so the swap after the commit cannot
+        // throw: the copy, and room to retire the replaced definition rather than destroy
+        // it, so references and strings handed out from it stay valid.
+        auto copy = std::make_unique<StageDefinition>(definition);
         impl_->retired.reserve(impl_->retired.size() + 1);
-        // Stale first, along the old dependents: if a later write fails the stage is
-        // still marked, never silently current with a new record.
-        impl_->markStaleLocked(existing);
-        writer.setConfiguration(existing, record.c_str());
+        {
+            // A read-only store opens no batch: its first write refuses with the IoError
+            // it always has, and nothing is written.
+            std::optional<StageStateWriter::Batch> batch;
+            if (!store.isReadOnly()) batch.emplace(writer);
+            for (const int32_t stage : stale) writer.setStale(StageId(stage), true);
+            writer.setConfiguration(existing, record.c_str());
+            runDeclareHook();
+            addWrittenLayers(existing);
+            impl_->persist(next.graph);
+            if (batch) batch->commit();
+        }
         held->second.swap(copy);
-        impl_->unresolved = std::move(candidateUnresolved);  // positions of the definition now held
         impl_->retired.push_back(std::move(copy));  // capacity reserved above: cannot throw
         impl_->unreadable.erase(existing.value());
-        impl_->pins = std::move(candidatePins);
-        for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
-            writer.addWrittenLayer(existing, definition.writtenLayerAt(i));
-        }
-        impl_->deriveAndPersist();
-        impl_->markStaleLocked(existing);
+        impl_->adopt(next, candidatePins);
         return existing;
     }
 
+    // Refused before anything is written; derived again below once the id is known.
+    requireAcyclic(deriveWithPins(candidate, candidatePins), candidate);
+    // Allocated before the store is touched, so the swap after the commit cannot throw:
+    // the copy, in a map node parked under a placeholder key until the id is known.
     const int32_t placeholder = std::numeric_limits<int32_t>::min();
-    impl_->definitions[placeholder] = std::move(copy);
+    impl_->definitions[placeholder] = std::make_unique<StageDefinition>(definition);
     auto node = impl_->definitions.extract(placeholder);
+    std::optional<StageStateWriter::Batch> batch;  // none on a read-only store, as above
+    if (!store.isReadOnly()) batch.emplace(writer);
     const StageId id = writer.declare(definition.name(), record.c_str());
-    // The stage now exists in the store, so its definition is kept even if a later
-    // write throws; the next declare rewrites every dependency row.
+    runDeclareHook();
+    candidate.back().id = id.value();  // the new stage's entry, re-keyed from its placeholder
+    Impl::Derived next = impl_->derive(candidate, candidatePins);
+    addWrittenLayers(id);
+    impl_->persist(next.graph);
+    if (batch) batch->commit();
     node.key() = id.value();
     impl_->definitions.insert(std::move(node));
-    for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
-        writer.addWrittenLayer(id, definition.writtenLayerAt(i));
-    }
-    impl_->deriveAndPersist();
+    impl_->adopt(next, candidatePins);
     return id;
 }
 

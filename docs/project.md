@@ -318,6 +318,20 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     and record the change in the verification evidence. Level 0 and integer
     scales are unchanged. Re-run affected stages and record the change in the
     verification evidence; stored results are not marked stale automatically.
+  - **Resolved (stage declarations): a declare was not one transaction.** Each
+    of its writes committed on its own, so a reader refreshing between a
+    redeclaration's new record and its dependency rows could re-pin a row the
+    writer then dropped and keep disagreeing with the writer, and a declare
+    that failed part way left the stage row, the record or stale flags behind.
+    Fixed by the
+    [single-transaction declare plan](superpowers/plans/2026-11-21-single-transaction-declare.md):
+    `StageStateWriter::Batch` groups a thread's writes into one transaction
+    (SDS 03 §3.10a), and `StageRegistry::declare` computes everything aside,
+    writes its rows in one batch and adopts what it computed only after the
+    commit, so a failed declare changes nothing in the store or in memory (SDS
+    04 §4.3). `markStale`, `clearStale`, `StageRunner`'s writes and
+    `declareCoarseToFine` across its two declarations keep their separate
+    commits. Stored results are unaffected.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

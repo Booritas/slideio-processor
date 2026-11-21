@@ -419,8 +419,8 @@ public:
 /// `"fine"` when a half was never set, `"names"`, `"layers"`, `"levels"`) when
 /// the names match, the layers match, or both levels are explicit and the
 /// coarse one is not strictly greater. If the fine `declare` throws, the
-/// coarse stage stays declared (`storage` has no transaction across
-/// declarations) and the error is rethrown unchanged.
+/// coarse stage stays declared (each declaration is its own transaction)
+/// and the error is rethrown unchanged.
 void declareCoarseToFine(StageRegistry&, const CoarseToFineSpec&,
                          StageId& coarseOut, StageId& fineOut);
 ```
@@ -467,8 +467,8 @@ names, distinct layers, strictly ordered explicit levels) all run before the
 first `declare`, so a refused pair declares nothing. A fine level of -1 passes,
 because automatic selection cannot be compared. The one failure the helper cannot
 check in advance is the fine `declare` itself (a cycle, say); by then the coarse
-stage is declared, and it stays so, since `storage` has no transaction across
-declarations. The helper says so and rethrows rather than trying to undo a
+stage is declared, and it stays so, since each declaration is its own
+transaction. The helper says so and rethrows rather than trying to undo a
 declaration, which would also discard a stage that was already there.
 
 **It is sugar over `StageDefinition`, not a second path.** It declares two
@@ -649,9 +649,11 @@ raster-read, layer-ordering, derived-from and explicit-dependency edges, not
 the effective dependencies alone. It sets the flag through
 `StageStateWriter::setStale` on the stage and on every stage the answer lists,
 each once (the staleness graph is acyclic, 4.5); `clearStale` sets it
-on that stage alone. A redeclaration marks along the old edges first, then
-writes the record, re-derives, and marks again along the new ones, so a
-failure part way never leaves a changed stage current. The staleness edges
+on that stage alone. A redeclaration that changes the declaration marks the
+stage and every stage the forward answer lists under the old edges and under
+the new ones, each once, in the same transaction as its record and rows (plan
+A, below), so a changed stage is never current and a failed redeclaration
+marks nothing. The staleness edges
 are rebuilt in memory with the dependency graph on every declare and restore,
 from the held definitions and never from `LayerRegistry::writerStageAt`, which
 keeps a writer a redeclaration dropped. They are not persisted: the dependency
@@ -673,11 +675,12 @@ rewrites the dependency rows of every stage (`clearDependencies`, then
 `addDependency`) and records the declaring stage's written layers
 (`addWrittenLayer`), so `StageStateReader` and `LayerRegistry::writerStageAt`
 show the derived graph without linking this module, and a later declare repairs
-the rows of an earlier one that failed part way. A redeclaration identical to
-the held one does the same in a writable workspace (both writes repeat
-harmlessly) and marks nothing stale, so declaring the stage again repairs its
-written-layer rows too; in a read-only workspace it writes nothing. The
-in-memory graph changes only after the whole rewrite succeeds. `declare`,
+the partial rows a store written before declares were one transaction can hold
+(below). A redeclaration identical to the held one does the same in a writable
+workspace (both writes repeat harmlessly) and marks nothing stale, so declaring
+the stage again repairs its written-layer rows too; in a read-only workspace it
+writes nothing. The in-memory state changes only once the declare has
+committed. `declare`,
 `markStale` and `clearStale` check first that the store is open, so a closed
 workspace is an `IoError` rather than a misleading complaint about an
 undeclared layer. The registry is complete when the workspace opens: its
@@ -703,20 +706,47 @@ explicit flag), and every later `declare` carries the pins, so a reader of a
 broken writer's layer stays blocked, the writer never being runnable, instead of
 becoming runnable. Redeclaring the stage successfully drops its pins and normal
 derivation resumes. A refresh keeps the pins it already holds for a stage that is
-still unreadable, because a writer that is rewriting the rows can leave them
-empty for a moment, but drops every held pin with an end that was unreadable
+still unreadable, because a store written before declares were one transaction
+can hold them empty, but drops every held pin with an end that was unreadable
 and now parses: the writer redeclared that stage, and redeclaring drops every
 pin around it whatever the other end, so once the redeclaration has finished
-reader and writer hold the same pins (PR #17 review). A redeclaration is not one
-transaction: a refresh landing after the writer stores the new record but before
-it rewrites the dependency rows re-pins its stale stored row to a stage that is
-still unreadable, and later refreshes carry that pin as held (the redeclared
-stage was no longer unreadable when they began) until the other end is
-redeclared, so the reader can disagree with the writer. Making `declare` one write
-transaction (or adding the dependency rows to the refresh snapshot) closes this;
-it is a follow-up.
+reader and writer hold the same pins (PR #17 review).
+
+**A declare is one transaction: compute aside, write once, adopt.** Before it
+writes, `declare` computes the candidate entries, pins and unresolved names, the
+next dependency graph and staleness edges, the record and the copy of the
+definition, and, for a redeclaration that changes the declaration, the stages to
+mark stale (the stage, and every stage the forward answer lists under the current
+edges and under the candidate's, each once). It then writes in one
+`StageStateWriter::Batch` (SDS 03 §3.10a): for a new stage the stage row (which
+gives the id, so the graph and staleness edges are derived again with it), the
+written layers and every stage's dependency rows; for a changed redeclaration the
+stale flags, the record, the written layers and every stage's dependency rows; for
+an identical one, in a writable workspace only, the written layers and every
+stage's dependency rows. After the commit it swaps in what it computed: the
+definitions (the replaced one retired), the unreadable set, the pins, the graph,
+the staleness edges and the unresolved names. The swap cannot throw, because
+everything it needs is allocated before the batch opens. If anything throws before
+the commit returns, the batch rolls back and the registry is as it was, so a
+failed declare changes nothing in the store or in memory: a new stage leaves no
+row, and a changed one keeps its old record, flags and rows. In a read-only
+workspace no batch opens, and a new or changed declaration is refused by its first
+write with `IoError`, as before. A store written before declares were one
+transaction can still hold partial rows, which is why every declare still rewrites
+every stage's rows.
+
+**A refresh needs no snapshot of its own.** `restore` reads each stage's
+configuration before any dependency row. With `declare` atomic, a commit landing
+during a restore can pair only an old configuration with new rows; that
+configuration differs from the one the writer now holds, so the next query sees
+the change and restores again, reading both new. A reader that refreshes while a
+redeclaration is in flight therefore sees either the old state or the new one, and
+once it has finished, reader and writer hold the same pins; a single read snapshot
+for restore is not needed and is not added. `markStale`, `clearStale` and
+`StageRunner`'s writes keep their separate commits.
+
 `dependencyCount`, `dependencyAt`, `isExplicitDependency`,
-`isRunnable` and `runBlocker` all read this one in-memory graph; only the status and stale
+`isRunnable` and `runBlocker` all read the registry's one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
 
 **A read-only registry follows a live writer (UR-OBS-1).** An observer opens
