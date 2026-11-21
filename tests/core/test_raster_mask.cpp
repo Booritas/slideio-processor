@@ -616,10 +616,16 @@ TEST(RasterMask, TestLevel0InvertsTheLevelMapping) {
             row.row(0)[p + 301] = 255;
             ASSERT_TRUE(row.testLevel0({at, 0})) << "scale " << scale << ", pixel " << p;
             ASSERT_FALSE(row.testLevel0({at - 1, 0})) << "scale " << scale << ", pixel " << p;
+            // The pixel's upper end: the next pixel's start belongs to the next pixel.
+            const int64_t end = std::llround(static_cast<double>(p + 1) * scale);
+            ASSERT_TRUE(row.testLevel0({end - 1, 0})) << "scale " << scale << ", pixel " << p;
+            ASSERT_FALSE(row.testLevel0({end, 0})) << "scale " << scale << ", pixel " << p;
             RasterMask column(Rect64{0, -301, 1, 603}, 1, scale);
             column.row(p + 301)[0] = 255;
             ASSERT_TRUE(column.testLevel0({0, at})) << "scale " << scale << ", pixel " << p;
             ASSERT_FALSE(column.testLevel0({0, at - 1})) << "scale " << scale << ", pixel " << p;
+            ASSERT_TRUE(column.testLevel0({0, end - 1})) << "scale " << scale << ", pixel " << p;
+            ASSERT_FALSE(column.testLevel0({0, end})) << "scale " << scale << ", pixel " << p;
         }
     }
 }
@@ -629,4 +635,10 @@ TEST(RasterMask, TestLevel0OutOfRangeIsFalse) {
     m.row(0)[0] = 255;
     EXPECT_FALSE(m.testLevel0({std::numeric_limits<int64_t>::max(), 0}));
     EXPECT_FALSE(m.testLevel0({std::numeric_limits<int64_t>::min(), 0}));
+    // Scale 3: the seed, about 3.07e18, passes the 2^62 guard, and its product with the scale
+    // reaches 2^63, so the answer is refused by the forward product check.
+    RasterMask three(Rect64{0, 0, 1, 1}, 1, 3.0);
+    three.row(0)[0] = 255;
+    EXPECT_FALSE(three.testLevel0({std::numeric_limits<int64_t>::max(), 0}));
+    EXPECT_FALSE(three.testLevel0({0, std::numeric_limits<int64_t>::max()}));
 }

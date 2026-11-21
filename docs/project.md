@@ -294,15 +294,25 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     boundary, the strip of tiles just before the ROI is now evaluated instead of
     skipped, so `tilesSkipped` and `droppedByRestriction` can change for such
     runs; stored results are unaffected by that.
-  - **Open follow-up (not fixed): the level pixel of an anchor tested against a
-    polygon or a mask source.** A polygon or a mask source is still tested at
-    `floor(anchor / scale)`, while the level-to-level-0 mapping uses
-    `llround(L * scale)` for pixel corners. At a non-integer scale, roughly half
-    the time that pixel is the one before the level pixel whose corner the
-    anchor is, so a mask-source restriction (the workspace restrict-to-layer
-    path) can test an object's anchor one level pixel to its left or above.
-    This is a core convention question (`RasterMask::testLevel0`, a public
-    header), not an ROI one, and is recorded here for a decision.
+  - **Resolved (polygon and mask-source restrictions): the level pixel of an
+    anchor.** A polygon or a mask source was tested at `floor(anchor / scale)`,
+    while the level-to-level-0 mapping uses `llround(L * scale)` for pixel
+    corners, so at a non-integer scale a mask-source restriction (the workspace
+    restrict-to-layer path) could test an object's anchor one level pixel to its
+    left or above. Fixed by the
+    [anchor level pixel plan](superpowers/plans/2026-11-21-anchor-level-pixel.md):
+    `RasterMask::testLevel0` tests the level pixel that is the inverse of the
+    mapping (the largest `L` with `llround(L * scale) <= x`), and
+    `RestrictionFilter` finds the same pixel. The floor-only widening of the
+    tile mask and of the ROI mask that compensated for the old rule is removed
+    (SDS 05 §5.5). **Effect on stored results (QA/regulatory):** at levels whose
+    scale is not an integer, runs restricted by a polygon or a mask source
+    (workspace restrict-to-layer) can keep or drop different objects along the
+    restriction's edges. The mask an ROI-restricted operation sees loses the
+    extra left/top column or row added on 2026-11-21, and `tilesSkipped` can
+    change. Level 0 and integer scales are unchanged. Re-run affected stages and
+    record the change in the verification evidence; stored results are not
+    marked stale automatically.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

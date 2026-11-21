@@ -877,8 +877,9 @@ std::vector<ObjectId> barObjects(int32_t tile, bool restricted, bool seams) {
 } // namespace
 
 // At a non-integer level scale, a tile's first level-0 column or row is the level-0 image of
-// its first level pixel. An object anchored there is admitted when the restriction covers it,
-// so a restriction covering the slide keeps every object.
+// its first level pixel, and an anchor there is tested at that pixel, the inverse of the level
+// mapping. An object anchored there is admitted when the restriction covers it, so a
+// restriction covering the slide keeps every object.
 TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
     for (const int32_t tile : {64, 100}) {
         const std::vector<ObjectId> unrestricted = barObjects(tile, false, false);
@@ -1418,4 +1419,56 @@ TEST(Restriction, PolygonAdmitsEveryAnchorWhosePixelCentreItContains) {
         }
     }
     EXPECT_GE(checked, 100);
+}
+
+// A tile's mask covers exactly its halo rect at the level, at a non-integer scale too: every
+// anchor a tile owns has its level pixel inside the tile's rect, so nothing widens the mask.
+TEST(Restriction, TileMaskIsTheHaloRect) {
+    for (const int32_t halo : {0, 2}) {
+        ts::registerTestOperations();
+        LineMaskSource line(false, 127);
+        OperationParameters parameters;
+        parameters.setInt("halo", halo);
+        PipelineSpec spec = spec1("test.components", parameters);
+        spec.analysisLevel(1);
+        Pipeline pipeline(ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, blobs),
+                          config(), spec);
+        pipeline.bindLayer("objects", LayerId(3)).maskSource(&line);
+        pipeline.validate();
+        auto& impl = detail::PipelineAccess::impl(pipeline);
+        const detail::RunPlan& plan = detail::PipelineAccess::plan(pipeline);
+        ASSERT_DOUBLE_EQ(plan.levelScale, 2.4);
+        const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+        ASSERT_GT(plan.grid.tileCount(), 1);
+        for (int64_t t = 0; t < plan.grid.tileCount(); ++t) {
+            EXPECT_EQ(filter.buildTileMask(t).regionAtLevel(), plan.grid.tileRectAtLevelWithHalo(t, plan.chainHalo))
+                << "halo " << halo << ", tile " << t;
+        }
+    }
+}
+
+// The ROI part of a tile mask is exactly the outward mapping of the ROI: it holds every ROI
+// anchor's level pixel at the scale and sets nothing else.
+TEST(Restriction, RoiMaskIsTheLevelMappingOfTheRoi) {
+    for (const Rect64& roi : {Rect64{307, 307, 100, 100}, Rect64{308, 308, 99, 99}}) {
+        const RoiRun run(600, 250, roi);
+        ASSERT_DOUBLE_EQ(run.plan().levelScale, 2.4);
+        const LevelSelector& selector = *detail::PipelineAccess::impl(run.pipeline).selector;
+        const Rect64 expected = selector.mapToLevel(roi, 1);
+        const TileGrid& grid = run.plan().grid;
+        int64_t set = 0;
+        for (int64_t t = 0; t < grid.tileCount(); ++t) {
+            const RasterMask mask = run.filter->buildTileMask(t);
+            const Rect64 region = mask.regionAtLevel();
+            for (int64_t y = region.y; y < region.y + region.height; ++y) {
+                for (int64_t x = region.x; x < region.x + region.width; ++x) {
+                    const bool inside = x >= expected.x && y >= expected.y && x < expected.x + expected.width &&
+                                        y < expected.y + expected.height;
+                    ASSERT_EQ(mask.test(Point64{x, y}), inside) << "tile " << t << ", pixel " << x << ", " << y;
+                    set += mask.test(Point64{x, y}) ? 1 : 0;
+                }
+            }
+        }
+        EXPECT_EQ(set, expected.area());
+    }
 }

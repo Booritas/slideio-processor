@@ -147,7 +147,8 @@ public:
      * llround(P * levelScale), so it is tested at P.
      * @param slidePoint The point, in level-0 coordinates.
      * @return test() of that level pixel; false for a null mask, or when the
-     * level pixel does not fit int64.
+     * point's level ordinate would lie beyond +-2^62, or a mapped product
+     * reaches 2^63.
      * @throws Nothing.
      */
     bool testLevel0(Point64 slidePoint) const noexcept;

@@ -981,13 +981,12 @@ produced the object, so UR-QA-3's worker-count invariance survives unchanged.
 An ROI is tested exactly: in level 0, at the anchor, half-open
 (`x <= anchor.x < x + width`, likewise in y), whatever the analysis level. The
 mask built from an ROI is a skipping aid and what an operation sees through
-`Operation::mask()`, and it is widened to cover both rules: the level mapping
-of the rectangle and every level pixel holding an ROI anchor. At an integer
-scale the second is contained in the first; at a non-integer scale the mask
-grows by at most one level pixel on its left and top edges, so an operation that honours its
-advisory mask can see one more edge column or row, never fewer. A polygon or a
-mask source is tested on the level mask, at the level pixel of the anchor, and
-an ROI combined with one of them must pass both.
+`Operation::mask()`, and it is the level mapping of the rectangle,
+`mapToLevel(roi)`, which holds the level pixel of every ROI anchor at every
+scale. A polygon or a mask source is tested on the level mask, at the level
+pixel the object was found in: the inverse of the level mapping, the largest
+`L` with `llround(L × scale) <= anchor` (`RasterMask::testLevel0`, 1.17). An
+ROI combined with one of them must pass both.
 
 One consequence worth stating because a test will find it: an object whose
 anchor falls just outside the mask is dropped whole, including the part inside.
@@ -1279,17 +1278,13 @@ collinear, or a spike of zero area — fails the run, or the read, with
 
 Per tile, before any pixel is read, the worker builds the tile's mask over its
 **halo** rect at the level, and only when the run is restricted: all pixels set,
-intersected with the ROI's level rectangle (widened, 5.5, to every level pixel holding an ROI anchor), then with the polygon, then with the bound
-`TileMaskSource` (which fills a second mask that is intersected in). At a
-non-integer level scale a tile owns, besides its rect, one more column and row
-before it, whatever the halo: a tile owns the objects anchored in its level-0
-rect (`llround` of the level rect), an anchor is tested at the level pixel
-`floor(anchor / scale)`, and the tile's first level-0 column or row can floor
-to the pixel before the tile. A zero left or top halo is widened to cover that
-pixel; a larger halo already does. Without it, such an object would be dropped
-by the tile that owns it, while a merged object at the same anchor is
-admitted. When the mask has no set pixel inside the tile's owned rect (the
-tile rect and that extra column and row), the tile is skipped: no pixel is
+intersected with the ROI's level rectangle (`mapToLevel(roi)`, 5.5), then with the polygon, then with the bound
+`TileMaskSource` (which fills a second mask that is intersected in). A tile
+owns the objects anchored in its level-0 rect (`llround` of the level rect),
+and an anchor is tested at the level pixel that is the inverse of that mapping,
+so every anchor a tile owns has its level pixel inside the tile's rect, at any
+scale and with any halo: the mask is exactly the halo rect. When the mask has no
+set pixel inside the tile's rect, the tile is skipped: no pixel is
 read and it is deferred, not complete (below). `OperationContext::mask()`
 returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
@@ -1320,10 +1315,7 @@ progress (the pass already counted it) and is counted in
 `RunCounters::tilesEvaluatedOnDemand`, while staying in `tilesSkipped`. Its
 tile objects pass the normal object filter, and admission by anchor still
 decides what is stored. Accumulation passes still skip and are unchanged, so
-global statistics do not move. At a non-integer scale the skip test uses the
-owned rect (below), which is wider than the bare tile rect, so an accumulation
-pass can evaluate a few more tiles than before; the results are unchanged,
-because operations mask to the tile rect.
+global statistics do not move. The skip test uses the tile rect.
 
 **Pass-fragment pruning, and its precondition.** Only a component holding a
 fragment from a tile evaluated in the pass (a *pass fragment*) demands tiles; a
@@ -1335,11 +1327,9 @@ demand, so an object with a pixel in an evaluated tile holds that tile's
 fragment and reaches every skipped tile it crosses, while an object lying
 wholly in skipped tiles has its anchor where the mask is zero and the
 restriction drops it, whole or truncated. The precondition is that `skips()`
-means the mask is zero over everything the tile owns. At a non-integer scale
-the tile owns the extra column and row before it, whatever the halo, and
-`skips()` and `buildTileMask` share one owned rect
-(`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale` and its halo and
-row variants).
+means the mask is zero over everything the tile owns, which is its rect at
+any scale (`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale` and its
+halo and row variants).
 The reproducer is `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
 (`tests/workspace/test_stage_runner.cpp`).
 
@@ -1354,13 +1344,13 @@ fragment in, and this pruning would lose the object.
 **The region edge.** An ROI's or a polygon's region is not the grid of an
 object-producing tiled run: that grid spans the level, so a tile straddling the
 region edge is a full tile and its seams to the tiles beyond are real seams
-(5.7). Tiles whose owned rect misses the region are skipped without building a
+(5.7). Tiles whose rect misses the region are skipped without building a
 mask, and an object anchored inside the region that reaches into one gets it
-evaluated on demand, as for a mask-source restriction. The skip tests the owned
+evaluated on demand, as for a mask-source restriction. The skip tests the tile
 rect against the region, widened by one level pixel on every side at a
 non-integer level scale (at an integer scale it is not widened): the polygon's
-conservative raster can set the pixel just past its bounding box's outward
-mapping, and an anchor floors to the level pixel before the region. The test is
+conservative raster sets a pixel whose real square touches the polygon, which
+can lie one pixel outside the bounding box's outward mapping, on any side. The test is
 only a shortcut; the anchor filter decides what is stored, so an object
 crossing the ROI or bounding-box edge is stored whole when its anchor is
 admitted and not at all otherwise. A chain with a WholeLevel operation is out of

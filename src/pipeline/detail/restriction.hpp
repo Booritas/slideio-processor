@@ -25,12 +25,11 @@ namespace slideio::processor::detail {
 /// several threads at once. Every pointer and reference is borrowed and must
 /// outlive the filter.
 ///
-/// The ROI is rasterised over two pixel sets: a level pixel is set when it lies inside
-/// LevelSelector::mapToLevel(roi), the outward mapping that also gives the run's region, or
-/// when it holds an ROI anchor (the level pixel of a level-0 point inside the ROI, as
-/// RasterMask::testLevel0 finds it). The mask is what skipping and operations see; admission
-/// tests the ROI exactly in level 0 (inRoi()), so an anchor whose pixel is set but which lies
-/// outside the ROI is refused.
+/// The ROI is rasterised as LevelSelector::mapToLevel(roi), the outward mapping that also gives
+/// the run's region; it holds the level pixel of every ROI anchor (the level pixel of a level-0
+/// point, as RasterMask::testLevel0 finds it). The mask is what skipping and operations see;
+/// admission tests the ROI exactly in level 0 (inRoi()), so an anchor whose pixel is set but which
+/// lies outside the ROI is refused.
 /// The polygon is rasterised with rasteriseInto (conservative even-odd) and the
 /// TileMaskSource fills a second mask over the same region; both are intersected
 /// with the tile mask. The mask source may be called from several workers at
@@ -62,21 +61,17 @@ public:
 
     /// The tile's mask over its halo rect at the level (the tile grown by the
     /// chain's halo); a null mask when the run is unrestricted. Not cached.
-    /// At a non-integer level scale, a zero left or top halo is widened by one
-    /// pixel: the tile's first level-0 column or row can floor to the level
-    /// pixel before the tile, and an anchor there is tested on this mask.
     RasterMask buildTileMask(int64_t tileIndex) const;
 
     /// True when the tile's mask has no set pixel inside the tile's owned rect, so the
     /// tile is skipped. False for a null mask.
     bool skips(const RasterMask& mask, int64_t tileIndex) const;
 
-    /// True when the tile's owned rect (what skips() tests) does not intersect the run's region.
-    /// Only a shortcut: the mask is empty there. The widened ROI mask sets a level pixel before the
-    /// region, and the polygon's conservative raster can lie one level pixel past its bounding
-    /// box's outward mapping, so at a non-integer scale the region is widened by one column and row
-    /// on every side before the test; a pass skips the tile without building a mask. False for an
-    /// unrestricted run.
+    /// True when the tile's rect (what skips() tests) does not intersect the run's region.
+    /// Only a shortcut: the mask is empty there. The polygon's conservative raster can lie one
+    /// level pixel past its bounding box's outward mapping, so at a non-integer scale the region is
+    /// widened by one column and row on every side before the test; a pass skips the tile without
+    /// building a mask. False for an unrestricted run.
     bool outsideRegion(int64_t tileIndex) const;
 
     /// True when the run has no ROI, or when the level-0 point lies inside the ROI
@@ -118,11 +113,8 @@ private:
     };
 
     // The level pixel whose mapped corners hold a level-0 point, as RasterMask::testLevel0 finds it.
-    // Throws InvalidArgumentError when it does not fit int64.
+    // Throws InvalidArgumentError when the point's level ordinate is out of range.
     Point64 levelPixelOf(Point64 anchorLevel0) const;
-    /// The tile rect at the level and, at a non-integer scale, the one column and row before
-    /// it that the tile's first level-0 column or row can floor to. What the tile owns.
-    Rect64 ownedRectAtLevel(int64_t tileIndex) const;
 
     // A mask over `regionAtLevel` holding exactly the restriction.
     RasterMask buildMask(const Rect64& regionAtLevel) const;
