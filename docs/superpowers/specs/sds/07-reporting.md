@@ -456,53 +456,138 @@ reporting plan B; user decision 2026-11-21).
 
 Export streams. Ten million objects stay within the memory ceiling.
 
-## 7.6 Mask rasters — `reporting/mask_writer.hpp`
+## 7.6 Mask rasters — `reporting/raster_tiff_writer.hpp`, `reporting/label_mask.hpp` and the `masks` engine module
+
+Reporting plan C (user decisions 2026-11-21) splits mask export across the two
+libraries. What needs no SlideIO library call lives here, in the data library;
+what builds or reads a SlideIO scene lives in the engine's `masks` module.
 
 ```cpp
-enum class MaskCompression : int32_t { None, Lzw, Deflate, Jpeg };
+// reporting/raster_tiff_writer.hpp — data library
+class RasterTiffWriter {
+public:
+    explicit RasterTiffWriter(const char* path);
+    ~RasterTiffWriter();
 
+    RasterTiffWriter& compression(RasterCompression);       // default Deflate
+    RasterTiffWriter& resolution(double micronsPerPixel);   // 0 = unknown (default)
+    RasterTiffWriter& name(const char*);                    // default empty
+
+    ExportResult write(TileRasterSource& source, const Rect64& regionLevel0, double scale,
+                       ProgressObserver*, const CancellationToken&);
+};
+
+// reporting/label_mask.hpp — data library
+TileRasterSourcePtr makeLabelMaskSource(Store&, const ObjectQuery&);
+
+// masks/label_scene.hpp — engine library
+std::shared_ptr<slideio::Scene> rasteriseLabels(Store&, const ObjectQuery&,
+                                                const Rect64& regionLevel0);
+
+// masks/mask_writer.hpp — engine library
 class MaskWriter {
 public:
     explicit MaskWriter(const char* path);
     ~MaskWriter();
 
-    MaskWriter& tileSize(int32_t width, int32_t height);
-    MaskWriter& compression(MaskCompression);
-    MaskWriter& pyramidLevels(int32_t);              // 0 = auto
-    MaskWriter& resolution(double micronsPerPixel);
+    MaskWriter& compression(RasterCompression);       // default Deflate
+    MaskWriter& resolution(double micronsPerPixel);   // default: the scene's own
+    MaskWriter& name(const char*);                    // default empty
 
-    /// Writes any scene as a pyramidal TIFF, including a lazy pipeline scene.
-    ExportResult write(slideio::ScenePtr,
+    ExportResult write(std::shared_ptr<slideio::Scene>,
                        ProgressObserver*, const CancellationToken&);
 };
-
-/// Rasterises the objects of a query into a label mask scene, readable at any
-/// level. Lazy: no pixels are computed until read.
-slideio::ScenePtr rasteriseLabels(Store&, const ObjectQuery&,
-                                  const Rect64& region,
-                                  int32_t level);
 ```
 
-**Requirements:** UR-RES-7.
+**Requirements:** UR-RES-7, UR-QA-3.
 
-UR-RES-7 offers two forms and this module provides both: `rasteriseLabels`
-returns a scene readable at any level, and `MaskWriter` persists any scene —
-including a lazy `pipeline` scene — as a pyramidal TIFF via slideio-converter.
+UR-RES-7 offers two forms and both are provided: `rasteriseLabels` returns a
+scene readable at any resolution, and `MaskWriter` persists any scene —
+including a lazy `pipeline` scene from `Pipeline::asScene()` — as a pyramidal
+OME-TIFF. The acceptance criterion is that a written mask reopens in SlideIO
+with the expected levels and dimensions; the `masks` tests open every file they
+write through SlideIO's `OMETIFF` driver.
 
-`write` takes a `slideio::ScenePtr` rather than a `Pipeline`, which is what
-keeps this module free of a `pipeline` dependency and therefore keeps it on the
-OpenCV-free side of the library split.
+**`RasterTiffWriter`** rasterises `regionLevel0` at `scale` (level-0 pixels per
+output pixel, at least 1) by asking the source for each 512×512 output tile, and
+writes the result with `storage`'s writer in its opt-in OME-TIFF layout
+(`03-storage.md` 3.8): page 0 is full resolution, the reduced levels — each half
+the one before, until both sides are at most 512 — are its SubIFDs, and page 0's
+ImageDescription is minimal OME-XML with the caller's `name()` and, when set,
+the pixel size in µm. No path or other identifier is written. Compression is
+None, LZW or Deflate: lossless only. Reduced levels follow storage's rules —
+integer types take the top-left sample of each 2×2 block, floating types the
+mean — so a label value is never blended. The OME layout holds Byte, Int8,
+UInt16, Int16, Int32, Float32 and Float64; any other type, an empty region or a
+scale below 1 is refused before a file is created. The file is written to
+`<path>.partial` and renamed only when complete; progress is per tile, stage
+`"raster export"`, and cancellation leaves no file. Two writes of the same
+source with the same settings are byte-identical (UR-QA-3).
 
-The acceptance criterion is that a written mask reopens in SlideIO with the
-expected levels and dimensions.
+**`makeLabelMaskSource`** is a one-plane `Int32` source. For each tile it
+queries the store with the caller's query plus the tile's extent and rasterises
+the admitted objects conservatively, with `core`'s layer rasteriser.
+
+**`rasteriseLabels`** wraps that source in a scene with `slideio::makeScene`.
+The scene has one `Int32` channel; its size is the region's in level-0 pixels,
+scene pixel (x, y) being level-0 pixel (region.x + x, region.y + y); its
+resolution is 0 (unknown). It is lazy: creating it reads nothing, and every
+block read queries the store as it is then. It has a single zoom level, because
+a resampled read reaches the source with its block size and is rasterised at
+that size directly — so every zoom is exact, none is resampled from a finer
+raster, and no label value is blended. Pixels outside the region read 0. Reads
+may overlap: each builds a label source of its own over the ThreadSafe store.
+
+**`MaskWriter`** adapts the scene to a `TileRasterSource` that reads each tile
+with `Scene::readResampledBlock` (pixels outside the scene are zero) and writes
+it through `RasterTiffWriter` at scale 1 over the whole scene, so the file's
+layout, compression, determinism and cancellation are `RasterTiffWriter`'s.
+Every channel must share one type the OME layout holds: a null scene or
+channels of differing types are `InvalidArgumentError`, an unsupported type
+`UnsupportedDataTypeError`, all before a file is created. The pixel size is
+`resolution()`'s when set, otherwise the scene's own x resolution converted from
+metres to µm when it is greater than 0, otherwise none. SlideIO failures become
+`IoError` with SlideIO's text as the cause; messages carry no values, names or
+paths.
+
+**Why the engine, and why not the data library.** `rasteriseLabels` builds a
+scene with `slideio::makeScene`, and `MaskWriter` reads one: both call into
+SlideIO's DLLs, which embed OpenCV statically. The data library uses SlideIO
+for its headers only and must never load OpenCV (design 5.1), so these two live
+in the engine's `masks` module, which depends on the data library and SlideIO
+and on nothing else in the engine. `write` still takes a scene rather than a
+`Pipeline`, so `masks` needs no `pipeline` dependency. Everything that needs no
+SlideIO call — the TIFF writer and the label source — stays in the data library,
+so an export tool can write label masks without linking the engine.
+
+**Why not slideio-converter.** The converter writes JPEG or JPEG 2000 only, and
+a label mask must be lossless: a lossy codec invents label values at every
+boundary. The masks are written by `storage`'s own lossless pyramid writer
+through `RasterTiffWriter` instead.
+
+**Dropped from the earlier design.** `rasteriseLabels`' `level` parameter: a
+store has no level scales of its own, and the scene is readable at any
+resolution. `MaskWriter::tileSize`: fixed at 512 by storage's writer.
+`MaskWriter::pyramidLevels`: automatic, halving until both sides are at most
+512. `MaskCompression::Jpeg`: label masks must be lossless, and
+`MaskCompression` is replaced by storage's `RasterCompression`.
 
 **A label mask encodes one label per pixel, and the query chooses which.**
 Where the query carries a `label()` filter, the raster encodes membership of
-that label; where it does not, it encodes the producing stage's row label, and
-objects that have none read as unlabelled. There is no blending rule and no
-priority order, because any would be arbitrary once an object can be both
-`tumour` and `Ki67` (`03-storage.md` 3.7). A caller wanting both asks twice —
-the scenes are lazy, so an unread second mask costs nothing but the call.
+that label: the pixel holds that `LabelId`. Where it does not, the pixel holds
+the first label of the object's effective set (`03-storage.md` 3.7) — the
+producing stage's row label when it has one — and an object with none reads 0.
+Where objects overlap, the smallest `ObjectId` wins, as storage's label source
+does. Uncovered pixels are 0. There is no blending rule and no label priority,
+because any would be arbitrary once an object can be both `tumour` and `Ki67`.
+A caller wanting both asks twice — the scenes are lazy, so an unread second mask
+costs nothing but the call.
+
+Effective labels are read through `AnnotationStore`, with storage's own
+visibility, not the query's. An object the query admits only because its
+`visibility()` is wider than `AnnotationStore`'s — an object of an incomplete
+stage, say — has no effective label there and, without a `label()` filter,
+rasterises as 0.
 
 ## 7.7 Bounded materialisation — `reporting/materialise.hpp`
 

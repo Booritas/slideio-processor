@@ -5,6 +5,7 @@ add_subdirectory(reporting)
 add_subdirectory(pipeline)
 add_subdirectory(algorithm)
 add_subdirectory(workspace)
+add_subdirectory(masks)
 
 # Linking the object library (rather than $<TARGET_OBJECTS:...>) puts its
 # objects into the DLL and lets its usage requirements propagate.
@@ -44,7 +45,20 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
     endforeach()
 endforeach()
 
-# The engine library (design 5.1): pipeline, algorithm and workspace. Its
+# The masks module links the data library and SlideIO only (design 5.1, reporting plan C
+# decision 4): never OpenCV, algorithm or workspace. Fail the configure if any other
+# target reaches its link line.
+get_target_property(masks_link_libs slideio-processor-masks LINK_LIBRARIES)
+get_target_property(masks_interface_link_libs slideio-processor-masks INTERFACE_LINK_LIBRARIES)
+foreach(libs ${masks_link_libs} ${masks_interface_link_libs})
+    if(NOT libs STREQUAL "slideio-processor-data" AND NOT libs STREQUAL "slideio::slideio")
+        message(FATAL_ERROR
+            "slideio-processor-masks must link only slideio-processor-data and slideio::slideio "
+            "(found '${libs}').")
+    endif()
+endforeach()
+
+# The engine library (design 5.1): pipeline, algorithm, workspace and masks. Its
 # public headers name slideio::Scene and the data library's types,
 # so both are PUBLIC; OpenCV is static and PRIVATE. SlideIO's DLLs carry
 # their own static OpenCV, and the two copies never meet: SlideIO's API is
@@ -52,7 +66,8 @@ endforeach()
 add_library(slideio-processor-engine SHARED)
 target_link_libraries(slideio-processor-engine
     PUBLIC slideio-processor-data slideio::slideio
-    PRIVATE slideio-processor-pipeline slideio-processor-algorithm slideio-processor-workspace opencv_core opencv_imgproc)
+    PRIVATE slideio-processor-pipeline slideio-processor-algorithm slideio-processor-workspace slideio-processor-masks
+            opencv_core opencv_imgproc)
 target_include_directories(slideio-processor-engine PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_definitions(slideio-processor-engine PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)

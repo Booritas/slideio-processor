@@ -445,10 +445,34 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     Possible fix: let a base keep both twins, and write a baseless twin's own column
     under every policy.
 - [Reporting implementation plan C](superpowers/plans/2026-11-21-reporting-c.md) —
-  plan C for raster export and label masks. Task 1 adds storage's opt-in
-  OME-TIFF pyramid layout (`PyramidLayout::OmeSubIfds`, SDS 03 §3.8), which
-  SlideIO's `OMETIFF` driver opens with every level. **In progress** on
-  `feat/reporting-c`.
+  plan C for raster export and label masks (SDS 07 §7.6). Task 1 adds storage's
+  opt-in OME-TIFF pyramid layout (`PyramidLayout::OmeSubIfds`, SDS 03 §3.8),
+  which SlideIO's `OMETIFF` driver opens with every level. Task 2 adds
+  `RasterTiffWriter`, which writes any tile raster source as a lossless
+  pyramidal OME-TIFF; Task 3 `makeLabelMaskSource`, a label-mask tile source
+  driven by an object query; both are in the data library. Task 4 adds the
+  `masks` engine module: `rasteriseLabels`, a lazy label-mask scene, and
+  `MaskWriter`, which writes any SlideIO scene through `RasterTiffWriter`.
+  **In progress** on `feat/reporting-c`.
+  - **User decisions (2026-11-21).**
+    1. Masks live in the engine library, as the `masks` module, not in
+       `reporting`: `rasteriseLabels` and `MaskWriter` call SlideIO's DLLs,
+       which embed OpenCV, and the data library must never load it.
+       Everything that needs no SlideIO call stays in the data library.
+    2. slideio-converter is not used: it writes only JPEG and JPEG 2000, and a
+       label mask must be lossless. Masks are written by storage's lossless
+       pyramid writer through `RasterTiffWriter`.
+    3. Dropped from SDS 07's first draft: `rasteriseLabels`' `level`
+       parameter, `MaskWriter::tileSize` and `pyramidLevels`, and
+       `MaskCompression::Jpeg`; `MaskCompression` became `RasterCompression`.
+  - **Open (physical resolution for `rasteriseLabels`' scene).** The scene
+    reports resolution 0, so a mask written from it carries no pixel size
+    unless the caller sets `MaskWriter::resolution()`. The store records the
+    slide's calibration; the scene could report it.
+  - **Open (SlideIO OME-TIFF compatibility on each SlideIO upgrade).** The
+    masks tests read every written file back through SlideIO's `OMETIFF`
+    driver; rerun them, and recheck the OME-XML attributes the layout relies
+    on (SDS 03 §3.8), whenever the SlideIO submodule moves.
   - **Open (fix single-tile level reads in SlideIO's OME-TIFF driver
     upstream; then drop the striped special case).** SlideIO stretches a level
     that fits in one tile: `LevelInfo::getTileRect`

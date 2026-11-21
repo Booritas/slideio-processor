@@ -4,7 +4,7 @@
 **Date:** 2026-10-08
 **Parent:** [SDS README](README.md)
 
-The classes of all seven modules, drawn. Nothing here is new: every class,
+The classes of all eight modules, drawn. Nothing here is new: every class,
 member and relationship comes from [01](01-core.md)–[07](07-reporting.md), and
 where a drawing and a module document disagree, **the module document is
 correct**. This exists to make the shape visible before the detail — which
@@ -35,7 +35,7 @@ convention rather than anything structural, and every `Ptr` alias (`StorePtr`,
 
 ---
 
-## D.1 The seven modules
+## D.1 The eight modules
 
 ```mermaid
 flowchart TB
@@ -43,9 +43,10 @@ flowchart TB
         workspace["workspace<br/>stages, re-run, staleness"]
         algorithm["algorithm<br/>the catalog — a leaf"]
         pipeline["pipeline<br/>tiling, halo, budget, threads"]
+        masks["masks<br/>label-mask scenes, MaskWriter"]
     end
     subgraph data["slideio-processor-data — links no OpenCV"]
-        reporting["reporting<br/>CSV, Parquet, GeoJSON, masks"]
+        reporting["reporting<br/>CSV, Parquet, GeoJSON, raster TIFF"]
         storage["storage<br/>the store file"]
         config["config<br/>settings, vocabulary, backend"]
         core["core<br/>types and interfaces"]
@@ -66,6 +67,10 @@ flowchart TB
     workspace --> config
     workspace --> pipeline
     workspace --> storage
+    masks --> core
+    masks --> config
+    masks --> storage
+    masks --> reporting
 ```
 
 `storage` reads and writes rasters with **libtiff**, linked privately into the data
@@ -2153,14 +2158,17 @@ classDiagram
         +write(Store, ObjectQuery) ExportResult
     }
 
-    class MaskWriter {
+    class RasterTiffWriter {
         <<ThreadConfined>>
-        +MaskWriter(cstr path)
-        +tileSize(int32_t w, int32_t h) MaskWriter
-        +compression(MaskCompression) MaskWriter
-        +pyramidLevels(int32_t) MaskWriter
-        +resolution(double micronsPerPixel) MaskWriter
-        +write(ScenePtr, ProgressObserver*, CancellationToken) ExportResult
+        +RasterTiffWriter(cstr path)
+        +compression(RasterCompression) RasterTiffWriter
+        +resolution(double micronsPerPixel) RasterTiffWriter
+        +name(cstr) RasterTiffWriter
+        +write(TileRasterSource, Rect64 regionLevel0, double scale, ProgressObserver*, CancellationToken) ExportResult
+    }
+
+    class TileRasterSource {
+        <<core module>>
     }
 
     class ObjectArray {
@@ -2172,7 +2180,7 @@ classDiagram
     class reportingFunctions {
         <<free functions>>
         +materialise(Store, ObjectQuery, int64_t maxObjects) ObjectArrayPtr
-        +rasteriseLabels(Store, ObjectQuery, Rect64 region, int32_t level) ScenePtr
+        +makeLabelMaskSource(Store, ObjectQuery) TileRasterSourcePtr
     }
 
     class GeoJsonWriter {
@@ -2193,7 +2201,9 @@ classDiagram
     CsvWriter ..> ExportResult
     ParquetWriter ..> ExportResult
     GeoJsonExporter ..> ExportResult
-    MaskWriter ..> ExportResult
+    RasterTiffWriter ..> ExportResult
+    RasterTiffWriter ..> TileRasterSource : one 512 x 512 tile at a time
+    reportingFunctions ..> TileRasterSource : a label mask
     CsvWriter ..> Store : streams a Cursor
     ParquetWriter ..> Store
     GeoJsonExporter ..> Store
@@ -2216,9 +2226,53 @@ explicit cap, and throws rather than truncating. UR-RES-6's acceptance
 criterion is that *the API offers no call that materialises an unfiltered
 stage*, so there is no overload without `maxObjects`.
 
-`MaskWriter::write` takes a `slideio::ScenePtr` rather than a `Pipeline` — the
-one decision keeping this module off the OpenCV side of the split while still
-letting it persist a lazy pipeline scene.
+`RasterTiffWriter` and `makeLabelMaskSource` need no SlideIO library call, so
+they stay here, in the data library. What builds or reads a SlideIO scene —
+`rasteriseLabels` and `MaskWriter` — is in the engine's `masks` module (D.8.1),
+because SlideIO's DLLs embed OpenCV (`07-reporting.md` 7.6).
+
+### D.8.1 `masks`
+
+Engine module; depends on `core`, `config`, `storage`, `reporting` and SlideIO,
+never on `pipeline`, `algorithm` or `workspace`.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class MaskWriter {
+        <<ThreadConfined>>
+        +MaskWriter(cstr path)
+        +compression(RasterCompression) MaskWriter
+        +resolution(double micronsPerPixel) MaskWriter
+        +name(cstr) MaskWriter
+        +write(shared_ptr~Scene~, ProgressObserver*, CancellationToken) ExportResult
+    }
+
+    class masksFunctions {
+        <<free functions>>
+        +rasteriseLabels(Store, ObjectQuery, Rect64 regionLevel0) shared_ptr~Scene~
+    }
+
+    class RasterTiffWriter {
+        <<reporting module>>
+    }
+    class makeLabelMaskSource {
+        <<reporting module>>
+    }
+    class Scene {
+        <<SlideIO>>
+    }
+
+    MaskWriter ..> RasterTiffWriter : writes the scene at scale 1
+    MaskWriter ..> Scene : readResampledBlock per tile
+    masksFunctions ..> makeLabelMaskSource : one source per read
+    masksFunctions ..> Scene : slideio::makeScene
+```
+
+`MaskWriter::write` takes a SlideIO scene rather than a `Pipeline`, so `masks`
+needs no `pipeline` dependency while still persisting a lazy pipeline scene from
+`Pipeline::asScene()`.
 
 ---
 

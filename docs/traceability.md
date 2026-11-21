@@ -443,7 +443,7 @@ IDs are those the tests under `tests/workspace/` declare. The module so far hold
 
 ## reporting
 
-IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7); reporting plan B adds `GeoJsonExporter` (SDS 07 §7.5); reporting plan C adds `RasterTiffWriter` (SDS 07 §7.6). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
+IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7); reporting plan B adds `GeoJsonExporter` (SDS 07 §7.5); reporting plan C adds `RasterTiffWriter` and `makeLabelMaskSource` (SDS 07 §7.6). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
 
 | Requirement | Test file | Tests |
 |---|---|---|
@@ -471,8 +471,11 @@ IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds
 
 ## masks
 
-IDs are those the tests under `tests/masks/` declare. Reporting plan C adds the module's engine-side test target. So far it holds the SlideIO read-back of storage's opt-in OME-TIFF pyramid layout (reporting plan C, decision 1; SDS 03 §3.8): a file `detail::writePyramidTiff` writes with `PyramidLayout::OmeSubIfds` opens through SlideIO's `OMETIFF` driver with every level, its type, size, name and resolution, and exact pixels at every level, for every type the layout accepts. The storage detail sources are compiled into the test; the data library never links SlideIO.
+IDs are those the tests under `tests/masks/` declare. Reporting plan C adds the `masks` engine module (decision 4, SDS 07 §7.6): `rasteriseLabels`, a lazy label-mask scene, and `MaskWriter`, which writes any SlideIO scene through `RasterTiffWriter`. Its tests read every written file back through SlideIO. The target also holds the SlideIO read-back of storage's opt-in OME-TIFF pyramid layout (reporting plan C, decision 1; SDS 03 §3.8): a file `detail::writePyramidTiff` writes with `PyramidLayout::OmeSubIfds` opens through SlideIO's `OMETIFF` driver with every level, its type, size, name and resolution, and exact pixels at every level, for every type the layout accepts. The storage detail sources are compiled into the test; the data library never links SlideIO.
 
 | Requirement | Test file | Tests |
 |---|---|---|
 | UR-RES-7 | `tests/masks/test_ome_layout.cpp` | OmeLayout.OpensInSlideIOWithAllLevels, OmeLayout.OneTileRasterOpensInSlideIO, OmeLayout.EveryAcceptedTypeOpensInSlideIO |
+| UR-RES-7 | `tests/masks/test_label_scene.cpp` | Masks.LabelSceneIsLazyAndExact, Masks.LabelSceneClipsToItsRegion, Masks.LabelSceneRefusesBadArguments |
+| UR-RES-7 | `tests/masks/test_mask_writer.cpp` | Masks.WrittenLabelMaskReopensInSlideIO, Masks.ReducedLevelsKeepLabelValues, Masks.WritesAPipelineScene, Masks.RefusesMixedChannelTypes, Masks.ResolutionDefaultsToTheScenes |
+| UR-QA-3 | `tests/masks/test_mask_writer.cpp` | Masks.ReducedLevelsKeepLabelValues, Masks.WritesAPipelineScene |

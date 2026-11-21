@@ -868,7 +868,7 @@ of the whole slide at level 0 is 32 GB, and one tile's worth is a megabyte.
 `makeLayerRasterSource` lives in `core` on exactly the argument that put
 `makeLayerMaskSource` here — it needs an `ObjectSource`, an `ObjectQuery` and
 the rasteriser of 1.17, all of which are `core`. The alternative placement,
-`reporting::rasteriseLabels` (`07-reporting.md` 7.6), is unreachable from the
+`reporting::makeLabelMaskSource` (`07-reporting.md` 7.6), is unreachable from the
 module that needs it: `workspace` does not depend on `reporting` and must not
 start to, so the export-side rasteriser stays an export-side concern.
 
@@ -1606,7 +1606,7 @@ bounded by the tile, so a restriction to `cells` costs what a restriction to
 `tissue` costs.
 
 The rasteriser is in `core`, not in `pipeline`, for the reason the GeoJSON
-codec is (1.14): `reporting::rasteriseLabels` (`07-reporting.md` 7.6) already
+codec is (1.14): `reporting::makeLabelMaskSource` (`07-reporting.md` 7.6) already
 turns objects into pixels, on the OpenCV-free side of the library split. One
 kernel, used by a module that exports masks and a module that applies them,
 rather than two that can disagree about which pixels a shape covers.

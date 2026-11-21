@@ -4,7 +4,7 @@
 **Date:** 2026-09-28
 **Parent:** [Module structure design](../2026-09-28-module-structure-design.md)
 
-The public API of all seven modules. The module structure document decides
+The public API of all eight modules. The module structure document decides
 *what the modules are and why*; these documents decide *what they expose*.
 
 ## Documents
@@ -18,7 +18,7 @@ The public API of all seven modules. The module structure document decides
 | 04 | [workspace](04-workspace.md) | `workspace` | engine |
 | 05 | [pipeline](05-pipeline.md) | `pipeline` | engine |
 | 06 | [algorithm](06-algorithm.md) | `algorithm` | engine |
-| 07 | [reporting](07-reporting.md) | `reporting` | data |
+| 07 | [reporting](07-reporting.md) | `reporting`; `masks` (§7.6) | data; engine |
 | 08 | [Class diagrams](08-class-diagrams.md) | all | — |
 
 **Read 00 first.** It fixes the ABI rules, string and collection conventions,

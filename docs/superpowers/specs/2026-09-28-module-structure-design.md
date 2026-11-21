@@ -105,7 +105,9 @@ therefore spatial scan order, which an observing viewer gets for free.
                /   /     \  |       /   \
               /   /       \ |      /     \
         algorithm          workspace     reporting
-         (leaf)             (leaf)        (leaf)
+         (leaf)             (leaf)           |
+                                           masks
+                                           (leaf)
 ```
 
 | Module | Depends on | Third-party surface |
@@ -116,11 +118,19 @@ therefore spatial scan order, which an observing viewer gets for free.
 | `storage` | core, config | **SQLite** with R\*Tree |
 | `algorithm` | core, config, pipeline | **OpenCV**, privately, for its kernels |
 | `workspace` | core, config, pipeline, storage | — |
-| `reporting` | core, config, storage | slideio-converter, Parquet writer |
+| `reporting` | core, config, storage | Parquet writer (deferred). Rasters go through `storage`'s lossless TIFF writer |
+| `masks` | core, config, storage, reporting | **SlideIO**'s library: `slideio::makeScene` and scene reads |
+
+`masks` was added by reporting plan C (decision 4). It turns label masks into
+SlideIO scenes and writes any SlideIO scene as an OME-TIFF, so it links SlideIO's
+library, not only its headers. SlideIO's DLLs carry OpenCV statically, so `masks`
+belongs to the engine library (section 5.1), not to `reporting`. It never depends on
+`pipeline`, `algorithm` or `workspace`: a pipeline's output reaches it as a
+`slideio::Scene`, through `Pipeline::asScene()`.
 
 Three properties this shape exists to produce:
 
-**The viewer links four modules, not seven.** `core` + `config` + `storage` +
+**The viewer links four modules, not eight.** `core` + `config` + `storage` +
 `reporting` gives subscription, spatial query, cursors, geometry and export.
 No OpenCV, no workspace, no catalog.
 
@@ -161,7 +171,7 @@ own correctness test (UR-ALG-6), so OpenCV's numerics are checked, not trusted.
 
 **Two shared libraries, one Conan package, one CLI executable.**
 
-The seven modules are unchanged by this. They remain internal CMake targets
+The eight modules are unchanged by this. They remain internal CMake targets
 with the dependency rules of 4.1; this section only decides where the shared
 object boundary falls.
 
@@ -172,11 +182,11 @@ graph cleanly — and it divides it exactly where the two audiences are.
 
 ```
 libslideio-processor-data      core  config  storage  reporting
-  deps: slideio, SQLite (R*Tree), slideio-converter, parquet
+  deps: slideio (headers only), SQLite (R*Tree), libtiff, parquet (deferred)
   no OpenCV
 
-libslideio-processor-engine    pipeline  algorithm  workspace
-  deps: libslideio-processor-data, OpenCV
+libslideio-processor-engine    pipeline  algorithm  workspace  masks
+  deps: libslideio-processor-data, SlideIO, OpenCV
 ```
 
 | Consumer | Links | Loads OpenCV |
@@ -197,6 +207,18 @@ lives in the `stages` table, which `storage` owns. So **reading** stage state
 is part of `storage`'s query surface; `workspace` owns only what *runs* or
 *invalidates* — `StageRunner`, `RerunPolicy`, `StalenessGraph`,
 `LayerLifecycle`.
+
+**Consequence for masks (reporting plan C, decision 4).** The data library uses
+SlideIO for its headers only; it never loads SlideIO's DLLs, because they embed
+OpenCV statically. A scene built with `slideio::makeScene`, and a scene read back
+for writing, need those DLLs, so the `masks` module that does both is an engine
+module. Its edges are `core`, `config`, `storage` and `reporting` (through the data
+library) and SlideIO, and nothing else in the engine; the configure step fails if
+its link line ever names another target. What needs no SlideIO library call stays in
+the data library: `RasterTiffWriter`, which writes any `TileRasterSource` as a
+lossless OME-TIFF through `storage`'s writer, and `makeLabelMaskSource`. An export
+tool that writes label masks without building a scene therefore still links the data
+library only.
 
 ### 5.2 Packaging
 
@@ -463,12 +485,27 @@ Export-only. Depends on `core`, `config`, `storage` — never on `pipeline`,
 | `CsvWriter` | One row per object, documented column schema, loads in pandas. | UR-RES-9 |
 | `ParquetWriter` | Binary columnar for result sets impractical as CSV. | UR-RES-10 |
 | `GeoJsonWriter` | Streaming export via `core`'s codec, QuPath-compatible. | UR-RES-8 |
-| `MaskWriter` | Label and probability maps to pyramidal TIFF via slideio-converter. Takes a `Scene`, hence no `pipeline` dependency. | UR-RES-7 |
+| `RasterTiffWriter` | Any `TileRasterSource` to a lossless pyramidal OME-TIFF through `storage`'s TIFF writer. | UR-RES-7 |
+| `makeLabelMaskSource` | The label values of the objects a query admits, as a tile raster source. | UR-RES-7 |
 
-Three rules across all four: every writer is driven by a `Cursor` over a query
+Three rules across all of them: every writer is driven by a `Cursor` over a query
 and never materialises a result set; every export carries provenance
 recoverable from the store alone; every export marks each label's origin as
-standard or workspace-local and names the object's layer.
+standard or workspace-local and names the object's layer. Mask rasters are the
+exception to the last two: a pixel carries one label value and nothing else.
+
+`MaskWriter` moved to `masks` (6.8) in reporting plan C: it takes a SlideIO scene,
+and reading one needs SlideIO's DLLs, which the data library must not load.
+
+### 6.8 `masks`
+
+Engine module (5.1). Depends on `core`, `config`, `storage`, `reporting` and
+SlideIO — never on `pipeline`, `algorithm` or `workspace`.
+
+| Component | Responsibility | Requirements |
+|---|---|---|
+| `rasteriseLabels` | A lazy label-mask scene over a region, readable at any resolution. | UR-RES-7 |
+| `MaskWriter` | Any SlideIO scene — a label mask, a lazy pipeline scene, a file — to a lossless OME-TIFF, through `RasterTiffWriter`. | UR-RES-7 |
 
 ## 7. Cross-cutting concerns
 
@@ -495,6 +532,7 @@ unopenable; a schema change must not force a major API version.
 | `algorithm` | Operations must be reentrant; enforced by the `Operation` contract |
 | `workspace` | Single-writer, matching Assumption 6 |
 | `reporting` | Thread-compatible; one writer per export |
+| `masks` | `MaskWriter` thread-confined; a label-mask scene may be read from several threads at once |
 
 ### 7.3 Determinism
 
@@ -536,6 +574,7 @@ transport can be omitted entirely on any platform.
 | `algorithm` | UR-PIX-1 to UR-PIX-6, UR-SEG-1, UR-SEG-2, UR-SEG-4 to UR-SEG-7, UR-ALG-1 to UR-ALG-8 |
 | `workspace` | UR-STG-1 to UR-STG-12, UR-EXE-4 |
 | `reporting` | UR-RES-7 to UR-RES-10, UR-RES-15 |
+| `masks` | UR-RES-7 |
 
 ## 9. Consequences for `requirements.md`
 
