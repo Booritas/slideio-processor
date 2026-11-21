@@ -22,7 +22,7 @@ RestrictionFilter::RestrictionFilter(const RunPlan& plan, const PipelineSpec& sp
     if (hasRoi_) {
         // The outward mapping, which gives the run's region, grown to the level pixels holding an
         // ROI anchor, where admits() tests it: at a non-integer scale the ROI's first level-0 column
-        // or row can floor to the pixel before the mapping. Both are contiguous and they overlap,
+        // or row can floor to the pixel before the mapping. Both are contiguous and they overlap or touch,
         // so their bounding union is exactly the two.
         roiAtLevel_ = selector.mapToLevel(roi_, plan.level);
         if (!roi_.isEmpty()) {

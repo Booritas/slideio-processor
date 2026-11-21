@@ -944,7 +944,7 @@ applied at three points, and it matters that they are three rather than one:
 |---|---|---|
 | Grid construction | An object-producing tiled run's grid spans the level, others span the restriction's bounding box (5.6); tiles outside the region are skipped without a mask | Whole rows and columns of tiles never exist for a run that cannot produce objects; objects crossing the region edge meet real tiles beyond it |
 | Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels; an object reaching into a skipped tile gets it evaluated on demand (5.5) | UR-IMG-5: "reads only tiles intersecting it", as a strong tendency |
-| Object emission | Each object is kept only if the mask is set at its **anchor** | UR-STG-3: "produces no objects outside those regions" |
+| Object emission | Each object is kept only if its **anchor** lies in the ROI (decided exactly, in level 0) and the mask is set there | UR-STG-3: "produces no objects outside those regions" |
 
 The third is the authoritative one and the other two are optimisations that
 change only cost. That separation is what lets both acceptance criteria hold at
@@ -969,7 +969,7 @@ is the one-nucleus-becomes-two failure of 5.6 arriving by a different road. The
 finished objects only.
 
 **The test is the anchor, and that is a deliberate choice among four.** An
-object is in when the mask is set at its topmost-then-leftmost vertex — the
+object is in when (for an ROI, see below) the mask is set at its topmost-then-leftmost vertex — the
 same point `ObjectId::fromAnchor` derives identity from (`01-core.md` 1.4,
 decision 8). Centroid would need a computation the record already carries but
 which no longer matches identity; intersection would admit objects mostly
@@ -984,7 +984,7 @@ mask built from an ROI is a skipping aid and what an operation sees through
 `Operation::mask()`, and it is widened to cover both rules: the level mapping
 of the rectangle and every level pixel holding an ROI anchor. At an integer
 scale the second is contained in the first; at a non-integer scale the mask
-grows by at most one level pixel on a side, so an operation that honours its
+grows by at most one level pixel on its left and top edges, so an operation that honours its
 advisory mask can see one more edge column or row, never fewer. A polygon or a
 mask source is tested on the level mask, at the level pixel of the anchor, and
 an ROI combined with one of them must pass both.
@@ -1279,7 +1279,7 @@ collinear, or a spike of zero area — fails the run, or the read, with
 
 Per tile, before any pixel is read, the worker builds the tile's mask over its
 **halo** rect at the level, and only when the run is restricted: all pixels set,
-intersected with the ROI rectangle, then with the polygon, then with the bound
+intersected with the ROI's level rectangle (widened, 5.5, to every level pixel holding an ROI anchor), then with the polygon, then with the bound
 `TileMaskSource` (which fills a second mask that is intersected in). At a
 non-integer level scale a tile owns, besides its rect, one more column and row
 before it, whatever the halo: a tile owns the objects anchored in its level-0
@@ -1293,7 +1293,7 @@ tile rect and that extra column and row), the tile is skipped: no pixel is
 read and it is deferred, not complete (below). `OperationContext::mask()`
 returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
-the `ObjectSink` and admits an object when the mask is set at its anchor; for
+the `ObjectSink` and admits an object when its anchor is in the ROI (`inRoi`) and the mask is set at it; for
 objects emitted outside a tile, such as merged objects (5.7), it exposes
 `admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
 from the same three sources. Filtering never alters pixels.

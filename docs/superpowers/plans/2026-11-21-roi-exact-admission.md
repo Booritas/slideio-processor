@@ -36,7 +36,7 @@
    - `mapToLevel(roi)`;
    - the pixels holding an ROI anchor, `[levelPixelOf(roi.x), levelPixelOf(roi.x + roi.width − 1)]` in x, and the same in y.
 
-   Each is a contiguous interval and they overlap, so the union is one rect. At an integer scale the second is contained in the first, so the mask does not change. At a non-integer scale it grows by at most one level pixel on a side.
+   Each is a contiguous interval and they overlap, so the union is one rect. At an integer scale the second is contained in the first, so the mask does not change. At a non-integer scale it grows by at most one level pixel on its left and top edges.
 3. **What that changes for operations.** `Operation::mask()` is advisory (§5.1). An operation that honours it, such as the Otsu threshold restricted to an ROI, can see one more edge column or row at a non-integer scale, never fewer. `readBlock`'s "outside the restriction is zero" moves with it. This is accepted and documented. The mask stays what skipping and operations see; only emission is exact.
 4. **Skipping stays sound.** `skips()` and `outsideRegion()` are unchanged:
    - Every admissible anchor is tested at a pixel the widened mask sets (decision 2), so `skips()` keeps every tile holding one.

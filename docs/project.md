@@ -283,13 +283,17 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     by the tile object filter; the level mask's ROI part is widened to cover
     every level pixel holding an ROI anchor, so skipping stays sound. Level 0
     and runs restricted only by a polygon or a mask source are unchanged; the
-    ROI mask an operation sees through `mask()` can be one level pixel wider
-    per side at a non-integer scale (advisory, SDS 05 §5.5). **Effect on stored
+    ROI mask an operation sees through `mask()` can be one level pixel wider on
+    its left and top edges at a non-integer scale (advisory, SDS 05 §5.5). **Effect on stored
     results (QA/regulatory):** at levels above 0, objects anchored just outside
     an ROI edge are no longer stored, and objects on its first column or row
     are no longer dropped, so counts at an ROI's edges can change. Re-run
     ROI-restricted stages at levels above 0 and record the change in the
     verification evidence.
+    At a non-integer scale, when the ROI's mapped start falls on a tile
+    boundary, the strip of tiles just before the ROI is now evaluated instead of
+    skipped, so `tilesSkipped` and `droppedByRestriction` can change for such
+    runs; stored results are unaffected by that.
   - **Open follow-up (not fixed): the level pixel of an anchor tested against a
     polygon or a mask source.** A polygon or a mask source is still tested at
     `floor(anchor / scale)`, while the level-to-level-0 mapping uses

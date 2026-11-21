@@ -67,17 +67,16 @@ public:
     /// pixel before the tile, and an anchor there is tested on this mask.
     RasterMask buildTileMask(int64_t tileIndex) const;
 
-    /// True when the tile's mask has no set pixel inside the tile rect, so the
+    /// True when the tile's mask has no set pixel inside the tile's owned rect, so the
     /// tile is skipped. False for a null mask.
     bool skips(const RasterMask& mask, int64_t tileIndex) const;
 
     /// True when the tile's owned rect (what skips() tests) does not intersect the run's region.
-    /// Only a shortcut: the mask is empty there, because the ROI is rasterised by the outward
-    /// mapping that also gives the region, and the polygon's conservative raster lies inside its
-    /// bounding box's outward mapping to within one level pixel at a non-integer scale, so a pass
-    /// skips the tile without building a mask. At a non-integer scale the region is widened by
-    /// one column and row on every side, because a level pixel straddles its edge and a polygon's
-    /// conservative raster can set it. False for an unrestricted run.
+    /// Only a shortcut: the mask is empty there. The widened ROI mask sets a level pixel before the
+    /// region, and the polygon's conservative raster can lie one level pixel past its bounding
+    /// box's outward mapping, so at a non-integer scale the region is widened by one column and row
+    /// on every side before the test; a pass skips the tile without building a mask. False for an
+    /// unrestricted run.
     bool outsideRegion(int64_t tileIndex) const;
 
     /// True when the run has no ROI, or when the level-0 point lies inside the ROI
