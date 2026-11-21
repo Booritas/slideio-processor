@@ -31,6 +31,11 @@ namespace slideio::processor {
  * smallest ObjectId wins. Every other pixel, including any outside the query's own box,
  * is 0.
  *
+ * Effective labels are read through AnnotationStore with storage's own visibility, not
+ * the query's. An object the query admits only because its visibility() is wider than
+ * AnnotationStore's (an object of an incomplete stage, say) has no effective label there
+ * and, without a label() filter, rasterises as 0.
+ *
  * Rasterisation is core's: this source drives makeLayerRasterSource() over an
  * ObjectSource that merges the query into each tile query.
  * @param store The store to read. Borrowed: it must outlive the source, and the source's

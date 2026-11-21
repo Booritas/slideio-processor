@@ -16,8 +16,10 @@ namespace slideio::processor {
 namespace {
 
 constexpr int64_t kSide = 64;
-constexpr int32_t kTumour = 1;
-constexpr int32_t kStroma = 2;
+// Object 1, the lower ObjectId, carries the larger label value, so the overlap tells
+// "smallest ObjectId wins" apart from "smallest LabelId wins".
+constexpr int32_t kTumour = 2;
+constexpr int32_t kStroma = 1;
 constexpr int32_t kKi67 = 3;
 
 ObjectRecord record(LayerId layer, int64_t x, int64_t y, int64_t side, int32_t label) {
@@ -92,8 +94,10 @@ TEST_F(LabelMaskTest, ValuesFollowTheQuery) {
     EXPECT_EQ(source->planeType(), DataType::Int32);
     EXPECT_EQ(source->planeCount(), 1);
     const std::vector<int32_t> pixels = fill(*source, kSide);
+    ASSERT_LT(one, two);
+    ASSERT_GT(kTumour, kStroma);
     EXPECT_EQ(at(pixels, 5, 5), kTumour);
-    EXPECT_EQ(at(pixels, 15, 15), kTumour);  // the overlap: the smaller ObjectId wins
+    EXPECT_EQ(at(pixels, 15, 15), kTumour);  // the overlap: the smaller ObjectId wins, not the smaller label
     EXPECT_EQ(at(pixels, 25, 25), kStroma);
     EXPECT_EQ(at(pixels, 45, 45), kKi67);  // object 3 has no row label: its first effective label
     EXPECT_EQ(at(pixels, 60, 60), 0);
