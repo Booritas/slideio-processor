@@ -71,6 +71,12 @@ ctest --test-dir build -C Release --output-on-failure
 
 Run a single test with `-R <regex>`.
 
+OpenCV comes in through Conan and is linked privately into
+`slideio-processor-engine` only. The first `./build.sh -c debug` may build
+OpenCV Debug from source when the Conan cache lacks it.
+
+SQLite comes in through Conan and is linked privately into `slideio-processor-data`.
+
 ### Release builds without test seams
 
 The tests need a few test-only exports in the shared libraries (the
@@ -85,12 +91,7 @@ scripts/check-no-test-seams.sh build-noseams
 The script exits 0 and prints `no test seams exported` when neither library exports a
 symbol containing `Testing`. With plain CMake, configure with
 `-DSLIDEIO_PROCESSOR_TEST_SEAMS=OFF`. The default is ON, which `./run-tests.sh` needs.
-
-OpenCV comes in through Conan and is linked privately into
-`slideio-processor-engine` only. The first `./build.sh -c debug` may build
-OpenCV Debug from source when the Conan cache lacks it.
-
-SQLite comes in through Conan and is linked privately into `slideio-processor-data`.
+CI builds this way on Ubuntu after the tests and runs the check.
 
 ## Libraries
 

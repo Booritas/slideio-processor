@@ -279,4 +279,4 @@ declarations do not change the class layout, so ABI is unaffected.
 
 A release package is built with `./build.sh --no-test-seams` (into `build-noseams`),
 and `scripts/check-no-test-seams.sh <build dir>` verifies that neither shared library
-exports a symbol containing `Testing`.
+exports a symbol containing `Testing`. CI runs both steps on Ubuntu, after the tests, reusing the main build's Conan cache and SlideIO install.

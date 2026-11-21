@@ -97,6 +97,17 @@ jobs:
         shell: bash
         run: ./run-tests.sh
 
+      # A release package is built without the test-only seams. Once is enough, so
+      # Ubuntu only; it reuses this job's Conan cache and SlideIO install.
+      - name: Build without test seams and check the exports
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        env:
+          PYTHON: python
+        run: |
+          ./build.sh --skip-slideio --no-test-seams
+          scripts/check-no-test-seams.sh build-noseams
+
   build-manylinux:
     name: manylinux_2_28 x86_64
     runs-on: ubuntu-latest
