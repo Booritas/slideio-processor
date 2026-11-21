@@ -122,6 +122,73 @@ public:
      */
     uint64_t revision() const noexcept;
 
+    /**
+     * @brief Groups the writes one thread makes through the writers of one store into a
+     * single transaction, which commits whole or not at all.
+     *
+     * The constructor takes the store's write lock and begins the transaction. Until
+     * commit() or the destructor, every write the same thread makes through any writer of
+     * that store joins the batch instead of committing on its own. A join is a
+     * savepoint: a write that succeeds is kept in the batch; a write that throws undoes
+     * only itself, throws the exception it throws today, and leaves the batch able to
+     * commit. Readers, and other processes, see none of the batch before commit() and
+     * all of it after. Writes by other threads wait for the batch to end, as they wait
+     * for any write.
+     *
+     * Rules:
+     * - One batch per thread and store: a second Batch on a thread that holds one throws.
+     * - A durable write (a commit that is on disk before it returns, as
+     *   RasterRegistry::discardRasterOfStage makes) cannot join and throws
+     *   InvalidArgumentError, since the synchronous level cannot change inside a
+     *   transaction. The batch is unaffected.
+     * - Create, commit() and destroy a Batch on one thread, and close the store on
+     *   another or after the batch has ended: Store::close() waits for a batch of another
+     *   thread, and deadlocks against one held by the thread that calls it.
+     * - Keep a batch short. It holds the write lock, so every other writer of the store
+     *   waits for it.
+     * - A setStatus() in a batch posts its commit notification when the batch commits,
+     *   and never when it rolls back.
+     * - revision() counts every setStatus() and setStale() call, as it does outside a
+     *   batch. It may therefore count a change that a rolled-back batch then discarded;
+     *   it never misses a change that committed. Callers that key a cache on it
+     *   re-read, so a spurious count costs only a re-read.
+     *
+     * Not copyable or movable.
+     * @par Thread-safety
+     * NotThreadSafe: use it only on the thread that created it. Other threads' writes to
+     * the store are safe and wait for it.
+     * @par Requirements
+     * UR-STG-4
+     */
+    class SLIDEIO_PROCESSOR_DATA_EXPORTS Batch {
+    public:
+        /**
+         * @brief Begins the batch.
+         * @param writer A writer of the store to group writes in.
+         * @throws IoError When the store is closed or read-only, or when SQLite fails.
+         * @throws InvalidArgumentError When this thread already holds a batch on the store.
+         */
+        explicit Batch(StageStateWriter& writer);
+        /** @brief Rolls the batch back unless commit() ran. Never throws. */
+        ~Batch();
+        Batch(const Batch&) = delete;             ///< Not copyable.
+        Batch& operator=(const Batch&) = delete;  ///< Not copyable.
+
+        /**
+         * @brief Commits every write of the batch at once, then posts the notification
+         * a setStatus() in it deferred.
+         *
+         * The batch has ended afterwards, whether or not the commit succeeded.
+         * @throws InvalidArgumentError When the batch has already been committed.
+         * @throws IoError When the commit fails; the batch is then rolled back.
+         */
+        void commit();
+
+    private:
+        detail::StoreImpl* store_;
+        bool open_;
+    };
+
 private:
     friend class Store;
     explicit StageStateWriter(detail::StoreImpl& store);

@@ -39,6 +39,24 @@ StageStateWriter::StageStateWriter(detail::StoreImpl& store) : impl_(std::make_u
 
 StageStateWriter::~StageStateWriter() = default;
 
+StageStateWriter::Batch::Batch(StageStateWriter& writer) : store_(&writer.impl_->store), open_(false) {
+    store_->beginBatch("StageStateWriter::Batch");
+    open_ = true;
+}
+
+StageStateWriter::Batch::~Batch() {
+    if (open_) store_->abortBatch();
+}
+
+void StageStateWriter::Batch::commit() {
+    if (!open_) detail::throwInvalid("StageStateWriter::Batch::commit", "the batch has already ended");
+    if (!store_->batchOpenOnThisThread()) {
+        detail::throwInvalid("StageStateWriter::Batch::commit", "the batch belongs to another thread");
+    }
+    open_ = false;  // the batch ends whether the commit succeeds or not
+    store_->commitBatch();
+}
+
 StageId StageStateWriter::declare(const char* name, const char* configurationJson) {
     constexpr const char* kOperation = "StageStateWriter::declare";
     return impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {

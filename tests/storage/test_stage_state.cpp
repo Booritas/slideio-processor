@@ -1,14 +1,17 @@
 // Requirements: UR-STG-4, UR-STG-2, UR-OBS-5
+#include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/storage/event_journal.hpp>
+#include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -292,4 +295,160 @@ TEST_F(StageState, ConcurrentDeclaresGetDistinctIds) {
     for (auto& t : threads) t.join();
     EXPECT_EQ(r.count(), 40);
     for (int i = 0; i < 40; ++i) EXPECT_EQ(r.at(i), StageId(i + 1));
+}
+
+namespace {
+
+class StageStateBatch : public StoreFixture {
+protected:
+    // Three declared stages: A (configuration {"v":1}), B depending on nothing, C.
+    void declareAbc() {
+        StageStateWriter& w = store().stageStateWriter();
+        a = w.declare("a", R"({"v":1})");
+        b = w.declare("b", "");
+        c = w.declare("c", "");
+        w.addDependency(b, a);
+    }
+    StageId a, b, c;
+};
+
+}  // namespace
+
+TEST_F(StageStateBatch, CommitMakesEveryWriteVisibleAtOnce) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    StorePtr ro = Store::open(pathUtf8().c_str(), OpenMode::ReadOnly, config());
+    const StageStateReader& r = ro->stageStates();
+    {
+        StageStateWriter::Batch batch(w);
+        w.setConfiguration(a, R"({"v":2})");
+        w.clearDependencies(b);
+        w.addDependency(b, c);
+        w.setStale(c, true);
+        EXPECT_STREQ(r.configuration(a), R"({"v":1})");
+        ASSERT_EQ(r.dependencyCount(b), 1);
+        EXPECT_EQ(r.dependencyAt(b, 0), a);
+        EXPECT_FALSE(r.isStale(c));
+        batch.commit();
+    }
+    EXPECT_STREQ(r.configuration(a), R"({"v":2})");
+    ASSERT_EQ(r.dependencyCount(b), 1);
+    EXPECT_EQ(r.dependencyAt(b, 0), c);
+    EXPECT_TRUE(r.isStale(c));
+}
+
+TEST_F(StageStateBatch, DestructorRollsBack) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    const StageStateReader& r = store().stageStates();
+    {
+        StageStateWriter::Batch batch(w);
+        w.setConfiguration(a, R"({"v":2})");
+        w.clearDependencies(b);
+        w.addDependency(b, c);
+        w.setStale(c, true);
+    }
+    EXPECT_STREQ(r.configuration(a), R"({"v":1})");
+    ASSERT_EQ(r.dependencyCount(b), 1);
+    EXPECT_EQ(r.dependencyAt(b, 0), a);
+    EXPECT_FALSE(r.isStale(c));
+    w.setStale(c, true);  // the write lock was released
+    EXPECT_TRUE(r.isStale(c));
+}
+
+TEST_F(StageStateBatch, FailingWriteUndoesOnlyItself) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    const StageStateReader& r = store().stageStates();
+    StageStateWriter::Batch batch(w);
+    w.setConfiguration(a, R"({"v":2})");
+    EXPECT_THROW(w.addDependency(a, StageId(9999)), InvalidArgumentError);
+    batch.commit();
+    EXPECT_STREQ(r.configuration(a), R"({"v":2})");
+    EXPECT_EQ(r.dependencyCount(a), 0);
+}
+
+TEST_F(StageStateBatch, OtherThreadWritesWaitForTheBatch) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    const StageStateReader& r = store().stageStates();
+    std::atomic<bool> committedFlag{false};
+    bool sawFlag = false;
+    std::thread other;
+    {
+        StageStateWriter::Batch batch(w);
+        w.setStale(a, true);
+        other = std::thread([&] {
+            w.setStale(b, true);
+            sawFlag = committedFlag.load();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        committedFlag = true;
+        batch.commit();
+    }
+    other.join();
+    EXPECT_TRUE(sawFlag);
+    EXPECT_TRUE(r.isStale(a));
+    EXPECT_TRUE(r.isStale(b));
+}
+
+TEST_F(StageStateBatch, NestedBatchIsRefused) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    StageStateWriter::Batch first(w);
+    w.setStale(a, true);
+    EXPECT_THROW(StageStateWriter::Batch second(w), InvalidArgumentError);
+    first.commit();
+    EXPECT_TRUE(store().stageStates().isStale(a));
+}
+
+TEST_F(StageStateBatch, ReadOnlyStoreRefusesABatch) {
+    declareAbc();
+    StorePtr ro = reopen(OpenMode::ReadOnly);
+    EXPECT_THROW(StageStateWriter::Batch batch(ro->stageStateWriter()), IoError);
+}
+
+TEST_F(StageStateBatch, CommitTwiceIsRefused) {
+    declareAbc();
+    StageStateWriter::Batch batch(store().stageStateWriter());
+    batch.commit();
+    EXPECT_THROW(batch.commit(), InvalidArgumentError);
+}
+
+TEST_F(StageStateBatch, DurableWriteInsideABatchIsRefused) {
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    StageStateWriter::Batch batch(w);
+    w.setStale(a, true);
+    EXPECT_THROW(store().rasters().discardRasterOfStage(a), InvalidArgumentError);
+    batch.commit();
+    EXPECT_TRUE(store().stageStates().isStale(a));
+}
+
+// A commit posts the store's wake-up signal for an appended event; a rollback must not.
+// Observed on a second StoreImpl (compiled into this test) that shares the signal by the
+// store's uuid.
+TEST_F(StageStateBatch, StatusNotifiesOnlyOnCommit) {
+    if (!detail::ChangeSignal::isSupported()) GTEST_SKIP() << "no wake-up signal on this platform";
+    declareAbc();
+    StageStateWriter& w = store().stageStateWriter();
+    detail::StoreImpl observer(pathUtf8().c_str(), OpenMode::ReadOnly, config());
+    const std::shared_ptr<detail::CommitWaiter> waiter = observer.commitWaiter();
+    waiter->wait(0);  // drain anything the setup posted
+    const auto waited = [&](int32_t timeoutMs) {
+        const auto start = std::chrono::steady_clock::now();
+        waiter->wait(timeoutMs);
+        return std::chrono::steady_clock::now() - start;
+    };
+    {
+        StageStateWriter::Batch batch(w);
+        w.setStatus(a, StageStatus::Running);
+    }
+    EXPECT_GE(waited(300), std::chrono::milliseconds(250));  // timed out: nothing was posted
+    {
+        StageStateWriter::Batch batch(w);
+        w.setStatus(a, StageStatus::Running);
+        batch.commit();
+    }
+    EXPECT_LT(waited(5000), std::chrono::milliseconds(2000));  // woken by the commit
 }

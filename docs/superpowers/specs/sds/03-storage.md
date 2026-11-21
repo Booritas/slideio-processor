@@ -1806,7 +1806,7 @@ through it.** Declaring, running and invalidating stages stay `workspace`'s
 decisions (`04-workspace.md`); this class is only how they reach the store, so
 that `workspace` never touches the store's tables directly.
 
-Every member is one write transaction. Every member throws `IoError` on a
+Every member is one write transaction (or joins the thread's `Batch`, below). Every member throws `IoError` on a
 closed or `ReadOnly` store — on a `ReadOnly` store the writer exists and
 refuses everything — and `InvalidArgumentError` for an unknown stage.
 
@@ -1828,6 +1828,57 @@ refuses everything — and `InvalidArgumentError` for an unknown stage.
   the only writer of statuses, completion times and stale flags while the store
   is open, so `StageRegistry` keys the staleness causes it caches on it
   (`04-workspace.md` 4.5; PR #17 review).
+
+### `StageStateWriter::Batch`
+
+```cpp
+class StageStateWriter::Batch {
+public:
+    explicit Batch(StageStateWriter& writer);  // takes the write lock, BEGIN IMMEDIATE
+    ~Batch();                                  // rolls back unless committed; never throws
+    void commit();
+    // Not copyable or movable.
+};
+```
+
+**One transaction across several writes of one thread.** A `Batch` makes
+`workspace`'s `declare` all or nothing (`04-workspace.md`): readers, and other
+processes, see none of its writes before `commit()` and all of them after.
+
+- **Opening.** The constructor takes the store's write mutex and runs
+  `BEGIN IMMEDIATE`. It throws `IoError` on a closed or `ReadOnly` store, and
+  `InvalidArgumentError` when the calling thread already holds a batch on the
+  store: batches do not nest.
+- **Joining.** While a batch is open, a write by the same thread through any
+  writer of that store (`StageStateWriter`, `RasterRegistry`, the object and
+  edge writers, ...) joins it instead of locking and committing:
+  `SAVEPOINT`, then `RELEASE` on success. A write that throws is rolled back to
+  its savepoint, released, and rethrows the exception it throws outside a
+  batch, so **a failed write undoes only itself** and the batch can still
+  commit. This is in `StoreImpl::runWriteTransaction`; the owning thread id is
+  an atomic, so other threads compare it without a lock.
+- **Durable writes refused.** A write that commits durably
+  (`withDurableWriteTransaction`, as `RasterRegistry::discardRasterOfStage`
+  does, 3.8) throws `InvalidArgumentError` "`<operation>`: a durable write
+  cannot join a batch" on the batch's thread: `synchronous` cannot change inside
+  a transaction. The batch is unaffected.
+- **Other threads** wait on the write mutex until the batch ends, as they wait
+  for any write.
+- **`commit()`** runs `COMMIT`. When that fails it rolls back and throws
+  `IoError`; the batch has ended either way. A second call throws
+  `InvalidArgumentError`. The destructor rolls back an uncommitted batch and
+  releases the lock.
+- **Notifications are deferred.** `notifyCommitted()` called on the batch's
+  thread only records that a post is due; `commit()` posts once after `COMMIT`,
+  and a rollback posts nothing. So a subscriber is never woken for events that
+  never committed.
+- **`revision()`** still counts every `setStatus` and `setStale` call. It may
+  count a change a batch then rolled back, but never misses a committed one;
+  callers re-read when it moves, so an extra count costs a re-read only.
+- **Thread rule and `close()`.** Create, commit and destroy a batch on one
+  thread. `Store::close()` takes the write mutex, so it waits for a batch held
+  by another thread; a batch held by the thread that calls `close()` deadlocks
+  it, so none may be open there.
 
 ## 3.11 GeoJSON import — `storage/geojson_import.hpp`
 

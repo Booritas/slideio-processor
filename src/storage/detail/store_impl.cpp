@@ -337,6 +337,70 @@ void StoreImpl::rollbackWrite() noexcept {
     }
 }
 
+// A join is a savepoint inside the batch's transaction. The name is fixed: a join runs a
+// single write, and a write never starts another.
+void StoreImpl::beginJoin(const char* operation) {
+    sqlite3* db = writeConnection_.get();
+    const int rc = sqlite3_exec(db, "SAVEPOINT slideio_join", nullptr, nullptr, nullptr);
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+}
+
+void StoreImpl::releaseJoin(const char* operation) {
+    sqlite3* db = writeConnection_.get();
+    const int rc = sqlite3_exec(db, "RELEASE slideio_join", nullptr, nullptr, nullptr);
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+}
+
+void StoreImpl::rollbackJoin() noexcept {
+    sqlite3* db = writeConnection_.get();
+    // ROLLBACK TO keeps the savepoint open; RELEASE then closes it.
+    sqlite3_exec(db, "ROLLBACK TO slideio_join", nullptr, nullptr, nullptr);
+    sqlite3_exec(db, "RELEASE slideio_join", nullptr, nullptr, nullptr);
+}
+
+void StoreImpl::beginBatch(const char* operation) {
+    checkWritable(operation);
+    if (batchOpenOnThisThread()) throwInvalidArgument(operation, "a batch is already open on this thread");
+    std::unique_lock<std::mutex> lock(writeMutex_);
+    checkOpen(operation);  // close() may have run while this call waited
+    beginWrite(operation);
+    batchLock_ = std::move(lock);
+    batchNotifyPending_ = false;
+    batchOwner_.store(std::this_thread::get_id(), std::memory_order_release);
+}
+
+void StoreImpl::commitBatch() {
+    const char* operation = "StageStateWriter::Batch::commit";
+    if (!batchOpenOnThisThread()) throwInvalidArgument(operation, "the batch is not open on this thread");
+    try {
+        commitWrite(operation);
+    } catch (...) {
+        rollbackWrite();
+        finishBatch(false);
+        throw;
+    }
+    finishBatch(true);
+}
+
+void StoreImpl::abortBatch() noexcept {
+    if (!batchOpenOnThisThread()) return;
+    rollbackWrite();
+    finishBatch(false);
+}
+
+void StoreImpl::finishBatch(bool committed) noexcept {
+    const bool notify = committed && batchNotifyPending_;
+    batchNotifyPending_ = false;
+    batchOwner_.store(std::thread::id(), std::memory_order_release);
+    batchLock_.unlock();
+    if (notify) notifyCommitted();
+}
+
+void StoreImpl::throwInvalidArgument(const char* operation, const char* what) {
+    const std::string message = std::string(operation) + ": " + what;
+    throw InvalidArgumentError(message.c_str());
+}
+
 void StoreImpl::throwTranslated(const char* operation, const std::exception& e) const {
     const std::string message = std::string(operation) + ": unexpected failure on '" + path_ + "'";
     ErrorContext context;
@@ -403,7 +467,13 @@ void StoreImpl::openChangeSignal() noexcept {
     }
 }
 
-void StoreImpl::notifyCommitted() noexcept { waiter_->notify(); }
+void StoreImpl::notifyCommitted() noexcept {
+    if (batchOpenOnThisThread()) {
+        batchNotifyPending_ = true;
+        return;
+    }
+    waiter_->notify();
+}
 
 void StoreImpl::close() {
     if (!isOpen()) return;

@@ -30,6 +30,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -200,7 +201,10 @@ public:
     // Runs fn(sqlite3* writeConnection) inside BEGIN IMMEDIATE ... COMMIT, holding the
     // write mutex, and returns its result. Rolls back and rethrows when fn throws; a
     // standard exception other than std::bad_alloc becomes InternalError. Throws
-    // IoError when closed, read-only, or on a SQLite failure.
+    // IoError when closed, read-only, or on a SQLite failure. On the thread that holds a
+    // batch (beginBatch) it instead joins the batch: a SAVEPOINT, released when fn
+    // returns, rolled back to and released when fn throws, so a failed write undoes
+    // only itself and nothing commits until the batch does.
     template <class Fn>
     auto withWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>()));
 
@@ -213,6 +217,22 @@ public:
     // failure to restore NORMAL afterwards is logged at Warning and leaves FULL.
     template <class Fn>
     auto withDurableWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>()));
+
+    // The batch: one transaction that spans several writes of one thread (SDS 03 §3.10a).
+    // beginBatch takes the write mutex and runs BEGIN IMMEDIATE, and keeps the mutex until
+    // commitBatch or abortBatch, which must run on the thread that began it. Other
+    // threads' writes wait on the mutex. beginBatch throws IoError when closed or
+    // read-only, and InvalidArgumentError when this thread already holds a batch.
+    // commitBatch throws IoError when COMMIT fails, rolling back; either way the batch
+    // has ended. abortBatch rolls back and never throws. A batch must not be open on the
+    // thread that calls close().
+    void beginBatch(const char* operation);
+    void commitBatch();
+    void abortBatch() noexcept;
+    // True while the calling thread holds a batch.
+    bool batchOpenOnThisThread() const noexcept {
+        return batchOwner_.load(std::memory_order_acquire) == std::this_thread::get_id();
+    }
 
     // Runs fn(sqlite3* readConnection) on a pooled read connection and returns its
     // result. No transaction is opened: a single statement is its own snapshot; fn
@@ -236,7 +256,8 @@ public:
 
     // Called after any write transaction that appended an event has committed, so that
     // subscribers waiting on the CommitWaiter wake at once. Correctness never depends
-    // on it.
+    // on it. On the thread that holds a batch it only records the call: the batch posts
+    // once when it commits, and never when it rolls back.
     void notifyCommitted() noexcept;
 
     // The waiter event cursors share; outlives this object while a cursor holds it.
@@ -284,7 +305,13 @@ private:
     void beginWrite(const char* operation);
     void commitWrite(const char* operation);
     void rollbackWrite() noexcept;
+    void finishBatch(bool committed) noexcept;
+    void beginJoin(const char* operation);
+    void releaseJoin(const char* operation);
+    void rollbackJoin() noexcept;
     [[noreturn]] void throwTranslated(const char* operation, const std::exception& e) const;
+    // Throws InvalidArgumentError "<operation>: <what>".
+    [[noreturn]] static void throwInvalidArgument(const char* operation, const char* what);
 
     std::string path_;
     OpenMode mode_;
@@ -295,6 +322,12 @@ private:
     std::atomic<bool> closing_{false};  // set once close() begins; never cleared
     WriterLock writerLock_;
     mutable std::mutex writeMutex_;
+    // The open batch: its thread (the default id when none), the lock it holds on
+    // writeMutex_, and whether a write in it asked for notifyCommitted. The lock and the
+    // flag belong to the owning thread; other threads only compare the id.
+    std::atomic<std::thread::id> batchOwner_{std::thread::id()};
+    std::unique_lock<std::mutex> batchLock_;
+    bool batchNotifyPending_ = false;
     Connection writeConnection_;
     std::shared_ptr<ConnectionPool> pool_;
     std::shared_ptr<CommitWaiter> waiter_ = std::make_shared<CommitWaiter>();
@@ -342,6 +375,32 @@ template <class Fn>
 auto StoreImpl::runWriteTransaction(const char* operation, bool durable, Fn&& fn)
     -> decltype(fn(std::declval<sqlite3*>())) {
     checkWritable(operation);
+    if (batchOpenOnThisThread()) {
+        // Joins this thread's batch, which holds the write mutex already. The synchronous
+        // level cannot change inside a transaction, so a durable write cannot join.
+        if (durable) throwInvalidArgument(operation, "a durable write cannot join a batch");
+        beginJoin(operation);
+        try {
+            if constexpr (std::is_void_v<decltype(fn(std::declval<sqlite3*>()))>) {
+                fn(writeConnection_.get());
+                releaseJoin(operation);
+                return;
+            } else {
+                auto result = fn(writeConnection_.get());
+                releaseJoin(operation);
+                return result;
+            }
+        } catch (const ProcessorError&) {
+            rollbackJoin();
+            throw;
+        } catch (const std::bad_alloc&) {
+            rollbackJoin();
+            throw;
+        } catch (const std::exception& e) {
+            rollbackJoin();
+            throwTranslated(operation, e);
+        }
+    }
     std::lock_guard<std::mutex> guard(writeMutex_);
     checkOpen(operation);  // close() may have run while this call waited
     // Declared after the guard, so NORMAL is back before the write mutex is released, and

@@ -758,6 +758,24 @@ classDiagram
         +writtenLayerAt(StageId, int32_t) LayerId
     }
 
+    class StageStateWriter {
+        <<ThreadSafe>>
+        +declare(cstr name, cstr configurationJson) StageId
+        +setStatus(StageId, StageStatus) void
+        +setStale(StageId, bool) void
+        +setConfiguration(StageId, cstr) void
+        +addDependency(StageId, StageId) void
+        +clearDependencies(StageId) void
+        +addWrittenLayer(StageId, LayerId) void
+        +revision() uint64_t
+    }
+
+    class StageStateWriter_Batch {
+        <<NotThreadSafe>>
+        +Batch(StageStateWriter&)
+        +commit() void
+    }
+
     class ObjectStore {
         <<ThreadSafe>>
     }
@@ -774,6 +792,8 @@ classDiagram
     Store *-- EdgeStore
     Store *-- EventJournal
     Store *-- StageStateReader
+    Store *-- StageStateWriter
+    StageStateWriter ..> StageStateWriter_Batch : nested class, one open per thread
     Store ..> OpenMode
     Store ..> Provenance : slide-level record
     LayerRegistry ..> LayerKind
@@ -787,6 +807,11 @@ one mutex-guarded write connection and a pool of read connections (03 §3.2),
 which is what lets a `ReadOnly` store in
 a viewer process read while a `ReadWrite` store in a script process writes —
 UR-OBS-1, measured in the [spike](../2026-10-07-spike-q3-q4-findings.md) §2.3.
+
+`StageStateWriter::Batch` (03 §3.10a) is how `workspace` makes several stage
+writes one transaction: the constructor takes the write lock, the thread's
+writes join it as savepoints, and `commit()` publishes them all at once. It is
+`NotThreadSafe` by design, one per thread.
 
 `coarsestAnalysisLevel` is how a consumer learns **what a boundary is worth**.
 Every polygon is in level-0 coordinates (UR-SEG-4), so a `tissue` layer
@@ -819,6 +844,25 @@ classDiagram
     }
     class Cursor {
         <<interface>>
+    }
+
+
+    class StageStateWriter {
+        <<ThreadSafe>>
+        +declare(cstr name, cstr configurationJson) StageId
+        +setStatus(StageId, StageStatus) void
+        +setStale(StageId, bool) void
+        +setConfiguration(StageId, cstr) void
+        +addDependency(StageId, StageId) void
+        +clearDependencies(StageId) void
+        +addWrittenLayer(StageId, LayerId) void
+        +revision() uint64_t
+    }
+
+    class StageStateWriter_Batch {
+        <<NotThreadSafe>>
+        +Batch(StageStateWriter&)
+        +commit() void
     }
 
     class ObjectStore {
@@ -2239,6 +2283,25 @@ classDiagram
     class RasterWriter {
         <<storage>>
     }
+
+    class StageStateWriter {
+        <<ThreadSafe>>
+        +declare(cstr name, cstr configurationJson) StageId
+        +setStatus(StageId, StageStatus) void
+        +setStale(StageId, bool) void
+        +setConfiguration(StageId, cstr) void
+        +addDependency(StageId, StageId) void
+        +clearDependencies(StageId) void
+        +addWrittenLayer(StageId, LayerId) void
+        +revision() uint64_t
+    }
+
+    class StageStateWriter_Batch {
+        <<NotThreadSafe>>
+        +Batch(StageStateWriter&)
+        +commit() void
+    }
+
     class ObjectStore {
         <<storage>>
     }
