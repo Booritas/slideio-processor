@@ -188,7 +188,7 @@ TEST(MeasurementFinish, UnselectedNamesAreRemoved) {
     EXPECT_TRUE(has(record, "area.um2"));
     EXPECT_TRUE(has(record, "intensity.3.mean"));
     EXPECT_EQ(value(record, "intensity.3.mean"), 5.0);
-    for (const std::string& name : {"perimeter", "perimeter.um", "centroid.x", "centroid.y.um", "boundingBox.x",
+    for (const char* name : {"perimeter", "perimeter.um", "centroid.x", "centroid.y.um", "boundingBox.x",
                                     "boundingBox.height.um", "intensity.3.stddev", "intensity.3.min",
                                     "intensity.3.max"}) {
         EXPECT_FALSE(has(record, name)) << name;
@@ -307,7 +307,9 @@ TEST(MeasurementSelectionTest, CopyAndMove) {
     MeasurementSelection assigned;
     assigned = copy;
     EXPECT_EQ(assigned.count(), 2);
-    assigned = assigned; // self-assignment keeps the selection
+    // Self-assignment through an alias, deliberately: the compiler flags a literal x = x.
+    MeasurementSelection& same = assigned;
+    assigned = same; // self-assignment keeps the selection
     EXPECT_EQ(assigned.count(), 2);
 
     MeasurementSelection moved(std::move(copy));

@@ -224,8 +224,9 @@ TEST(Polygon, CollinearRingsAreRejected) {
                       {0, 0},
                       {4000000000000000000LL, 4000000000000000000LL}}; // products past 2^64
     Point64 repeated[] = {{3, 3}, {3, 3}, {7, 1}, {3, 3}, {7, 1}};
-    for (const auto& ring : {std::make_pair(horizontal, 3), std::make_pair(diagonal, 4),
-                             std::make_pair(huge, 3), std::make_pair(repeated, 5)}) {
+    const std::pair<Point64*, int> rings[] = {std::make_pair(horizontal, 3), std::make_pair(diagonal, 4),
+                                              std::make_pair(huge, 3), std::make_pair(repeated, 5)};
+    for (const auto& ring : rings) {
         Polygon p;
         EXPECT_THROW(p.addRing(ring.first, ring.second, false), InvalidArgumentError);
         EXPECT_TRUE(p.isEmpty());

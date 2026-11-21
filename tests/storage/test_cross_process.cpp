@@ -229,7 +229,9 @@ TEST(CrossProcess, ReaderNeverSeesAPartialBatchAndNeverErrors) {  // Review Focu
     ASSERT_FALSE(counts.empty());
     for (size_t i = 0; i < counts.size(); ++i) {
         EXPECT_EQ(counts[i] % kBatchObjects, 0) << "count " << i << " is " << counts[i];
-        if (i > 0) EXPECT_GE(counts[i], counts[i - 1]) << "count " << i;
+        if (i > 0) {
+            EXPECT_GE(counts[i], counts[i - 1]) << "count " << i;
+        }
     }
     // The reader ran while the batches landed, so the checks above are not vacuous. The
     // helper was querying before the first commit, its 3 s window outlasts the ~1 s of

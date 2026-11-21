@@ -43,7 +43,9 @@ std::string timestampNow() {
 #else
     gmtime_r(&seconds, &utc);
 #endif
-    char buffer[40];
+    // Every %d field is printed in full whatever its value, so size for the worst case: seven
+    // ints of up to 11 characters each, the separators, the Z and the terminator.
+    char buffer[96];
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", utc.tm_year + 1900,
                   utc.tm_mon + 1, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec,
                   static_cast<int>(millis.count()));

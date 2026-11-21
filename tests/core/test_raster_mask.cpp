@@ -355,7 +355,9 @@ TEST(RasterMask, HorizontalEdgeOnPixelCentreLine) {
     for (int64_t x = 0; x < 5; ++x) EXPECT_FALSE(m.test({x, 3}));
     // Every level pixel that contains the centre of a level-0 pixel inside the polygon is set.
     for (int64_t y = 0; y < 8; ++y) for (int64_t x = 0; x < 10; ++x)
-        if (p.contains({x, y})) EXPECT_TRUE(m.test({x / 2, y / 2})) << x << "," << y;
+        if (p.contains({x, y})) {
+            EXPECT_TRUE(m.test({x / 2, y / 2})) << x << "," << y;
+        }
     // The same shape at scale 1 with integer edges: exact against contains.
     Point64 w[] = {{1,1},{4,1},{4,3},{1,3}}; Polygon q; q.addRing(w, 4, false);
     RasterMask n(Rect64{0,0,5,4}, 0, 1.0); rasteriseInto(n, q);

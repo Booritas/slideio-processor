@@ -145,10 +145,10 @@ bool polygonsEqual(const Polygon& a, const Polygon& b) {
 }
 
 // Member access helpers for fromJson: each throws naming the member.
-const rapidjson::Value& member(const rapidjson::Value& object, const char* key, const std::string& where) {
+const rapidjson::Value& member(const rapidjson::Value& object, const char* key, const char* where) {
     const auto it = object.FindMember(key);
     if (it == object.MemberEnd()) {
-        fail(where + ": missing member '" + key + "'");
+        fail(std::string(where) + ": missing member '" + key + "'");
     }
     return it->value;
 }
@@ -164,7 +164,7 @@ PipelineSpec readSpec(const rapidjson::Value& root) {
     if (!root.IsObject()) {
         fail("fromJson: the document must be a JSON object");
     }
-    const std::string top = "fromJson";
+    const char* const top = "fromJson";
     const rapidjson::Value& version = member(root, "specVersion", top);
     if (integerOf(version, "fromJson: 'specVersion'") != 1) {
         fail("fromJson: 'specVersion' must be 1");

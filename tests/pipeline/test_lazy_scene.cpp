@@ -75,7 +75,7 @@ std::shared_ptr<ts::SyntheticSource> textureSource(std::vector<ts::SyntheticLeve
 class CaptureSink : public RasterSink {
 public:
     CaptureSink(int64_t width, int64_t height, std::vector<int64_t> sampleBytes)
-        : width_(width), height_(height), sampleBytes_(std::move(sampleBytes)) {
+        : width_(width), sampleBytes_(std::move(sampleBytes)) {
         for (int64_t bytes : sampleBytes_) {
             planes_.emplace_back(static_cast<size_t>(width * height * bytes), uint8_t{0});
         }
@@ -100,7 +100,6 @@ public:
 
 private:
     int64_t width_;
-    int64_t height_;
     std::vector<int64_t> sampleBytes_;
     std::mutex mutex_;
     std::vector<std::vector<uint8_t>> planes_;

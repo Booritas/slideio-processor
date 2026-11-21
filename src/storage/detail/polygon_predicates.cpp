@@ -36,7 +36,8 @@ Unsigned128 multiply(uint64_t a, uint64_t b) noexcept {
     product.low = _umul128(a, b, &product.high);
     return product;
 #elif defined(__SIZEOF_INT128__)
-    const unsigned __int128 product = static_cast<unsigned __int128>(a) * b;
+    __extension__ typedef unsigned __int128 Uint128; // not ISO C++; the extension is used on purpose
+    const Uint128 product = static_cast<Uint128>(a) * b;
     return {static_cast<uint64_t>(product >> 64), static_cast<uint64_t>(product)};
 #else
     // Schoolbook multiplication on 32-bit halves.

@@ -55,7 +55,7 @@ OperationParameters intParam(const char* key, int64_t value) {
 class CapturingRasterSink : public RasterSink {
 public:
     CapturingRasterSink(int64_t width, int64_t height)
-        : width_(width), height_(height), pixels_(static_cast<size_t>(width * height), -1.0f),
+        : width_(width), pixels_(static_cast<size_t>(width * height), -1.0f),
           written_(static_cast<size_t>(width * height), 0) {}
 
     void writeTile(const BlockView& tile) override {
@@ -81,7 +81,6 @@ public:
 
 private:
     int64_t width_;
-    int64_t height_;
     std::mutex mutex_;
     std::vector<float> pixels_;
     std::vector<int> written_;
