@@ -18,6 +18,19 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# CI turns this on. These options cover this project's targets only: SlideIO is
+# installed separately and the Conan dependencies are imported targets, whose
+# headers count as system headers.
+option(SLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS
+       "Treat compiler warnings in this project's sources as errors" OFF)
+if(SLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS)
+    if(MSVC)
+        add_compile_options(/WX)
+    else()
+        add_compile_options(-Werror)
+    endif()
+endif()
+
 # The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
 # SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
 find_package(slideio 2.10 REQUIRED)

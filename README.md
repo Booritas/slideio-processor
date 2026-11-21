@@ -77,6 +77,16 @@ OpenCV Debug from source when the Conan cache lacks it.
 
 SQLite comes in through Conan and is linked privately into `slideio-processor-data`.
 
+### Warnings as errors
+
+```sh
+./build.sh --warnings-as-errors     # -Werror, or /WX on MSVC, for this project's sources
+```
+
+With plain CMake, configure with `-DSLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS=ON` (default
+OFF). It covers this project's targets, not SlideIO or the Conan dependencies. CI builds
+every job with it, so a warning on any of the four compilers fails the build.
+
 ### Release builds without test seams
 
 The tests need a few test-only exports in the shared libraries (the

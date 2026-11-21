@@ -18,6 +18,8 @@
 #       --no-test-seams           Build without the test-only seams, as for a release
 #                                 package; tests are not built. Writes build-noseams
 #                                 (build-noseams-debug for debug).
+#       --warnings-as-errors      Fail the build on any compiler warning in this
+#                                 project's sources.
 #   -h, --help                    Show this help.
 #
 # Environment:
@@ -28,7 +30,7 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "build.sh: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
@@ -36,12 +38,14 @@ config=release
 rebuild_slideio=0
 skip_slideio=0
 test_seams=ON
+warnings_as_errors=OFF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--config) [[ $# -ge 2 ]] || die "$1 needs a value"; config="$2"; shift 2 ;;
         --rebuild-slideio) rebuild_slideio=1; shift ;;
         --skip-slideio) skip_slideio=1; shift ;;
         --no-test-seams) test_seams=OFF; shift ;;
+        --warnings-as-errors) warnings_as_errors=ON; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option '$1' (see --help)" ;;
     esac
@@ -180,7 +184,7 @@ cmake -S . -B "$build_dir" \
       -DCMAKE_TOOLCHAIN_FILE="$(native "$root/$build_dir/conan/conan_toolchain.cmake")" \
       -DCMAKE_PREFIX_PATH="$(native "$slideio_prefix/release")" \
       -DCMAKE_BUILD_TYPE="$build_type" \
-      -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams"
+      -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams"       -DSLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS="$warnings_as_errors"
 
 step "Building ($build_type)"
 cmake --build "$build_dir" --config "$build_type" --parallel

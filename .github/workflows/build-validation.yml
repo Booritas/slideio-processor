@@ -91,7 +91,7 @@ jobs:
         shell: bash
         env:
           PYTHON: python
-        run: ./build.sh
+        run: ./build.sh --warnings-as-errors
 
       - name: Test
         shell: bash
@@ -105,7 +105,7 @@ jobs:
         env:
           PYTHON: python
         run: |
-          ./build.sh --skip-slideio --no-test-seams
+          ./build.sh --skip-slideio --no-test-seams --warnings-as-errors
           scripts/check-no-test-seams.sh build-noseams
 
   build-manylinux:
@@ -137,6 +137,6 @@ jobs:
             bash -c '
               set -euo pipefail
               git config --global --add safe.directory "*"
-              ./build.sh
+              ./build.sh --warnings-as-errors
               ./run-tests.sh
             '
