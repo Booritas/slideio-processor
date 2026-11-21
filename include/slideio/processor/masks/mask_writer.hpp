@@ -37,7 +37,9 @@ namespace slideio::processor {
  *
  * The pixel size written is the one set with resolution(); when none was set it is the
  * scene's own x resolution, converted from metres to micrometres, when that is greater
- * than 0, and none otherwise. No path or other identifier is written.
+ * than 0, and none otherwise. Only the x resolution is used: RasterTiffWriter takes one
+ * pixel size and writes it for both axes, so a scene with non-square pixels is written
+ * as square at its x size. No path or other identifier is written.
  * @par Thread-safety
  * ThreadConfined: one thread at a time. The scene is read from the calling thread only.
  * @par Requirements

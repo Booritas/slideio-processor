@@ -76,6 +76,7 @@ inline std::vector<uint8_t> readAll(slideio::Scene& scene, size_t sampleBytes) {
 // Layer "nuclei" holds four complete labelled squares in [0, 1000) x [0, 800) -- two of
 // them overlapping, the lower ObjectId carrying the larger label, and one running past the
 // region's far corner -- and one square wholly outside that region.
+// Square b starts on an odd coordinate, so some 2 x 2 blocks of level 0 span two labels.
 class MaskStoreTest : public StoreFixture {
 protected:
     static constexpr int32_t kWidth = 1000;
@@ -87,7 +88,7 @@ protected:
         StageId stage = store().stageStateWriter().declare("segment", "{}");
         ObjectWriterPtr writer = store().objects().writerForStage(stage);
         ObjectRecord a = labelled(nuclei, 100, 100, 200, 9);
-        ObjectRecord b = labelled(nuclei, 250, 250, 200, 3);
+        ObjectRecord b = labelled(nuclei, 251, 251, 200, 3);
         ObjectRecord c = labelled(nuclei, 600, 450, 150, 5);
         ObjectRecord d = labelled(nuclei, 930, 730, 140, 7);
         ObjectRecord outside = labelled(nuclei, 1100, 100, 60, 10);

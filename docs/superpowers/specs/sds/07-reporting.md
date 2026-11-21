@@ -546,7 +546,9 @@ Every channel must share one type the OME layout holds: a null scene or
 channels of differing types are `InvalidArgumentError`, an unsupported type
 `UnsupportedDataTypeError`, all before a file is created. The pixel size is
 `resolution()`'s when set, otherwise the scene's own x resolution converted from
-metres to µm when it is greater than 0, otherwise none. SlideIO failures become
+metres to µm when it is greater than 0, otherwise none. Only the x resolution is
+used: `RasterTiffWriter` takes one pixel size and writes it for both axes, so a
+scene with non-square pixels is written as square at its x size. SlideIO failures become
 `IoError` with SlideIO's text as the cause; messages carry no values, names or
 paths.
 

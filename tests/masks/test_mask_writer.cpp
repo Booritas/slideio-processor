@@ -76,6 +76,32 @@ struct PipelineScene {
     }
 };
 
+// Level 1 (500 x 400) of a reopened 1000 x 800 Int32 mask, read through SlideIO.
+std::vector<int32_t> readLevel1(slideio::Scene& scene) {
+    std::vector<int32_t> level1(static_cast<size_t>(500 * 400), -1);
+    scene.readResampledLevelBlockChannels(1, std::make_tuple(0, 0, 500, 400), std::make_tuple(500, 400), {0},
+                                          level1.data(), level1.size() * sizeof(int32_t));
+    return level1;
+}
+
+// Storage's integer rule: level-1 pixel (x, y) is level-0 pixel (2x, 2y), the top-left of
+// its 2 x 2 block. Also requires the fixture to have blocks spanning two values, without
+// which a mean would pass as well.
+void expectTopLeftSampling(const std::vector<int32_t>& level0, const std::vector<int32_t>& level1) {
+    constexpr int w0 = 1000, w1 = 500, h1 = 400;
+    int64_t mixedBlocks = 0, mismatches = 0;
+    for (int y = 0; y < h1; ++y) {
+        for (int x = 0; x < w1; ++x) {
+            const auto at0 = [&](int dx, int dy) { return level0[static_cast<size_t>((2 * y + dy) * w0 + 2 * x + dx)]; };
+            const int32_t topLeft = at0(0, 0);
+            if (at0(1, 0) != topLeft || at0(0, 1) != topLeft || at0(1, 1) != topLeft) ++mixedBlocks;
+            if (level1[static_cast<size_t>(y * w1 + x)] != topLeft) ++mismatches;
+        }
+    }
+    EXPECT_GT(mixedBlocks, 0) << "the fixture must have 2 x 2 blocks spanning two labels";
+    EXPECT_EQ(mismatches, 0) << "level 1 is not the top-left sample of level 0";
+}
+
 std::string fileText(const OutputDir& out) {
     std::ifstream in(out.tif, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
@@ -103,7 +129,9 @@ TEST_F(Masks, WrittenLabelMaskReopensInSlideIO) {
     // No resolution: the label scene has none.
     EXPECT_EQ(fileText(out).find("PhysicalSizeX"), std::string::npos);
 
-    EXPECT_EQ(asInt32(masks_test::readAll(*reopened, 4)), asInt32(masks_test::readAll(*scene, 4)));
+    const std::vector<int32_t> level0 = asInt32(masks_test::readAll(*reopened, 4));
+    EXPECT_EQ(level0, asInt32(masks_test::readAll(*scene, 4)));
+    expectTopLeftSampling(level0, readLevel1(*reopened));
 }
 
 TEST_F(Masks, ReducedLevelsKeepLabelValues) {
@@ -118,9 +146,9 @@ TEST_F(Masks, ReducedLevelsKeepLabelValues) {
     const std::set<int32_t> values(level0.begin(), level0.end());
     EXPECT_EQ(values, (std::set<int32_t>{0, 3, 5, 7, 9}));
 
-    std::vector<int32_t> level1(static_cast<size_t>(500 * 400), -1);
-    reopened->readResampledLevelBlockChannels(1, std::make_tuple(0, 0, 500, 400), std::make_tuple(500, 400), {0},
-                                              level1.data(), level1.size() * sizeof(int32_t));
+    const std::vector<int32_t> level1 = readLevel1(*reopened);
+    // Membership alone cannot catch a mean (mean(3, 7) = 5); the exact rule can.
+    expectTopLeftSampling(level0, level1);
     std::set<int32_t> reduced;
     for (int32_t value : level1) {
         EXPECT_EQ(values.count(value), 1u) << "a blended label value";
