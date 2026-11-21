@@ -942,8 +942,8 @@ applied at three points, and it matters that they are three rather than one:
 
 | Point | What it does | Why there |
 |---|---|---|
-| Grid construction | The grid spans the restriction's bounding box, not the scene (5.6) | Whole rows and columns of tiles never exist |
-| Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels | UR-IMG-5: "reads only tiles intersecting it" |
+| Grid construction | An object-producing tiled run's grid spans the level, others span the restriction's bounding box (5.6); tiles outside the region are skipped without a mask | Whole rows and columns of tiles never exist for a run that cannot produce objects; objects crossing the region edge meet real tiles beyond it |
+| Tile dispatch | A worker builds the tile's mask first and skips the tile when it is empty, reading no pixels; an object reaching into a skipped tile gets it evaluated on demand (5.5) | UR-IMG-5: "reads only tiles intersecting it", as a strong tendency |
 | Object emission | Each object is kept only if the mask is set at its **anchor** | UR-STG-3: "produces no objects outside those regions" |
 
 The third is the authoritative one and the other two are optimisations that
@@ -1007,7 +1007,7 @@ mis-specified stage fails in seconds rather than hours. Each failure is an
 3. Every operation name is registered in the catalog; the message names it.
 4. An explicit channel index is below the scene's channel count.
 5. An explicit `analysisLevel` is within the scene's levels.
-6. The grid region (5.6) is non-empty; otherwise the message is "the
+6. The region (5.6) is non-empty; otherwise the message is "the
    restriction does not intersect the scene".
 7. Types. The check walks the chain with the per-plane types: the scene's
    channel types for the first operation, then each operation's `outputType`.
@@ -1042,8 +1042,8 @@ behaves identically whether a stage or a direct caller ran it. Operations that
 do not produce objects are not consulted.
 
 **One producer per layer.** Two operations producing objects that resolve to
-the same layer are refused, "operations X and Y both target layer \"L\"" —
-names only. A layer's objects are finished by the operation producing it
+the same layer are refused, "the operation and operation X both target layer
+\"L\"", with Y in `ErrorContext::operationName` — names only. A layer's objects are finished by the operation producing it
 (5.1), and a merged object carries no trace of which operation emitted its
 fragments, so a second producer would leave the finisher ambiguous.
 
@@ -1051,16 +1051,17 @@ fragments, so a second producer would leave the finisher ambiguous.
 finds its seams on its own tile rect, and a later operation's halo would grow
 that rect, so its fragments would miss the seams the merger joins on. A chain
 in which an operation producing objects is followed by any operation with a
-non-zero halo is therefore refused, "operation X produces objects and must not
-be followed by a halo". A point operation after it is accepted.
+non-zero halo is therefore refused, "the operation produces objects and must
+not be followed by a halo", with X in `ErrorContext::operationName`. A point operation after it is accepted.
 
 **A per-channel object producer gets one plane.** A `PerChannel` operation
 producing objects is applied once per plane and emits into its one layer, so
 over several planes it would store every object once per plane under the same
 `ObjectId` — a label raster stored as identical channels, for one, would give
 each region twice. A chain giving such an operation more than one plane is
-refused, "operation \"X\" produces objects and runs per channel, so it must be
-given exactly one channel" — the name only. A `Joint` producer is unaffected.
+refused, "the operation produces objects and runs per channel, so it must be
+given exactly one channel", with X in `ErrorContext::operationName` — the name
+only. A `Joint` producer is unaffected.
 
 **Stage name.** `stageName(name)` sets the name the run reports: the
 `stageName` of every `ProgressObserver::onProgress` call and the stage in every
@@ -1069,7 +1070,7 @@ throws `InvalidArgumentError`. `StageRunner` sets it to the stage's name
 (`04-workspace.md` 4.4).
 
 **Whole-level chains.** If any operation reports `TileRequirement::WholeLevel`,
-the run is a single tile covering the grid region, whatever the configured tile
+the run is a single tile covering the region, whatever the configured tile
 size. The configured size is the `tileSizeFromSlide` default, not a choice about
 this operation, so the chain is laid out for what it needs rather than refused.
 `validate()` then checks the level against the memory ceiling:
@@ -1080,7 +1081,7 @@ needed = levelPixels × (Σ input plane bytes + Σ output plane bytes over the c
          + max workingSetBytesPerTile
 ```
 
-where `levelPixels` is the area of the grid region at the analysis level. The
+where `levelPixels` is the area of the region at the analysis level. The
 sum of every operation's per-pixel working set is a deliberately conservative
 bound — the operations run one after another, so only one of them holds its
 working set at a time — and the per-call figures add only the largest. When
@@ -1269,19 +1270,105 @@ Per tile, before any pixel is read, the worker builds the tile's mask over its
 **halo** rect at the level, and only when the run is restricted: all pixels set,
 intersected with the ROI rectangle, then with the polygon, then with the bound
 `TileMaskSource` (which fills a second mask that is intersected in). At a
-non-integer level scale, a zero left or top halo is widened by one pixel: a
-tile owns the objects anchored in its level-0 rect (`llround` of the level
-rect), an anchor is tested at the level pixel `floor(anchor / scale)`, and the
-tile's first level-0 column or row can floor to the pixel before the tile.
-Without the extra pixel, such an object would be dropped by the tile that owns
-it, while a merged object at the same anchor is admitted. When the
-mask has no set pixel inside the **tile** rect, the tile is skipped: no pixel is
-read and it counts as complete. `OperationContext::mask()` returns the tile's
+non-integer level scale a tile owns, besides its rect, one more column and row
+before it, whatever the halo: a tile owns the objects anchored in its level-0
+rect (`llround` of the level rect), an anchor is tested at the level pixel
+`floor(anchor / scale)`, and the tile's first level-0 column or row can floor
+to the pixel before the tile. A zero left or top halo is widened to cover that
+pixel; a larger halo already does. Without it, such an object would be dropped
+by the tile that owns it, while a merged object at the same anchor is
+admitted. When the mask has no set pixel inside the tile's owned rect (the
+tile rect and that extra column and row), the tile is skipped: no pixel is
+read and it is deferred, not complete (below). `OperationContext::mask()`
+returns the tile's
 mask, or null when the run is unrestricted. `detail::RestrictionFilter` wraps
 the `ObjectSink` and admits an object when the mask is set at its anchor; for
 objects emitted outside a tile, such as merged objects (5.7), it exposes
 `admits(anchor)`, which builds a one-pixel mask at the anchor's level pixel
 from the same three sources. Filtering never alters pixels.
+
+**A skipped tile is deferred, not complete.** An admitted object can reach past
+the mask's edge into a tile that holds no set mask pixel, and that tile
+produces no fragments of it. The seam merger (5.7) therefore tracks four
+states per tile, named as the enum names them. *Pending* is the initial state.
+*Deferred* is a tile the restriction skipped: the final pass calls
+`notifyTileSkipped` for it instead of `notifyTileComplete`, so it is not
+complete, and a fragment beside it still records that it expects it.
+*Demanded* is a deferred tile that `takeAwaitedDeferred` has returned, marked so
+that it is returned at most once; it is not terminal, because it is still to be
+evaluated. *Completed* is the end state, reached by `notifyTileComplete`, for an
+evaluated tile (a demanded one included), or by `completeDeferred` for a
+deferred tile left over. After the final pass the
+executor loops: it takes the deferred tiles that some open component expects,
+evaluates each once with the skip bypassed, through the same workers,
+reservation and cancellation as the pass, reports it complete, and repeats
+until none is awaited. It then calls `completeDeferred`, which completes every
+deferred tile still left without evaluating it, and `resolve`. A demanded tile
+is an ordinary evaluated tile except that it writes no raster tile, reports no
+progress (the pass already counted it) and is counted in
+`RunCounters::tilesEvaluatedOnDemand`, while staying in `tilesSkipped`. Its
+tile objects pass the normal object filter, and admission by anchor still
+decides what is stored. Accumulation passes still skip and are unchanged, so
+global statistics do not move. At a non-integer scale the skip test uses the
+owned rect (below), which is wider than the bare tile rect, so an accumulation
+pass can evaluate a few more tiles than before; the results are unchanged,
+because operations mask to the tile rect.
+
+**Pass-fragment pruning, and its precondition.** Only a component holding a
+fragment from a tile evaluated in the pass (a *pass fragment*) demands tiles; a
+fragment from a demanded tile does not set the flag, and a union has it when
+either side had it. Without this, every object a demanded tile found would pull
+in its own neighbours and the demands would spread over dense objects. It is
+sound because the pass completes every tile it evaluates before the first
+demand, so an object with a pixel in an evaluated tile holds that tile's
+fragment and reaches every skipped tile it crosses, while an object lying
+wholly in skipped tiles has its anchor where the mask is zero and the
+restriction drops it, whole or truncated. The precondition is that `skips()`
+means the mask is zero over everything the tile owns. At a non-integer scale
+the tile owns the extra column and row before it, whatever the halo, and
+`skips()` and `buildTileMask` share one owned rect
+(`Restriction.SkipAgreesWithTheBuiltMaskAtANonIntegerScale` and its halo and
+row variants).
+The reproducer is `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated`
+(`tests/workspace/test_stage_runner.cpp`).
+
+**What the pruning rests on: the anchor.** The argument that an object lying
+wholly in skipped tiles is dropped needs the anchor to be a vertex of the
+object's own boundary, its topmost-then-leftmost pixel corner. Only then does a
+whole object admitted by its anchor have a pixel in the tile holding that
+anchor, and hence a fragment there. An anchor defined any other way, such as a
+centroid or a bounding-box corner, could lie in a skipped tile the object has no
+fragment in, and this pruning would lose the object.
+
+**The region edge.** An ROI's or a polygon's region is not the grid of an
+object-producing tiled run: that grid spans the level, so a tile straddling the
+region edge is a full tile and its seams to the tiles beyond are real seams
+(5.7). Tiles whose owned rect misses the region are skipped without building a
+mask, and an object anchored inside the region that reaches into one gets it
+evaluated on demand, as for a mask-source restriction. The skip tests the owned
+rect against the region, widened by one level pixel on every side at a
+non-integer level scale (at an integer scale it is not widened): the polygon's
+conservative raster can set the pixel just past its bounding box's outward
+mapping, and an anchor floors to the level pixel before the region. The test is
+only a shortcut; the anchor filter decides what is stored, so an object
+crossing the ROI or bounding-box edge is stored whole when its anchor is
+admitted and not at all otherwise. A chain with a WholeLevel operation is out of
+this rule: it analyses the region as one image, so its objects stop at the
+region edge, because the chain never sees beyond the region.
+
+**Effect on stored results.** Objects of a restricted run that cross into a
+skipped tile are now stored whole, so against results stored before the fix:
+the identifier of an affected object changes, because a whole object's anchor
+differs from the truncated one's; counts can fall, because a truncated object
+admitted by its old anchor is dropped when the whole object's anchor lies in a
+skipped tile; and results previously stored by restricted stages are affected
+and are not marked stale. Re-run restricted stages and record the change in the
+verification evidence.
+
+**Cost.** Evaluating tiles on demand costs time, never correctness, and one
+very large object can pull in many tiles. UR-IMG-5's "reads only tiles
+intersecting it" is therefore a strong tendency, not a guarantee: a skipped
+tile is read when an object reaching out of an evaluated tile expects it.
 
 ### The lazy mode: `levelCount`, `rect`, `readBlock`, `asScene`
 
@@ -1289,7 +1376,7 @@ from the same three sources. Filtering never alters pixels.
 `levelCount()` is the source scene's level count minus `analysisLevel()`; output
 level *k* is the chain evaluated on source level `analysisLevel() + k`, laid out
 as `validate()` would lay the run out at that level, with every halo in that
-level's pixels — never rescaled (5.6). `rect(k)` is the grid region (5.6) at
+level's pixels — never rescaled (5.6). `rect(k)` is the region (5.6) at
 that source level, in its coordinates. The plan of every output level is
 resolved once, on the first lazy call, from a snapshot of the bindings that
 matter to pixels — spec, scene, configuration, budget, mask source and
@@ -1486,7 +1573,7 @@ coordinates, `PipelineSpec::restrictTo` takes level-0, and `Pipeline` maps it
 down with `mapToLevel`, which rounds **outward** so no level-0 pixel of the
 requested region is dropped on the way in.
 
-**What region the grid spans.** `Pipeline` intersects, in level-0 coordinates,
+**The region a restriction bounds.** `Pipeline` intersects, in level-0 coordinates,
 the scene rect with whichever of the spec's restrictions are present — the ROI
 rectangle, the polygon's `boundingBox()` — and maps the result down with
 `mapToLevel`. A bound `TileMaskSource` does **not** narrow the grid: it is
@@ -1505,7 +1592,20 @@ chosen for a whole-level chain.
 `tilesTotal` counts the grid, not the tiles that did work, so a heavily
 restricted run reports fast progress through its empty region rather than
 stalling at an unexplained count. `tilesCompleted` reaching `tilesTotal`
-continues to mean the run is done.
+does not mean the run is done: tiles demanded by the seam merger (5.5) and the
+merging run after the last progress call, possibly in several rounds.
+
+The grid of an object-producing tiled run spans the level; any other run's grid
+spans that region. The region (the scene, the ROI and the polygon's
+bounding box intersected, at the level) is a `RunPlan` field and still bounds
+`rect(k)`, the raster tiles written (a tile writes only its part inside the
+region), and the pixels an accumulation pass applies to (a straddling tile
+applies over its part in the region, so a reduction that ignores the mask
+counts exactly the region's pixels). A final-pass tile applies over its whole
+rect. `tilesTotal` counts the level grid for such a run, so an ROI- or
+polygon-restricted object run reports more tiles than before, the out-of-region
+ones as fast progress. The per-tile memory check uses a full tile
+(`min(tile, level)` per side), because a straddling tile is full size.
 
 Halo is declared, supplied and applied in **level** pixels. An operation's
 neighbourhood is a property of its kernel, which works on the pixels it is
@@ -1654,7 +1754,7 @@ splitting one object into two, each plausible, with no error raised.
 
 A fragment's **seam contacts** are the maximal stretches of its rings lying on a
 seam line of the grid — the level-0 edge `tileRect(c).x` of an interior column
-boundary, likewise `y` for a row boundary; the outer boundary of the grid region
+boundary, likewise `y` for a row boundary; the outer boundary of the grid
 is not a seam — recorded as a line and a half-open interval in level-0
 integers. Two fragments of the same layer **and the same join key** (5.1), in
 the tiles on either side of one seam line, join when they have contacts on
@@ -1703,8 +1803,11 @@ the output, because identity comes from the merged object's anchor
 A fragment in tile *t* with a contact on seam line *s* **expects** the tile on
 the other side of *s* at that contact. A component closes when every tile
 holding one of its fragments and every tile one of them expects has completed —
-reported through `notifyTileComplete`, which the executor calls for every tile,
-**a tile skipped by the restriction included**. `notifyTileComplete(t, sink)`
+reported through `notifyTileComplete`, which the executor calls for every tile
+the pass evaluated and for every deferred tile evaluated on demand. **A tile
+skipped by the restriction is not complete**: it is deferred (5.5), and
+completes only when it is evaluated on demand or `completeDeferred` completes
+it. `notifyTileComplete(t, sink)`
 re-examines only the components touching *t*; reporting a tile twice does
 nothing more. A closed component is merged, measured, tested against the
 restriction at its anchor (through the filter the executor hands the merger;
@@ -2113,9 +2216,11 @@ each tile, with `total` equal to `tileCount()` (5.6) for a single pass and
 `done` counting skipped tiles. Observer calls are serialised.
 
 The executor calls `SeamMerger::notifyTileComplete` as each tile of the final
-pass finishes, a tile skipped by the restriction included, which is what lets
-seam-crossing objects be emitted during the pass instead of piling up until the
-end (5.7). After the pass it calls `resolve`, on success only: after a
+pass that was evaluated finishes, and `notifyTileSkipped` for a tile the
+restriction skipped, which is what lets seam-crossing objects be emitted during
+the pass instead of piling up until the end (5.7). After the pass it evaluates
+the deferred tiles an open object expects, completes the rest with
+`completeDeferred` (5.5), and calls `resolve`, on success only: after a
 cancellation or a tile failure the merger is destroyed with whatever it still
 holds. When the run is restricted, the tile masks the restriction filter caches
 to test merged anchors are released as tiles settle — a tile's mask once it and

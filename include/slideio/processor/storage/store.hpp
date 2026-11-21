@@ -118,6 +118,13 @@ public:
      * @throws Nothing.
      */
     bool isReadOnly() const noexcept;
+    /**
+     * @brief Tells whether the store is still open.
+     * @return False once close() has run; a caller that caches answers read from the
+     * store uses it to stop answering from the cache.
+     * @throws Nothing.
+     */
+    bool isOpen() const noexcept;
 
     /**
      * @brief Returns the stored provenance record.

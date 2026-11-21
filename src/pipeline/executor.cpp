@@ -524,8 +524,8 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     // tile masks admits() caches are released as tiles settle, about one grid row
     // after they complete, so the cache holds about one row of tile masks, each
     // charged to the pool's budget when it fits and not cached otherwise. The
-    // merger calls the filter only from notifyTileComplete() and resolve(),
-    // never after run() leaves them.
+    // merger calls the filter only from notifyTileComplete(), completeDeferred()
+    // and resolve(), never after run() leaves them.
     std::unique_ptr<detail::TileMaskRelease> maskRelease;
     if (merger && evaluator.restriction().restricted()) {
         maskRelease = std::make_unique<detail::TileMaskRelease>(evaluator.restriction(), plan.grid);
@@ -547,9 +547,13 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
     // slot before each tile index, and `evaluateTile` gets the slot to return or hand
     // over; a worker waiting for one leaves when the pass stops. Tiles take their
     // indices in the order their slots were taken, so the tiles holding slots are the
-    // lowest not yet folded: the fold's next tile always has one.
+    // lowest not yet folded: the fold's next tile always has one. With `demanded`,
+    // only those tiles run, in their order, and no progress is reported for them:
+    // the pass that skipped them already counted them done.
     using TileFunction = std::function<void(int64_t tile, const char** operation, SlotHold& slot)>;
-    const auto runPass = [&](const TileFunction& evaluateTile, detail::InstanceSlots* slots) {
+    const auto runPass = [&](const TileFunction& evaluateTile, detail::InstanceSlots* slots,
+                             const std::vector<int64_t>* demanded) {
+        const int64_t count = demanded != nullptr ? static_cast<int64_t>(demanded->size()) : tileCount;
         const auto shared = std::make_shared<RunState>();
         RunState& run = *shared;
         auto work = [&, shared]() {
@@ -569,10 +573,11 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                     own.recordFailure(std::current_exception(), -1, nullptr);
                     break;
                 }
-                const int64_t tile = own.next.fetch_add(1);
-                if (tile >= tileCount) {
+                const int64_t next = own.next.fetch_add(1);
+                if (next >= count) {
                     break;
                 }
+                const int64_t tile = demanded != nullptr ? (*demanded)[static_cast<size_t>(next)] : next;
                 const char* operation = nullptr;
                 try {
                     token.throwIfCancelled();
@@ -585,6 +590,9 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                             break;
                         }
                         evaluateTile(tile, &operation, slot);
+                    }
+                    if (demanded != nullptr) {
+                        continue;
                     }
                     std::lock_guard<std::mutex> lock(own.progressMutex);
                     const int64_t done = ++completed;
@@ -710,7 +718,7 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
                 }
                 *operation = nullptr;
             },
-            &slots);
+            &slots, nullptr);
         if (!fold.complete()) {
             throw InternalError("TileExecutor::run: an accumulation pass ended with tiles not folded");
         }
@@ -720,23 +728,53 @@ void TileExecutor::run(Pipeline& pipeline, ObjectSink& sink, ProgressObserver* p
             reportFailure(std::current_exception(), stageName, name, impl_->grid, -1);
         }
     }
-    // The final pass. Every tile, a skipped one included, is reported to the
-    // merger as it completes, so objects close during the pass; a failure there is
-    // the tile's. After a failure or a cancellation nothing is resolved: the
-    // merger is destroyed with whatever it still holds.
+    // The final pass. Every evaluated tile is reported to the merger as it
+    // completes, so objects close during the pass; a failure there is the tile's.
+    // A tile the restriction skips is deferred instead: an object reaching into
+    // it from an evaluated tile stays open until the tile is evaluated on demand
+    // below. Its mask settles as before, as if it had completed: releasing a mask
+    // never changes an answer. After a failure or a cancellation nothing is
+    // resolved: the merger is destroyed with whatever it still holds.
     runPass(
         [&](int64_t tile, const char** operation, SlotHold&) {
-            evaluator.evaluate(tile, token, operation);
+            const detail::TileOutcome outcome = evaluator.evaluate(tile, token, operation);
             if (merger) {
-                merger->notifyTileComplete(tile, finishing);
+                if (outcome.skipped) {
+                    detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+                } else {
+                    merger->notifyTileComplete(tile, finishing);
+                }
                 if (maskRelease) {
                     maskRelease->tileCompleted(tile);
                 }
             }
         },
-        nullptr);
+        nullptr, nullptr);
+    if (merger && evaluator.restriction().restricted()) {
+        // The skipped tiles an open object expects are evaluated, through the same
+        // workers, reservation and cancellation, each once; the objects they hold
+        // may expect further skipped tiles, taken in the next round. A round's
+        // list is complete because no tile is in flight between rounds.
+        for (std::vector<int64_t> demanded = detail::SeamMergerAccess::takeAwaitedDeferred(*merger);
+             !demanded.empty(); demanded = detail::SeamMergerAccess::takeAwaitedDeferred(*merger)) {
+            runPass(
+                [&](int64_t tile, const char** operation, SlotHold&) {
+                    evaluator.evaluate(tile, token, operation, nullptr, detail::EvaluationMode::OnDemand);
+                    merger->notifyTileComplete(tile, finishing);
+                    if (maskRelease) {
+                        maskRelease->tileCompleted(tile);
+                    }
+                },
+                nullptr, &demanded);
+        }
+    }
     if (merger) {
         try {
+            if (evaluator.restriction().restricted()) {
+                // The skipped tiles nothing awaits complete unevaluated.
+                token.throwIfCancelled();
+                detail::SeamMergerAccess::completeDeferred(*merger, finishing);
+            }
             merger->resolve(finishing, progress, token);
         } catch (...) {
             detail::rethrowSeamMergeFailure(std::current_exception(), stageName);

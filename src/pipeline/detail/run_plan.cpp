@@ -125,8 +125,10 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
         for (DataType type : in) {
             if (!operationAccepts(supported, type)) {
                 const std::string message =
-                    std::string(kWhere) + op.name() + " does not accept " + dataTypeName(type) + " input";
-                throw UnsupportedDataTypeError(message.c_str(), type, supported);
+                    std::string(kWhere) + "the operation does not accept " + dataTypeName(type) + " input";
+                ErrorContext context;
+                context.operationName = op.name();
+                throw UnsupportedDataTypeError(message.c_str(), type, supported, context);
             }
         }
         std::vector<DataType> out;
@@ -134,17 +136,18 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
             if (op.requiresUniformTypes() &&
                 std::any_of(in.begin(), in.end(), [&in](DataType t) { return t != in.front(); })) {
                 std::string message =
-                    std::string(kWhere) + op.name() + " requires one type across its planes but receives";
+                    std::string(kWhere) + "the operation requires one type across its planes but receives";
                 for (size_t plane = 0; plane < in.size(); ++plane) {
                     message += (plane == 0 ? " " : ", ") + planeLabel(k, plane, channels) + " (" +
                                dataTypeName(in[plane]) + ")";
                 }
-                throw ChannelArityError(message.c_str(), static_cast<int32_t>(in.size()));
+                ErrorContext context;
+                context.operationName = op.name();
+                throw ChannelArityError(message.c_str(), static_cast<int32_t>(in.size()), context);
             }
             const int32_t count = op.outputPlaneCount(static_cast<int32_t>(in.size()));
             if (count < 1) {
-                invalid(op.name(),
-                        std::string(op.name()) + " declares " + std::to_string(count) + " output planes");
+                invalid(op.name(), "the operation declares " + std::to_string(count) + " output planes");
             }
             out.assign(static_cast<size_t>(count), op.outputType(in.front()));
         } else {
@@ -154,7 +157,7 @@ std::vector<std::vector<DataType>> walkTypes(const std::vector<OperationPtr>& op
         }
         for (DataType type : out) {
             if (dataTypeSizeBytes(type) <= 0) {
-                invalid(op.name(), std::string(op.name()) + " declares no output type for its input");
+                invalid(op.name(), "the operation declares no output type for its input");
             }
         }
         steps.push_back(std::move(out));
@@ -183,28 +186,27 @@ std::vector<LayerId> resolveTargetLayers(const std::vector<OperationPtr>& operat
         const char* name = present ? parameters.getString("targetLayer", nullptr) : nullptr;
         if (present && name == nullptr) {
             invalid(op.name(),
-                    std::string("the \"targetLayer\" parameter of ") + op.name() + " is not a string");
+                    "the operation's \"targetLayer\" parameter is not a string");
         }
         if (name && *name) {
             const auto found = std::find_if(layers.begin(), layers.end(),
                                             [name](const std::pair<std::string, LayerId>& l) { return l.first == name; });
             if (found == layers.end()) {
-                invalid(op.name(), std::string(op.name()) + " targets layer \"" + name + "\", which is not bound");
+                invalid(op.name(), std::string("the operation targets layer \"") + name + "\", which is not bound");
             }
             bound = &*found;
         } else if (layers.size() == 1) {
             bound = &layers.front();
         } else if (layers.empty()) {
-            invalid(op.name(),
-                    std::string(op.name()) + " has no target layer: no layer is bound");
+            invalid(op.name(), "the operation has no target layer: no layer is bound");
         } else {
             invalid(op.name(),
-                    std::string(op.name()) + " has no target layer and " + std::to_string(layers.size()) +
+                    "the operation has no target layer and " + std::to_string(layers.size()) +
                     " layers are bound; name one with its \"targetLayer\" parameter");
         }
         for (size_t earlier = 0; earlier < k; ++earlier) {
             if (operations[earlier]->producesObjects() && targets[earlier] == bound->second) {
-                invalid(op.name(), std::string("operations ") + operations[earlier]->name() + " and " + op.name() +
+                invalid(op.name(), std::string("the operation and operation ") + operations[earlier]->name() +
                         " both target layer \"" + bound->first + "\"");
             }
         }
@@ -224,8 +226,7 @@ void checkNothingGrowsObjectTiles(const std::vector<OperationPtr>& operations) {
             // A negative halo is refused on its own, by sumHalos.
             const Halo h = operations[later]->halo();
             if (h.left > 0 || h.top > 0 || h.right > 0 || h.bottom > 0) {
-                invalid(operations[k]->name(), std::string("operation ") + operations[k]->name() +
-                        " produces objects and must not be followed by a halo");
+                invalid(operations[k]->name(), "the operation produces objects and must not be followed by a halo");
             }
         }
     }
@@ -238,8 +239,8 @@ void checkPerChannelProducersGetOnePlane(const std::vector<OperationPtr>& operat
     for (size_t k = 0; k < operations.size(); ++k) {
         const Operation& op = *operations[k];
         if (op.producesObjects() && op.arity() == ChannelArity::PerChannel && planeTypes[k].size() > 1) {
-            invalid(op.name(), std::string("operation \"") + op.name() +
-                    "\" produces objects and runs per channel, so it must be given exactly one channel");
+            invalid(op.name(),
+                    "the operation produces objects and runs per channel, so it must be given exactly one channel");
         }
     }
 }
@@ -249,7 +250,7 @@ Halo sumHalos(const std::vector<OperationPtr>& operations) {
     for (const OperationPtr& op : operations) {
         const Halo h = op->halo();
         if (h.left < 0 || h.top < 0 || h.right < 0 || h.bottom < 0) {
-            invalid(op->name(), std::string(op->name()) + " declares a negative halo");
+            invalid(op->name(), "the operation declares a negative halo");
         }
         left += h.left;
         top += h.top;
@@ -278,8 +279,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     }
     for (int32_t k = 0; k < spec.operationCount(); ++k) {
         if (!catalog.isRegistered(spec.operationName(k))) {
-            invalid(spec.operationName(k),
-                    std::string("operation \"") + spec.operationName(k) + "\" is not registered");
+            invalid(spec.operationName(k), "the operation is not registered");
         }
     }
 
@@ -369,12 +369,16 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         }
         return largest;
     };
-    // When the buffers alone fit the ceiling, the working sets decide: the message names the largest.
-    auto decidedBy = [&](int64_t buffers, int64_t area) {
+    // When the buffers alone fit the ceiling, the working sets decide: the message names the
+    // largest, unless it belongs to `named`, the operation the error's context names.
+    auto decidedBy = [&](int64_t buffers, int64_t area, const char* named) {
         const char* name = nullptr;
         largestWorkingSet(area, &name);
         if (buffers > inputs.ceilingBytes || name == nullptr) {
             return std::string();
+        }
+        if (named != nullptr && std::strcmp(name, named) == 0) {
+            return std::string("; the largest working set is its own");
         }
         return std::string("; the largest working set is ") + name + "'s";
     };
@@ -386,10 +390,10 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         return addSat(mulSat(mulSat(region.width, region.height), wholeBytesPerPixel), largestPerTile);
     };
     auto tooBig = [&](int32_t level, const Rect64& region, const char* prefix) {
-        invalid((*whole)->name(), std::string(prefix) + (*whole)->name() + " needs level " + std::to_string(level) +
+        invalid((*whole)->name(), std::string(prefix) + "the operation needs level " + std::to_string(level) +
                 " whole in memory: " + bytesText(wholeNeed(region)) + " bytes, above the memory ceiling of " +
                 std::to_string(inputs.ceilingBytes) + " bytes" +
-                decidedBy(wholeBuffers(region), mulSat(region.width, region.height)));
+                decidedBy(wholeBuffers(region), mulSat(region.width, region.height), (*whole)->name()));
     };
 
     // What one tile's buffers need: every step's planes, the reader's interleave
@@ -468,13 +472,20 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
         }
     }
 
-    // The grid, one tile for a whole-level chain.
+    // The grid, one tile for a whole-level chain. A tiled chain producing objects tiles the
+    // whole level, so the region's edge is a seam and an object crossing it is carried
+    // whole; any other tiles the region.
+    const LevelDims& dims = levels[static_cast<size_t>(level)];
+    const Rect64 levelRect{0, 0, dims.width, dims.height};
+    const bool producesObjects =
+        std::any_of(targetLayers.begin(), targetLayers.end(), [](LayerId layer) { return layer.isValid(); });
+    const Rect64 gridRect = producesObjects && !wholeLevel ? levelRect : region;
     int32_t tileWidth = 0;
     int32_t tileHeight = 0;
     if (wholeLevel) {
         constexpr int64_t kMax = std::numeric_limits<int32_t>::max();
         if (region.width > kMax || region.height > kMax) {
-            invalid((*whole)->name(), std::string((*whole)->name()) + " needs level " + std::to_string(level) +
+            invalid((*whole)->name(), "the operation needs level " + std::to_string(level) +
                     " as one tile, whose side does not fit int32");
         }
         tileWidth = static_cast<int32_t>(region.width);
@@ -482,11 +493,11 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     } else {
         tileSizeOfLevel(levels[static_cast<size_t>(level)], *inputs.config, tileWidth, tileHeight);
     }
-    TileGrid grid(region, level, tileWidth, tileHeight, selector);
+    TileGrid grid(gridRect, level, tileWidth, tileHeight, selector);
 
-    // One tile's buffers and working set against the ceiling.
-    const int64_t tileW = std::min<int64_t>(tileWidth, region.width);
-    const int64_t tileH = std::min<int64_t>(tileHeight, region.height);
+    // One tile's buffers and working set against the ceiling: the grid's largest tile.
+    const int64_t tileW = std::min<int64_t>(tileWidth, gridRect.width);
+    const int64_t tileH = std::min<int64_t>(tileHeight, gridRect.height);
     const int64_t tileBytes = tileNeed(tileW, tileH);
     if (tileBytes > inputs.ceilingBytes) {
         const int64_t area = haloArea(tileW, tileH);
@@ -494,7 +505,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                 std::to_string(haloSide(tileW, chainHalo.left, chainHalo.right)) + " x " +
                 std::to_string(haloSide(tileH, chainHalo.top, chainHalo.bottom)) + " with the chain's halo) needs " +
                 bytesText(tileBytes) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
-                " bytes" + decidedBy(mulSat(area, tilePixelBytes), area));
+                " bytes" + decidedBy(mulSat(area, tilePixelBytes), area, nullptr));
     }
 
     // The state a global-context operation's instances keep between calls. A run holds
@@ -521,7 +532,7 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
     const int64_t stateNeed = addSat(tileBytes, addSat(stateSum, largestState));
     if (stateNeed > inputs.ceilingBytes) {
         invalid(largestStateName,
-                std::string(largestStateName) + " keeps accumulated state: a tile of " + bytesText(tileBytes) +
+                "the operation keeps accumulated state: a tile of " + bytesText(tileBytes) +
                 " bytes with the global-context operations' state and one more instance of the largest needs " +
                 bytesText(stateNeed) + " bytes, above the memory ceiling of " + std::to_string(inputs.ceilingBytes) +
                 " bytes");
@@ -539,7 +550,8 @@ RunPlan buildRunPlan(const RunPlanInputs& inputs) {
                    std::move(accumulatedStateBytes),
                    restricted,
                    tileBytes,
-                   Rect64{0, 0, levels[static_cast<size_t>(level)].width, levels[static_cast<size_t>(level)].height}};
+                   levelRect,
+                   region};
 }
 
 } // namespace slideio::processor::detail

@@ -33,13 +33,6 @@ namespace {
     throw InvalidArgumentError((std::string(where) + ": " + what).c_str());
 }
 
-// The region a grid covers: from its first tile to its last.
-Rect64 gridRegion(const TileGrid& grid) {
-    const Rect64 first = grid.tileRectAtLevel(0);
-    const Rect64 last = grid.tileRectAtLevel(grid.tileCount() - 1);
-    return Rect64{first.x, first.y, last.x + last.width - first.x, last.y + last.height - first.y};
-}
-
 bool overlaps(int64_t a, int64_t aLength, int64_t b, int64_t bLength) {
     return a < b + bLength && b < a + aLength;
 }
@@ -73,8 +66,8 @@ public:
 
 // Receives the final output of each tile of one readBlock call, on the calling
 // thread, and copies the part lying over the requested region into the caller's
-// view, zeroing what the restriction excludes. The tile in progress is set
-// before each evaluation.
+// view, zeroing what the restriction excludes. The tile in progress, and the rect
+// its written view covers, are set before each evaluation.
 class BlockCopySink : public RasterSink {
 public:
     BlockCopySink(BlockView& out, const Rect64& region) : out_(out), region_(region) {}
@@ -187,7 +180,7 @@ PipelineSceneSource::PipelineSceneSource(PipelineSnapshot snapshot) : snapshot_(
                                        snapshot_.budget->ceilingBytes()};
             plan = std::make_shared<const RunPlan>(buildRunPlan(inputs));
         }
-        levels_.push_back(Level{plan, gridRegion(plan->grid)});
+        levels_.push_back(Level{plan, plan->region});
     }
 }
 
@@ -284,7 +277,8 @@ void PipelineSceneSource::readBlock(int32_t level, const Rect64& region, BlockVi
     for (int64_t row : rows) {
         for (int64_t column : columns) {
             const int64_t tile = grid.tileIndex(column, row);
-            copy.setTile(tile, grid.tileRectAtLevel(tile));
+            // The evaluator writes the part of the tile inside the plan's region.
+            copy.setTile(tile, grid.tileRectAtLevel(tile).intersected(entry.region));
             // As in a run: the plan's tile bytes bound the tile's peak buffers. A thread
             // already holding a tile reservation (a pipeline tile reading this scene) never
             // waits: its bytes, and its fellow workers', are freed only by tiles, so waiting

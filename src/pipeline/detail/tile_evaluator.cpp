@@ -173,7 +173,8 @@ TileEvaluator::TileEvaluator(const RunPlan& plan, std::vector<OperationPtr> oper
 const RestrictionFilter& TileEvaluator::restriction() const noexcept { return restriction_; }
 
 TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& token,
-                                    const char** runningOperation, const Accumulation* accumulation) const {
+                                    const char** runningOperation, const Accumulation* accumulation,
+                                    EvaluationMode mode) const {
     if (runningOperation != nullptr) {
         *runningOperation = nullptr;
     }
@@ -182,17 +183,32 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         (accumulation->position >= operations.size() || accumulation->accumulator == nullptr)) {
         throw InvalidArgumentError("TileEvaluator::evaluate: the accumulation names no operation");
     }
+    const bool onDemand = mode == EvaluationMode::OnDemand;
+    if (onDemand && accumulation != nullptr) {
+        throw InvalidArgumentError("TileEvaluator::evaluate: an accumulation pass evaluates no tile on demand");
+    }
     token.throwIfCancelled();
     const TileGrid& grid = plan_.grid;
     const Rect64 tile = grid.tileRectAtLevel(tileIndex);
     int64_t bytes = 0;
+
+    // A tile outside the region is skipped without a mask: it is empty there anyway.
+    if (!onDemand && restriction_.outsideRegion(tileIndex)) {
+        if (accumulation == nullptr) {
+            ++bindings_.counters->tilesSkipped;  // Once per run: the final pass counts it.
+        }
+        return TileOutcome{true, 0};
+    }
 
     // The mask comes first: an excluded tile reads no pixel.
     const RasterMask mask = restriction_.buildTileMask(tileIndex);
     if (!mask.isNull()) {
         bytes += mask.regionAtLevel().width * mask.regionAtLevel().height;
     }
-    if (restriction_.skips(mask, tileIndex)) {
+    // A tile evaluated on demand was skipped, and counted, by the pass.
+    if (onDemand) {
+        ++bindings_.counters->tilesEvaluatedOnDemand;
+    } else if (restriction_.skips(mask, tileIndex)) {
         if (accumulation == nullptr) {
             ++bindings_.counters->tilesSkipped;  // Once per run: the final pass counts it.
         }
@@ -205,9 +221,18 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
     const bool finalPass = accumulation == nullptr;
     const size_t end = finalPass ? operations.size() : accumulation->position + 1;
 
-    // Operation k writes the tile grown by the halos of the operations after it, up to `end`.
+    // The final pass applies over the whole tile, so a tile straddling the region's edge
+    // meets the tiles beyond it at real seams. An accumulation pass applies over the part
+    // inside the region: mask() is advisory, and an accumulator ignoring it then still
+    // sees the region's pixels alone.
+    const Rect64 applied = finalPass ? tile : tile.intersected(plan_.region);
+    if (applied.isEmpty()) {
+        return TileOutcome{true, bytes};
+    }
+
+    // Operation k writes `applied` grown by the halos of the operations after it, up to `end`.
     std::vector<Rect64> outputRects(end);
-    Rect64 sourceRect = tile;
+    Rect64 sourceRect = applied;
     for (size_t k = end; k-- > 0;) {
         outputRects[k] = sourceRect;
         sourceRect = grow(sourceRect, operations[k]->halo());
@@ -340,8 +365,12 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         currentRect = outputRect;
     }
 
-    if (bindings_.rasterSink != nullptr) {
-        const BlockView result = current->view(plan_.level, tile, plan_.levelScale);
+    // The raster holds the region alone: a tile writes its part inside the region, and
+    // nothing when it has none. A tile evaluated on demand writes no raster tile: the
+    // raster stays what the restriction selects.
+    const Rect64 written = tile.intersected(plan_.region);
+    if (bindings_.rasterSink != nullptr && !onDemand && !written.isEmpty()) {
+        const BlockView result = subView(*current, currentRect, written, plan_.level, plan_.levelScale);
         bindings_.rasterSink->writeTile(result);
     }
     return TileOutcome{false, bytes};

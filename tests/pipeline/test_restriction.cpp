@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -187,17 +188,105 @@ void registerMaskReading() {
 
 } // namespace
 
-// The grid of a polygon run spans the polygon's bounding box, not the scene.
-TEST(Restriction, PolygonGridSpansItsBoundingBox) {
-    auto scene = ts::makeSyntheticScene(source(texture));
-    PipelineSpec spec = spec1("test.threshold");
-    spec.restrictToPolygon(triangle(70, 70, 330, 200));  // bbox 260 x 130 -> 5 x 3 tiles of 64
-    Pipeline p(scene, config(), spec);
-    const auto calls = progressOf(p);
+// The grid of a polygon run producing objects spans the level, so the polygon's edge is no
+// grid edge; a run producing none keeps the grid over the polygon's bounding box. rect()
+// stays the bounding box either way.
+TEST(Restriction, PolygonObjectRunGridSpansTheLevel) {
+    registerMaskReading();
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Polygon polygon = triangle(70, 70, 330, 200);  // bbox 260 x 130 -> 5 x 3 tiles of 64
+    const Rect64 box{70, 70, 260, 130};
+
+    PipelineSpec objectSpec = spec1("test.maskComponents");
+    objectSpec.restrictToPolygon(polygon);
+    Pipeline objects(scene, config(), objectSpec);
+    objects.bindLayer("objects", LayerId(3));
+    RecordingObserver observer;
+    ts::CollectingObjectSink sink;
+    objects.runInto(sink, &observer, CancellationToken());
+    const int64_t whole = (kSide / kTile) * (kSide / kTile);
+    ASSERT_FALSE(observer.calls.empty());
+    EXPECT_EQ(observer.calls.back().second, whole);
+    EXPECT_EQ(observer.calls.back().first, whole);
+    EXPECT_EQ(objects.rect(0), box);
+
+    PipelineSpec rasterSpec = spec1("test.threshold");
+    rasterSpec.restrictToPolygon(polygon);
+    Pipeline raster(scene, config(), rasterSpec);
+    const auto calls = progressOf(raster);
     ASSERT_FALSE(calls.empty());
     EXPECT_EQ(calls.back().second, 15);
     EXPECT_EQ(calls.back().first, 15);
-    EXPECT_LT(calls.back().second, (kSide / kTile) * (kSide / kTile));
+    EXPECT_EQ(raster.rect(0), box);
+}
+
+namespace {
+
+// Records the level-0 rect of every raster tile written.
+class RectRecordingRasterSink : public RasterSink {
+public:
+    void writeTile(const BlockView& tile) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rects_.push_back(tile.slideRect());
+    }
+    void flush() override {}
+    int64_t tilesWritten() const override { return static_cast<int64_t>(rects().size()); }
+    std::vector<Rect64> rects() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return rects_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<Rect64> rects_;
+};
+
+// The pixels of the scene that `rects` cover, one flag per pixel.
+std::vector<bool> coverage(const std::vector<Rect64>& rects) {
+    std::vector<bool> covered(static_cast<size_t>(kSide * kSide), false);
+    for (const Rect64& r : rects) {
+        for (int64_t y = r.y; y < r.y + r.height; ++y) {
+            for (int64_t x = r.x; x < r.x + r.width; ++x) {
+                covered[static_cast<size_t>(y * kSide + x)] = true;
+            }
+        }
+    }
+    return covered;
+}
+
+} // namespace
+
+// An ROI run producing objects tiles the level, yet writes raster pixels only inside its
+// region, and exactly the pixels a run producing none writes over its region grid.
+TEST(Restriction, RoiObjectRunWritesRasterOnlyInsideTheRegion) {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Rect64 roi{70, 70, 260, 130};
+
+    PipelineSpec objectSpec = spec1("test.components");
+    objectSpec.restrictTo(roi);
+    RectRecordingRasterSink objectRaster;
+    Pipeline objects(scene, config(), objectSpec);
+    objects.bindLayer("objects", LayerId(3)).rasterSink(&objectRaster);
+    ts::CollectingObjectSink sink;
+    objects.runInto(sink, nullptr, CancellationToken());
+    const Rect64 region = objects.rect(0);
+    EXPECT_EQ(region, roi);
+    EXPECT_EQ(detail::PipelineAccess::plan(objects).grid.tileCount(), (kSide / kTile) * (kSide / kTile));
+
+    PipelineSpec rasterSpec = spec1("test.threshold");
+    rasterSpec.restrictTo(roi);
+    RectRecordingRasterSink regionRaster;
+    Pipeline raster(scene, config(), rasterSpec);
+    raster.rasterSink(&regionRaster);
+    raster.run(nullptr, CancellationToken());
+
+    const std::vector<Rect64> written = objectRaster.rects();
+    ASSERT_FALSE(written.empty());
+    for (const Rect64& r : written) {
+        EXPECT_FALSE(r.isEmpty());
+        EXPECT_EQ(r.intersected(region), r) << "a raster tile reaches beyond the region";
+    }
+    EXPECT_TRUE(coverage(written) == coverage(regionRaster.rects()));
 }
 
 // Tiles whose restriction mask is empty read no pixel but still count as complete.
@@ -280,7 +369,6 @@ TEST(Restriction, AnchorDecides) {
         EXPECT_TRUE(expectedMask.testLevel0(r.geometry().anchor())) << "an object with its anchor outside was stored";
     }
 }
-
 
 // With a polygon and a mask source both bound, an object is stored exactly when its
 // anchor lies in the polygon and in the mask: no stored anchor lies outside their
@@ -796,4 +884,229 @@ TEST(Restriction, NonIntegerScaleKeepsObjectsOnTileEdges) {
     for (const int32_t tile : {64, 100}) {
         EXPECT_EQ(barObjects(tile, true, true), whole) << "tile " << tile;
     }
+}
+
+namespace {
+
+// Vertical bars two level columns wide, one every three columns: each is anchored on the
+// first level-0 row of every tile, as bars() is on the first column.
+double vbars(int, int64_t x, int64_t) { return x % 3 < 2 ? 255.0 : 0.0; }
+
+// Sets only the level column (or row) `index`, over the whole slide.
+class LineMaskSource : public TileMaskSource {
+public:
+    LineMaskSource(bool row, int64_t index) : row_(row), index_(index) {}
+    void fillMask(RasterMask& out) override {
+        const Rect64 region = out.regionAtLevel();
+        for (int64_t y = 0; y < region.height; ++y) {
+            uint8_t* line = out.row(y);
+            for (int64_t x = 0; x < region.width; ++x) {
+                const int64_t at = row_ ? region.y + y : region.x + x;
+                line[x] = at == index_ ? 255 : 0;
+            }
+        }
+    }
+
+private:
+    bool row_;
+    int64_t index_;
+};
+using SkipRing = std::vector<std::pair<int64_t, int64_t>>;
+using SkipKey = std::tuple<ObjectId, std::vector<std::pair<bool, SkipRing>>,
+                           std::vector<std::tuple<std::string, double, int32_t>>>;
+
+// A record as its id, rings and measurements, as sortedKeys of test_seam_run.cpp does.
+SkipKey keyOf(const ObjectRecord& record) {
+    std::vector<std::pair<bool, SkipRing>> rings;
+    const Polygon& polygon = record.geometry();
+    for (int32_t r = 0; r < polygon.ringCount(); ++r) {
+        std::vector<Point64> points(static_cast<size_t>(polygon.ringPointCount(r)));
+        polygon.ringPoints(r, points.data(), static_cast<int64_t>(points.size()));
+        SkipRing ring;
+        for (const Point64& p : points) {
+            ring.emplace_back(p.x, p.y);
+        }
+        rings.emplace_back(polygon.ringIsHole(r), std::move(ring));
+    }
+    std::vector<std::tuple<std::string, double, int32_t>> measurements;
+    const MeasurementSet& m = record.measurements();
+    for (int32_t i = 0; i < m.count(); ++i) {
+        const Measurement measurement = m.at(i);
+        measurements.emplace_back(measurement.name(), measurement.value(), static_cast<int32_t>(measurement.unit()));
+    }
+    return SkipKey(record.id(), std::move(rings), std::move(measurements));
+}
+
+
+// At level 1 (scale 2.4) with 64-pixel tiles, the first level-0 column (row) of tile 2 is 307,
+// which floors to level column (row) 127, the last of tile 1. With only that line set, tile 2's
+// rect is empty but it owns objects anchored on it: the skip test must agree with the mask the
+// tile was given, so those objects are emitted, with or without a halo.
+void expectSkipAgreesWithTheMask(bool row, int32_t halo) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        row ? vbars : bars);
+    const Configuration configuration =
+        ConfigurationBuilder().tileSize(64, 64).tileSizeFromSlide(false).workerCount(4).build();
+    const auto run = [&](bool restricted) {
+        OperationParameters parameters;
+        parameters.setInt("halo", halo);
+        PipelineSpec spec = spec1("test.components", parameters);
+        spec.analysisLevel(1);
+        LineMaskSource line(row, 127);
+        ts::CollectingObjectSink sink;
+        Pipeline p(scene, configuration, spec);
+        p.bindLayer("objects", LayerId(3));
+        if (restricted) {
+            p.maskSource(&line);
+        }
+        p.runInto(sink, nullptr, CancellationToken());
+        return sink.records();
+    };
+    const std::vector<ObjectRecord> all = run(false);
+    std::vector<SkipKey> expected;
+    for (const ObjectRecord& r : all) {
+        const Point64 anchor = r.geometry().anchor();
+        const int64_t along = row ? anchor.y : anchor.x;
+        if (static_cast<int64_t>(std::floor(static_cast<double>(along) / 2.4)) == 127) {
+            // Owned by tile 2, whose first level-0 column (row) is 307, not by tile 1.
+            EXPECT_GE(along, 307);
+            expected.push_back(keyOf(r));
+        }
+    }
+    std::sort(expected.begin(), expected.end());
+    ASSERT_FALSE(expected.empty());
+    ASSERT_LT(expected.size(), all.size());
+    std::vector<SkipKey> got;
+    for (const ObjectRecord& r : run(true)) {
+        got.push_back(keyOf(r));
+    }
+    std::sort(got.begin(), got.end());
+    EXPECT_TRUE(got == expected) << "the stored objects differ from the unrestricted run's (ids, rings or measurements)";
+}
+
+} // namespace
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScale) { expectSkipAgreesWithTheMask(false, 0); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleWithAHalo) { expectSkipAgreesWithTheMask(false, 2); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRows) { expectSkipAgreesWithTheMask(true, 0); }
+
+TEST(Restriction, SkipAgreesWithTheBuiltMaskAtANonIntegerScaleForRowsWithAHalo) {
+    expectSkipAgreesWithTheMask(true, 2);
+}
+
+namespace {
+
+// Sets every pixel and records the region of each fill.
+class RegionRecordingMaskSource : public TileMaskSource {
+public:
+    void fillMask(RasterMask& out) override {
+        const Rect64 region = out.regionAtLevel();
+        for (int64_t y = 0; y < region.height; ++y) {
+            std::memset(out.row(y), 255, static_cast<size_t>(region.width));
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        regions_.push_back(region);
+    }
+    std::vector<Rect64> regions() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return regions_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<Rect64> regions_;
+};
+
+// An ROI in an object run, and a mask source over the whole level: a tile whose owned rect misses
+// the ROI builds no mask in a pass, so only a tile evaluated on demand fills a mask outside it.
+void expectOutsideTilesBuildNoMask() {
+    auto scene = ts::makeSyntheticScene(source(blobs));
+    const Rect64 roi{70, 70, 260, 130};
+    RegionRecordingMaskSource fills;
+    Pipeline p(scene, config(), [&] {
+        PipelineSpec spec = spec1("test.components");
+        spec.restrictTo(roi);
+        return spec;
+    }());
+    p.bindLayer("objects", LayerId(3)).maskSource(&fills);
+    ts::CollectingObjectSink sink;
+    p.runInto(sink, nullptr, CancellationToken());
+
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    // Tiles 1..5 by 1..3 meet the ROI; every other tile of the 8 x 8 grid is skipped.
+    ASSERT_EQ(plan.grid.tileCount(), (kSide / kTile) * (kSide / kTile));
+    const auto& counters = detail::PipelineAccess::impl(p).counters;
+    EXPECT_EQ(counters.tilesSkipped.load(), 64 - 5 * 3);
+    int64_t outside = 0;
+    for (const Rect64& r : fills.regions()) {
+        outside += r.intersects(roi) ? 0 : 1;
+    }
+    EXPECT_LE(outside, counters.tilesEvaluatedOnDemand.load());
+}
+
+} // namespace
+
+TEST(Restriction, OutsideRegionTilesBuildNoMask) { expectOutsideTilesBuildNoMask(); }
+
+namespace {
+
+// For every tile of an object run at level 1 (scale 2.4), outsideRegion implies the built mask
+// has no set pixel in the owned rect, so the shortcut never skips a tile the mask would keep.
+void expectOutsideRegionAgreesWithTheMask(int32_t halo, int variant) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, blobs);
+    OperationParameters parameters;
+    parameters.setInt("halo", halo);
+    PipelineSpec spec = spec1("test.components", parameters);
+    spec.analysisLevel(1);
+    if (variant == 1) {
+        spec.restrictToPolygon(triangle(307, 307, 1000, 700));
+    } else if (variant == 2) {
+        // The bounding box ends inside the level: the raster can set the pixel past the region.
+        spec.restrictToPolygon(rectangle(100, 100, 305, 305));
+    } else if (variant == 3) {
+        spec.restrictToPolygon(rectangle(100, 100, 305, 305));
+        spec.restrictTo(Rect64{0, 0, 450, 450});
+    } else {
+        spec.restrictTo(Rect64{307, 307, 700, 400});
+    }
+    Pipeline p(scene, config(), spec);
+    p.bindLayer("objects", LayerId(3));
+    p.validate();
+    auto& impl = detail::PipelineAccess::impl(p);
+    const detail::RunPlan& plan = detail::PipelineAccess::plan(p);
+    const detail::RestrictionFilter filter(plan, impl.spec, *impl.selector, impl.maskSource);
+    ASSERT_TRUE(filter.restricted());
+    int64_t outside = 0;
+    for (int64_t t = 0; t < plan.grid.tileCount(); ++t) {
+        if (filter.outsideRegion(t)) {
+            ++outside;
+            EXPECT_TRUE(filter.skips(filter.buildTileMask(t), t)) << "tile " << t;
+        }
+    }
+    EXPECT_GT(outside, 0);
+    EXPECT_LT(outside, plan.grid.tileCount());
+}
+
+} // namespace
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScale) { expectOutsideRegionAgreesWithTheMask(0, 0); }
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleWithAHalo) {
+    expectOutsideRegionAgreesWithTheMask(2, 0);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskAtANonIntegerScaleForAPolygon) {
+    expectOutsideRegionAgreesWithTheMask(0, 1);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForAPolygonEndingInsideTheLevel) {
+    expectOutsideRegionAgreesWithTheMask(0, 2);
+}
+
+TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForARoiPastThePolygonBox) {
+    expectOutsideRegionAgreesWithTheMask(0, 3);
 }

@@ -387,6 +387,7 @@ class CoarseToFineSpec {
 public:
     CoarseToFineSpec(const char* coarseStageName, const char* fineStageName);
     CoarseToFineSpec(const CoarseToFineSpec&);
+    CoarseToFineSpec& operator=(const CoarseToFineSpec&);
     ~CoarseToFineSpec();
 
     /// The coarse half: what it computes, and the layer it writes. Its
@@ -413,13 +414,18 @@ public:
 /// Declares the two stages, wired. The fine one gets `readsLayerAsRaster`
 /// against the coarse one's layer — and so, through the implied `readsLayer`,
 /// the dependency and the staleness edge (4.3, 4.5) — plus the restriction
-/// unless it was turned off. Throws `StageError` naming the offending field
-/// when the names match, the layers match, or the levels are not ordered.
+/// unless it was turned off. Everything is validated before anything is
+/// declared: it throws `StageError` naming the offending field (`"coarse"` or
+/// `"fine"` when a half was never set, `"names"`, `"layers"`, `"levels"`) when
+/// the names match, the layers match, or both levels are explicit and the
+/// coarse one is not strictly greater. If the fine `declare` throws, the
+/// coarse stage stays declared (`storage` has no transaction across
+/// declarations) and the error is rethrown unchanged.
 void declareCoarseToFine(StageRegistry&, const CoarseToFineSpec&,
                          StageId& coarseOut, StageId& fineOut);
 ```
 
-**Thread-safety:** `CoarseToFineSpec` is ThreadConfined.
+**Thread-safety:** `CoarseToFineSpec` is ThreadConfined; `declareCoarseToFine` declares through the registry, one `declare` at a time, and the pair is not atomic.
 **Requirements:** UR-SEG-8, UR-IMG-4, UR-STG-10.
 
 Written out, the pair it replaces is five declarations and one string that has
@@ -456,7 +462,14 @@ separately and silently:
   inheriting `LayerRasterContent`'s own default for exactly that reason.
 
 `declareCoarseToFine` makes all three true by construction and throws on the
-one it can check, which is the ordering.
+one it can check, which is the ordering. The checks (both halves set, distinct
+names, distinct layers, strictly ordered explicit levels) all run before the
+first `declare`, so a refused pair declares nothing. A fine level of -1 passes,
+because automatic selection cannot be compared. The one failure the helper cannot
+check in advance is the fine `declare` itself (a cycle, say); by then the coarse
+stage is declared, and it stays so, since `storage` has no transaction across
+declarations. The helper says so and rethrows rather than trying to undo a
+declaration, which would also discard a stage that was already there.
 
 **It is sugar over `StageDefinition`, not a second path.** It declares two
 ordinary stages, and nothing downstream can tell: dependency derivation,
@@ -483,6 +496,10 @@ would otherwise have to invent.
 ## 4.3 Stage registry — `workspace/stage_registry.hpp`
 
 ```cpp
+enum class RunBlocker : int32_t {
+    None, Unreadable, UnresolvedDependency, DependencyIncomplete, DependencyStale
+};
+
 class StageRegistry {
 public:
     /// Declares or redeclares a stage. Redeclaring with a different
@@ -506,8 +523,22 @@ public:
     StageId dependencyAt(StageId, int32_t index) const;
     bool    isExplicitDependency(StageId, int32_t index) const;
 
-    /// True when every effective dependency is complete and not stale.
+    /// The explicit `dependsOn` names no declared stage carries yet, in
+    /// declaration order. Not counted in `dependencyCount`; the stage is not
+    /// runnable until each is declared (4.3).
+    int32_t     unresolvedDependencyCount(StageId) const;
+    const char* unresolvedDependencyAt(StageId, int32_t index) const;
+
+    /// True when every effective dependency is complete and not stale and no
+    /// `dependsOn` name is unresolved.
     bool isRunnable(StageId) const;
+
+    /// The first reason the stage cannot run, in `StageRunner`'s order
+    /// (unreadable, an unresolved `dependsOn` name, a dependency not complete
+    /// or stale), with the name it concerns, read under one hold of the
+    /// registry mutex; `None` exactly when `isRunnable`. `StageRunner`'s gate
+    /// uses it, so no declaration lands between a count and its accessor.
+    RunBlocker runBlocker(StageId, const char*& name) const;
 
     /// True for a stage kept by name only at restore, because its record could
     /// not be read. Such a stage is never runnable; `StageRunner` refuses it.
@@ -518,29 +549,37 @@ public:
     /// record could not be restored.
     const StageDefinition& definition(StageId) const;
 
-    /// Marks `stage` and every stage reachable from it stale, by the four
-    /// paths of 4.5. **Transitive**, and there is no non-propagating form:
+    /// Marks `stage` and every stage its forward answer lists stale, by the five
+    /// paths of 4.5, each once. **Transitive**, and there is no non-propagating form:
     /// a caller who wanted one would be asking for exactly the UR-STG-8
     /// failure — a dependent left current whose parents have been replaced.
+    /// `IoError` when the workspace is read-only, before the stage is resolved.
     void markStale(StageId);
+
+    /// Marks every stage a re-run of `stage` would invalidate, by the five
+    /// paths of 4.5, each once, in one locked pass; never `stage` itself, as
+    /// the staleness graph is acyclic. Transitive. `IoError` when the workspace is
+    /// read-only, before the stage is resolved. This is step 1 of a re-run (4.4).
+    void markAffectedStale(StageId);
 
     /// Clears the flag on `stage` alone. **Not** transitive. A stage becomes
     /// current by being re-run, which is `StageRunner`'s business; clearing a
     /// dependent's flag without re-running it would assert a coherence
-    /// nothing established.
+    /// nothing established. `IoError` when the workspace is read-only, before the
+    /// stage is resolved.
     void clearStale(StageId);
 
-    /// **Plan C; not declared in plan A** (decision 6). The derived graph
+    /// The derived graph
     /// behind `markStale` and `isRunnable`: what a re-run would invalidate,
     /// and why a stage is stale now (4.5). Recomputed with the dependency
     /// set on every `declare`; the reference stays valid for the life of the
     /// registry.
-    const StalenessGraph& staleness() const noexcept;  // plan C
+    const StalenessGraph& staleness() const noexcept;
 };
 ```
 
 **Thread-safety:** ThreadSafe. **Requirements:** UR-STG-2, UR-STG-4,
-UR-STG-8, UR-OBS-1.
+UR-STG-8, UR-STG-11, UR-OBS-1.
 
 The read side duplicates `storage::StageStateReader` deliberately: an observer
 gets the same information without linking this module, while a producer gets it
@@ -557,6 +596,16 @@ Derivation is order-independent: dependencies are recomputed on every
 the writer appears. That matters because a script does not always declare
 stages in execution order, and requiring it to would reintroduce by convention
 the ordering the derivation exists to remove.
+
+An explicit `dependsOn` may name a stage that is not declared yet. Until a stage
+of that name exists the name is **unresolved**: it gives no dependency row and no
+edge, so it is not counted in `dependencyCount`; `isRunnable` is false while any
+name is unresolved, `StageRunner` refuses the stage with a `StageError` naming the
+missing stage, and `unresolvedDependencyCount` / `unresolvedDependencyAt` list the
+names. The declaration that adds the named stage triggers the next derivation,
+which resolves the name, and the cycle check then includes it, so a declaration
+that closes a cycle through an earlier unresolved name is refused there. A stage
+that names itself is still a `StageError` at `declare`.
 
 `declare` rejects two things it previously could not see:
 
@@ -594,16 +643,30 @@ instead would make staleness depend on key order and float formatting, so a
 redeclaration that changed nothing could mark a slide's worth of downstream
 work stale.
 
-**Plan A: staleness follows the effective dependencies only (decision 6).**
-Until plan C adds `StalenessGraph` and `staleness()`, `markStale` walks the
-reversed effective dependencies — the `LayerRead`, `RasterRead` and explicit
-`dependsOn` edges — and nothing else. The layer-ordering and derived-from paths
-of 4.5 are not followed yet, and `staleness()` is not declared. `markStale`
-sets the flag through `StageStateWriter::setStale` on the stage and on every
-stage reachable from it; `clearStale` sets it on that stage alone. A
-redeclaration marks along the old dependents first, then writes the record,
-re-derives, and marks again along the new ones, so a failure part way never
-leaves a changed stage current.
+**Staleness follows the staleness graph (plan C, decisions 1 and 2).**
+`markStale` walks the forward answer of 4.5 from the stage: the layer-read,
+raster-read, layer-ordering, derived-from and explicit-dependency edges, not
+the effective dependencies alone. It sets the flag through
+`StageStateWriter::setStale` on the stage and on every stage the answer lists,
+each once (the staleness graph is acyclic, 4.5); `clearStale` sets it
+on that stage alone. A redeclaration marks along the old edges first, then
+writes the record, re-derives, and marks again along the new ones, so a
+failure part way never leaves a changed stage current. The staleness edges
+are rebuilt in memory with the dependency graph on every declare and restore,
+from the held definitions and never from `LayerRegistry::writerStageAt`, which
+keeps a writer a redeclaration dropped. They are not persisted: the dependency
+rows, `isRunnable` and the cycle check are unchanged, because `LayerOrdering`
+and `DerivedFrom` do not gate running.
+
+`markAffectedStale` is the same walk without the stage itself: it sets the flag
+on every stage the forward answer lists, each once, under one hold of the
+registry mutex (PR #16 finding 7), and never on the stage itself, which no
+edge of the acyclic graph leads back to. `StageRunner` calls it at re-run
+step 1 instead of scanning the stages for direct dependents. On a read-only
+registry it throws `IoError` before it resolves the stage, as do `markStale`
+and `clearStale`, so an observer asking about a stage the writer declared after
+it opened gets `IoError`, not an unknown-stage error. `LayerLifecycle::drop`
+still marks nothing (UR-STG-12).
 
 **Plan A: persisted dependencies and restore (decision 7).** Every `declare`
 rewrites the dependency rows of every stage (`clearDependencies`, then
@@ -624,12 +687,14 @@ anything, so `openReadOnly` works. A declare in a reopened workspace therefore
 derives from, and cycle-checks against, the stages persisted earlier. A row
 whose record does not parse (an `InvalidArgumentError` or `InternalError` from
 `stageFromRecord`; any other failure, an `IoError` in particular, propagates),
-or whose explicit `dependsOn` names a stage that is not stored or the stage
+or whose explicit `dependsOn` names the stage
 itself, is kept by name only: a warning naming the stage is logged, the stage
 has an empty definition, so it derives no reads or writes of its own, and it is
 never runnable. Redeclaring it with a real definition repairs it and marks it
 stale. Layers a stage wrote under an earlier declaration stay recorded as its
-written layers, because storage has no way to remove one.
+written layers, because storage has no way to remove one. A stored `dependsOn`
+naming a stage that is not stored is not damage: it stays unresolved, as at
+`declare`.
 
 The edges around an unreadable stage are not lost. At restore the stored
 dependency rows on either side of it — its own and other stages' dependencies
@@ -637,8 +702,21 @@ on it — are pinned into the graph as non-explicit edges (storage records no
 explicit flag), and every later `declare` carries the pins, so a reader of a
 broken writer's layer stays blocked, the writer never being runnable, instead of
 becoming runnable. Redeclaring the stage successfully drops its pins and normal
-derivation resumes. `dependencyCount`, `dependencyAt`, `isExplicitDependency`
-and `isRunnable` all read this one in-memory graph; only the status and stale
+derivation resumes. A refresh keeps the pins it already holds for a stage that is
+still unreadable, because a writer that is rewriting the rows can leave them
+empty for a moment, but drops every held pin with an end that was unreadable
+and now parses: the writer redeclared that stage, and redeclaring drops every
+pin around it whatever the other end, so once the redeclaration has finished
+reader and writer hold the same pins (PR #17 review). A redeclaration is not one
+transaction: a refresh landing after the writer stores the new record but before
+it rewrites the dependency rows re-pins its stale stored row to a stage that is
+still unreadable, and later refreshes carry that pin as held (the redeclared
+stage was no longer unreadable when they began) until the other end is
+redeclared, so the reader can disagree with the writer. Making `declare` one write
+transaction (or adding the dependency rows to the refresh snapshot) closes this;
+it is a follow-up.
+`dependencyCount`, `dependencyAt`, `isExplicitDependency`,
+`isRunnable` and `runBlocker` all read this one in-memory graph; only the status and stale
 flag of each dependency come from storage. Restore writes nothing.
 
 **A read-only registry follows a live writer (UR-OBS-1).** An observer opens
@@ -652,7 +730,9 @@ or redeclare changes one of them. When either differs it restores again, under
 its mutex, building aside and swapping in, so a failure leaves the previous
 state. Storage offers no cheaper change signal through its API. Stages are
 never removed, so a stored count below the one restored means the store
-cannot be read (it is closed): the registry then answers from what it last
+cannot be read (it is closed), also when it closes between the comparison and
+the restore: a restore that reads fewer stages than it holds keeps the snapshot, and
+the registry then answers from what it last
 read. A definition a refresh replaces is kept for the life of the registry,
 so a reference from `definition()` never dangles. The writer registry is the
 only writer, so it never re-reads.
@@ -893,17 +973,23 @@ annotation writers write nothing until given something.
 **Gating comes before anything is written.** `run()` first throws `IoError`
 when the workspace is read-only; that check needs no run slot. It then throws
 `StageError`, with the stage's name in `ErrorContext.stageName` and in the
-message, in five cases, checked in this order:
+message, in six cases, checked in this order:
 
 1. another `StageRunner` of the same workspace is inside `run()`;
 2. the stage's record is unreadable (`StageRegistry::isUnreadable`);
-3. a dependency is not `Complete`, or is stale: the message names the first
+3. a `dependsOn` name is unresolved, the stage not being declared yet
+   (`unresolvedDependencyCount`): the message names the first missing stage;
+4. a dependency is not `Complete`, or is stale: the message names the first
    such dependency in `dependencyAt` order;
-4. the stage writes a raster that another stage populated
+
+   Cases 2 to 4 come from one `StageRegistry::runBlocker` call, under one hold
+   of the registry mutex, so a declaration on another thread cannot land
+   between a count and its accessor (PR #17 review);
+5. the stage writes a raster that another stage populated
    (`RasterRegistry::isPopulated` and `writerStage`, reads only): the message
    names the raster and that stage, which alone may write it until it is
    discarded (ruling S47);
-5. the stage's bound pipeline cannot be built (an auxiliary source that cannot
+6. the stage's bound pipeline cannot be built (an auxiliary source that cannot
    be opened, say) or fails `Pipeline::validate()` (the layer binding below
    among others): the `cause` is the original error, the pipeline's naming the
    operation and the layer, and `ErrorContext.operationName` is copied when the
@@ -998,7 +1084,9 @@ them the same way, but records nothing, as it has changed nothing):
 - Every other `ProcessorError` becomes a `StageError` with `stageName` the
   stage and `cause` the original's `what()`; the original's operation name and
   tile (`hasTile`, `tileX`, `tileY`) are copied when it has them, so a tile
-  fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5).
+  fault reads "stage nuclei, operation, tile (X, Y)" (UR-EXE-5). What is copied
+  is left out of the `cause` text, so `what()` names the operation and tile once
+  (PR #17 review).
 - An exception that is not a `ProcessorError` is translated as `error.hpp`'s
   exception stance (C-6) requires: `std::system_error` (with
   `std::filesystem::filesystem_error`) and `std::ios_base::failure` become
@@ -1029,11 +1117,10 @@ level is the coarsest any writer used, so keeping it errs on the side of the coa
 edges it previously asserted and the annotations it previously made are all
 replaced, not duplicated (UR-STG-6). The order is fixed:
 
-1. call `StageRegistry::markStale` on every stage that depends directly on this
-   one (found by scanning the stages' `dependencyAt`), because its inputs are
-   about to be replaced whatever this run's outcome; `markStale` is a locking
-   public call of the registry and the runner is outside it, so there is no
-   re-entrancy;
+1. call `StageRegistry::markAffectedStale` on this stage: every stage the staleness
+   graph reaches from it (4.5) is marked stale, whatever this run's outcome,
+   because its inputs are about to be replaced; it is one locking public call
+   of the registry and the runner is outside it, so there is no re-entrancy;
 2. set the stage `Running`;
 3. only then discard the prior output with `discardStage`,
    `discardEdgesOfStage`, `discardAnnotationsOfStage` and
@@ -1044,8 +1131,8 @@ stage `Complete` with its output intact and its dependents merely stale, which
 a re-run of them fixes; a crash after step 2 or during step 3 leaves the stage
 `Running`, which the next run treats as a re-run. No point leaves the stage
 `Complete` with part of its output gone, or its dependents looking current.
-`isRerun()` is decided before step 1. Steps 2 and 3 sit inside the run's guarded
-region, so a failure in either is recorded `Failed` as above.
+`isRerun()` is decided before step 1. All three steps sit inside the run's guarded
+region, so a failure in any of them is recorded `Failed` as above.
 
 **A stage may read the raster it writes** (`readsRaster` and `writesRaster`
 naming one raster); the declaration is legal. The gate opened that raster's
@@ -1106,7 +1193,7 @@ public:
     StalenessReason reasonAt(StageId, int32_t index) const;
     const char*     reasonDetailAt(StageId, int32_t index) const;
 
-    /// Reverse: why `stage` is stale now. Zero when it is not stale. For a
+    /// Reverse: why `stage` is stale now (durable data only). Zero when it is not stale. For a
     /// `Reconfigured` cause the stage is its own cause, which is reported as
     /// such rather than omitted.
     int32_t         causeCount(StageId) const;
@@ -1127,6 +1214,118 @@ relation, and any explicit `dependsOn`. Re-running the stage that writes `tissue
 `nuclei` stale whether or not anything was declared between them, and
 re-running a stage that writes a primitive layer marks the semantic layers
 derived from it stale (UR-STG-11).
+
+**The five edges (plan C, decision 1).** A layer is *above* another when it
+lies further from the pixel layer in the layer hierarchy
+(`LayerRegistry::isAbove`): `nuclei`, a child of `cells`, is above `cells`,
+which is above `tissue`. For stages U and V (U ≠ V) there is
+an edge U → V, one per reason, when:
+
+- `LayerRead`: V reads (`readLayerAt`) a layer U writes;
+- `RasterRead`: V reads (`readRasterAt`) the raster U writes;
+- `LayerOrdering`: V writes a semantic layer strictly above
+  (`LayerRegistry::isAbove(descendant, ancestor)`) a layer U writes, so the
+  `tissue` writer reaches the `cells` and `nuclei` writers;
+- `DerivedFrom`: V reads a *primitive* layer U writes and V writes at least
+  one semantic layer; such a pair is reported as `DerivedFrom` instead of
+  `LayerRead`, per pair: when V also reads a semantic layer U writes, only
+  `DerivedFrom` is reported for U → V. A stage can only assert derived-from
+  edges onto objects it has
+  read, so a reads-based relation finds every derivation a run can produce;
+  storage has no layer-level derived-from relation, and object-level edges
+  are not consulted;
+- `StageDependency`: V's explicit `dependsOn` names U.
+
+The edges come from the in-memory definitions, never from
+`LayerRegistry::writerStageAt`, which keeps a writer a redeclaration dropped.
+An unreadable stage contributes its pinned edges with reason
+`StageDependency`.
+
+**The staleness graph is acyclic (plan C, decision 1, amended by the final
+review).** A cycle would never settle: re-running either stage on it would mark
+the other stale, so "run every stale stage" would not end. The effective edges
+— `LayerRead`, `RasterRead`, `DerivedFrom`, `StageDependency` and the pinned
+edges — are the dependency graph of 4.3, which is already kept acyclic. A
+`LayerOrdering` edge U → V is suppressed when it would close a cycle, that is,
+when V already reaches U. The `LayerOrdering` edges are decided in ascending
+(U, V) order of stage id, each against the effective edges plus the
+`LayerOrdering` edges kept so far, so the result is deterministic and the same
+after a reopen. The case is a `cells` stage that reads `nuclei`,
+with `nuclei` above `cells`: the `nuclei` writer reaches it by `LayerRead`, and
+the `LayerOrdering` edge from it back to the `nuclei` writer is suppressed. The
+stage that reads the layer above re-asserts the parent links, so its effective
+edge wins. `isRunnable` and the persisted dependency rows are unchanged:
+`LayerOrdering` and `DerivedFrom` do not gate running.
+
+**The forward answer (plan C, decision 2).** `affectedCount`, `affectedAt`,
+`reasonAt` and `reasonDetailAt` list one entry per edge U → V in the subgraph
+reachable from the stage S, with V the affected stage: breadth first from S,
+the edges of one source ordered by ascending V and then by reason; a stage
+reached down two paths appears twice, and S itself never appears, the graph
+being acyclic. Each detail names the source stage and the artifact, for
+example `reads layer "tissue" written by stage "background"` or
+`writes layer "nuclei" above layer "tissue" written by stage "background"`.
+The accessors take the registry's mutex, and a read-only registry first
+follows a live writer. An unknown stage or an index out of range is an
+`InvalidArgumentError`. The detail strings are interned in a pool the registry
+keeps for its own life and never shrinks, so a string returned stays valid
+for the life of the registry, across every later `declare()` and read-only
+refresh; the pool grows only by details not seen before.
+
+**The reverse answer (plan C, decision 3).** `causeCount`, `causeAt`,
+`causeReasonAt` and `causeReasonDetailAt` answer from durable data alone (the
+stored stale flag, status and `completedAtUnixMs`), so they are identical after
+a reopen. A stage that is not stale has no causes. For a stale stage S the
+causes are its incoming edges U → S where U has changed since S:
+
+- U is stale (marking U is what reaches S); or
+- U is `Running`: a run of U is replacing its output now; or
+- U is `Failed` and completed at some time (`completedAtUnixMs(U) > 0`): a
+  re-run of U failed, replacing the output S was built against. The store
+  keeps no time for a run that did not complete, so this counts whenever it
+  happened; or
+- U is `Complete` and `completedAtUnixMs(U) > completedAtUnixMs(S)`, which
+  needs S to have completed.
+
+A `Pending` source never ran, and a `Failed` one that never completed never
+produced output, so neither is a cause by itself; this matters for
+`LayerOrdering`, whose target runs without its source (PR #17 review). Each
+source's state is read once, however many reasons join it to S. There is one
+entry per qualifying edge, each with its own reason and detail, so a source
+joined to S by two reasons appears twice, as in the forward answer; they are
+ordered by ascending U, then by reason. When no edge qualifies, S is its own
+single cause with reason `Reconfigured`. `None` is never reported. Causes need
+no storage of their own. They take the same errors as the forward answer.
+
+The detail of that self cause depends on whether S ever completed. A stage
+that completed and has no changed source was redeclared or marked stale
+directly: the detail is `the stage was redeclared or marked stale directly`. A
+stage that never completed has no completion time to compare a `Complete`
+source with, and the store keeps no time for when a stale flag was set, so two
+histories look the same from durable data: S redeclared after U completed, and
+S marked by a re-run of U that has since completed. Blaming U would be wrong in
+the first; not blaming it is wrong in the second. The answer names no source,
+and the detail says only what is known: `the stage has not completed: it was
+redeclared or marked stale directly, or a source stage re-ran` (a stage with an
+edge to it, `LayerOrdering` included). While U
+is still `Running`, or stale, it is named. Telling the two apart exactly needs
+a durable record of when, or by what, a stale flag was set, which storage does
+not keep (PR #17 review).
+
+**Cached answers (PR #17 review).** Iterating an answer by index would otherwise
+recompute it on every call. The forward answer of a stage is computed once per
+set of edges: the registry bumps a generation whenever it replaces them (every
+declare and restore), and the answer depends on nothing else. The causes are
+cached per stage under a key of that generation and
+`StageStateWriter::revision()`, an in-memory count the store's writer advances
+after every committed `setStatus` and `setStale`. The store's exclusive writer
+lock makes that writer the only one of statuses, completion times and stale
+flags while it is open, so the key follows every change — the registry's,
+`StageRunner`'s, or a caller's straight through `StageStateWriter` — and reading
+it costs no query. A read-only registry does not cache causes: its writer is
+another process, whose changes advance no count it can see. Nor does a closed
+store answer from the cache (`Store::isOpen`): its causes throw `IoError`, as
+documented.
 
 `RasterRead` is the one genuinely new edge the raster store adds. Every other
 declaration in 4.2 reduces to `readsLayer` — `annotatesLayer`,

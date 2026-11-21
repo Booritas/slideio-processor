@@ -203,7 +203,80 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   including a stage left `Running` by a dead process, it marks the direct
   dependents stale, sets the stage `Running`, and only then discards the prior
   output. Annotation-target checks are deferred (decision 7).
-  **Implemented** on `feat/workspace-b`, awaiting review and merge.
+  **Implemented**; merged to `main` (merge commit 491e2a9).
+- [Workspace implementation plan C](superpowers/plans/2026-11-20-workspace-c.md) —
+  plan C of three for the `workspace` module: `StalenessGraph` (SDS 04 §4.5) over
+  five edge paths (layer read, raster read, layer ordering, derived-from, explicit
+  dependency) with forward answers and durable reverse causes,
+  `StageRegistry::staleness()` and `markAffectedStale` (re-run step 1 now follows
+  all five paths), a `dependsOn` that may name a stage declared later
+  (`unresolvedDependencyCount/At`), `declareCoarseToFine`, and the follow-ups of
+  plans A and B (a read-only refresh never shrinks to empty and keeps the pins of a
+  still-unreadable stage, `IoError` from `markStale` and `clearStale` on a
+  read-only registry, the operation name on type and arity errors, a disc in the
+  dilation band of the coarse-restriction test). The final review made the
+  staleness graph acyclic (a layer-ordering edge that would close a cycle is
+  suppressed), so re-running every stale stage settles.
+  **Implemented** on `feat/workspace-c`, awaiting review and merge.
+  - **Resolved (mask-source restrictions): restricted objects crossing into a
+    skipped tile were stored truncated.** A pre-existing pipeline defect the
+    final review found: `RestrictionFilter::skips` skipped a tile with no mask
+    pixel, and the seam merger closed the component without that tile's
+    fragments. Fixed for restrictions whose grid spans the scene (mask sources,
+    such as the workspace restrict-to-layer path) by the
+    [restricted-object truncation plan](superpowers/plans/2026-11-20-restriction-truncation.md):
+    a skipped tile is deferred, and after the final pass each deferred tile an
+    open object reaching out of an evaluated tile expects is evaluated on demand
+    (SDS 05 §5.5, "The tile mask"). The ROI and polygon edge route was fixed afterwards:
+    see the next entry. Cost: UR-IMG-5's "reads only intersecting tiles"
+    is now a strong tendency, not a guarantee. Reproducer
+    `StageRunner.RestrictedObjectCrossingIntoASkippedTileIsNotTruncated` is
+    enabled. **Effect on stored results (QA/regulatory):** the object
+    identifiers of affected objects change, because a whole object's anchor
+    differs from the truncated one's; counts can fall, because a truncated
+    object admitted by its old anchor is dropped when the whole object's anchor
+    lies in a skipped tile; and results previously stored by restricted stages
+    are affected and are not marked stale. Re-run restricted stages and record
+    the change in the verification evidence.
+  - **Resolved (ROI and polygon restrictions): an object crossing the ROI or
+    polygon grid-region edge was stored truncated.** The same defect as the
+    mask-source one, on the route the first fix left open: the tile grid spanned
+    the ROI's or the polygon's bounding box, so the region's outer boundary was
+    not a seam and an object anchored inside that crossed the edge was stored
+    cut there, or an object whose true anchor lay outside was stored with the
+    cut part's anchor. Fixed by the
+    [ROI and polygon edge truncation plan](superpowers/plans/2026-11-20-roi-edge-truncation.md):
+    an object-producing tiled run's grid spans the level, the region becomes a
+    `RunPlan` field bounding `rect`, the raster written and accumulation, tiles
+    outside the region are skipped without a mask, and the deferred-tile
+    machinery above carries objects across the edge (SDS 05 §5.5, "The region
+    edge"). Chains with a WholeLevel operation still stop at the region edge by
+    design. Reproducer `SeamRun.RoiEdgeObjectIsNotTruncated` is enabled, with
+    polygon, scene-edge and ROI-plus-mask-source cases. **Effect on stored
+    results (QA/regulatory):** the identifiers of affected objects change,
+    because a whole object's anchor differs from the truncated one's; objects
+    previously stored cut become whole; objects whose true anchor is outside
+    the ROI or polygon are no longer stored, so counts can fall; `tilesTotal`
+    grows for ROI and polygon object runs, because it counts the level grid;
+    and results previously stored by ROI- or polygon-restricted stages are
+    affected and are not marked stale. Re-run those stages and record the
+    change in the verification evidence.
+    Also changed for ROI and polygon object runs: `tilesSkipped` now counts the
+    out-of-region tiles; the per-tile memory check uses a full tile, so a tiny
+    ROI on an object chain can now be refused by the memory ceiling where it was
+    accepted before (a stage that ran earlier can fail validation, with the
+    same message); and a float accumulation (a global-context reduction) folds
+    over different tile boundaries, so its result, and any objects thresholded
+    by it, can differ in the last bits from earlier runs.
+  - **Open follow-up (not fixed): the ROI admission rule at a non-integer level
+    scale is exact only to one level-0 column.** Pre-existing. At a non-integer
+    scale the ROI's anchor test floors the anchor to a level pixel, while the
+    ROI's level mapping rounds outward by `llround`, so the two disagree by up
+    to one level-0 column at the ROI's edges: an anchor on the ROI's first
+    column can be refused, and one just past its far edge admitted. At an
+    integer scale, and at level 0, the rule is exact. The edge-truncation fix
+    above does not change this; "Resolved" there means objects are whole, not
+    that ROI admission is exact at every scale.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

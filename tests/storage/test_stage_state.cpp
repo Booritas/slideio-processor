@@ -157,6 +157,26 @@ TEST_F(StageState, DependenciesAndStale) {
     EXPECT_THROW(w.setConfiguration(StageId(99), ""), InvalidArgumentError);
 }
 
+// revision() advances once per committed status or stale-flag change, and for nothing
+// else; a refused call leaves it as it was.
+TEST_F(StageState, RevisionCountsStatusAndStaleChanges) {
+    StageStateWriter& w = store().stageStateWriter();
+    EXPECT_EQ(w.revision(), 0u);
+    const StageId a = w.declare("nuclei", "");
+    const StageId b = w.declare("cells", "");
+    w.setConfiguration(a, "{}");
+    w.addDependency(b, a);
+    w.clearDependencies(b);
+    EXPECT_EQ(w.revision(), 0u);
+    w.setStatus(a, StageStatus::Running);
+    EXPECT_EQ(w.revision(), 1u);
+    w.setStale(a, true);
+    EXPECT_EQ(w.revision(), 2u);
+    EXPECT_THROW(w.setStale(StageId(99), true), InvalidArgumentError);
+    EXPECT_THROW(w.setStatus(StageId(99), StageStatus::Complete), InvalidArgumentError);
+    EXPECT_EQ(w.revision(), 2u);
+}
+
 TEST_F(StageState, WrittenLayerValidation) {
     StageStateWriter& w = store().stageStateWriter();
     const StageStateReader& r = store().stageStates();

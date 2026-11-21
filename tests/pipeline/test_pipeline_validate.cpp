@@ -406,6 +406,38 @@ TEST(PipelineValidate, TileBytesCountTheRestrictionMasks) {
     EXPECT_EQ(tileBytes(specOf("test.threshold"), true), base + 2 * area);
 }
 
+// An ROI run producing objects tiles the level, so a tile straddling the ROI is a full
+// tile: its bytes are the full tile's however small the ROI. A run producing none keeps
+// the ROI-sized tile.
+TEST(PipelineValidate, LevelGridTileBytesUseTheFullTile) {
+    auto source = byteSource();
+    const auto scene = ts::makeSyntheticScene(source);
+    auto spec = [](const char* operation, const Rect64& roi) {
+        PipelineSpec s = specOf(operation);
+        s.restrictTo(roi);
+        return s;
+    };
+    const Rect64 small{100, 100, 50, 50};
+
+    // The full tile's need, from an ROI whose region grid has full tiles.
+    Pipeline full(scene, config(256), spec("test.components", Rect64{0, 0, 1000, 800}));
+    full.bindLayer("nuclei", LayerId(7));
+    full.validate();
+    const int64_t fullNeed = planOf(full).tileBytes;
+
+    Pipeline objects(scene, config(256), spec("test.components", small));
+    objects.bindLayer("nuclei", LayerId(7)).memoryBudget(makeMemoryBudget(fullNeed - 1));
+    const std::string message = validateMessage<InvalidArgumentError>(objects);
+    EXPECT_TRUE(contains(message, "a tile of 256 x 256 level pixels")) << message;
+    EXPECT_TRUE(contains(message, std::to_string(fullNeed - 1) + " bytes")) << message;
+
+    Pipeline raster(scene, config(256), spec("test.threshold", small));
+    raster.memoryBudget(makeMemoryBudget(fullNeed - 1));
+    raster.validate();
+    EXPECT_LT(planOf(raster).tileBytes, fullNeed - 1);
+    EXPECT_EQ(source->readCount(), 0);
+}
+
 namespace {
 
 // A raster source whose declarations are set per test. Never read here.
@@ -560,4 +592,50 @@ TEST(PipelineValidate, PerChannelMixedTypesRunEndToEnd) {
         }
     }
     EXPECT_EQ(mismatches, 0);
+}
+
+// A caller that wraps the error (StageRunner) copies ErrorContext::operationName, so a
+// refusal of one operation names it there, not only in the message.
+TEST(PipelineValidate, TypeAndArityErrorsNameTheOperation) {
+    auto bytes = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_UInt16});
+    Pipeline unsupported(ts::makeSyntheticScene(bytes), config(), specOf("test.threshold"));
+    try {
+        unsupported.validate();
+        FAIL() << "validate must refuse the type";
+    } catch (const UnsupportedDataTypeError& e) {
+        EXPECT_STREQ(e.operationName(), "test.threshold");
+    }
+
+    auto mixed = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
+    Pipeline arity(ts::makeSyntheticScene(mixed), config(), specOf("test.jointUniform"));
+    try {
+        arity.validate();
+        FAIL() << "validate must refuse the mixed types";
+    } catch (const ChannelArityError& e) {
+        EXPECT_STREQ(e.operationName(), "test.jointUniform");
+    }
+}
+
+// ErrorContext::operationName already appends "; operation: <name>" to what(), so the
+// message text does not repeat the name: it appears exactly once (PR #17 finding 10).
+TEST(PipelineValidate, RefusalNamesTheOperationOnce) {
+    const auto once = [](const std::string& text, const std::string& name) {
+        const size_t first = text.find(name);
+        return first != std::string::npos && text.find(name, first + 1) == std::string::npos;
+    };
+    auto words = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_UInt16});
+    Pipeline unsupported(ts::makeSyntheticScene(words), config(), specOf("test.threshold"));
+    const std::string type = validateMessage<UnsupportedDataTypeError>(unsupported);
+    EXPECT_TRUE(once(type, "test.threshold")) << type;
+    EXPECT_TRUE(contains(type, "the operation does not accept UInt16 input")) << type;
+
+    auto mixed = sourceOf({{300, 200, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Float32});
+    Pipeline arity(ts::makeSyntheticScene(mixed), config(), specOf("test.jointUniform"));
+    const std::string planes = validateMessage<ChannelArityError>(arity);
+    EXPECT_TRUE(once(planes, "test.jointUniform")) << planes;
+
+    auto bytes = byteSource();
+    Pipeline unknown(ts::makeSyntheticScene(bytes), config(), specOf("test.V.nope"));
+    const std::string missing = validateMessage<InvalidArgumentError>(unknown);
+    EXPECT_TRUE(once(missing, "test.V.nope")) << missing;
 }

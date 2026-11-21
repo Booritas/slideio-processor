@@ -1,4 +1,4 @@
-// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
+// Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-8, UR-STG-10, UR-STG-11, UR-EXE-1, UR-EXE-4, UR-EXE-5
 #include "pipeline/test_support/executor_support.hpp"
 #include "pipeline/test_support/test_operations.hpp"
 #include "storage/raster_test_util.hpp"
@@ -31,6 +31,7 @@
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/stage_registry.hpp>
 #include <slideio/processor/workspace/stage_runner.hpp>
+#include <slideio/processor/workspace/staleness_graph.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <workspace/detail/run_fault.hpp>
@@ -74,7 +75,7 @@ StageDefinition blobStage(const char* name, LayerId layer) {
 }
 
 // Which 600 x 600 slide a Fixture writes.
-enum class SlideKind { Blobs, HalfBlobs, Edge };
+enum class SlideKind { Blobs, HalfBlobs, Edge, EdgeTruncation };
 
 // A 600 x 600 blob slide in a workspace with the layers the tests name.
 struct Fixture {
@@ -88,6 +89,9 @@ struct Fixture {
         case SlideKind::Blobs: slide = writeBlobSlide(file, 600, 600, levels); break;
         case SlideKind::HalfBlobs: slide = writeHalfBlobSlide(file, 600, 600); break;
         case SlideKind::Edge: slide = writeEdgeBlobSlide(file, 600, 600, levels); break;
+        case SlideKind::EdgeTruncation:
+            slide = writeEdgeBlobSlide(file, 600, 600, levels, testing_support::kEdgeXTruncation);
+            break;
         }
         workspacePath = (dir.path() / "ws").u8string();
         workspace = Workspace::create(workspacePath.c_str(), slide.u8string().c_str(), 0, config);
@@ -273,6 +277,27 @@ TEST(StageRunner, BlockedByStaleDependency) {
     f.stages().markStale(background);
     EXPECT_NE(messageOf(early).find("background"), std::string::npos);
     EXPECT_TRUE(early.isRerun()) << "the refused run started from Complete";
+}
+
+TEST(StageRunner, UnresolvedDependencyIsRefusedAtTheGate) {
+    Fixture f;
+    StageDefinition def = blobStage("nuclei", f.nuclei);
+    def.dependsOn("a");
+    const StageId nuclei = f.stages().declare(def);
+    StageRunner runner(*f.workspace, nuclei);
+    std::string stageName;
+    const std::string message = messageOf(runner, &stageName);
+    EXPECT_NE(message.find("\"a\""), std::string::npos) << message;
+    EXPECT_NE(message.find("nuclei"), std::string::npos) << message;
+    EXPECT_EQ(stageName, "nuclei");
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Pending);
+    EXPECT_EQ(f.objectsOf(f.nuclei), 0);
+
+    // Once the named stage is declared and complete, the stage runs.
+    const StageId a = f.stages().declare(blobStage("a", f.tissue));
+    StageRunner(*f.workspace, a).run();
+    StageRunner(*f.workspace, nuclei).run();
+    EXPECT_EQ(f.stages().status(nuclei), StageStatus::Complete);
 }
 
 TEST(StageRunner, UnreadableStageIsRefused) {
@@ -481,7 +506,7 @@ TEST(StageRunner, RestrictionKeepsObjectsInsideTheLayer) {
 TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     Fixture f(SlideKind::Edge, 3);
 
-    // The background layer is the white region, found at level 2: its edge, at 302, is
+    // The background layer is the white region, found at level 2: its edge, at 290, is
     // rounded out to the level-2 pixel grid.
     PipelineSpec coarse;
     coarse.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
@@ -505,29 +530,123 @@ TEST(StageRunner, RestrictionToCoarseLayerIsOneSided) {
     StageRunner(*f.workspace, id).run();
     EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
 
-    // Discs A, B, C of writeEdgeBlobSlide, by their level-0 centres.
+    // Discs A, B, C, D of writeEdgeBlobSlide, by their level-0 centres.
     const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(level) / 2.0;
     const int64_t centreA = testing_support::kEdgeX - 25;
     const int64_t centreB = testing_support::kEdgeX + 60;
+    const int64_t centreD = testing_support::kEdgeX + 3;
     // B lies wholly outside the region dilated by the half-step, A and C have their centres inside.
     ASSERT_GT(static_cast<double>(centreB - 20), static_cast<double>(region.right()) + halfStep);
     ASSERT_LT(centreA, region.right());
+    // D sits in the dilation band: outside the undilated region, within the half-step of it.
+    ASSERT_GT(centreD, region.right());
+    ASSERT_LE(static_cast<double>(centreD), static_cast<double>(region.right()) + halfStep);
 
     const std::vector<Rect64> nuclei = boundsOf(f, f.nuclei);
-    bool foundA = false, foundB = false, foundC = false;
+    bool foundA = false, foundB = false, foundC = false, foundD = false;
     for (const Rect64& box : nuclei) {
         const int64_t cx = box.x + box.width / 2;
         const int64_t cy = box.y + box.height / 2;
         foundA = foundA || (cx == centreA && cy == 150);
         foundB = foundB || cx == centreB;
         foundC = foundC || (cx == 100 && cy == 450);
+        foundD = foundD || (cx == centreD && cy == 300);
         // No object lies outside the dilated region (by its centre: the anchor decides).
         EXPECT_LE(static_cast<double>(cx), static_cast<double>(region.right()) + halfStep);
     }
     EXPECT_TRUE(foundA) << "the disc 25 px inside the edge was missed";
     EXPECT_TRUE(foundC) << "the disc inside the region was missed";
+    EXPECT_TRUE(foundD) << "the disc in the dilation band was missed";
     EXPECT_FALSE(foundB) << "the disc outside the dilated region was found";
-    EXPECT_EQ(nuclei.size(), 2u);
+    EXPECT_EQ(nuclei.size(), 3u);
+}
+
+// Reproduces the defect fixed by the restricted-truncation plan: a tile holding no mask pixel
+// was skipped and the seam merger closed the component without that tile's fragments, so
+// the partial object was admitted by its anchor. Disc D of the edge-blob slide, with the edge
+// at kEdgeXTruncation, spans 285 to 325 across the tile seam at 320; the tile beyond holds no
+// pixel of the dilated mask. D must be stored whole, 41 px wide, the skipped tile having been
+// evaluated on demand.
+TEST(StageRunner, RestrictedObjectCrossingIntoASkippedTileIsNotTruncated) {
+    Fixture f(SlideKind::EdgeTruncation, 3);
+    const int64_t edgeX = testing_support::kEdgeXTruncation;
+
+    // The background layer is the white region, found at level 2.
+    PipelineSpec coarse;
+    coarse.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    coarse.operation("pixel.threshold_fixed",
+                     OperationParameters().setDouble("value", 230.0).setString("direction", "Above"));
+    coarse.operation("segment.connected_components", OperationParameters().setBool("extractHoles", false));
+    coarse.analysisLevel(2);
+    StageDefinition bg("background");
+    bg.writesLayer(f.background).pipeline(coarse);
+    StageRunner(*f.workspace, f.stages().declare(bg)).run();
+    const int32_t level = f.workspace->layers().coarsestAnalysisLevel(f.background);
+    ASSERT_EQ(level, 2);
+    const std::vector<Rect64> background = boundsOf(f, f.background);
+    ASSERT_EQ(background.size(), 1u);
+    const double halfStep = LevelSelector(f.workspace->scene()).scaleOfLevel(level) / 2.0;
+    // The geometry the reproducer relies on: D's centre is in the dilated region, and the
+    // dilated region ends before the tile seam at 320 that D crosses.
+    const int64_t centreD = edgeX + 3;
+    ASSERT_LE(static_cast<double>(centreD), static_cast<double>(background[0].right()) + halfStep);
+    ASSERT_LT(static_cast<double>(background[0].right()) + halfStep, 320.0);
+    ASSERT_GT(centreD + 20, 320);
+
+    StageDefinition def("nuclei");
+    def.writesLayer(f.nuclei).restrictToLayer(f.background).pipeline(chainFor(128.0, "Below", nullptr));
+    const StageId id = f.stages().declare(def);
+    StageRunner(*f.workspace, id).run();
+    ASSERT_EQ(f.stages().status(id), StageStatus::Complete);
+
+    // D is found (its anchor is in the mask) and must be whole: 2 x 20 + 1 px wide and high.
+    bool foundD = false;
+    for (const Rect64& box : boundsOf(f, f.nuclei)) {
+        if (box.y > 300 || box.bottom() <= 300 || box.x > centreD || box.right() <= centreD) continue;
+        foundD = true;
+        EXPECT_EQ(box.x, centreD - 20) << "disc D's left edge";
+        EXPECT_EQ(box.width, 41) << "disc D is truncated at the tile seam x = 320 (its box spans x " << box.x
+                                 << " to " << box.right() << ")";
+        EXPECT_EQ(box.height, 41) << "disc D's height";
+    }
+    EXPECT_TRUE(foundD) << "disc D, whose anchor is in the dilated region, was not found";
+}
+
+// A cells stage seeded by nuclei, a layer above cells: the staleness graph stays acyclic
+// (SDS 04 4.5), so re-running either stage and then whichever is stale settles.
+TEST(StageRunner, NucleiSeededCellsPairSettles) {
+    Fixture f;
+    LayerLifecycle& l = f.workspace->layerLifecycle();
+    const LayerId cellLayer = l.declareSemantic("cell_bodies", f.tissue);
+    const LayerId seedLayer = l.declareSemantic("seeds", cellLayer);
+    const StageId nuclei = f.stages().declare(blobStage("seed_nuclei", seedLayer));
+    StageDefinition c("seeded_cells");
+    c.readsLayer(seedLayer).writesLayer(cellLayer).pipeline(blobChain());
+    const StageId cells = f.stages().declare(c);
+    StageRunner(*f.workspace, nuclei).run();
+    StageRunner(*f.workspace, cells).run();
+
+    const std::vector<StageId> pair = {nuclei, cells};
+    // Re-runs `first`, then the first stale stage of the pair while any is, at most four
+    // times; returns how many extra runs it took.
+    const auto settle = [&](StageId first) {
+        StageRunner(*f.workspace, first).run();
+        int extra = 0;
+        for (; extra < 4; ++extra) {
+            const auto stale =
+                std::find_if(pair.begin(), pair.end(), [&](StageId s) { return f.stages().isStale(s); });
+            if (stale == pair.end()) break;
+            StageRunner(*f.workspace, *stale).run();
+        }
+        return extra;
+    };
+    for (const StageId first : pair) {
+        EXPECT_LE(settle(first), 2) << "re-running " << f.stages().name(first) << " did not settle";
+        for (const StageId s : pair) {
+            EXPECT_FALSE(f.stages().isStale(s)) << f.stages().name(s);
+            EXPECT_EQ(f.stages().status(s), StageStatus::Complete) << f.stages().name(s);
+        }
+    }
 }
 
 namespace {
@@ -1019,6 +1138,26 @@ TEST(StageRunner, RerunOfDependencyStalesAndThenReleasesDependent) {
     EXPECT_FALSE(f.stages().isStale(nuclei));
 }
 
+// nuclei writes a layer below the one background writes and reads nothing: only the
+// LayerOrdering edge reaches it, and the re-run still marks it stale.
+TEST(StageRunner, RerunMarksLayerOrderingDependentsStale) {
+    Fixture f;
+    const StageId tissueStage = f.stages().declare(blobStage("tissueStage", f.tissue));
+    const StageId nuclei = f.stages().declare(blobStage("nuclei", f.nuclei));
+    ASSERT_EQ(f.stages().dependencyCount(nuclei), 0);
+
+    StageRunner(*f.workspace, tissueStage).run();
+    StageRunner(*f.workspace, nuclei).run();
+    ASSERT_FALSE(f.stages().isStale(nuclei));
+
+    StageRunner(*f.workspace, tissueStage).run();
+    EXPECT_TRUE(f.stages().isStale(nuclei));
+    EXPECT_FALSE(f.stages().isStale(tissueStage));
+    EXPECT_EQ(f.stages().staleness().causeCount(nuclei), 1);
+    EXPECT_EQ(f.stages().staleness().causeAt(nuclei, 0), tissueStage);
+    EXPECT_EQ(f.stages().staleness().causeReasonAt(nuclei, 0), StalenessReason::LayerOrdering);
+}
+
 TEST(StageRunner, RerunOfCellsLeavesAttachedNucleiUntouched) {
     Fixture f;
     LayerLifecycle& life = f.workspace->layerLifecycle();
@@ -1091,8 +1230,12 @@ TEST(StageRunner, GateRefusalWrapsThePipelineError) {
         EXPECT_STREQ(e.stageName(), "two");
         const std::string cause = e.cause();
         EXPECT_NE(cause.find("Pipeline::validate"), std::string::npos) << "the pipeline's own error: " << cause;
-        EXPECT_NE(cause.find("segment.connected_components"), std::string::npos) << cause;
         EXPECT_STREQ(e.operationName(), "segment.connected_components") << "copied from the pipeline's error";
+        // The copied name is left out of the cause, so what() names the operation once.
+        const std::string what = e.what();
+        const size_t first = what.find("segment.connected_components");
+        ASSERT_NE(first, std::string::npos) << what;
+        EXPECT_EQ(what.find("segment.connected_components", first + 1), std::string::npos) << what;
     }
     EXPECT_EQ(f.stages().status(id), StageStatus::Pending) << "refused at the gate";
     EXPECT_EQ(discardEventsOf(f, id), 0);

@@ -1,6 +1,10 @@
 add_library(slideio-processor-workspace OBJECT
     layer_lifecycle.cpp
+    coarse_to_fine.cpp
     stage_registry.cpp
+    staleness_graph.cpp
+    detail/staleness_edges.cpp
+    detail/stage_reads.cpp
     stage_definition.cpp
     detail/stage_record.cpp
     stage_runner.cpp

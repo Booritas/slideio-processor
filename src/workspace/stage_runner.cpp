@@ -94,18 +94,20 @@ public:
         try {
             noteStatus();  // again under the slot: no other run can change it from here
             const StageRegistry& registry = workspace.stages();
-            if (registry.isUnreadable(stage)) {
+            // One locked call, so a declaration on another thread cannot land between a
+            // count and its accessor: the reasons come back in §4.4's order.
+            const char* about = nullptr;
+            switch (registry.runBlocker(stage, about)) {
+            case RunBlocker::None:
+                break;
+            case RunBlocker::Unreadable:
                 throwStage(name, "stage \"" + name + "\" cannot run: its stored record could not be read");
-            }
-            const int32_t count = registry.dependencyCount(stage);
-            for (int32_t i = 0; i < count; ++i) {
-                const StageId dependency = registry.dependencyAt(stage, i);
-                const bool complete = registry.status(dependency) == StageStatus::Complete;
-                if (!complete || registry.isStale(dependency)) {
-                    const std::string dependencyName = registry.name(dependency);
-                    throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + dependencyName +
-                                         (complete ? "\" is stale" : "\" is not complete"));
-                }
+            case RunBlocker::UnresolvedDependency:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is not declared");
+            case RunBlocker::DependencyIncomplete:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is not complete");
+            case RunBlocker::DependencyStale:
+                throwStage(name, "stage \"" + name + "\" cannot run: its dependency \"" + about + "\" is stale");
             }
             checkRasterOwnership(registry.definition(stage));
         } catch (...) {
@@ -192,21 +194,6 @@ public:
         }
     }
 
-    // Decision 3, first step of a re-run: every stage that depends directly on this one is
-    // marked stale, whatever this run's outcome, before anything of this stage changes.
-    void markDependentsStale(StageRegistry& registry) {
-        for (int32_t i = 0; i < registry.count(); ++i) {
-            const StageId other = registry.at(i);
-            const int32_t dependencies = registry.dependencyCount(other);
-            for (int32_t k = 0; k < dependencies; ++k) {
-                if (registry.dependencyAt(other, k) == stage) {
-                    registry.markStale(other);
-                    break;
-                }
-            }
-        }
-    }
-
     // Decision 3, last step of a re-run, after the stage is set Running: the prior output
     // goes. A crash part-way leaves the stage Running, which the next run treats as a re-run.
     void discardPriorOutput(Store& store) {
@@ -252,15 +239,30 @@ public:
         return context;
     }
 
-    // The context of an error built from `original`: this stage, the original's text as
-    // the cause, and the operation and tile the original names.
-    ErrorContext contextOf(const ProcessorError& original) const {
-        ErrorContext context = contextOf(original.what());
+    // The context of an error built from `original`: this stage, `cause` (causeOf the
+    // original, kept alive by the caller), and the operation and tile the original names.
+    ErrorContext contextOf(const ProcessorError& original, const std::string& cause) const {
+        ErrorContext context = contextOf(cause.c_str());
         if (original.operationName()[0] != '\0') context.operationName = original.operationName();
         context.hasTile = original.hasTile();
         context.tileX = original.tileX();
         context.tileY = original.tileY();
         return context;
+    }
+
+    // The original's text as a cause, without the operation and tile it names: the
+    // wrapping error's context carries those, and what() would otherwise repeat them.
+    static std::string causeOf(const ProcessorError& original) {
+        std::string text = original.what();
+        const auto erase = [&text](const std::string& piece) {
+            const size_t at = text.find(piece);
+            if (at != std::string::npos) text.erase(at, piece.size());
+        };
+        if (original.operationName()[0] != '\0') erase(std::string("; operation: ") + original.operationName());
+        if (original.hasTile()) {
+            erase("; tile: (" + std::to_string(original.tileX()) + ", " + std::to_string(original.tileY()) + ")");
+        }
+        return text;
     }
 
     // Decision 5 and error.hpp's exception stance, applied to the exception being
@@ -272,12 +274,15 @@ public:
         try {
             throw;
         } catch (const CancelledError& e) {
-            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw CancelledError(("stage \"" + name + "\" was cancelled").c_str(), contextOf(e, cause));
         } catch (const StageError& e) {
             if (name == e.stageName()) throw;
-            throw StageError(message.c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw StageError(message.c_str(), contextOf(e, cause));
         } catch (const ProcessorError& e) {
-            throw StageError(message.c_str(), contextOf(e));
+            const std::string cause = causeOf(e);
+            throw StageError(message.c_str(), contextOf(e, cause));
         } catch (const std::bad_alloc&) {
             throw;
         } catch (const std::ios_base::failure& e) {
@@ -337,8 +342,9 @@ public:
         try {
             // Decision 3's order: dependents stale, then Running, then the discards, so a
             // crash between any two steps never leaves the stage Complete with part of its
-            // output gone, nor its dependents looking current.
-            if (rerun) markDependentsStale(registry);
+            // output gone, nor its dependents looking current. Step 1 marks every stage the
+            // staleness graph reaches from this one (SDS 04 4.5), whatever this run's outcome.
+            if (rerun) registry.markAffectedStale(stage);
             store->stageStateWriter().setStatus(stage, StageStatus::Running);
             if (rerun) {
                 releaseSelfReads(prepared);  // first: an open source would keep the file

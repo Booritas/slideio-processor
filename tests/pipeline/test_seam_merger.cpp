@@ -208,15 +208,42 @@ TEST(SeamMerger, CompletionOrderDoesNotChangeTheResult) {
         std::vector<int64_t> tiles(static_cast<size_t>(grid.tileCount()));
         std::iota(tiles.begin(), tiles.end(), int64_t{0});
         std::shuffle(tiles.begin(), tiles.end(), random);
+        // On odd trials some tiles are skipped, as a restricted run skips them,
+        // and evaluated only when an open object awaits them. Tiles 2 and 4 hold
+        // objects of their own, so they are never skipped, and one of the bar's
+        // tiles 6 and 7 is always evaluated: every object is then reached.
+        std::vector<char> skipped(static_cast<size_t>(grid.tileCount()), 0);
+        if (trial % 2 == 1) {
+            for (int64_t tile : {0, 1, 3, 5, 6, 7, 8}) {
+                skipped[static_cast<size_t>(tile)] = static_cast<char>(random() % 2);
+            }
+            skipped[static_cast<size_t>(6 + random() % 2)] = 0;
+        }
         // A tile is notified only after its own fragments have arrived, as the executor does.
-        for (int64_t tile : tiles) {
+        const auto evaluate = [&](int64_t tile) {
             for (size_t i : addOrder) {
                 if (fragments[i].tile == tile) {
                     add(*merger, fragments[i]);
                 }
             }
             merger->notifyTileComplete(tile, sink);
+        };
+        for (int64_t tile : tiles) {
+            if (skipped[static_cast<size_t>(tile)] != 0) {
+                detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+            } else {
+                evaluate(tile);
+            }
         }
+        for (std::vector<int64_t> awaited = detail::SeamMergerAccess::takeAwaitedDeferred(*merger);
+             !awaited.empty(); awaited = detail::SeamMergerAccess::takeAwaitedDeferred(*merger)) {
+            EXPECT_TRUE(std::is_sorted(awaited.begin(), awaited.end()));
+            for (int64_t tile : awaited) {
+                EXPECT_NE(skipped[static_cast<size_t>(tile)], 0) << "trial " << trial;
+                evaluate(tile);
+            }
+        }
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
         merger->resolve(sink, nullptr, CancellationToken());
 
         const std::vector<Emitted> emitted = summarise(sink.records());
@@ -415,6 +442,231 @@ TEST(SeamMerger, ResolveHonoursCancellation) {
     CancellationSource source;
     source.cancel();
     EXPECT_THROW(merger->resolve(sink, nullptr, source.token()), CancelledError);
+}
+
+TEST(SeamMerger, SkippedTileKeepsItsComponentOpen) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+    detail::SeamMergerAccess::notifyTileSkipped(*merger, 1);
+    merger->notifyTileComplete(0, sink);
+    // Tile 1 is deferred, not complete: the object waits for it.
+    EXPECT_EQ(sink.emittedCount(), 0);
+    EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+
+    merger->addFragment(1, rectangle(10, 2, 5, 4), kLayer, nullptr, 0);
+    merger->notifyTileComplete(1, sink);
+    ASSERT_EQ(sink.emittedCount(), 1);
+    const ObjectRecord record = sink.records().front();
+    EXPECT_EQ(record.id(), ObjectId::fromAnchor(kLayer, Point64{5, 2}));
+    EXPECT_TRUE(samePoints({ringOf(record.geometry(), 0)}, {{{5, 2}, {15, 2}, {15, 6}, {5, 6}}}));
+    EXPECT_EQ(measurement(record, "area"), 40.0);
+}
+
+TEST(SeamMerger, SkippedTileCompletedBeforeTheFragmentIsStillAwaited) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    // Tile 1 is skipped before the fragment expecting it arrives.
+    detail::SeamMergerAccess::notifyTileSkipped(*merger, 1);
+    merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+    merger->notifyTileComplete(0, sink);
+    EXPECT_EQ(sink.emittedCount(), 0);
+    EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+
+    merger->addFragment(1, rectangle(10, 2, 5, 4), kLayer, nullptr, 0);
+    merger->notifyTileComplete(1, sink);
+    ASSERT_EQ(sink.emittedCount(), 1);
+    EXPECT_EQ(measurement(sink.records().front(), "area"), 40.0);
+}
+
+TEST(SeamMerger, AwaitedDeferredIsReturnedOnce) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    auto merger = mergerFor(grid);
+    ts::CollectingObjectSink sink;
+    detail::SeamMergerAccess::notifyTileSkipped(*merger, 1);
+    detail::SeamMergerAccess::notifyTileSkipped(*merger, 4);
+    merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+    merger->notifyTileComplete(0, sink);
+    EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+    EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+    // Tile 1's fragment reaches on into tile 4, which is then awaited in turn.
+    merger->addFragment(1, rectangle(10, 2, 5, 8), kLayer, nullptr, 0);
+    merger->notifyTileComplete(1, sink);
+    EXPECT_EQ(sink.emittedCount(), 0);
+    EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{4});
+    EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+    merger->addFragment(4, rectangle(12, 10, 3, 3), kLayer, nullptr, 0);
+    merger->notifyTileComplete(4, sink);
+    ASSERT_EQ(sink.emittedCount(), 1);
+    EXPECT_EQ(measurement(sink.records().front(), "area"), 69.0);
+}
+
+// On an 8-connected layer a fragment touching a tile corner awaits the
+// diagonal tile, though no edge of the fragment borders it; on a 4-connected
+// layer it does not.
+TEST(SeamMerger, DeferredDiagonalTileIsAwaitedAcrossACorner) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    for (const bool eight : {true, false}) {
+        auto merger = mergerFor(grid);
+        if (eight) {
+            detail::SeamMergerAccess::setEightConnected(*merger, kLayer);
+        }
+        ts::CollectingObjectSink sink;
+        // The square ends at the corner (10,10); tile 4 lies diagonally across it.
+        detail::SeamMergerAccess::notifyTileSkipped(*merger, 4);
+        merger->addFragment(0, rectangle(5, 5, 5, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        merger->notifyTileComplete(3, sink);
+        if (!eight) {
+            EXPECT_EQ(sink.emittedCount(), 1) << "4-connected: nothing waits on the corner";
+            EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+            continue;
+        }
+        EXPECT_EQ(sink.emittedCount(), 0);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{4});
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        merger->addFragment(4, rectangle(10, 10, 5, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(4, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 50.0);
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 1);
+    }
+}
+
+// Only an object holding a fragment of a tile the pass evaluated demands a
+// tile: one made of fragments of demanded tiles alone demands nothing until
+// it joins such a fragment.
+TEST(SeamMerger, OnlyObjectsWithAPassFragmentDemandTiles) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        for (const int64_t tile : {1, 2, 4, 5}) {
+            detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+        }
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+
+        // Tile 1, evaluated on demand: the first fragment joins the pass
+        // fragment and reaches tile 2; the second, alone, reaches tile 4.
+        merger->addFragment(1, rectangle(10, 2, 10, 4), kLayer, nullptr, 0);
+        merger->addFragment(1, rectangle(16, 7, 3, 3), kLayer, nullptr, 0);
+        merger->notifyTileComplete(1, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{2});
+
+        merger->addFragment(2, rectangle(20, 2, 3, 4), kLayer, nullptr, 0);
+        merger->notifyTileComplete(2, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 72.0);
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        // Tile 4 was never evaluated: the lone fragment closes with it.
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        ASSERT_EQ(sink.emittedCount(), 2);
+        EXPECT_EQ(measurement(sink.records().back(), "area"), 9.0);
+        for (const int64_t tile : {3, 6, 7, 8}) {
+            merger->notifyTileComplete(tile, sink);
+        }
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 2);
+    }
+    {
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        for (const int64_t tile : {1, 2, 4}) {
+            detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+        }
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        merger->addFragment(3, rectangle(5, 15, 5, 3), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(3, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), (std::vector<int64_t>{1, 4}));
+
+        // Tile 1's fragment reaches tiles 2 and 4 but holds no pass fragment:
+        // tile 2 is not demanded yet.
+        merger->addFragment(1, rectangle(12, 5, 8, 5), kLayer, nullptr, 0);
+        merger->notifyTileComplete(1, sink);
+        EXPECT_EQ(sink.emittedCount(), 1) << "tile 0's fragment closes alone";
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+
+        // Tile 4's fragment joins it to tile 3's pass fragment: now tile 2 is demanded.
+        merger->addFragment(4, rectangle(10, 10, 5, 6), kLayer, nullptr, 0);
+        merger->notifyTileComplete(4, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{2});
+
+        merger->addFragment(2, rectangle(20, 5, 2, 2), kLayer, nullptr, 0);
+        merger->notifyTileComplete(2, sink);
+        ASSERT_EQ(sink.emittedCount(), 2);
+        EXPECT_EQ(measurement(sink.records().back(), "area"), 89.0);
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        for (const int64_t tile : {5, 6, 7, 8}) {
+            merger->notifyTileComplete(tile, sink);
+        }
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 2);
+    }
+}
+
+TEST(SeamMerger, CompleteDeferredClosesWhatNothingAwaits) {
+    const TileGrid grid = gridOf(3, 3, 10, 10);
+    {
+        // Every tile but 0 and 1 is deferred and nothing awaits them: they
+        // complete without evaluation, emit nothing and leave nothing open.
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        for (int64_t tile = 2; tile < grid.tileCount(); ++tile) {
+            detail::SeamMergerAccess::notifyTileSkipped(*merger, tile);
+        }
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        merger->addFragment(1, rectangle(10, 2, 5, 4), kLayer, nullptr, 0);
+        merger->notifyTileComplete(0, sink);
+        merger->notifyTileComplete(1, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_TRUE(detail::SeamMergerAccess::takeAwaitedDeferred(*merger).empty());
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        EXPECT_EQ(sink.emittedCount(), 1);
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(merger->residentFragmentCount(), 0);
+    }
+    {
+        // A deferred tile never taken as awaited is completed all the same, and
+        // what it held open closes and is emitted.
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        detail::SeamMergerAccess::notifyTileSkipped(*merger, 1);
+        merger->notifyTileComplete(0, sink);
+        EXPECT_EQ(sink.emittedCount(), 0);
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        ASSERT_EQ(sink.emittedCount(), 1);
+        EXPECT_EQ(measurement(sink.records().front(), "area"), 20.0);
+        merger->resolve(sink, nullptr, CancellationToken());
+        EXPECT_EQ(sink.emittedCount(), 1);
+    }
+    {
+        // A demanded tile is left for its evaluation: until it completes, its
+        // object stays open.
+        auto merger = mergerFor(grid);
+        ts::CollectingObjectSink sink;
+        merger->addFragment(0, rectangle(5, 2, 5, 4), kLayer, nullptr, 0);
+        detail::SeamMergerAccess::notifyTileSkipped(*merger, 1);
+        merger->notifyTileComplete(0, sink);
+        EXPECT_EQ(detail::SeamMergerAccess::takeAwaitedDeferred(*merger), std::vector<int64_t>{1});
+        detail::SeamMergerAccess::completeDeferred(*merger, sink);
+        EXPECT_EQ(sink.emittedCount(), 0);
+        EXPECT_THROW(merger->resolve(sink, nullptr, CancellationToken()), InternalError);
+    }
 }
 
 TEST(SeamMerger, MergeFailureNamesTheLayerNotTheGeometry) {

@@ -12,8 +12,10 @@ add_executable(slideio_processor_workspace_tests
     # tests do; the library's copy stays internal to it and the two never meet.
     ${PROJECT_SOURCE_DIR}/src/storage/detail/half_float.cpp
     test_layer_lifecycle.cpp
+    test_coarse_to_fine.cpp
     test_stage_definition.cpp
     test_stage_registry.cpp
+    test_staleness_graph.cpp
     test_stage_runner.cpp
     test_workspace.cpp
 )

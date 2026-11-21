@@ -1037,10 +1037,12 @@ classDiagram
 
     class CoarseToFineSpec {
         <<ThreadConfined, sugar over StageDefinition>>
+        +CoarseToFineSpec(cstr coarseName, cstr fineName)
         +coarse(PipelineSpec, LayerId) CoarseToFineSpec
         +fine(PipelineSpec, LayerId) CoarseToFineSpec
         +binding(cstr, LayerRasterContent) CoarseToFineSpec
         +restrictFineToCoarse(bool) CoarseToFineSpec
+        +declareCoarseToFine(StageRegistry, CoarseToFineSpec, StageId&, StageId&) void
     }
 
     class StageDefinition {
@@ -1092,11 +1094,16 @@ classDiagram
         +dependencyCount(StageId) int32_t
         +dependencyAt(StageId, int32_t) StageId
         +isExplicitDependency(StageId, int32_t) bool
+        +unresolvedDependencyCount(StageId) int32_t
+        +unresolvedDependencyAt(StageId, int32_t) cstr
         +isRunnable(StageId) bool
+        +runBlocker(StageId, cstr&) RunBlocker
         +isUnreadable(StageId) bool
         +definition(StageId) StageDefinition
         +markStale(StageId) void
+        +markAffectedStale(StageId) void
         +clearStale(StageId) void
+        +staleness() StalenessGraph
     }
 
     class StageRunner {
@@ -1174,7 +1181,7 @@ classDiagram
     StageRunner ..> TileMaskSource : makeLayerMaskSource, binds
     StageRunner ..> TileRasterSource : makeLayerRasterSource, binds
     StageRunner ..> RasterWriter : writerForStage, flush last, abandon on failure
-    StageRunner ..> StageRegistry : markStale of dependents on re-run, clearStale on success
+    StageRunner ..> StageRegistry : markAffectedStale along the staleness graph on re-run, clearStale on success
     StageRunner ..> ObjectStore : discardStage on re-run and on failure
     StageRunner ..> EdgeStore : discardEdgesOfStage
     StageRunner ..> AnnotationStore : discardAnnotationsOfStage
@@ -1217,8 +1224,9 @@ reaching both `pipeline` and `storage`, which is the only way UR-EXE-2's
 ceiling can span raster tiles, object accumulation and store buffers at once.
 
 `StageRunner`'s failure and re-run paths are what call the four
-`discard...` calls, and `markStale` on a stage's direct dependents. On a
-re-run it marks the dependents stale, then sets the stage `Running`, then
+`discard...` calls, and `markAffectedStale`, which marks stale every stage the
+staleness graph says a re-run invalidates (`04-workspace.md` 4.5). On a
+re-run it marks those stages stale, then sets the stage `Running`, then
 discards, so a crash part-way never leaves the stage `Complete` with its output
 gone; on a failure it abandons the raster writer, discards, and sets
 `Failed`, with each step best effort so that the exception that propagates is
@@ -1234,6 +1242,15 @@ stated boundary. The split is now by authority — the registry owns the durable
 flag and is its only writer, the graph is a read-only view that says what a
 re-run would invalidate and why a stage is stale, and `staleness()` is how a
 caller reaches it.
+
+**`declareCoarseToFine` is a free function, drawn with the spec it consumes.** It
+validates the whole spec, then declares the coarse stage and the fine one through
+`StageRegistry::declare`; the pair is not atomic. The graph follows five paths
+(layer read, raster read, layer ordering, derived-from, explicit `dependsOn`), and
+`markAffectedStale` marks what its forward answer lists in one locked pass. A
+`dependsOn` may name a stage declared later: `unresolvedDependencyCount` and
+`unresolvedDependencyAt` list the names not yet resolved, and such a stage is not
+runnable until they are.
 
 ---
 
