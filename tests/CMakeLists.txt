@@ -1,6 +1,7 @@
 add_subdirectory(core)
 add_subdirectory(config)
 add_subdirectory(storage)
+add_subdirectory(reporting)
 add_subdirectory(pipeline)
 add_subdirectory(algorithm)
 add_subdirectory(workspace)

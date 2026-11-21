@@ -437,3 +437,13 @@ IDs are those the tests under `tests/workspace/` declare. The module so far hold
 | UR-SEG-8 | `tests/workspace/test_coarse_to_fine.cpp` | CoarseToFine.DeclaresTwoWiredStages, CoarseToFine.BindingAndRestrictionCanBeChanged, CoarseToFine.CopyAndAssignmentAreIndependent, CoarseToFine.LevelsMustBeStrictlyOrdered, CoarseToFine.SameNamesOrLayersAreRefused, CoarseToFine.MissingHalfIsRefused, CoarseToFine.FailedFineDeclareLeavesTheCoarseStageDeclared, CoarseToFine.PairRunsEndToEnd |
 | UR-IMG-4 | `tests/workspace/test_coarse_to_fine.cpp` | CoarseToFine.DeclaresTwoWiredStages, CoarseToFine.BindingAndRestrictionCanBeChanged, CoarseToFine.CopyAndAssignmentAreIndependent, CoarseToFine.LevelsMustBeStrictlyOrdered, CoarseToFine.SameNamesOrLayersAreRefused, CoarseToFine.MissingHalfIsRefused, CoarseToFine.FailedFineDeclareLeavesTheCoarseStageDeclared, CoarseToFine.PairRunsEndToEnd |
 | UR-STG-10 | `tests/workspace/test_coarse_to_fine.cpp` | CoarseToFine.DeclaresTwoWiredStages, CoarseToFine.BindingAndRestrictionCanBeChanged, CoarseToFine.CopyAndAssignmentAreIndependent, CoarseToFine.LevelsMustBeStrictlyOrdered, CoarseToFine.SameNamesOrLayersAreRefused, CoarseToFine.MissingHalfIsRefused, CoarseToFine.FailedFineDeclareLeavesTheCoarseStageDeclared, CoarseToFine.PairRunsEndToEnd |
+
+## reporting
+
+IDs are those the tests under `tests/reporting/` declare. Reporting plan A so far holds the module wiring, `ExportResult` and `materialise` (SDS 07 §7.1, §7.7).
+
+| Requirement | Test file | Tests |
+|---|---|---|
+| UR-QA-3 | `tests/reporting/test_materialise.cpp` | MaterialiseTest.ReadsAFilteredQuery, MaterialiseTest.RefusesUnfilteredQuery, MaterialiseTest.RefusesNonPositiveCap, MaterialiseTest.RefusesCountAboveCap, MaterialiseTest.AtOutOfRangeThrows, ExportResult.ReportsItsValues |
+| UR-RES-6 | `tests/reporting/test_materialise.cpp` | MaterialiseTest.ReadsAFilteredQuery, MaterialiseTest.RefusesUnfilteredQuery, MaterialiseTest.RefusesNonPositiveCap, MaterialiseTest.RefusesCountAboveCap, MaterialiseTest.AtOutOfRangeThrows, ExportResult.ReportsItsValues |
+| UR-RES-9 | `tests/reporting/test_materialise.cpp` | MaterialiseTest.ReadsAFilteredQuery, MaterialiseTest.RefusesUnfilteredQuery, MaterialiseTest.RefusesNonPositiveCap, MaterialiseTest.RefusesCountAboveCap, MaterialiseTest.AtOutOfRangeThrows, ExportResult.ReportsItsValues |
