@@ -352,10 +352,12 @@ auto StoreGate::with(const char* operation, Fn&& fn) -> decltype(fn(std::declval
     return fn(*store_);
 }
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 // Test seam, the one function `Store` befriends: tracks `client` on the open store's gate,
 // so a detail test can act inside Store::close(). Exported, as a Store lives in the
 // library; nothing in the library calls it.
 SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std::shared_ptr<GateClient>& client);
+#endif
 
 // Takes the writer lock for creating a store at `path` (UTF-8), which the caller found
 // free; another creator may have taken it since. Throws IoError "Store::open: '<path>'

@@ -6,6 +6,8 @@
 // and of its re-run discards, which no argument or storage state can reach
 // deterministically.
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
+
 #include <slideio/processor/pipeline/export.hpp>
 
 namespace slideio::processor::detail {
@@ -21,3 +23,5 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS void failNextStageFailureRecordingForTesting() 
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS void failNextRerunDiscardForTesting() noexcept;
 
 } // namespace slideio::processor::detail
+
+#endif  // SLIDEIO_PROCESSOR_TEST_SEAMS

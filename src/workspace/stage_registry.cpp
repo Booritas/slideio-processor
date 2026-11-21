@@ -35,6 +35,7 @@ namespace slideio::processor {
 
 namespace {
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 std::atomic<bool> gReadStoredCountAsZero{false};
 
 std::mutex gDeclareHookMutex;
@@ -52,6 +53,7 @@ void runDeclareHook() {
     }
     if (hook != nullptr) hook(context);
 }
+#endif
 
 using Entry = detail::StageRef;
 using detail::quoted;
@@ -188,6 +190,7 @@ std::vector<Entry> entriesOf(const Definitions& definitions) {
 
 } // namespace
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 void detail::readNextStoredStageCountAsZeroForTesting() noexcept { gReadStoredCountAsZero.store(true); }
 
 void detail::hookNextDeclareMidwayForTesting(void (*hook)(void*), void* context) noexcept {
@@ -195,6 +198,7 @@ void detail::hookNextDeclareMidwayForTesting(void (*hook)(void*), void* context)
     gDeclareHook = hook;
     gDeclareHookContext = context;
 }
+#endif
 
 class StageRegistry::Impl {
 public:
@@ -395,7 +399,11 @@ public:
             nextDefinitions[id.value()] = std::make_unique<StageDefinition>(name);
             nextUnreadable.insert(id.value());
         };
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         const int32_t stored = gReadStoredCountAsZero.exchange(false) ? 0 : reader.count();
+#else
+        const int32_t stored = reader.count();
+#endif
         // Stages are never removed, so fewer than the snapshot holds means the store cannot
         // be read (count() answers 0 once it is closed): the snapshot stands.
         if (stored < static_cast<int32_t>(snapshot.size())) return;
@@ -639,7 +647,9 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
             if (!store.isReadOnly()) batch.emplace(writer);
             for (const int32_t stage : stale) writer.setStale(StageId(stage), true);
             writer.setConfiguration(existing, record.c_str());
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
             runDeclareHook();
+#endif
             addWrittenLayers(existing);
             impl_->persist(next.graph);
             if (batch) batch->commit();
@@ -661,7 +671,9 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     std::optional<StageStateWriter::Batch> batch;  // none on a read-only store, as above
     if (!store.isReadOnly()) batch.emplace(writer);
     const StageId id = writer.declare(definition.name(), record.c_str());
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
     runDeclareHook();
+#endif
     candidate.back().id = id.value();  // the new stage's entry, re-keyed from its placeholder
     Impl::Derived next = impl_->derive(candidate, candidatePins);
     addWrittenLayers(id);

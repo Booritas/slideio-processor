@@ -29,7 +29,6 @@ find_package(OpenCV REQUIRED)
 if(OpenCV_VERSION VERSION_LESS 4)
   message(FATAL_ERROR "OpenCV 4 or later is required; found ${OpenCV_VERSION}")
 endif()
-find_package(GTest REQUIRED)
 find_package(RapidJSON REQUIRED)
 find_package(SQLite3 REQUIRED)
 # Raster TIFF I/O in storage, linked privately (see src/storage/CMakeLists.txt).
@@ -38,9 +37,27 @@ find_package(ZLIB REQUIRED)
 # The storage wake-up signal uses sem_*, in libpthread on glibc before 2.34.
 find_package(Threads REQUIRED)
 
+# Test seams: test-only exports (the detail::*ForTesting functions and
+# detail::trackForCloseTesting) and the production branches that read them. Turn this off
+# for a release package: the seams are compiled out, GTest is not required and tests/ is
+# not built; scripts/check-no-test-seams.sh checks the result. Not gated, as they are not
+# exported: WriterLock::acquire(path, afterOpen), TiffRasterReader's openHook_ and
+# TileSpool::piecesStored/piecesDecoded.
+option(SLIDEIO_PROCESSOR_TEST_SEAMS
+       "Build and export the test-only seams the tests need; turn off for release packages" ON)
+if(SLIDEIO_PROCESSOR_TEST_SEAMS)
+    # Directory-scoped: nothing reaches an installed or exported package configuration.
+    add_compile_definitions(SLIDEIO_PROCESSOR_TEST_SEAMS=1)
+    find_package(GTest REQUIRED)
+else()
+    message(STATUS "slideio-processor: test seams off; tests are not built")
+endif()
+
 enable_testing()
 add_subdirectory(src)
-add_subdirectory(tests)
+if(SLIDEIO_PROCESSOR_TEST_SEAMS)
+    add_subdirectory(tests)
+endif()
 
 # Optional API documentation: only when Doxygen is installed.
 find_package(Doxygen QUIET)

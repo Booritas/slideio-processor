@@ -6,6 +6,8 @@
 // between the change check and the restore, which no argument or storage state can reach
 // deterministically.
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
+
 #include <slideio/processor/pipeline/export.hpp>
 
 namespace slideio::processor::detail {
@@ -16,3 +18,5 @@ namespace slideio::processor::detail {
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS void readNextStoredStageCountAsZeroForTesting() noexcept;
 
 } // namespace slideio::processor::detail
+
+#endif  // SLIDEIO_PROCESSOR_TEST_SEAMS

@@ -17,3 +17,5 @@ docs/algorithms/*.pdf
 
 # Local CMake presets
 CMakeUserPresets.json
+build-noseams/
+build-noseams-debug/

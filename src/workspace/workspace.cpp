@@ -145,6 +145,7 @@ void undoCreate(const fs::path& directory, bool madeDirectory, bool madeStore, c
     }
 }
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 std::atomic<bool> gFailNextCreate{false};
 
 std::mutex gHookMutex;
@@ -162,9 +163,11 @@ void runCreateHook() {
     }
     if (hook != nullptr) hook(context);
 }
+#endif
 
 } // namespace
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 void detail::failNextWorkspaceCreateForTesting() noexcept { gFailNextCreate.store(true); }
 
 void detail::hookNextWorkspaceCreateForTesting(void (*hook)(void*), void* context) noexcept {
@@ -172,6 +175,7 @@ void detail::hookNextWorkspaceCreateForTesting(void (*hook)(void*), void* contex
     gHook = hook;
     gHookContext = context;
 }
+#endif
 
 class Workspace::Impl {
 public:
@@ -255,7 +259,9 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     // From here a failure removes what this call made, and only that, so the path is
     // as it was and a retry can succeed. What it made is tracked, never inferred: a
     // racing create on the same path may own everything else there.
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
     runCreateHook();
+#endif
     bool madeDirectory = false;
     if (!existed) {
         // Not create_directories: the parent must exist, so a mistyped path makes nothing.
@@ -279,9 +285,11 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
         provenance.setSlideId(slideText.c_str());
         provenance.setSceneIndex(sceneIndex);
         store->setProvenance(provenance);
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         if (gFailNextCreate.exchange(false)) {
             throwIo(std::string(kOperation) + ": injected failure for '" + directory.u8string() + "'", "");
         }
+#endif
         resetScratch(directory / kScratchName, kOperation);
         return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, slideText, sceneIndex, false,
                                                                  configuration, std::move(store), std::move(slide),

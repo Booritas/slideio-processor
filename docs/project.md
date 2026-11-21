@@ -204,6 +204,11 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   dependents stale, sets the stage `Running`, and only then discards the prior
   output. Annotation-target checks are deferred (decision 7).
   **Implemented**; merged to `main` (merge commit 491e2a9).
+  - **Resolved (test seams): the test-only seams were exported from release builds.**
+    The CMake option `SLIDEIO_PROCESSOR_TEST_SEAMS` (default ON) compiles the
+    `detail::*ForTesting` functions, `detail::trackForCloseTesting` and the branches
+    that read them out of a build made with `./build.sh --no-test-seams`;
+    `scripts/check-no-test-seams.sh` checks the export tables (SDS 00 C-15).
 - [Workspace implementation plan C](superpowers/plans/2026-11-20-workspace-c.md) —
   plan C of three for the `workspace` module: `StalenessGraph` (SDS 04 §4.5) over
   five edge paths (layer read, raster read, layer ordering, derived-from, explicit

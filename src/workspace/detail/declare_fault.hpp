@@ -7,6 +7,8 @@
 // deterministically: to show that a reader refreshing there sees no half-written
 // declaration, and that a declare failing there changes nothing.
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
+
 #include <slideio/processor/pipeline/export.hpp>
 
 namespace slideio::processor::detail {
@@ -20,3 +22,5 @@ namespace slideio::processor::detail {
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS void hookNextDeclareMidwayForTesting(void (*hook)(void*), void* context) noexcept;
 
 } // namespace slideio::processor::detail
+
+#endif  // SLIDEIO_PROCESSOR_TEST_SEAMS

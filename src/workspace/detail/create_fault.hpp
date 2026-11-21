@@ -7,6 +7,8 @@
 // a racing create on the same path between its occupancy check and its first write,
 // to show that a failed create removes what it made and only that.
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
+
 #include <slideio/processor/pipeline/export.hpp>
 
 namespace slideio::processor::detail {
@@ -22,3 +24,5 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS void failNextWorkspaceCreateForTesting() noexce
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS void hookNextWorkspaceCreateForTesting(void (*hook)(void*), void* context) noexcept;
 
 } // namespace slideio::processor::detail
+
+#endif  // SLIDEIO_PROCESSOR_TEST_SEAMS

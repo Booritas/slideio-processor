@@ -58,14 +58,18 @@ namespace {
     throw StageError(message.c_str(), context);
 }
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 std::atomic<bool> gFailNextRecording{false};
 std::atomic<bool> gFailNextRerunDiscard{false};
+#endif
 
 } // namespace
 
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
 void detail::failNextStageFailureRecordingForTesting() noexcept { gFailNextRecording.store(true); }
 
 void detail::failNextRerunDiscardForTesting() noexcept { gFailNextRerunDiscard.store(true); }
+#endif
 
 class StageRunner::Impl {
 public:
@@ -197,7 +201,9 @@ public:
     // Decision 3, last step of a re-run, after the stage is set Running: the prior output
     // goes. A crash part-way leaves the stage Running, which the next run treats as a re-run.
     void discardPriorOutput(Store& store) {
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         if (gFailNextRerunDiscard.exchange(false)) throw IoError("injected re-run discard fault");
+#endif
         store.objects().discardStage(stage);
         store.edges().discardEdgesOfStage(stage);
         store.annotations().discardAnnotationsOfStage(stage);
@@ -210,19 +216,25 @@ public:
     void recordFailure(Store& store, RasterWriterPtr& rasterWriter) noexcept {
         objects = 0;
         edges = 0;
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         injectFault = gFailNextRecording.exchange(false);
+#endif
         guarded("abandoning the raster writer", [&] { rasterWriter.reset(); });
         guarded("discarding its objects", [&] { store.objects().discardStage(stage); });
         guarded("discarding its edges", [&] { store.edges().discardEdgesOfStage(stage); });
         guarded("discarding its annotations", [&] { store.annotations().discardAnnotationsOfStage(stage); });
         guarded("discarding its raster", [&] { store.rasters().discardRasterOfStage(stage); });
         guarded("marking it Failed", [&] { store.stageStateWriter().setStatus(stage, StageStatus::Failed); });
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         injectFault = false;
+#endif
     }
 
     template <class Step> void guarded(const char* what, Step step) noexcept {
         try {
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
             if (injectFault) throw IoError("injected recording fault");
+#endif
             step();
         } catch (const std::exception& e) {
             logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what, e.what());
@@ -390,7 +402,9 @@ public:
     ProgressObserver* progress = nullptr;
     CancellationToken cancel;
     bool rerun = false;
+#if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
     bool injectFault = false;  ///< Test seam: the current recording's steps all throw.
+#endif
     int64_t objects = 0;
     int64_t edges = 0;
 };

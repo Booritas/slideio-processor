@@ -252,3 +252,31 @@ int32_t     standardVocabularyVersion() noexcept;  // UR-RES-17
 
 Header include order, formatting, the clang-format configuration, and internal
 (`detail/`) naming. Those belong to the implementation plan.
+
+## C-15. Test seams and release builds
+
+A few internals exist only so tests can reach failures no argument or storage state
+can: six `detail::*ForTesting` functions, declared in
+`src/workspace/detail/{create,declare,refresh,run}_fault.hpp` and exported from the
+engine, and `detail::trackForCloseTesting`, declared in `storage/store.hpp` (with its
+`Store` friend declaration) and exported from the data library. They are not API, but
+an exported symbol is reachable by any consumer of the package, and one of them
+(`detail::trackForCloseTesting`) sits in a public header.
+
+The CMake option `SLIDEIO_PROCESSOR_TEST_SEAMS` (default ON) decides whether they
+exist. When ON, the build defines the macro `SLIDEIO_PROCESSOR_TEST_SEAMS` for every
+target in the build tree, and the tests build. When OFF, these are compiled out:
+
+- every declaration in the four `*_fault.hpp` headers and each matching definition;
+- the globals they set and every production branch that reads them, including
+  `StageRunner`'s `injectFault` member and its uses;
+- `trackForCloseTesting`'s declaration, definition and friend declaration.
+
+With the macro undefined the code behaves as a seam that was never armed. `tests/` is
+not added and GTest is not required. The macro is never defined for a consumer outside
+the build tree, so the public header a consumer sees carries no seam; friend
+declarations do not change the class layout, so ABI is unaffected.
+
+A release package is built with `./build.sh --no-test-seams` (into `build-noseams`),
+and `scripts/check-no-test-seams.sh <build dir>` verifies that neither shared library
+exports a symbol containing `Testing`.

@@ -4,7 +4,7 @@
 #   2. builds and installs SlideIO from the submodule into build/slideio-install,
 #   3. installs this project's Conan dependencies,
 #   4. configures and builds this project.
-# Run the tests afterwards with ./run-tests.sh.
+# Run the tests afterwards with ./run-tests.sh (not after --no-test-seams).
 #
 # Usage: ./build.sh [options]
 #   -c, --config <release|debug>  Configuration of this project (default: release).
@@ -15,6 +15,9 @@
 #       --rebuild-slideio         Reinstall SlideIO even if the installed copy
 #                                 matches the submodule commit.
 #       --skip-slideio            Do not touch the SlideIO install.
+#       --no-test-seams           Build without the test-only seams, as for a release
+#                                 package; tests are not built. Writes build-noseams
+#                                 (build-noseams-debug for debug).
 #   -h, --help                    Show this help.
 #
 # Environment:
@@ -25,18 +28,20 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "build.sh: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
 config=release
 rebuild_slideio=0
 skip_slideio=0
+test_seams=ON
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--config) [[ $# -ge 2 ]] || die "$1 needs a value"; config="$2"; shift 2 ;;
         --rebuild-slideio) rebuild_slideio=1; shift ;;
         --skip-slideio) skip_slideio=1; shift ;;
+        --no-test-seams) test_seams=OFF; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option '$1' (see --help)" ;;
     esac
@@ -46,6 +51,8 @@ case "$config" in
     debug) build_type=Debug; build_dir=build-debug ;;
     *) die "--config must be release or debug, not '$config'" ;;
 esac
+# A build without the seams has its own tree, so it never replaces the build the tests use.
+if [[ "$test_seams" == OFF ]]; then build_dir="build-noseams${build_dir#build}"; fi
 # SlideIO's API passes std::string, std::vector and std::shared_ptr across its DLL
 # boundary. MSVC lays those out differently in Debug and Release and nothing detects
 # the mismatch, so a Debug build against the Release SlideIO installed below would
@@ -172,9 +179,14 @@ step "Configuring ($build_type)"
 cmake -S . -B "$build_dir" \
       -DCMAKE_TOOLCHAIN_FILE="$(native "$root/$build_dir/conan/conan_toolchain.cmake")" \
       -DCMAKE_PREFIX_PATH="$(native "$slideio_prefix/release")" \
-      -DCMAKE_BUILD_TYPE="$build_type"
+      -DCMAKE_BUILD_TYPE="$build_type" \
+      -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams"
 
 step "Building ($build_type)"
 cmake --build "$build_dir" --config "$build_type" --parallel
 
-step "Done: $build_dir ($build_type). Run the tests with ./run-tests.sh -c $config"
+if [[ "$test_seams" == OFF ]]; then
+    step "Done: $build_dir ($build_type), no test seams. Check it with scripts/check-no-test-seams.sh $build_dir"
+else
+    step "Done: $build_dir ($build_type). Run the tests with ./run-tests.sh -c $config"
+fi
