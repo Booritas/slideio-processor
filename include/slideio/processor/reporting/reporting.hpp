@@ -5,8 +5,8 @@
  * @brief Umbrella header: includes every public header of the reporting module.
  *
  * Including this file is equivalent to including each header under
- * slideio/processor/reporting/ individually. It currently covers column_schema.hpp, export_result.hpp
- * and materialise.hpp.
+ * slideio/processor/reporting/ individually. It currently covers column_schema.hpp,
+ * export_result.hpp and materialise.hpp.
  *
  * Thread-safety: not applicable (declarations only).
  */

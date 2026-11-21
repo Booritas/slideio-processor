@@ -77,7 +77,8 @@ public:
 };
 
 /** Resolves the schema against the measurement names the store holds. */
-SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store);
+SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS ResolvedColumns resolveColumns(const ColumnSchema& schema,
+                                                                   Store& store);
 
 /** The fixed columns of the schema, in order. */
 std::vector<ResolvedColumn> fixedColumns(const ColumnSchema::Impl& settings);

@@ -43,8 +43,11 @@ bool needsQuoting(const std::string& s) {
 ColumnSchema::ColumnSchema() : impl_(makeDefault()) {}
 ColumnSchema::ColumnSchema(const ColumnSchema& other)
     : impl_(std::make_unique<Impl>(*other.impl_)) {}
-ColumnSchema::ColumnSchema(ColumnSchema&& other) : impl_(std::move(other.impl_)) {
-    other.impl_ = makeDefault();
+ColumnSchema::ColumnSchema(ColumnSchema&& other) {
+    // The default is built first, so a throw leaves the source untouched and valid.
+    auto fresh = makeDefault();
+    impl_ = std::move(other.impl_);
+    other.impl_ = std::move(fresh);
 }
 ColumnSchema& ColumnSchema::operator=(const ColumnSchema& other) {
     if (this != &other) impl_ = std::make_unique<Impl>(*other.impl_);

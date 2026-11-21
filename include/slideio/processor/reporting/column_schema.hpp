@@ -21,7 +21,8 @@ enum class IdFormat : int32_t {
 
 /** @brief Which labels an object's label columns carry. */
 enum class LabelPolicy : int32_t {
-    EffectiveSet,  ///< Every label, ';'-separated, with a parallel workspace-local flag list (default).
+    /// Every label, ';'-separated, with a parallel workspace-local flag list (default).
+    EffectiveSet,
     ProducerOnly   ///< The label of the producing stage alone.
 };
 
@@ -181,7 +182,9 @@ public:
      * @brief Adds, when a writer starts, every measurement the store holds, after the
      * explicit names, in ascending byte order and without duplicates.
      *
-     * Calling it twice is the same as once.
+     * Store names ending in ".um" or ".um2" are skipped: they are calibrated twins, and
+     * units() decides whether a twin column is written beside its base name. Calling it
+     * twice is the same as once.
      * @return This schema.
      * @throws std::bad_alloc When memory is exhausted.
      */

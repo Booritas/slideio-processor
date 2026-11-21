@@ -68,8 +68,8 @@ else
     exports() { nm -D --defined-only "$1"; }
 fi
 
-# Engine functions that production calls only inside the engine; they are exported only
-# when test seams are on, so tests can reach them. Each entry is matched as a substring.
+# Detail functions that production calls only inside their own library; they are exported
+# only when test seams are on, so tests can reach them. Each name is matched as a substring.
 test_only=(
     SeamMergerAccess     # the owner of notifyTileSkipped, takeAwaitedDeferred and completeDeferred;
                          # matched by owner because SeamMerger::Impl has methods of the same
