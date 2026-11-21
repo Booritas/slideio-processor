@@ -466,6 +466,7 @@ IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds
 | UR-SEG-6 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.DefaultSchemaKeepsEveryMeasurement, GeoJsonExport.SchemaSelectsMeasurementsAndUnits, GeoJsonExport.NonFiniteMeasurementIsOmitted, GeoJsonExport.LaterStageMeasurementsAreKeys, GeoJsonExport.FixedColumnNamedMeasurementIsKept, GeoJsonExport.RowTwinWithoutBaseIsKept |
 | UR-QA-3 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.ExportIsDeterministic |
 | UR-RES-7 | `tests/reporting/test_raster_tiff_writer.cpp` | RasterTiffWriterTest.WritesTheRegionAtTheScale, RasterTiffWriterTest.NonIntegerScaleTilesTheRegionContiguously, RasterTiffWriterTest.ExactQuotientDoesNotOvershootAPixel, RasterTiffWriterTest.CompressionsRoundTrip, RasterTiffWriterTest.ResolutionWritesPhysicalSize, RasterTiffWriterTest.CancelledWriteLeavesNoFile, RasterTiffWriterTest.CancelledWriteKeepsAnExistingFile, RasterTiffWriterTest.ReportsProgressPerTile, RasterTiffWriterTest.RefusesBadArguments, RasterTiffWriterTest.RefusesTypesTheOmeLayoutCannotHold, RasterTiffWriterTest.AFailingSourceLeavesNoFile, RasterTiffWriterTest.WriteIsDeterministic |
+| UR-RES-7 | `tests/reporting/test_label_mask.cpp` | LabelMaskTest.ValuesFollowTheQuery, LabelMaskTest.RequiresALayer, LabelMaskTest.QueryFiltersApply, LabelMaskTest.ScaledTilesMatchTheirLevel |
 | UR-QA-3 | `tests/reporting/test_raster_tiff_writer.cpp` | RasterTiffWriterTest.WriteIsDeterministic |
 
 ## masks

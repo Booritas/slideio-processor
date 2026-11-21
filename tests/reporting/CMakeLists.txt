@@ -6,6 +6,7 @@ add_executable(slideio_processor_reporting_tests
     test_csv_writer.cpp
     test_geojson_exporter.cpp
     test_raster_tiff_writer.cpp
+    test_label_mask.cpp
 )
 # store_fixture.hpp (header-only) comes from tests/storage through ${PROJECT_SOURCE_DIR}/tests.
 # rapidjson (header-only) parses the GeoJSON exports in test_geojson_exporter.cpp.
