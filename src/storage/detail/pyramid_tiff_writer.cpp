@@ -84,8 +84,10 @@ std::string imageDescription(const PyramidMetadata& metadata, DataType type) {
 }
 
 // The OME-XML Pixels Type for `type` (OME schema 2016-06, as SlideIO's OTTools::
-// stringToDataType reads it), or null for a type OME-XML cannot name. uint64 and int64
-// are not in the schema; SlideIO's driver reads them, and they keep an Int64 anchor exact.
+// stringToDataType reads it), or null for a type the OME layout refuses: Float16, which
+// OME-XML cannot name, and UInt32, UInt64 and Int64, whose TIFF samples SlideIO's
+// directory scan rejects (retrieveTiffDataType reads 32-bit samples as INT or IEEEFP
+// only, and 64-bit ones as IEEEFP only), so SlideIO would open no scene.
 const char* omePixelType(DataType type) {
     switch (type) {
     case DataType::Byte:
@@ -96,14 +98,8 @@ const char* omePixelType(DataType type) {
         return "uint16";
     case DataType::Int16:
         return "int16";
-    case DataType::UInt32:
-        return "uint32";
     case DataType::Int32:
         return "int32";
-    case DataType::UInt64:
-        return "uint64";
-    case DataType::Int64:
-        return "int64";
     case DataType::Float32:
         return "float";
     case DataType::Float64:
@@ -111,6 +107,16 @@ const char* omePixelType(DataType type) {
     default:
         return nullptr;
     }
+}
+
+// The types the OME layout takes: those omePixelType names.
+DataTypeSet omeTypes() {
+    DataTypeSet types;
+    for (int32_t i = 0; i < static_cast<int32_t>(DataType::Unknown); ++i) {
+        const auto type = static_cast<DataType>(i);
+        if (omePixelType(type) != nullptr) types.add(type);
+    }
+    return types;
 }
 
 // `text` as an XML attribute value, without its quotes. Tab, line feed and carriage return
@@ -463,8 +469,8 @@ PyramidInfo writePyramidTiff(const std::filesystem::path& tif, const TileSpool& 
     if (width <= 0 || height <= 0) throw InternalError("writePyramidTiff: the spool is empty");
     const bool ome = layout == PyramidLayout::OmeSubIfds;
     if (ome && omePixelType(format.type) == nullptr)
-        throw UnsupportedDataTypeError("writePyramidTiff: OME-XML has no pixel type for the raster's type", format.type,
-                                       DataTypeSet::all().remove(DataType::Float16));
+        throw UnsupportedDataTypeError("writePyramidTiff: the OME-TIFF layout does not take the raster's type", format.type,
+                                       omeTypes());
     if (ome && !(std::isfinite(metadata.micronsPerPixel) && metadata.micronsPerPixel >= 0))
         throw InvalidArgumentError("writePyramidTiff: the pixel size must be finite and not negative");
 

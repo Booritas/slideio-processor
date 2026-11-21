@@ -1427,10 +1427,14 @@ sample format and downsampling are those of S41–S43; what differs:
   gives a pixel size above 0, `PhysicalSizeX`/`PhysicalSizeY` in µm with
   `PhysicalSizeXUnit`/`PhysicalSizeYUnit="µm"`; and inside it one
   `<TiffData IFD="0" PlaneCount="1"/>`. `Type` is `uint8`, `int8`, `uint16`,
-  `int16`, `uint32`, `int32`, `float` or `double`, and `uint64` or `int64`,
-  which SlideIO reads though the schema lacks them. OME-XML has no half-float
-  type, so a `Float16` raster is refused (`UnsupportedDataTypeError`) before
-  the file is created.
+  `int16`, `int32`, `float` or `double`, for Byte, Int8, UInt16, Int16,
+  Int32, Float32 and Float64. Every other type is refused
+  (`UnsupportedDataTypeError`, naming those seven) before the file is
+  created: OME-XML has no half-float type, and SlideIO's directory scan
+  (`retrieveTiffDataType`, `imagetools/tifftools.cpp`) reads a 32-bit sample
+  only as `SAMPLEFORMAT_INT` or `IEEEFP` and a 64-bit one only as `IEEEFP`, so
+  a UInt32, UInt64 or Int64 file would open with no scene. Label masks are
+  Int32.
 - No path, file name, UUID or other identifier is written: the OME-XML names
   nothing outside the file.
 

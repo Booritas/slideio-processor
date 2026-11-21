@@ -476,6 +476,26 @@ void writeGoldenRaster(const TempRaster& files, DataType type, RasterCompression
     detail::writePyramidTiff(files.tif, spool, format, {"golden", "", 0, 1.0, 1.0, 0.0});
 }
 
+// A 1100x700 two-plane UInt16 LZW raster whose only call is a 100x100 patch in its
+// bottom-right corner: four of page 0's six tiles per plane are empty, so the zero tile is
+// encoded once and then written raw (TIFFReadRawTile, TIFFWriteRawTile), and the second plane
+// takes ExtraSamples.
+void writeSparseGoldenRaster(const TempRaster& files) {
+    const detail::RasterFormat format{DataType::UInt16, 2, RasterCompression::Lzw};
+    std::vector<std::vector<uint16_t>> planes(2, std::vector<uint16_t>(100 * 100));
+    for (int p = 0; p < 2; ++p)
+        for (int64_t y = 0; y < 100; ++y)
+            for (int64_t x = 0; x < 100; ++x)
+                planes[p][static_cast<size_t>(y * 100 + x)] = static_cast<uint16_t>((x * 7 + y * 3 + p * 500 + 1) & 0xffff);
+    detail::TileSpool spool(files.spoolPath, format);
+    appendBlock<uint16_t>(spool, 1000, 600, 100, 100, planes);
+    spool.place(1.0, 1.0);
+    const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"golden", "", 0, 1.0, 1.0, 0.0});
+    EXPECT_EQ(info.pages, 3);
+    EXPECT_EQ(info.width, 1100);
+    EXPECT_EQ(info.height, 700);
+}
+
 } // namespace
 
 // The default layout's bytes, captured from the writer before the OME-TIFF layout was added:
@@ -495,6 +515,14 @@ TEST(StorageRaster, SequentialLayoutUnchanged) {
         writeGoldenRaster<float>(files, DataType::Float32, RasterCompression::Lzw);
         EXPECT_EQ(std::filesystem::file_size(files.tif), 401140u);
         EXPECT_EQ(fileFingerprint(files.tif), 15631184123081310431ull);
+    }
+    {
+        // Captured from dcc71fb's writer, the commit before the OME-TIFF layout.
+        SCOPED_TRACE("UInt16 x 2, LZW, sparse");
+        TempRaster files;
+        writeSparseGoldenRaster(files);
+        EXPECT_EQ(std::filesystem::file_size(files.tif), 33998u);
+        EXPECT_EQ(fileFingerprint(files.tif), 1129978844046530253ull);
     }
 }
 
@@ -657,8 +685,8 @@ TEST(PyramidTiffWriter, OmeLayoutWithoutResolutionIsReproducible) {
 }
 
 // A single-tile raster has no reduced level, so no SubIFD tag, and is one strip per plane (an
-// all-zero plane included); and OME-XML has no Float16.
-TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndFloat16) {
+// all-zero plane included); and the types SlideIO cannot read are refused.
+TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndRefusedTypes) {
     {
         TempRaster files;
         const detail::RasterFormat format{DataType::Float32, 2, RasterCompression::Lzw};
@@ -687,14 +715,30 @@ TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndFloat16) {
         EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 0), (std::vector<float>{1.5f, -2.0f, 3.0f, 4.0f, 5.0f, 6.0f}));
         EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 1), (std::vector<float>(6, 0.0f)));
     }
-    {
+    // The types SlideIO's OME-TIFF driver cannot read are refused before the file exists:
+    // Float16 has no OME-XML Type, and SlideIO's TIFF scan (retrieveTiffDataType) rejects a
+    // 32-bit unsigned and a 64-bit integer sample.
+    DataTypeSet readable;
+    for (const DataType type : {DataType::Byte, DataType::Int8, DataType::UInt16, DataType::Int16, DataType::Int32,
+                                DataType::Float32, DataType::Float64})
+        readable.add(type);
+    for (const DataType type : {DataType::Float16, DataType::UInt32, DataType::UInt64, DataType::Int64}) {
+        SCOPED_TRACE(dataTypeName(type));
         TempRaster files;
-        const detail::RasterFormat format{DataType::Float16, 1, RasterCompression::None};
+        const detail::RasterFormat format{type, 1, RasterCompression::None};
         detail::TileSpool spool(files.spoolPath, format);
-        appendBlock<uint16_t>(spool, 0, 0, 1, 1, {{0x3C00}});
+        const std::vector<uint8_t> sample(static_cast<size_t>(dataTypeSizeBytes(type)), 1);
+        const void* planes[] = {sample.data()};
+        const int64_t strides[] = {dataTypeSizeBytes(type)};
+        spool.append(Rect64{0, 0, 1, 1}, 1, 1, planes, strides);
         spool.place(1.0, 1.0);
-        EXPECT_THROW(detail::writePyramidTiff(files.tif, spool, format, {}, detail::PyramidLayout::OmeSubIfds),
-                     UnsupportedDataTypeError);
+        try {
+            detail::writePyramidTiff(files.tif, spool, format, {}, detail::PyramidLayout::OmeSubIfds);
+            ADD_FAILURE() << "not refused";
+        } catch (const UnsupportedDataTypeError& e) {
+            EXPECT_EQ(e.offendingType(), type);
+            EXPECT_TRUE(e.supportedTypes() == readable);
+        }
         EXPECT_FALSE(std::filesystem::exists(files.tif));
     }
 }

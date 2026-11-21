@@ -57,9 +57,11 @@ struct PyramidInfo {
 //
 // With PyramidLayout::OmeSubIfds, page 0's ImageDescription is OME-XML naming the image
 // `metadata.name` (possibly empty) and, when `metadata.micronsPerPixel` > 0, its physical
-// pixel size; nothing else of `metadata` is written, and never a path. OME-XML has no
-// half-float pixel type, so a Float16 format throws UnsupportedDataTypeError before the file
-// is created, and a micronsPerPixel that is negative or not finite InvalidArgumentError.
+// pixel size; nothing else of `metadata` is written, and never a path. The layout takes
+// Byte, Int8, UInt16, Int16, Int32, Float32 and Float64, the types SlideIO's OME-TIFF
+// driver reads; any other type throws UnsupportedDataTypeError naming those, and a
+// micronsPerPixel that is negative or not finite InvalidArgumentError, both before the
+// file is created.
 PyramidInfo writePyramidTiff(const std::filesystem::path& tif, const TileSpool& spool, const RasterFormat& format,
                              const PyramidMetadata& metadata, PyramidLayout layout = PyramidLayout::Sequential);
 

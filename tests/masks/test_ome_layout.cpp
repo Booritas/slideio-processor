@@ -112,3 +112,62 @@ TEST(OmeLayout, OneTileRasterOpensInSlideIO) {
             if (pixels[static_cast<size_t>(y) * 300 + x] != test::omeSample(x, y)) ++mismatches;
     EXPECT_EQ(mismatches, 0u);
 }
+
+namespace {
+
+// A sample constant over each 2x2 block, so the top-left rule and the mean agree on level 1.
+int blockSample(int x, int y) { return ((x / 2) * 3 + (y / 2) * 5) % 100; }
+
+// Writes a 600x400 one-plane raster of `type` (two levels: 600x400 tiled, 300x200 striped)
+// with the OME layout, opens it through SlideIO and checks its type and both levels' pixels.
+template <typename T>
+void expectTypeRoundTrips(DataType type, slideio::DataType slideioType) {
+    SCOPED_TRACE(dataTypeName(type));
+    OmeFile file;
+    constexpr int width = 600, height = 400;
+    const detail::RasterFormat format{type, 1, RasterCompression::Deflate};
+    std::vector<T> plane(static_cast<size_t>(width) * height);
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) plane[static_cast<size_t>(y) * width + x] = static_cast<T>(blockSample(x, y));
+    {
+        detail::TileSpool spool(file.spool, format);
+        const void* planes[] = {plane.data()};
+        const int64_t strides[] = {width * static_cast<int64_t>(sizeof(T))};
+        spool.append(Rect64{0, 0, width, height}, width, height, planes, strides);
+        spool.place(1.0, 1.0);
+        detail::writePyramidTiff(file.tif, spool, format, {}, detail::PyramidLayout::OmeSubIfds);
+    }
+    auto slide = slideio::openSlide(file.tif.u8string(), "OMETIFF");
+    ASSERT_TRUE(slide);
+    ASSERT_EQ(slide->getNumScenes(), 1);
+    auto scene = slide->getScene(0);
+    ASSERT_EQ(scene->getNumChannels(), 1);
+    EXPECT_EQ(scene->getChannelDataType(0), slideioType);
+    ASSERT_EQ(scene->getNumZoomLevels(), 2);
+    for (int level = 0; level < 2; ++level) {
+        SCOPED_TRACE("level " + std::to_string(level));
+        const int w = width >> level, h = height >> level;
+        std::vector<T> pixels(static_cast<size_t>(w) * h);
+        scene->readResampledLevelBlockChannels(level, std::make_tuple(0, 0, w, h), std::make_tuple(w, h), {},
+                                               pixels.data(), pixels.size() * sizeof(T));
+        size_t mismatches = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                if (pixels[static_cast<size_t>(y) * w + x] != static_cast<T>(blockSample(x << level, y << level)))
+                    ++mismatches;
+        EXPECT_EQ(mismatches, 0u);
+    }
+}
+
+} // namespace
+
+// Every type the OME layout accepts opens in SlideIO with its own type and exact pixels.
+TEST(OmeLayout, EveryAcceptedTypeOpensInSlideIO) {
+    expectTypeRoundTrips<uint8_t>(DataType::Byte, slideio::DataType::DT_Byte);
+    expectTypeRoundTrips<int8_t>(DataType::Int8, slideio::DataType::DT_Int8);
+    expectTypeRoundTrips<uint16_t>(DataType::UInt16, slideio::DataType::DT_UInt16);
+    expectTypeRoundTrips<int16_t>(DataType::Int16, slideio::DataType::DT_Int16);
+    expectTypeRoundTrips<int32_t>(DataType::Int32, slideio::DataType::DT_Int32);
+    expectTypeRoundTrips<float>(DataType::Float32, slideio::DataType::DT_Float32);
+    expectTypeRoundTrips<double>(DataType::Float64, slideio::DataType::DT_Float64);
+}
