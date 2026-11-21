@@ -357,6 +357,18 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     04 §4.3). `markStale`, `clearStale`, `StageRunner`'s writes and
     `declareCoarseToFine` across its two declarations keep their separate
     commits. Stored results are unaffected.
+- [Reporting implementation plan A](superpowers/plans/2026-11-21-reporting-a.md) —
+  plan A for the `reporting` module (SDS 07): the module in the data library
+  (core, config and storage only), `ExportResult`, `materialise` (UR-RES-6),
+  `ColumnSchema` with per-store column resolution, and `CsvWriter` (UR-RES-9,
+  UR-RES-11, UR-RES-15, UR-SEG-6, UR-QA-3): '#' provenance lines, the effective
+  label set with workspace-local flags, parent ids, WKT geometry, calibrated
+  measurement twins, and a `.partial` file renamed into place only on success.
+  Storage gains `ObjectStore::measurementNameCount/At` (SDS 03, SDS 08).
+  **Deferred: Parquet (UR-RES-10).** By user decision on 2026-11-21 the Parquet
+  writer (SDS 07 §7.4) waits until its dependency is chosen; UR-RES-10 is not
+  met by plan A. GeoJSON export and mask rasters are plans B and C.
+  **In progress** on `feat/reporting-a`.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
