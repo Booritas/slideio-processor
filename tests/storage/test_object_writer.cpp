@@ -1,4 +1,4 @@
-// Requirements: UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-5, UR-STG-6, UR-OBS-2, UR-OBS-4, UR-QA-3
+// Requirements: UR-RES-1, UR-RES-2, UR-RES-3, UR-EXE-7, UR-STG-5, UR-STG-6, UR-OBS-2, UR-OBS-4, UR-QA-3, UR-RES-9
 #include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -519,6 +519,39 @@ TEST(ObjectHandleLifetime, WriterAndCursorOutliveTheirStore) {
     store = Store::open(files.utf8().c_str(), OpenMode::ReadOnly, config);
     EXPECT_EQ(store->objects().totalObjectCount(), 2);
     EXPECT_EQ(store->events().eventCount(), 3);  // LayerDeclared and two ObjectsAdded
+}
+
+TEST_F(ObjectWriterTest, MeasurementNamesAreListedInByteOrder) {
+    ObjectRecord first = rec(cells, 0, 0, 4);
+    first.measurements().set("perimeter", 14.0, MeasurementUnit::Pixels);
+    first.measurements().set("area", 16.0, MeasurementUnit::SquarePixels);
+    first.measurements().set("area.um2", 4.0, MeasurementUnit::SquareMicrometres);
+    ObjectWriterPtr w = objects().writerForStage(a);
+    w->emit(first);
+    w->flush();
+    complete(a);
+
+    ASSERT_EQ(objects().measurementNameCount(), 3);
+    EXPECT_STREQ(objects().measurementNameAt(0), "area");
+    EXPECT_STREQ(objects().measurementNameAt(1), "area.um2");
+    EXPECT_STREQ(objects().measurementNameAt(2), "perimeter");
+    EXPECT_EQ(objects().measurementNameAt(0), objects().measurementNameAt(0));  // interned: one stable pointer
+}
+
+TEST_F(ObjectWriterTest, MeasurementNameIndexOutOfRangeThrows) {
+    EXPECT_EQ(objects().measurementNameCount(), 0);
+    EXPECT_THROW(objects().measurementNameAt(0), InvalidArgumentError);
+    EXPECT_THROW(objects().measurementNameAt(-1), InvalidArgumentError);
+}
+
+TEST(ObjectHandleLifetime, MeasurementNamesOnAClosedStoreThrowIoError) {
+    StoreFilesGuard files("measurementnamesclosed");
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    ObjectStore& objects = store->objects();
+    store->close();
+    EXPECT_THROW(objects.measurementNameCount(), IoError);
+    EXPECT_THROW(objects.measurementNameAt(0), IoError);
 }
 
 // close() flushes every live writer, reports the first failure after trying them all, and

@@ -258,6 +258,39 @@ public:
      * @throws IoError When the store is closed, or when SQLite fails.
      */
     int64_t objectCountInLayer(LayerId layer) const;
+    /**
+     * @brief Returns the number of distinct measurement names the store holds.
+     *
+     * The names are those interned in the store, whichever object or stage wrote
+     * them: a name and its calibrated twin (for example "area" and "area.um2") count
+     * separately. measurementNameCount() and measurementNameAt() each read the store
+     * afresh, so a write between two calls can change the count and shift indices;
+     * read them while nothing writes, or tolerate the shift.
+     * @return The count, 0 for a store without measurements.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @par Thread-safety
+     * Safe to call from any thread.
+     * @par Requirements
+     * UR-RES-9.
+     */
+    int32_t measurementNameCount() const;
+    /**
+     * @brief Returns the measurement name at an index, in ascending byte order.
+     *
+     * Names are ordered by SQLite's BINARY collation (memcmp of their UTF-8 bytes), so
+     * "area" precedes "area.um2", which precedes "perimeter". The pointer stays valid
+     * for the life of the store: names are interned like StageStateReader's strings.
+     * @param index Zero-based, below measurementNameCount().
+     * @return The name, never null.
+     * @throws InvalidArgumentError When the index is negative or not below the count.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * Safe to call from any thread.
+     * @par Requirements
+     * UR-RES-9.
+     */
+    const char* measurementNameAt(int32_t index) const;
 
 private:
     friend class Store;

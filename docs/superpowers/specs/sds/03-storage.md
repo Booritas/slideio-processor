@@ -531,6 +531,11 @@ public:
 
     int64_t totalObjectCount() const;
     int64_t objectCountInLayer(LayerId layer) const;
+
+    /// The distinct measurement names the store holds, in ascending byte order
+    /// (SQLite BINARY collation). Pointers live as long as the store.
+    int32_t     measurementNameCount() const;
+    const char* measurementNameAt(int32_t index) const;
 };
 ```
 
@@ -681,6 +686,7 @@ objects committed later are not returned, and no batch is ever seen in part.
 - Polygon filters and `limit` are applied in the cursor loop, after the exact
   checks, so `limit` counts records actually returned.
 
+`measurementNameCount` and `measurementNameAt` list the names interned in`measurement_names` (a name and its `.um`/`.um2` twin count separately), orderedby `ORDER BY name` with SQLite's default BINARY collation, that is memcmp of theUTF-8 bytes. Each call reads a snapshot, so a write between two calls can shiftindices. Returned pointers are interned in a set under a mutex, as`StageStateReader`'s are, and stay valid for the store's life. `IoError` on aclosed store, `InvalidArgumentError` for an index out of range. `reporting` usesthem to expand `allMeasurements()`.
 `totalObjectCount` and `objectCountInLayer` count every stored row, whatever
 its stage's status; the latter is 0 for an unknown layer. `discardStage`
 removes a stage's objects and everything *about* them, in one transaction: their

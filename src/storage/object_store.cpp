@@ -9,6 +9,8 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -17,7 +19,16 @@ namespace slideio::processor {
 class ObjectStore::Impl {
 public:
     explicit Impl(detail::StoreImpl& s) : store(s) {}
+    // Keeps a copy of `text` alive for the life of the store and returns it. Equal values
+    // share one node; std::set nodes never move, so every pointer handed out stays valid.
+    const char* intern(std::string text) {
+        std::lock_guard<std::mutex> guard(mutex);
+        return pool.insert(std::move(text)).first->c_str();
+    }
+
     detail::StoreImpl& store;
+    std::mutex mutex;
+    std::set<std::string> pool;
 };
 
 ObjectStore::ObjectStore(detail::StoreImpl& store) : impl_(std::make_unique<Impl>(store)) {}
@@ -121,6 +132,32 @@ int64_t ObjectStore::objectCountInLayer(LayerId layer) const {
         count.bindInt64(1, layer.value());
         return count.step() ? count.columnInt64(0) : int64_t(0);
     });
+}
+
+int32_t ObjectStore::measurementNameCount() const {
+    return impl_->store.withReadConnection("ObjectStore::measurementNameCount", [](sqlite3* db) {
+        detail::Statement count(db, "SELECT COUNT(*) FROM measurement_names");
+        return count.step() ? static_cast<int32_t>(count.columnInt64(0)) : 0;
+    });
+}
+
+const char* ObjectStore::measurementNameAt(int32_t index) const {
+    constexpr const char* kOperation = "ObjectStore::measurementNameAt";
+    std::string name;
+    const bool found = impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
+        if (index < 0) return false;
+        detail::Statement select(db, "SELECT name FROM measurement_names ORDER BY name LIMIT 1 OFFSET ?");
+        select.bindInt64(1, index);
+        if (!select.step()) return false;
+        name = select.columnText(0);
+        return true;
+    });
+    if (!found) {
+        const std::string message =
+            std::string(kOperation) + ": index " + std::to_string(index) + " is out of range";
+        throw InvalidArgumentError(message.c_str());
+    }
+    return impl_->intern(std::move(name));
 }
 
 } // namespace slideio::processor

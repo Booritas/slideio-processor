@@ -856,6 +856,8 @@ classDiagram
         +discardStage(StageId) void
         +totalObjectCount() int64_t
         +objectCountInLayer(LayerId) int64_t
+        +measurementNameCount() int32_t
+        +measurementNameAt(int32_t) const char*
     }
 
     class ObjectWriter {
