@@ -189,6 +189,8 @@ TEST_F(Masks, RefusesMixedChannelTypes) {
 
     EXPECT_THROW(MaskWriter(""), InvalidArgumentError);
     EXPECT_THROW(MaskWriter(out.utf8().c_str()).resolution(-1.0), InvalidArgumentError);
+    EXPECT_THROW(MaskWriter(out.utf8().c_str()).name("a\xC0\xAF"), InvalidArgumentError);  // not UTF-8
+    EXPECT_TRUE(out.empty());
 }
 
 TEST_F(Masks, ResolutionDefaultsToTheScenes) {
@@ -212,4 +214,46 @@ TEST_F(Masks, ResolutionDefaultsToTheScenes) {
         MaskWriter(none.utf8().c_str()).resolution(0.0).write(pipeline.scene, nullptr, CancellationToken());
         EXPECT_EQ(fileText(none).find("PhysicalSizeX"), std::string::npos);
     }
+}
+
+TEST_F(Masks, WriteIsDeterministic) {
+    // UR-QA-3: two writes of the same scene with the same settings are byte-identical.
+    std::shared_ptr<slideio::Scene> labels = rasteriseLabels(store(), all(), Rect64{0, 0, kWidth, kHeight});
+    OutputDir once, twice;
+    MaskWriter(once.utf8().c_str()).name("labels").resolution(0.5).write(labels, nullptr, CancellationToken());
+    MaskWriter(twice.utf8().c_str()).name("labels").resolution(0.5).write(labels, nullptr, CancellationToken());
+    const std::string bytes = fileText(once);
+    EXPECT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes, fileText(twice));
+
+    PipelineScene pipeline;
+    OutputDir third, fourth;
+    MaskWriter(third.utf8().c_str()).write(pipeline.scene, nullptr, CancellationToken());
+    MaskWriter(fourth.utf8().c_str()).write(pipeline.scene, nullptr, CancellationToken());
+    EXPECT_EQ(fileText(third), fileText(fourth));
+}
+
+TEST_F(Masks, WritesAMultiChannelScene) {
+    // Two Byte channels become two planes of one IFD; the OME-XML says so with a Channel
+    // element (Bio-Formats expects it), and SlideIO still opens both channels.
+    std::shared_ptr<slideio::Scene> twoChannels = ts::makeSyntheticScene(
+        {{600, 520, 0, 0}}, {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte},
+        [](int channel, int64_t x, int64_t y) { return static_cast<double>((x * 7 + y * 3 + channel * 101) % 256); });
+    OutputDir out;
+    MaskWriter(out.utf8().c_str()).write(twoChannels, nullptr, CancellationToken());
+    EXPECT_NE(fileText(out).find("<Channel ID=\"Channel:0:0\" SamplesPerPixel=\"2\"/>"), std::string::npos);
+
+    std::shared_ptr<slideio::Scene> reopened = reopenFile(out);
+    ASSERT_TRUE(reopened);
+    EXPECT_EQ(reopened->getRect(), std::make_tuple(0, 0, 600, 520));
+    ASSERT_EQ(reopened->getNumChannels(), 2);
+    EXPECT_EQ(reopened->getChannelDataType(1), slideio::DataType::DT_Byte);
+    EXPECT_EQ(reopened->getNumZoomLevels(), 2);  // 600 x 520, then 300 x 260
+    EXPECT_EQ(masks_test::readAll(*reopened, 1), masks_test::readAll(*twoChannels, 1));
+
+    // A one-plane file has no Channel element.
+    std::shared_ptr<slideio::Scene> labels = rasteriseLabels(store(), all(), Rect64{0, 0, 300, 200});
+    OutputDir single;
+    MaskWriter(single.utf8().c_str()).write(labels, nullptr, CancellationToken());
+    EXPECT_EQ(fileText(single).find("<Channel"), std::string::npos);
 }

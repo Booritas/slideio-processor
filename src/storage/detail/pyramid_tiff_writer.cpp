@@ -186,7 +186,13 @@ std::string omeXml(const PyramidMetadata& metadata, const RasterFormat& format, 
         xml += " PhysicalSizeX=\"" + size + "\" PhysicalSizeXUnit=\"\xC2\xB5m\" PhysicalSizeY=\"" + size +
                "\" PhysicalSizeYUnit=\"\xC2\xB5m\"";
     }
-    xml += "><TiffData IFD=\"0\" PlaneCount=\"1\"/></Pixels></Image></OME>";
+    xml += ">";
+    // Several planes are SamplesPerPixel samples of the one IFD; Bio-Formats expects a
+    // Channel saying so. SlideIO counts channels by SizeC and reads only the attributes.
+    if (format.planes > 1) {
+        xml += "<Channel ID=\"Channel:0:0\" SamplesPerPixel=\"" + std::to_string(format.planes) + "\"/>";
+    }
+    xml += "<TiffData IFD=\"0\" PlaneCount=\"1\"/></Pixels></Image></OME>";
     return xml;
 }
 

@@ -1,6 +1,7 @@
 // Requirements: UR-RES-7, UR-QA-3
 #include <slideio/processor/reporting/raster_tiff_writer.hpp>
 
+#include "core/detail/utf8.hpp"
 #include "storage/detail/pyramid_tiff_writer.hpp"
 #include "storage/detail/tile_spool.hpp"
 
@@ -104,7 +105,9 @@ RasterTiffWriter& RasterTiffWriter::resolution(double micronsPerPixel) {
 }
 
 RasterTiffWriter& RasterTiffWriter::name(const char* name) {
-    impl_->name = name == nullptr ? std::string() : std::string(name);
+    std::string text = name == nullptr ? std::string() : std::string(name);
+    if (!detail::isValidUtf8(text)) throw InvalidArgumentError("RasterTiffWriter::name: the name is not valid UTF-8");
+    impl_->name = std::move(text);
     return *this;
 }
 

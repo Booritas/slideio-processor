@@ -36,9 +36,10 @@ namespace slideio::processor {
  *
  * The output size is ceil(region size / scale). The source is asked for each 512 x 512
  * output tile (edge tiles are clipped to the output) through a BlockView whose slideRect
- * is the tile's level-0 extent, which starts at region.x + round(offset * scale) and may run up to
- * `scale` level-0 pixels past the region's far edge: a source must zero or clip pixels outside
- * its own extent, as storage's sources do. The file goes to "<path>.partial", renamed onto path,
+ * is the tile's level-0 extent, which starts at region.x + round(offset * scale) and may run
+ * less than scale + 1 level-0 pixels past the region's far edge: a source must zero or clip
+ * pixels outside its own extent, as storage's sources do. The file goes to "<path>.partial",
+ * renamed onto path,
  * replacing any file there, only when it completes; a spool file "<path>.partial.spool"
  * exists meanwhile. A cancelled or failed write removes both and leaves any file already
  * at path untouched. Two writes of the same source with the same settings give
@@ -54,7 +55,9 @@ class SLIDEIO_PROCESSOR_DATA_EXPORTS RasterTiffWriter {
 public:
     /**
      * @brief Creates a writer for a file; nothing is created until write().
-     * @param path UTF-8 path of the TIFF file; not null, not empty.
+     * @param path UTF-8 path of the TIFF file; not null, not empty. Name it with the
+     * ".ome.tif" extension: Bio-Formats and QuPath read the OME-XML (and so the levels and
+     * the pixel size) only for that extension.
      * @throws InvalidArgumentError When path is null or empty.
      * @throws std::bad_alloc When memory is exhausted.
      */
@@ -83,6 +86,8 @@ public:
      * @brief Sets the image name in the OME-XML (default empty).
      * @param name UTF-8 name; null reads as empty. Copied.
      * @return This writer.
+     * @throws InvalidArgumentError When the name is not well-formed UTF-8; the writer is
+     * unchanged.
      * @throws std::bad_alloc When memory is exhausted; the writer is unchanged.
      */
     RasterTiffWriter& name(const char* name);

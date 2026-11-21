@@ -316,6 +316,23 @@ TEST_F(RasterTiffWriterTest, RefusesBadArguments) {
     expectNoFiles();
 }
 
+TEST_F(RasterTiffWriterTest, RefusesANameThatIsNotUtf8) {
+    RasterTiffWriter writer(out.utf8().c_str());
+    writer.name("kept");
+    for (const char* bad : {"\x80", "a\xC0\xAF", "\xED\xA0\x80", "\xE2\x82", "\xF4\x90\x80\x80", "\xFF"}) {
+        EXPECT_THROW(writer.name(bad), InvalidArgumentError) << "accepted an invalid name";
+    }
+    expectNoFiles();
+    writer.write(source, region, 1.0, nullptr, never);
+    EXPECT_NE(export_test::readText(out.path()).find("Name=\"kept\""), std::string::npos);  // unchanged
+
+    // Well-formed UTF-8 beyond ASCII is kept as written.
+    const char* const utf8 = "Ki67 \xC2\xB5m \xE6\x97\xA5 \xF0\x9F\x94\xAC";
+    RasterTiffWriter other(out.utf8().c_str());
+    other.name(utf8).write(source, region, 1.0, nullptr, never);
+    EXPECT_NE(export_test::readText(out.path()).find(std::string("Name=\"") + utf8 + "\""), std::string::npos);
+}
+
 TEST_F(RasterTiffWriterTest, RefusesTypesTheOmeLayoutCannotHold) {
     for (const DataType type : {DataType::Float16, DataType::UInt32, DataType::UInt64, DataType::Int64}) {
         CoordinateSource unsupported(type);

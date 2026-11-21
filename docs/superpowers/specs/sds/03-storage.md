@@ -1426,7 +1426,11 @@ sample format and downsampling are those of S41–S43; what differs:
   `SizeZ="1"`, `SizeT="1"` and `Interleaved="false"`, and, when the caller
   gives a pixel size above 0, `PhysicalSizeX`/`PhysicalSizeY` in µm with
   `PhysicalSizeXUnit`/`PhysicalSizeYUnit="µm"`; and inside it one
-  `<TiffData IFD="0" PlaneCount="1"/>`. `Type` is `uint8`, `int8`, `uint16`,
+  `<TiffData IFD="0" PlaneCount="1"/>`, preceded, when there is more than one
+  plane, by `<Channel ID="Channel:0:0" SamplesPerPixel="N"/>` for N planes: the
+  planes are the samples of one IFD, which Bio-Formats expects a `Channel` to
+  say; SlideIO counts channels by `SizeC` and only records the `Channel`'s
+  attributes (`otscene.cpp`, `initializeChannelAttributes`). `Type` is `uint8`, `int8`, `uint16`,
   `int16`, `int32`, `float` or `double`, for Byte, Int8, UInt16, Int16,
   Int32, Float32 and Float64. Every other type is refused
   (`UnsupportedDataTypeError`, naming those seven) before the file is

@@ -8,6 +8,8 @@
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/reporting/raster_tiff_writer.hpp>
 
+#include "core/detail/utf8.hpp"
+
 #include <slideio/slideio/scene.hpp>
 
 #include <algorithm>
@@ -167,7 +169,9 @@ MaskWriter& MaskWriter::resolution(double micronsPerPixel) {
 }
 
 MaskWriter& MaskWriter::name(const char* name) {
-    impl_->name = name == nullptr ? std::string() : std::string(name);
+    std::string text = name == nullptr ? std::string() : std::string(name);
+    if (!detail::isValidUtf8(text)) throw InvalidArgumentError("MaskWriter::name: the name is not valid UTF-8");
+    impl_->name = std::move(text);
     return *this;
 }
 

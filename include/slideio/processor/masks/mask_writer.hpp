@@ -3,7 +3,8 @@
 
 /**
  * @file mask_writer.hpp
- * @brief MaskWriter: writes any SlideIO scene as a lossless pyramidal OME-TIFF.
+ * @brief MaskWriter: writes a label mask or processing map, as a SlideIO scene, to a lossless
+ * pyramidal OME-TIFF.
  */
 
 #include <slideio/processor/core/control.hpp>
@@ -20,8 +21,8 @@ class Scene;
 namespace slideio::processor {
 
 /**
- * @brief Writes a whole SlideIO scene, at full resolution, as a pyramidal OME-TIFF that
- * SlideIO opens with all its levels.
+ * @brief Writes a label mask or a processing map, given as a SlideIO scene, at full
+ * resolution as a lossless pyramidal OME-TIFF that SlideIO opens with all its levels.
  *
  * The scene is read through Scene::readResampledBlock, one 512 x 512 tile at a time, and
  * written by RasterTiffWriter at scale 1 over the whole scene: the file's layout, its
@@ -31,9 +32,11 @@ namespace slideio::processor {
  * becomes one plane, in order.
  *
  * Every channel must share one data type, and that type must be one the OME-TIFF layout
- * holds (Byte, Int8, UInt16, Int16, Int32, Float32, Float64). The scene is any scene:
- * rasteriseLabels()'s, a pipeline's (Pipeline::asScene()) or a file's. Only z slice 0 and
- * time frame 0 are written.
+ * holds (Byte, Int8, UInt16, Int16, Int32, Float32, Float64). The scene is a label mask
+ * or processing map: rasteriseLabels()'s, or a pipeline's (Pipeline::asScene()).
+ * Converting whole-slide image files is not its purpose: general or lossy conversion
+ * belongs to slideio-converter (SDS 07 section 7.8). Only z slice 0 and time frame 0 are
+ * written.
  *
  * The pixel size written is the one set with resolution(); when none was set it is the
  * scene's own x resolution, converted from metres to micrometres, when that is greater
@@ -49,7 +52,9 @@ class SLIDEIO_PROCESSOR_ENGINE_EXPORTS MaskWriter {
 public:
     /**
      * @brief Creates a writer for a file; nothing is created until write().
-     * @param path UTF-8 path of the TIFF file; not null, not empty.
+     * @param path UTF-8 path of the TIFF file; not null, not empty. Name it with the
+     * ".ome.tif" extension: Bio-Formats and QuPath read the OME-XML (and so the levels and
+     * the pixel size) only for that extension.
      * @throws InvalidArgumentError When path is null or empty.
      * @throws std::bad_alloc When memory is exhausted.
      */
@@ -78,6 +83,8 @@ public:
      * @brief Sets the image name in the OME-XML (default empty).
      * @param name UTF-8 name; null reads as empty. Copied.
      * @return This writer.
+     * @throws InvalidArgumentError When the name is not well-formed UTF-8; the writer is
+     * unchanged.
      * @throws std::bad_alloc When memory is exhausted; the writer is unchanged.
      */
     MaskWriter& name(const char* name);
