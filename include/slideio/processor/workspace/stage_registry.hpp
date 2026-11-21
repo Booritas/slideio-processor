@@ -103,10 +103,10 @@ public:
      * recorded as written by the stage; storage has no way to drop them.
      * An explicit dependsOn naming the stage itself throws StageError.
      *
-     * Every call to StageStateWriter is its own transaction, so a storage failure in the
-     * middle of a declare can leave the stage declared (and held in memory) with
-     * incomplete written-layer or dependency rows. Declaring the stage again, changed or
-     * not, repairs both; any other declare repairs the dependency rows.
+     * The declare is one transaction: a failure before it commits changes neither the
+     * store nor the registry. Every declare still rewrites every stage's dependency rows,
+     * and a redeclaration records its written layers again, which repairs a store written
+     * before declares were one transaction.
      * @param definition The stage; copied.
      * @return The stage's id; the existing id for a redeclaration.
      * @throws InvalidArgumentError When a layer or raster the definition names is
