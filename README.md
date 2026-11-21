@@ -89,7 +89,9 @@ scripts/check-no-test-seams.sh build-noseams
 ```
 
 The script exits 0 and prints `no test seams exported` when neither library exports a
-symbol containing `Testing`. With plain CMake, configure with
+symbol containing `Testing`, nor any of the six test-only engine functions the tests call
+(`notifyTileSkipped`, `takeAwaitedDeferred`, `completeDeferred`, `stageRecordJson`,
+`stageFromRecord`, `sameDeclaration`). With plain CMake, configure with
 `-DSLIDEIO_PROCESSOR_TEST_SEAMS=OFF`. The default is ON, which `./run-tests.sh` needs.
 CI builds this way on Ubuntu after the tests and runs the check.
 

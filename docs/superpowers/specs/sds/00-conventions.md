@@ -279,4 +279,15 @@ declarations do not change the class layout, so ABI is unaffected.
 
 A release package is built with `./build.sh --no-test-seams` (into `build-noseams`),
 and `scripts/check-no-test-seams.sh <build dir>` verifies that neither shared library
-exports a symbol containing `Testing`. CI runs both steps on Ubuntu, after the tests, reusing the main build's Conan cache and SlideIO install.
+exports a symbol containing `Testing`, nor one of the six test-only engine exports below. CI runs both steps on Ubuntu, after the tests, reusing the main build's Conan cache and SlideIO install.
+
+Six more functions are test-only exports: production calls them only inside the engine,
+and only tests call them across the library boundary. They are `notifyTileSkipped`,
+`takeAwaitedDeferred` and `completeDeferred` of `detail::SeamMergerAccess`
+(`src/pipeline/detail/seam_merger_access.hpp`), and `detail::stageRecordJson`,
+`detail::stageFromRecord` and `detail::sameDeclaration`
+(`src/workspace/detail/stage_record.hpp`). They carry
+`SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS` (`src/pipeline/detail/engine_test_export.hpp`),
+which is `SLIDEIO_PROCESSOR_ENGINE_EXPORTS` while the option is ON and empty when it is
+OFF, so a release build does not export them; they stay callable inside the engine.
+The check script fails on their names as well as on `Testing`.

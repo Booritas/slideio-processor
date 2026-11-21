@@ -1,6 +1,7 @@
 // Requirements: UR-SEG-3, UR-QA-2, UR-QA-3
 #pragma once
 
+#include <pipeline/detail/engine_test_export.hpp>
 #include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/fragment_spill.hpp>
 
@@ -197,7 +198,7 @@ struct SeamMergerAccess {
     /// it holds no fragment yet, but fragments of other tiles still expect it,
     /// so the objects reaching into it stay open. A tile already completed or
     /// deferred is left as it is. Thread-safe, like notifyTileComplete.
-    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static void notifyTileSkipped(SeamMerger& merger, int64_t tileIndex);
+    SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS static void notifyTileSkipped(SeamMerger& merger, int64_t tileIndex);
     /// Returns, in ascending order, the deferred tiles some open object
     /// expects, and marks them demanded, so each is returned at most once. A
     /// demanded tile is evaluated and then completed with notifyTileComplete.
@@ -218,14 +219,14 @@ struct SeamMergerAccess {
     /// evaluated may yet add fragments expecting further deferred tiles. So the
     /// caller evaluates and completes the returned tiles, then calls again,
     /// until the list comes back empty.
-    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static std::vector<int64_t> takeAwaitedDeferred(SeamMerger& merger);
+    SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS static std::vector<int64_t> takeAwaitedDeferred(SeamMerger& merger);
     /// Completes every tile still deferred and not demanded, without
     /// evaluation, and emits the objects that close with them, as
     /// notifyTileComplete does. Called once takeAwaitedDeferred has come back
     /// empty: every demanded tile must by then have been completed through
     /// notifyTileComplete, or its objects stay open and resolve() throws
     /// InternalError.
-    SLIDEIO_PROCESSOR_ENGINE_EXPORTS static void completeDeferred(SeamMerger& merger, ObjectSink& sink);
+    SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS static void completeDeferred(SeamMerger& merger, ObjectSink& sink);
 };
 
 } // namespace slideio::processor::detail

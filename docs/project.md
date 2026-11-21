@@ -208,7 +208,9 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     The CMake option `SLIDEIO_PROCESSOR_TEST_SEAMS` (default ON) compiles the
     `detail::*ForTesting` functions, `detail::trackForCloseTesting` and the branches
     that read them out of a build made with `./build.sh --no-test-seams`;
-    `scripts/check-no-test-seams.sh` checks the export tables (SDS 00 C-15).
+    `scripts/check-no-test-seams.sh` checks the export tables (SDS 00 C-15). Six more
+    engine functions only tests call across the library boundary are exported only with
+    the option ON (`SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS`), and the check covers them.
 - [Workspace implementation plan C](superpowers/plans/2026-11-20-workspace-c.md) —
   plan C of three for the `workspace` module: `StalenessGraph` (SDS 04 §4.5) over
   five edge paths (layer read, raster read, layer ordering, derived-from, explicit
