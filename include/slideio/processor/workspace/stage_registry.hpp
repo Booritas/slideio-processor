@@ -104,8 +104,8 @@ public:
      * An explicit dependsOn naming the stage itself throws StageError.
      *
      * The declare is one transaction: a failure before it commits changes neither the
-     * store nor the registry. Every declare still rewrites every stage's dependency rows,
-     * and a redeclaration records its written layers again, which repairs a store written
+     * store nor the registry. In a writable workspace every declare still rewrites every
+     * stage's dependency rows, and a redeclaration records its written layers again, which repairs a store written
      * before declares were one transaction.
      * @param definition The stage; copied.
      * @return The stage's id; the existing id for a redeclaration.

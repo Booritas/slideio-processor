@@ -726,7 +726,7 @@ an identical one, in a writable workspace only, the written layers and every
 stage's dependency rows. After the commit it swaps in what it computed: the
 definitions (the replaced one retired), the unreadable set, the pins, the graph,
 the staleness edges and the unresolved names. The swap cannot throw, because
-everything it needs is allocated before the batch opens. If anything throws before
+everything it needs is allocated before the commit. If anything throws before
 the commit returns, the batch rolls back and the registry is as it was, so a
 failed declare changes nothing in the store or in memory: a new stage leaves no
 row, and a changed one keeps its old record, flags and rows. In a read-only
@@ -739,10 +739,10 @@ every stage's rows.
 configuration before any dependency row. With `declare` atomic, a commit landing
 during a restore can pair only an old configuration with new rows; that
 configuration differs from the one the writer now holds, so the next query sees
-the change and restores again, reading both new. A reader that refreshes while a
-redeclaration is in flight therefore sees either the old state or the new one, and
-once it has finished, reader and writer hold the same pins; a single read snapshot
-for restore is not needed and is not added. `markStale`, `clearStale` and
+the change and restores again, reading both new. A restore that straddles a
+commit can so hold a mixed state for one query at most; the next query converges
+to the new state, and once the redeclaration has committed, reader and writer hold
+the same pins. A single read snapshot for restore is not needed and is not added. `markStale`, `clearStale` and
 `StageRunner`'s writes keep their separate commits.
 
 `dependencyCount`, `dependencyAt`, `isExplicitDependency`,

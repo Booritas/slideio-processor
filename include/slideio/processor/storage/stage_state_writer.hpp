@@ -127,13 +127,21 @@ public:
      * single transaction, which commits whole or not at all.
      *
      * The constructor takes the store's write lock and begins the transaction. Until
-     * commit() or the destructor, every write the same thread makes through any writer of
-     * that store joins the batch instead of committing on its own. A join is a
-     * savepoint: a write that succeeds is kept in the batch; a write that throws undoes
-     * only itself, throws the exception it throws today, and leaves the batch able to
-     * commit. Readers, and other processes, see none of the batch before commit() and
-     * all of it after. Writes by other threads wait for the batch to end, as they wait
-     * for any write.
+     * commit() or the destructor, every write the same thread makes to that store joins
+     * the batch instead of committing on its own. A join is a savepoint: a write that
+     * succeeds is kept in the batch; a write that throws undoes only itself, throws the
+     * exception it throws outside a batch, and leaves the batch able to commit. Writes by
+     * other threads wait for the batch to end, as they wait for any write.
+     *
+     * Use it for StageStateWriter writes. A rollback undoes only the SQL rows; it does
+     * not undo what a writer keeps in memory about a write that joined. A writer that
+     * buffers (ObjectWriter::flush, say, which moves its pending objects to its committed
+     * count once its write returns) would, after a rolled-back batch, have lost those
+     * objects and report a wrong count.
+     *
+     * Reads, including those on the batch's own thread, go through pooled read
+     * connections: they see none of the batch's writes before commit() and all of them
+     * after, as other processes do.
      *
      * Rules:
      * - One batch per thread and store: a second Batch on a thread that holds one throws.
@@ -173,7 +181,12 @@ public:
          * @throws InvalidArgumentError When this thread already holds a batch on the store.
          */
         explicit Batch(StageStateWriter& writer);
-        /** @brief Rolls the batch back unless commit() ran. Never throws. */
+        /**
+         * @brief Rolls the batch back unless commit() ran. Never throws.
+         *
+         * Destroyed on a thread other than the one that created it, it cannot release
+         * the write lock: it logs an Error, does not roll back, and the lock stays held.
+         */
         ~Batch();
         Batch(const Batch&) = delete;             ///< Not copyable.
         Batch& operator=(const Batch&) = delete;  ///< Not copyable.
@@ -183,7 +196,8 @@ public:
          * a setStatus() in it deferred.
          *
          * The batch has ended afterwards, whether or not the commit succeeded.
-         * @throws InvalidArgumentError When the batch has already been committed.
+         * @throws InvalidArgumentError When the batch has already been committed, or when
+         * called on a thread other than the one that created the batch.
          * @throws IoError When the commit fails; the batch is then rolled back.
          */
         void commit();

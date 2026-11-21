@@ -1849,14 +1849,22 @@ processes, see none of its writes before `commit()` and all of them after.
   `BEGIN IMMEDIATE`. It throws `IoError` on a closed or `ReadOnly` store, and
   `InvalidArgumentError` when the calling thread already holds a batch on the
   store: batches do not nest.
-- **Joining.** While a batch is open, a write by the same thread through any
-  writer of that store (`StageStateWriter`, `RasterRegistry`, the object and
-  edge writers, ...) joins it instead of locking and committing:
+- **Joining.** While a batch is open, a write by the same thread to that
+  store joins it instead of locking and committing:
   `SAVEPOINT`, then `RELEASE` on success. A write that throws is rolled back to
   its savepoint, released, and rethrows the exception it throws outside a
   batch, so **a failed write undoes only itself** and the batch can still
   commit. This is in `StoreImpl::runWriteTransaction`; the owning thread id is
   an atomic, so other threads compare it without a lock.
+- **For `StageStateWriter` writes.** A rollback undoes only the SQL rows,
+  not what a writer keeps in memory about a write that joined. A writer that
+  buffers is not safe in a batch: `ObjectWriter::flush`, for one, moves its
+  pending objects to its committed count once its write returns, so after a
+  rolled-back batch it would have lost them and report a wrong count. The
+  batch is for `StageStateWriter` writes.
+- **Reads do not see the batch.** Reads, including those on the batch's own
+  thread, go through pooled read connections, so they see none of the batch's
+  writes before `commit()` and all of them after.
 - **Durable writes refused.** A write that commits durably
   (`withDurableWriteTransaction`, as `RasterRegistry::discardRasterOfStage`
   does, 3.8) throws `InvalidArgumentError` "`<operation>`: a durable write
@@ -1872,9 +1880,11 @@ processes, see none of its writes before `commit()` and all of them after.
 - **Other threads** wait on the write mutex until the batch ends, as they wait
   for any write.
 - **`commit()`** runs `COMMIT`. When that fails it rolls back and throws
-  `IoError`; the batch has ended either way. A second call throws
-  `InvalidArgumentError`. The destructor rolls back an uncommitted batch and
-  releases the lock.
+  `IoError`; the batch has ended either way. A second call, or a call from a
+  thread other than the batch's, throws `InvalidArgumentError`. The destructor
+  rolls back an uncommitted batch and releases the lock; run on another thread,
+  it cannot release the lock, so it logs an `Error`, does not roll back, and
+  the lock stays held.
 - **Notifications are deferred.** `notifyCommitted()` called on the batch's
   thread only records that a post is due; `commit()` posts once after `COMMIT`,
   and a rollback posts nothing. So a subscriber is never woken for events that

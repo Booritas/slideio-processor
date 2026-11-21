@@ -7,6 +7,7 @@
 #include "storage/detail/store_impl.hpp"
 
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/log.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -45,7 +46,16 @@ StageStateWriter::Batch::Batch(StageStateWriter& writer) : store_(&writer.impl_-
 }
 
 StageStateWriter::Batch::~Batch() {
-    if (open_) store_->abortBatch();
+    if (!open_) return;
+    if (!store_->batchOpenOnThisThread()) {
+        // Only the owning thread may release the write lock; rolling back from here would
+        // be undefined, so the lock stays held and every later write of the store waits.
+        logMessage(LogLevel::Error,
+                   "StageStateWriter::Batch: the batch was destroyed on a thread other than the one that "
+                   "began it; it is not rolled back and the store's write lock stays held");
+        return;
+    }
+    store_->abortBatch();
 }
 
 void StageStateWriter::Batch::commit() {

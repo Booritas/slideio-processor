@@ -15,7 +15,8 @@ namespace slideio::processor::detail {
 // stage, or a redeclaration that changes it) call hook(context) once that configuration is
 // written and before any dependency row is. An equivalent redeclaration does not call it.
 // A hook that throws makes the declare throw that exception, and the declare changes
-// nothing. One-shot: the hook is cleared before it runs.
+// nothing. One-shot: the hook is cleared before it runs. A null hook disarms one set
+// earlier.
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS void hookNextDeclareMidwayForTesting(void (*hook)(void*), void* context) noexcept;
 
 } // namespace slideio::processor::detail

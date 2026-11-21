@@ -1113,18 +1113,31 @@ TEST(StageRegistry, ReadOnlyMarkStaleOfALaterStageIsIoError) {
 
 namespace {
 
-// The reader registry a hookNextDeclareMidwayForTesting hook queries, and the stage.
+// The reader registry a hookNextDeclareMidwayForTesting hook queries, the stage, and how
+// many times the hook ran.
 struct ReaderProbe {
     StageRegistry* registry;
     StageId stage;
+    int calls = 0;
 };
 
 void queryReader(void* context) {
     auto* probe = static_cast<ReaderProbe*>(context);
+    ++probe->calls;
     (void)probe->registry->dependencyCount(probe->stage);
 }
 
 void throwInjected(void*) { throw IoError("injected"); }
+
+// Arms the declare hook for its scope and disarms it at the end, so a hook the test did not
+// reach never runs in a later test.
+class ArmedDeclareHook {
+public:
+    ArmedDeclareHook(void (*hook)(void*), void* context) { detail::hookNextDeclareMidwayForTesting(hook, context); }
+    ~ArmedDeclareHook() { detail::hookNextDeclareMidwayForTesting(nullptr, nullptr); }
+    ArmedDeclareHook(const ArmedDeclareHook&) = delete;
+    ArmedDeclareHook& operator=(const ArmedDeclareHook&) = delete;
+};
 
 } // namespace
 
@@ -1155,8 +1168,9 @@ TEST(StageRegistry, RefreshMidRedeclareKeepsReaderAndWriterInAgreement) {
     ASSERT_EQ(r.dependencyAt(x, 0), u);
 
     ReaderProbe probe{&r, x};
-    detail::hookNextDeclareMidwayForTesting(&queryReader, &probe);
+    const ArmedDeclareHook armed(&queryReader, &probe);
     EXPECT_EQ(w.declare(writer("x", f.y)), x);
+    EXPECT_EQ(probe.calls, 1);
 
     EXPECT_EQ(w.dependencyCount(x), 0);
     EXPECT_EQ(r.dependencyCount(x), 0);
@@ -1182,7 +1196,7 @@ TEST(StageRegistry, FailedRedeclareChangesNothing) {
     const StageStateReader& states = f.workspace->store()->stageStates();
     ASSERT_EQ(states.dependencyCount(b), 1);
 
-    detail::hookNextDeclareMidwayForTesting(&throwInjected, nullptr);
+    const ArmedDeclareHook armed(&throwInjected, nullptr);
     StageDefinition changed("a");
     changed.writesLayer(f.x).pipeline(blurSpec(2.0));
     bool threw = false;
@@ -1224,7 +1238,7 @@ TEST(StageRegistry, FailedDeclareOfANewStageLeavesNoRow) {
     f.stages().declare(writer("a", f.x));
     const int32_t before = f.stages().count();
 
-    detail::hookNextDeclareMidwayForTesting(&throwInjected, nullptr);
+    const ArmedDeclareHook armed(&throwInjected, nullptr);
     EXPECT_THROW(f.stages().declare(writer("n", f.y)), IoError);
     EXPECT_EQ(f.stages().count(), before);
     StageId found;

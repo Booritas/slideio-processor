@@ -846,25 +846,6 @@ classDiagram
         <<interface>>
     }
 
-
-    class StageStateWriter {
-        <<ThreadSafe>>
-        +declare(cstr name, cstr configurationJson) StageId
-        +setStatus(StageId, StageStatus) void
-        +setStale(StageId, bool) void
-        +setConfiguration(StageId, cstr) void
-        +addDependency(StageId, StageId) void
-        +clearDependencies(StageId) void
-        +addWrittenLayer(StageId, LayerId) void
-        +revision() uint64_t
-    }
-
-    class StageStateWriter_Batch {
-        <<NotThreadSafe>>
-        +Batch(StageStateWriter&)
-        +commit() void
-    }
-
     class ObjectStore {
         <<ThreadSafe>>
         +writerForStage(StageId) ObjectWriterPtr
@@ -2283,25 +2264,6 @@ classDiagram
     class RasterWriter {
         <<storage>>
     }
-
-    class StageStateWriter {
-        <<ThreadSafe>>
-        +declare(cstr name, cstr configurationJson) StageId
-        +setStatus(StageId, StageStatus) void
-        +setStale(StageId, bool) void
-        +setConfiguration(StageId, cstr) void
-        +addDependency(StageId, StageId) void
-        +clearDependencies(StageId) void
-        +addWrittenLayer(StageId, LayerId) void
-        +revision() uint64_t
-    }
-
-    class StageStateWriter_Batch {
-        <<NotThreadSafe>>
-        +Batch(StageStateWriter&)
-        +commit() void
-    }
-
     class ObjectStore {
         <<storage>>
     }
