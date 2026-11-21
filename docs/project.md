@@ -217,7 +217,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   dilation band of the coarse-restriction test). The final review made the
   staleness graph acyclic (a layer-ordering edge that would close a cycle is
   suppressed), so re-running every stale stage settles.
-  **Implemented** on `feat/workspace-c`, awaiting review and merge.
+  **Implemented**; merged to `main` via PR #17 (merge commit 8e0b2f3).
   - **Resolved (mask-source restrictions): restricted objects crossing into a
     skipped tile were stored truncated.** A pre-existing pipeline defect the
     final review found: `RestrictionFilter::skips` skipped a tile with no mask
