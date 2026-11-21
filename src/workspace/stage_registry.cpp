@@ -596,15 +596,18 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
     };
 
     if (redeclared) {
-        Impl::Derived next = impl_->derive(candidate, candidatePins);
         const auto held = impl_->definitions.find(existing.value());
         if (held == impl_->definitions.end()) throw InvalidArgumentError("the stage has no definition in the registry");
         if (impl_->unreadable.count(existing.value()) == 0 && detail::sameDeclaration(*held->second, definition)) {
             // Nothing changes, but the written layers and every stage's rows are written
             // again, repeating harmlessly: a store written before declares were one
             // transaction can hold the partial rows of a declare that failed part way, and
-            // this repairs them. A read-only store writes nothing.
+            // this repairs them. A read-only store writes nothing. Derived from the held
+            // definitions, which stay: sameDeclaration ignores list order, so the caller's
+            // dependsOn positions can differ from the held ones that unresolved indexes.
+            // The stage is not unreadable, so its candidate pins are the held ones.
             if (!store.isReadOnly()) {
+                Impl::Derived next = impl_->derive(impl_->entries(), candidatePins);
                 StageStateWriter::Batch batch(writer);
                 addWrittenLayers(existing);
                 impl_->persist(next.graph);
@@ -613,6 +616,7 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
             }
             return existing;
         }
+        Impl::Derived next = impl_->derive(candidate, candidatePins);
         // Stale: the stage itself, and every stage its forward answer lists under the held
         // edges and under the candidate's, each once, so a dependent it drops goes stale as
         // well as one it gains.

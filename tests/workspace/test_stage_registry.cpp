@@ -1240,3 +1240,25 @@ TEST(StageRegistry, FailedDeclareOfANewStageLeavesNoRow) {
     ASSERT_EQ(f.workspace->layers().writerStageCount(f.y), 1);
     EXPECT_EQ(f.workspace->layers().writerStageAt(f.y, 0), n);
 }
+
+// An equivalent redeclaration that only reorders dependsOn keeps the held definition, so
+// the unresolved positions stay those of the held list and name the undeclared stage.
+TEST(StageRegistry, ReorderedDependsOnKeepsTheUnresolvedName) {
+    Fixture f;
+    f.stages().declare(writer("q", f.x));
+    StageDefinition held("s");
+    held.dependsOn("p").dependsOn("q").writesLayer(f.y);
+    const StageId s = f.stages().declare(held);
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(s), 1);
+    ASSERT_STREQ(f.stages().unresolvedDependencyAt(s, 0), "p");
+
+    StageDefinition reordered("s");
+    reordered.dependsOn("q").dependsOn("p").writesLayer(f.y);
+    EXPECT_EQ(f.stages().declare(reordered), s);
+    EXPECT_FALSE(f.stages().isStale(s));
+    ASSERT_EQ(f.stages().unresolvedDependencyCount(s), 1);
+    EXPECT_STREQ(f.stages().unresolvedDependencyAt(s, 0), "p");
+    const char* name = nullptr;
+    EXPECT_EQ(f.stages().runBlocker(s, name), RunBlocker::UnresolvedDependency);
+    EXPECT_STREQ(name, "p");
+}
