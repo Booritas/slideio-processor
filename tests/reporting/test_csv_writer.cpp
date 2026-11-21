@@ -29,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -454,6 +455,36 @@ TEST_F(CsvExportTest, ExportIsDeterministic) {
     OutputPath other;
     CsvWriter(other.utf8().c_str()).schema(schema).write(store(), ObjectQuery());
     EXPECT_EQ(readText(other.path()), first);
+}
+
+TEST_F(CsvExportTest, OutputUnchangedByTheSharedDriver) {
+    ColumnSchema schema;
+    schema.units(UnitPolicy::BothColumns).includeGeometryWkt(true).includeParent(true)
+        .allMeasurements();
+    std::string text = exportText(schema);
+    const Provenance p = store().provenance();
+    const std::string version = std::string("# library_version: ") + p.libraryVersion() + "\n";
+    const std::string created = "# created_at_unix_ms: " + decimal(p.createdAtUnixMs()) + "\n";
+    // The two provenance lines that vary per run are replaced by fixed tokens.
+    for (const auto& [from, to] : {std::pair<std::string, std::string>{version, "@VERSION@\n"},
+                                   {created, "@CREATED@\n"}}) {
+        const size_t at = text.find(from);
+        ASSERT_NE(at, std::string::npos);
+        text.replace(at, from.size(), to);
+    }
+    const std::string expected = R"GOLDEN(# slideio-processor export
+# slide_id: slide-7
+# scene_index: 2
+@VERSION@
+@CREATED@
+# stage: seg {\n"k":1\r\n}
+# stage: classify {}
+layer_id,anchor_id,layer,stage,labels,labels_local,bbox_x,bbox_y,bbox_width,bbox_height,geometry_wkt,parent_layer_id,parent_anchor_id,area,area.um2,perimeter
+2,0,regions,seg,tumour,0,0,0,100,100,"POLYGON((0 0,100 0,100 100,0 100,0 0),(10 10,20 10,20 20,10 20,10 10))",,,9900,2475,
+3,64424509470,cells,seg,,,30,30,10,10,"POLYGON((30 30,40 30,40 40,30 40,30 30))",2,0,100,25,40
+3,107374182450,cells,seg,tumour;myLocal,0;1,50,50,10,10,"POLYGON((50 50,60 50,60 60,50 60,50 50))",2,0,100,25,0.10000000000000001
+)GOLDEN";
+    EXPECT_EQ(text, expected);
 }
 
 TEST_F(CsvExportTest, CancelledExportLeavesNoFile) {

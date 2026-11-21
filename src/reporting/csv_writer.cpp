@@ -3,6 +3,7 @@
 
 #include "reporting/detail/columns.hpp"
 #include "reporting/detail/csv_format.hpp"
+#include "reporting/detail/export_driver.hpp"
 #include "reporting/detail/wkt.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -26,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -34,61 +36,32 @@
 namespace slideio::processor {
 namespace {
 
-constexpr int64_t kProgressEvery = 1000;
-constexpr const char* kProgressName = "export";
-
-// Removes the partial file on every exit path unless released after the rename.
-class PartialFileGuard {
+// The shared name cache plus this writer's escaped form of each label name.
+class CsvNames {
 public:
-    explicit PartialFileGuard(std::filesystem::path path) : path_(std::move(path)) {}
-    PartialFileGuard(const PartialFileGuard&) = delete;
-    PartialFileGuard& operator=(const PartialFileGuard&) = delete;
-    ~PartialFileGuard() {
-        if (armed_) {
-            std::error_code ec;
-            std::filesystem::remove(path_, ec);
+    struct Label {
+        const std::string& name;  // escaped for a labels cell
+        bool isWorkspaceLocal;
+    };
+
+    explicit CsvNames(detail::NameCache& names) : names_(names) {}
+
+    const std::string& layer(LayerId id) { return names_.layer(id); }
+    const std::string& stage(StageId id) { return names_.stage(id); }
+    Label label(LabelId id) {
+        const detail::NameCache::LabelInfo& info = names_.label(id);
+        auto it = escaped_.find(id.value());
+        if (it == escaped_.end()) {
+            std::string text;
+            detail::appendEscapedLabel(text, info.name.c_str());
+            it = escaped_.emplace(id.value(), std::move(text)).first;
         }
-    }
-    void release() noexcept { armed_ = false; }
-
-private:
-    std::filesystem::path path_;
-    bool armed_ = true;
-};
-
-// Per-export lookups of names that repeat across rows.
-class NameCache {
-public:
-    explicit NameCache(Store& store) : store_(store) {}
-
-    const std::string& layer(LayerId id) {
-        auto it = layers_.find(id.value());
-        if (it == layers_.end()) it = layers_.emplace(id.value(), store_.layers().name(id)).first;
-        return it->second;
-    }
-    const std::string& stage(StageId id) {
-        auto it = stages_.find(id.value());
-        if (it == stages_.end())
-            it = stages_.emplace(id.value(), store_.stageStates().name(id)).first;
-        return it->second;
-    }
-    // The label's escaped name and whether it is not a standard label (UR-RES-15).
-    const std::pair<std::string, bool>& label(LabelId id) {
-        auto it = labels_.find(id.value());
-        if (it == labels_.end()) {
-            std::string escaped;
-            detail::appendEscapedLabel(escaped, store_.vocabulary().name(id));
-            const bool local = store_.vocabulary().origin(id) != LabelOrigin::Standard;
-            it = labels_.emplace(id.value(), std::make_pair(std::move(escaped), local)).first;
-        }
-        return it->second;
+        return Label{it->second, info.isWorkspaceLocal};
     }
 
 private:
-    Store& store_;
-    std::map<int32_t, std::string> layers_;
-    std::map<int32_t, std::string> stages_;
-    std::map<int32_t, std::pair<std::string, bool>> labels_;
+    detail::NameCache& names_;
+    std::map<int32_t, std::string> escaped_;
 };
 
 std::string objectIdText(ObjectId id) {
@@ -134,7 +107,7 @@ std::string provenanceLines(Store& store) {
 // Writes one object's cells into `line`, terminated by '\n'.
 void appendRow(std::string& line, const ObjectRecord& record,
                const detail::ResolvedColumns& resolved, char delimiter, Store& store,
-               NameCache& names) {
+               CsvNames& names) {
     const ObjectId id = record.id();
     std::string cell;
     // The effective label set is read once per row, and only when a column needs it.
@@ -171,22 +144,23 @@ void appendRow(std::string& line, const ObjectRecord& record,
                 AnnotationStore& annotations = store.annotations();
                 const int32_t count = annotations.labelCount(id);
                 for (int32_t i = 0; i < count; ++i) {
-                    const auto& label = names.label(annotations.labelAt(id, i));
+                    const CsvNames::Label label = names.label(annotations.labelAt(id, i));
                     if (i > 0) {
                         labels += ';';
                         locals += ';';
                     }
-                    labels += label.first;
-                    locals += label.second ? '1' : '0';
+                    labels += label.name;
+                    locals += label.isWorkspaceLocal ? '1' : '0';
                 }
             }
             cell = column.kind == detail::ColumnKind::Labels ? labels : locals;
             break;
         case detail::ColumnKind::Label:
-            if (record.hasLabel()) cell = names.label(record.label()).first;
+            if (record.hasLabel()) cell = names.label(record.label()).name;
             break;
         case detail::ColumnKind::LabelLocal:
-            if (record.hasLabel()) cell = names.label(record.label()).second ? "1" : "0";
+            if (record.hasLabel())
+                cell = names.label(record.label()).isWorkspaceLocal ? "1" : "0";
             break;
         case detail::ColumnKind::BboxX:
             cell = std::to_string(record.boundingBox().x);
@@ -232,6 +206,59 @@ void appendRow(std::string& line, const ObjectRecord& record,
     line += '\n';
 }
 
+// Streams rows into its own file; the driver owns the partial path and the rename.
+class CsvSink : public detail::ExportSink {
+public:
+    CsvSink(Store& store, const detail::ResolvedColumns& resolved, char delimiter,
+            bool provenance)
+        : store_(store), resolved_(resolved), delimiter_(delimiter), provenance_(provenance) {}
+
+    void begin(const std::filesystem::path& partialPath) override {
+        out_.open(partialPath, std::ios::binary | std::ios::trunc);
+        if (!out_.is_open()) throw IoError("CsvWriter::write: cannot create the output file");
+
+        std::string line;
+        if (provenance_) line = provenanceLines(store_);
+        for (size_t c = 0; c < resolved_.columns.size(); ++c) {
+            if (c > 0) line += delimiter_;
+            detail::appendField(line, resolved_.columns[c].name, delimiter_);
+        }
+        line += '\n';
+        out_.write(line.data(), static_cast<std::streamsize>(line.size()));
+        // Counted as written, so nothing can fail once the finished file is in place.
+        bytes_ = static_cast<int64_t>(line.size());
+    }
+
+    void writeObject(const ObjectRecord& record, detail::NameCache& names) override {
+        if (!csvNames_) csvNames_.emplace(names);
+        line_.clear();
+        appendRow(line_, record, resolved_, delimiter_, store_, *csvNames_);
+        out_.write(line_.data(), static_cast<std::streamsize>(line_.size()));
+        if (!out_) throw IoError("CsvWriter::write: writing the output file failed");
+        bytes_ += static_cast<int64_t>(line_.size());
+    }
+
+    int64_t finish() override {
+        out_.close();
+        if (!out_) throw IoError("CsvWriter::write: writing the output file failed");
+        return bytes_;
+    }
+
+    void close() noexcept override {
+        if (out_.is_open()) out_.close();
+    }
+
+private:
+    Store& store_;
+    const detail::ResolvedColumns& resolved_;
+    char delimiter_;
+    bool provenance_;
+    std::ofstream out_;
+    std::string line_;
+    int64_t bytes_ = 0;
+    std::optional<CsvNames> csvNames_;
+};
+
 } // namespace
 
 class CsvWriter::Impl {
@@ -276,64 +303,9 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query) {
 ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressObserver* observer,
                               const CancellationToken& token) {
     const detail::ResolvedColumns resolved = detail::resolveColumns(impl_->schema, store);
-    ObjectStore& objects = store.objects();
-    const int64_t total = objects.count(query);
-
-    const std::filesystem::path target = std::filesystem::u8path(impl_->path);
-    std::filesystem::path partial = target;
-    partial += ".partial";
-
-    // Declared before the stream, so the stream is closed before the guard removes the file.
-    PartialFileGuard guard(partial);
-    std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) throw IoError("CsvWriter::write: cannot create the output file");
-
-    std::string line;
-    if (impl_->provenance) line = provenanceLines(store);
-    for (size_t c = 0; c < resolved.columns.size(); ++c) {
-        if (c > 0) line += impl_->delimiter;
-        detail::appendField(line, resolved.columns[c].name, impl_->delimiter);
-    }
-    line += '\n';
-    out.write(line.data(), static_cast<std::streamsize>(line.size()));
-    // Counted as written, so nothing can fail once the finished file is in place.
-    int64_t bytes = static_cast<int64_t>(line.size());
-
-    auto report = [&](int64_t completed) {
-        if (observer == nullptr) return;
-        const double fraction =
-            total > 0 ? std::min(1.0, static_cast<double>(completed) / static_cast<double>(total))
-                      : 1.0;
-        observer->onProgress(kProgressName, fraction, completed, total);
-    };
-
-    NameCache names(store);
-    int64_t written = 0;
-    CursorPtr cursor = objects.query(query);
-    while (cursor->next()) {
-        if (token.isCancelled()) {
-            cursor->close();
-            return ExportResult(written, 0, true);  // the guard removes the partial file
-        }
-        line.clear();
-        appendRow(line, cursor->current(), resolved, impl_->delimiter, store, names);
-        out.write(line.data(), static_cast<std::streamsize>(line.size()));
-        if (!out) throw IoError("CsvWriter::write: writing the output file failed");
-        bytes += static_cast<int64_t>(line.size());
-        ++written;
-        if (written % kProgressEvery == 0) report(written);
-    }
-    cursor->close();
-
-    out.close();
-    if (!out) throw IoError("CsvWriter::write: writing the output file failed");
-    std::error_code ec;
-    std::filesystem::rename(partial, target, ec);
-    if (ec) throw IoError("CsvWriter::write: replacing the output file failed");
-    guard.release();
-
-    if (written == 0 || written % kProgressEvery != 0) report(written);
-    return ExportResult(written, bytes, false);
+    CsvSink sink(store, resolved, impl_->delimiter, impl_->provenance);
+    return detail::runExport(store, query, std::filesystem::u8path(impl_->path),
+                             "CsvWriter::write", sink, observer, token);
 }
 
 } // namespace slideio::processor

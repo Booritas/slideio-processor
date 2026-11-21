@@ -3,6 +3,7 @@ add_library(slideio-processor-reporting OBJECT
     materialise.cpp
     column_schema.cpp
     csv_writer.cpp
+    detail/export_driver.cpp
     detail/columns.cpp
     detail/csv_format.cpp
     detail/wkt.cpp
