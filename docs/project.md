@@ -434,6 +434,16 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     from `parentId` (UR-RES-15, user decision 2026-11-21). Today
     `GeoJsonImporter` puts every feature into one target layer, so the export
     round trip keeps geometry, classification and measurements only.
+  - **Open (twin edge cases in column resolution).** Found in the re-review of
+    plan B (SDS 07 §7.2):
+    1. A baseless pair `n.um` + `n.um2` exports only `n.um2`; `n.um` is never
+       written under any unit policy (one twin per base).
+    2. Under `PixelsOnly` a baseless twin gives an empty base column `n` in CSV
+       and no key in GeoJSON, so the twin's value is hidden.
+    3. CSV skips a baseless twin whose base equals a fixed column name (for
+       example `layer.um2` alone).
+    Possible fix: let a base keep both twins, and write a baseless twin's own column
+    under every policy.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

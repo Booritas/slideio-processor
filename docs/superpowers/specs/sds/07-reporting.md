@@ -146,7 +146,11 @@ twin under the base name followed by `.um` or `.um2`.
   `len.um` alone) counts as that base, so the unit policy still gives it its
   column (final review, reporting plan B). In a table (`CsvWriter`) a name equal
   to a fixed column name is skipped; `GeoJsonExporter`, whose measurements are a
-  nested object, keeps it (§7.5). Storage
+  nested object, keeps it (§7.5). Open edge cases (`docs/project.md`,
+  reporting plan B): a baseless pair `n.um` + `n.um2` writes only `n.um2`;
+  under `PixelsOnly` a baseless twin gives an empty `n` column (CSV) or no key
+  (GeoJSON), hiding its value; and CSV skips a baseless twin whose base is a
+  fixed column name (`layer.um2` alone). Storage
   lists the names with `ObjectStore::measurementNameCount/At` (SDS 03). That
   list is shared with assertions (reporting plan B, ruling C): a name that only
   later stages assert also appears as a row column, empty in every row; its
