@@ -2,8 +2,9 @@
 #pragma once
 
 // The durable record of a stage definition (SDS 04 4.2), shared by the stage registry
-// that stores it and the code that compares declarations. Not installed; exported from
-// the engine, declared only here, so the tests and the registry reach them.
+// that stores it and the code that compares declarations. Not installed. Exported from the
+// engine only with test seams on (SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS): the registry calls
+// them inside the engine, and tests reach them through the export.
 
 #include <pipeline/detail/engine_test_export.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>

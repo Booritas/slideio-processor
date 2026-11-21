@@ -38,13 +38,15 @@ find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 
 # Test seams: test-only exports (the detail::*ForTesting functions and
-# detail::trackForCloseTesting) and the production branches that read them. Turn this off
+# detail::trackForCloseTesting) and the production branches that read them. The option
+# also decides whether the six SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS functions are
+# exported (SDS 00 C-15). Turn this off
 # for a release package: the seams are compiled out, GTest is not required and tests/ is
 # not built; scripts/check-no-test-seams.sh checks the result. Not gated, as they are not
 # exported: WriterLock::acquire(path, afterOpen), TiffRasterReader's openHook_ and
 # TileSpool::piecesStored/piecesDecoded.
 option(SLIDEIO_PROCESSOR_TEST_SEAMS
-       "Build and export the test-only seams the tests need; turn off for release packages" ON)
+       "Build and export the test-only seams and engine functions the tests need; turn off for release packages" ON)
 if(SLIDEIO_PROCESSOR_TEST_SEAMS)
     # Directory-scoped: nothing reaches an installed or exported package configuration.
     add_compile_definitions(SLIDEIO_PROCESSOR_TEST_SEAMS=1)
