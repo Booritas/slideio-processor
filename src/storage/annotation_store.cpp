@@ -15,6 +15,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace slideio::processor {
 
@@ -116,6 +117,9 @@ public:
     ObjectStore& objects;  // the source of core's Membership and ObjectAnchor rasters
     mutable std::mutex poolMutex;
     mutable std::set<std::string> namePool;
+    // The (stage, name) pairs the most recent assertedMeasurementColumnCount() read.
+    mutable std::mutex columnsMutex;
+    mutable std::vector<std::pair<StageId, const char*>> assertedColumns;
 };
 
 AnnotationStore::AnnotationStore(detail::StoreImpl& store, const LayerRegistry& layers, ObjectStore& objects)
@@ -219,36 +223,38 @@ int64_t AnnotationStore::measurementAnnotationCount() const {
 }
 
 int32_t AnnotationStore::assertedMeasurementColumnCount() const {
+    constexpr const char* kOperation = "AnnotationStore::assertedMeasurementColumnCount";
+    // One scan of measurement_assertions gives every pair; At() reads the snapshot.
+    std::vector<std::pair<StageId, std::string>> rows;
+    impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
+        detail::Statement select(db,
+                                 "SELECT m.stage_id, n.name FROM (SELECT DISTINCT stage_id, name_id "
+                                 "FROM measurement_assertions) m JOIN measurement_names n ON n.id = m.name_id "
+                                 "ORDER BY m.stage_id, n.name");
+        while (select.step())
+            rows.emplace_back(StageId(static_cast<int32_t>(select.columnInt64(0))), select.columnText(1));
+        return true;
+    });
+    std::vector<std::pair<StageId, const char*>> snapshot;
+    snapshot.reserve(rows.size());
+    for (auto& [stage, name] : rows) snapshot.emplace_back(stage, impl_->pooledName(std::move(name)));
+    std::lock_guard<std::mutex> guard(impl_->columnsMutex);
+    impl_->assertedColumns = std::move(snapshot);
     // Safe: the pairs are far fewer than 2^31 (stages times distinct names).
-    return static_cast<int32_t>(
-        impl_->total("AnnotationStore::assertedMeasurementColumnCount",
-                     "SELECT COUNT(*) FROM (SELECT DISTINCT stage_id, name_id FROM measurement_assertions)"));
+    return static_cast<int32_t>(impl_->assertedColumns.size());
 }
 
 void AnnotationStore::assertedMeasurementColumnAt(int32_t index, StageId& stage, const char*& name) const {
     constexpr const char* kOperation = "AnnotationStore::assertedMeasurementColumnAt";
-    StageId foundStage;
-    std::string foundName;
-    const bool found = impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
-        if (index < 0) return false;
-        detail::Statement select(db,
-                                 "SELECT m.stage_id, n.name FROM (SELECT DISTINCT stage_id, name_id "
-                                 "FROM measurement_assertions) m JOIN measurement_names n ON n.id = m.name_id "
-                                 "ORDER BY m.stage_id, n.name LIMIT 1 OFFSET ?");
-        select.bindInt64(1, index);
-        if (!select.step()) return false;
-        foundStage = StageId(static_cast<int32_t>(select.columnInt64(0)));
-        foundName = select.columnText(1);
-        return true;
-    });
-    if (!found) {
+    impl_->store.checkOpen(kOperation);
+    std::lock_guard<std::mutex> guard(impl_->columnsMutex);
+    if (index < 0 || static_cast<size_t>(index) >= impl_->assertedColumns.size()) {
         const std::string message =
             std::string(kOperation) + ": index " + std::to_string(index) + " is out of range";
         throw InvalidArgumentError(message.c_str());
     }
-    const char* interned = impl_->pooledName(std::move(foundName));
-    stage = foundStage;
-    name = interned;
+    stage = impl_->assertedColumns[static_cast<size_t>(index)].first;
+    name = impl_->assertedColumns[static_cast<size_t>(index)].second;
 }
 
 TileRasterSourcePtr AnnotationStore::layerRasterSource(LayerId layer, LayerRasterContent content) const {

@@ -186,7 +186,8 @@ ExportResult GeoJsonExporter::write(Store& store, const ObjectQuery& query) {
 
 ExportResult GeoJsonExporter::write(Store& store, const ObjectQuery& query,
                                     ProgressObserver* observer, const CancellationToken& token) {
-    const detail::ResolvedColumns resolved = detail::resolveColumns(impl_->schema, store);
+    const detail::ResolvedColumns resolved =
+        detail::resolveColumns(impl_->schema, store, detail::ColumnLayout::MeasurementsOnly);
     detail::requireDistinctNames(resolved, kWho);
     const ColumnSchema::Impl& settings = detail::ColumnSchemaAccess::impl(impl_->schema);
     GeoJsonSink sink(store, resolved, settings.labelPolicy, settings.parent);

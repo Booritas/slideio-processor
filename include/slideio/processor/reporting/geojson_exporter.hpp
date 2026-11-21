@@ -34,10 +34,15 @@ class Store;
  *
  * The ColumnSchema decides what a feature carries:
  * - Default: without a schema() call the schema is
- *   ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns), so a default export
- *   loses no measurement.
+ *   ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns). A default export
+ *   carries every finite value an object holds and every visible value a later stage
+ *   asserted on it, including names like the CSV fixed columns ("layer", "labels")
+ *   and twins whose base the store lacks ("len.um" alone). The exceptions: non-finite
+ *   values (below), and a base name with both a ".um" and a ".um2" twin, of which only
+ *   ".um2" is read (one twin per base, as everywhere in reporting).
  * - Measurements: the schema's measurement columns, resolved against the store as
- *   CsvWriter resolves them, are the "measurements" keys, in column order and under
+ *   CsvWriter resolves them (except that names like the CSV fixed columns are kept),
+ *   are the "measurements" keys, in column order and under
  *   the column names: "area", the calibrated twin "area.um2", and a later stage's
  *   assertion "<stage>/<name>" (ColumnSchema::assertedMeasurement()). A key the object
  *   lacks, or whose assertion is not visible, is absent. Two columns with the same name

@@ -1306,7 +1306,8 @@ public:
                       int32_t labelCount);
     /// As above; a non-null `parent` adds `"parentId"` (its `toString()` text)
     /// right after `"objectId"`. A null `parent` gives the output of the
-    /// overload above, byte for byte.
+    /// overload above, byte for byte. An invalid parent id is written as the
+    /// text `"invalid"`, because `ObjectId::toString()` never fails.
     void writeFeature(const ObjectRecord& record,
                       const char* layerName,
                       const char* const* labelNames,

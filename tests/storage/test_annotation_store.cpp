@@ -433,6 +433,32 @@ TEST_F(AnnotationStoreTest, AssertedMeasurementColumnsAreListed) {
     EXPECT_THROW(annotations().assertedMeasurementColumnAt(0, stage, name), IoError);
 }
 
+TEST_F(AnnotationStoreTest, AssertedMeasurementColumnAtReadsTheCountSnapshot) {
+    const std::vector<ObjectId> ids = commit(a, {rec(cells, 0, 0, 4)});
+    complete(a);
+    StageId stage;
+    const char* name = nullptr;
+    // Before any count the snapshot is empty.
+    EXPECT_THROW(annotations().assertedMeasurementColumnAt(0, stage, name), InvalidArgumentError);
+
+    AnnotationWriterPtr wc = annotations().writerForStage(c);
+    wc->assertMeasurement(ids[0], "b", 1.0, MeasurementUnit::Dimensionless);
+    wc->flush();
+    ASSERT_EQ(annotations().assertedMeasurementColumnCount(), 1);
+
+    // A later write leaves the snapshot alone until the next count.
+    wc->assertMeasurement(ids[0], "a", 2.0, MeasurementUnit::Dimensionless);
+    wc->flush();
+    annotations().assertedMeasurementColumnAt(0, stage, name);
+    EXPECT_EQ(std::string(name), "b");
+    EXPECT_THROW(annotations().assertedMeasurementColumnAt(1, stage, name), InvalidArgumentError);
+
+    ASSERT_EQ(annotations().assertedMeasurementColumnCount(), 2);
+    annotations().assertedMeasurementColumnAt(0, stage, name);
+    EXPECT_EQ(std::string(name), "a");
+    EXPECT_EQ(stage, c);
+}
+
 TEST_F(AnnotationStoreTest, WriterBatchingAndLifecycle) {
     const std::vector<ObjectId> ids = commit(a, {rec(cells, 0, 0, 4), rec(cells, 10, 0, 4)});
     EXPECT_THROW(annotations().writerForStage(StageId(99)), InvalidArgumentError);

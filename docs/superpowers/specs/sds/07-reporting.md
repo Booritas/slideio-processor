@@ -139,9 +139,14 @@ twin under the base name followed by `.um` or `.um2`.
   ending in `.um` or `.um2`, or one equal to any fixed column name in the table
   above (whether or not that column is included) is `InvalidArgumentError`, so a
   header never holds two columns of one name.
-- `allMeasurements()` adds, when a writer starts, every store measurement name
-  that does not end in `.um` or `.um2` and is not a fixed column name, in
-  ascending byte order, after the explicit names and without duplicates. Storage
+- `allMeasurements()` adds, when a writer starts, every store measurement base
+  name, in ascending byte order, after the explicit names and without
+  duplicates. A name ending in `.um` or `.um2` is a twin, reached through its
+  base; a row twin whose base the store's name list lacks (an importer may write
+  `len.um` alone) counts as that base, so the unit policy still gives it its
+  column (final review, reporting plan B). In a table (`CsvWriter`) a name equal
+  to a fixed column name is skipped; `GeoJsonExporter`, whose measurements are a
+  nested object, keeps it (§7.5). Storage
   lists the names with `ObjectStore::measurementNameCount/At` (SDS 03). That
   list is shared with assertions (reporting plan B, ruling C): a name that only
   later stages assert also appears as a row column, empty in every row; its
@@ -292,7 +297,9 @@ the provenance UR-RES-11 asks for. Redaction is an open follow-up
   the cursor's order to `<path>.partial`.
 - It calls `observer->onProgress("export", fraction, completed, total)` after
   every 1000 objects and once at the end (not repeated when the end falls on a
-  multiple of 1000), when an observer is given.
+  multiple of 1000), when an observer is given. The final call comes before the
+  file is finished and renamed, so an observer that throws leaves any file at
+  `path` untouched.
 - It checks `token.isCancelled()` before writing each object. On cancel the
   partial file is removed, any file already at `path` is untouched, and the
   result has `wasCancelled() == true`, the objects written before the check, and
@@ -388,10 +395,15 @@ rings; several outer rings make a `MultiPolygon`.
 **What the schema means for GeoJSON** (plan B decision 4).
 
 - **Default.** With no `schema()` call the schema is
-  `ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns)`, so a
-  default export loses no measurement.
+  `ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns)`. A default
+  export carries every finite value an object holds and every visible value a
+  later stage asserted on it, including names like the CSV fixed columns
+  (`layer`, `labels`) and twins whose base the store lacks (`len.um` alone).
+  The exceptions: non-finite values (below), and a base name with both a `.um`
+  and a `.um2` twin, of which only `.um2` is read (one twin per base, §7.2).
 - **Measurements.** The resolved measurement columns (`detail::resolveColumns`,
-  §7.2) decide which values a feature carries, under their column names:
+  §7.2, with layout `MeasurementsOnly`: no fixed columns, and names like them
+  kept) decide which values a feature carries, under their column names:
   `area`, its calibrated twin `area.um2`, and a later stage's assertion
   `<stage>/<name>` (§7.2, plan B decision 9). The exporter builds a per-object
   copy of the record holding only those, in column order, each with its source

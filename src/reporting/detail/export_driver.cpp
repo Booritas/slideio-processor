@@ -111,13 +111,15 @@ ExportResult runExport(Store& store, const ObjectQuery& query,
     }
     cursor->close();
 
+    // The final progress comes before the file is finished and renamed, so an observer
+    // that throws leaves the target untouched.
+    if (written == 0 || written % kProgressEvery != 0) report(written);
+
     const int64_t bytes = sink.finish();
     std::error_code ec;
     std::filesystem::rename(partial, target, ec);
     if (ec) throw IoError((std::string(who) + ": replacing the output file failed").c_str());
     guard.release();
-
-    if (written == 0 || written % kProgressEvery != 0) report(written);
     return ExportResult(written, bytes, false);
 }
 

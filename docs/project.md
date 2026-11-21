@@ -369,7 +369,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   writer (SDS 07 §7.4) waits until its dependency is chosen; UR-RES-10 is not
   met by plan A. GeoJSON export and mask rasters are plans B and C.
   **In progress** on `feat/reporting-a`.
-  - **Resolved in reporting plan B (asserted measurements are not exported).**
+  - **Resolved in reporting plan B: later-stage measurements are exported.**
     Values a later stage asserted are exported in stage-qualified columns
     `<stage name>/<name>`, listed by `AnnotationStore::assertedMeasurementColumnCount/At`
     and selected by `ColumnSchema::assertedMeasurement()` or `allMeasurements()`
@@ -389,7 +389,25 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     (`src/reporting/detail/columns.cpp`, `readAssertedValues`). Correct, but slow
     at 10 million objects (UR-RES-8). Fix: a storage-side batched read alongside
     the object cursor, or cached prepared statements; then a 1-million-object
-    benchmark.
+    benchmark. The GeoJSON export (reporting plan B) makes the same per-object
+    lookups. Column resolution adds one scan of `measurement_assertions` per
+    export, for any writer: `AnnotationStore::assertedMeasurementColumnCount()`
+    reads every (stage, name) pair at once into a snapshot that
+    `assertedMeasurementColumnAt()` indexes (final review of plan B); the table
+    has no `(stage_id, name_id)` index, so the scan is of the whole table.
+  - **Open (per-object record copy in the GeoJSON export).** To select and
+    rename measurements, `GeoJsonExporter` copies each object's record, geometry
+    included, into a reused `ObjectRecord` before `GeoJsonWriter::writeFeature`
+    (`src/reporting/geojson_exporter.cpp`, `copyMeasurements`). Bounded memory,
+    but one polygon copy per feature; same family as the per-row lookups above.
+    Fix: a writer overload taking the measurements apart from the record, or a
+    record view, with the batched-read work.
+  - **Open (CSV under `Calibrated`: base without its twin).** A store that
+    holds a twin `n.um2` for some objects gives the column `n.um2` alone, so an
+    object with `n` but no `n.um2` gets an empty cell and its pixel value is
+    not exported (plan A behaviour, SDS 07 §7.2). `BothColumns` keeps both.
+    Fix, if wanted: fall back to the pixel value in a separate column, or
+    document `BothColumns` for mixed-calibration stores.
   - **Open (PHI/PII: slide identifier in export provenance).** The CSV
     provenance line `slide_id` is the slide path as the store holds it (the
     workspace stores the path it opened), and a path may carry identifiers

@@ -542,7 +542,7 @@ classDiagram
         <<ThreadConfined>>
         +begin(Provenance) void
         +writeFeature(ObjectRecord, cstr layer, cstr[] labels, bool[] isLocal, int32_t n) void
-        +writeFeature(ObjectRecord, cstr layer, cstr[] labels, bool[] isLocal, int32_t n, ObjectId parent) void
+        +writeFeature(ObjectRecord, cstr layer, cstr[] labels, bool[] isLocal, int32_t n, ObjectId* parent) void
         +end() void
         +featuresWritten() int64_t
     }

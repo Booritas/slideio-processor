@@ -93,15 +93,27 @@ public:
     static const ColumnSchema::Impl& impl(const ColumnSchema& schema) noexcept;
 };
 
+/** How a writer lays the columns out. */
+enum class ColumnLayout : int32_t {
+    /// A table (CSV): the fixed columns, then the measurements. allMeasurements() skips a
+    /// measurement named like a fixed column, which would repeat a header name.
+    Table,
+    /// Measurements only (GeoJSON, whose measurements are a nested object): no fixed
+    /// columns, and allMeasurements() keeps a measurement named like a fixed column.
+    MeasurementsOnly
+};
+
 /**
  * Resolves the schema against the measurement names the store holds: the row names
  * (ObjectStore::measurementNameAt()) and the asserted (stage, name) pairs
  * (AnnotationStore::assertedMeasurementColumnAt()). An asserted column is named
- * "<stage name>/<name>". It does not check that the names are distinct: every writer
- * calls requireDistinctNames() on the result before it creates its file.
+ * "<stage name>/<name>". Under allMeasurements(), a twin ("n.um", "n.um2") whose base no
+ * row (or, for an assertion, no assertion of that stage) holds counts as that base, and
+ * the unit policy picks its columns. It does not check that the names are distinct:
+ * every writer calls requireDistinctNames() on the result before it creates its file.
  */
-SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS ResolvedColumns resolveColumns(const ColumnSchema& schema,
-                                                                   Store& store);
+SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS ResolvedColumns resolveColumns(
+    const ColumnSchema& schema, Store& store, ColumnLayout layout = ColumnLayout::Table);
 
 /**
  * Throws InvalidArgumentError, prefixed by `who`, when two resolved columns share a

@@ -80,6 +80,7 @@ test_only=(
     sameDeclaration      # detail: compares two stage declarations
     resolveColumns       # detail: resolves a reporting column schema against a store
     appendDouble         # detail: formats a CSV measurement value (reporting)
+    requireDistinctNames # detail: refuses two reporting columns of the same name
 )
 pattern="Testing"
 for name in "${test_only[@]}"; do pattern+="|$name"; done

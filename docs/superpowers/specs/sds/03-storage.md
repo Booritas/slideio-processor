@@ -1149,7 +1149,12 @@ id. An indexed accessor with an out-of-range index throws
 `assertedMeasurementColumnCount/At` (reporting plan B, decision 9) ignore
 visibility: they list every stored `(stage_id, name)` pair, so a report's
 columns do not change with stage status; a stage's discard removes its pairs.
-Their errors are `ObjectStore::measurementNameAt`'s.
+Their errors are `ObjectStore::measurementNameAt`'s. `assertedMeasurementColumnCount()`
+reads every pair in one scan of `measurement_assertions` and keeps them as the
+store's snapshot (under a mutex); `assertedMeasurementColumnAt()` indexes the
+snapshot the most recent count took, reading no table, so callers call the count
+first. A column resolution, and so one export, costs one scan of the assertions
+table.
 
 **Both annotation tables are `WITHOUT ROWID`, keyed by their natural key, and
 measurement names are interned.** `label_assertions` is keyed

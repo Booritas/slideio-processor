@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -504,4 +505,85 @@ TEST_F(GeoJsonExport, UnwritablePathThrowsAndLeavesNothing) {
     }
     EXPECT_FALSE(std::filesystem::exists(missing));
     EXPECT_FALSE(std::filesystem::exists(partial));
+}
+
+// GeoJSON measurements are a nested object, so a name like a fixed CSV column is kept.
+TEST_F(GeoJsonExport, FixedColumnNamedMeasurementIsKept) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("labels", 1.0, MeasurementUnit::Dimensionless);
+    record.measurements().set("layer", 2.0, MeasurementUnit::Dimensionless);
+    commitOne(store(), "more", record);
+
+    rapidjson::Document doc;
+    parse(exportGeoJson(store(), out, nullptr), doc);
+    ASSERT_FALSE(HasFatalFailure());
+    const rapidjson::Value* properties = propertiesOf(doc, record.id());
+    ASSERT_NE(properties, nullptr);
+    EXPECT_EQ(measurementKeys(*properties), (std::vector<std::string>{"labels", "layer"}));
+    EXPECT_DOUBLE_EQ((*properties)["measurements"]["labels"].GetDouble(), 1.0);
+    EXPECT_DOUBLE_EQ((*properties)["measurements"]["layer"].GetDouble(), 2.0);
+    // The feature's own "layer" property is untouched.
+    EXPECT_STREQ((*properties)["layer"].GetString(), "cells");
+}
+
+// A twin with no base in the store (an importer can write one) is still exported.
+TEST_F(GeoJsonExport, RowTwinWithoutBaseIsKept) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("len.um", 5.0, MeasurementUnit::Micrometres);
+    commitOne(store(), "more", record);
+
+    rapidjson::Document doc;
+    parse(exportGeoJson(store(), out, nullptr), doc);
+    ASSERT_FALSE(HasFatalFailure());
+    const rapidjson::Value* properties = propertiesOf(doc, record.id());
+    ASSERT_NE(properties, nullptr);
+    EXPECT_EQ(measurementKeys(*properties), (std::vector<std::string>{"len.um"}));
+    EXPECT_DOUBLE_EQ((*properties)["measurements"]["len.um"].GetDouble(), 5.0);
+}
+
+TEST_F(GeoJsonExport, ClashingNamesAreRefusedBeforeTheFileIsCreated) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("ki67/positive_fraction", 1.0, MeasurementUnit::Dimensionless);
+    commitOne(store(), "more", record);
+    assertFraction(store(), "ki67", {{cell1Id, 0.25}});
+
+    EXPECT_THROW(GeoJsonExporter(out.utf8().c_str()).write(store(), ObjectQuery()),
+                 InvalidArgumentError);
+    EXPECT_FALSE(std::filesystem::exists(out.path()));
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
+}
+
+TEST_F(GeoJsonExport, InvisibleAssertionHasNoKey) {
+    assertFraction(store(), "late", {{cell1Id, 0.5}}, /*complete=*/false);
+    rapidjson::Document doc;
+    parse(exportText(), doc);
+    ASSERT_FALSE(HasFatalFailure());
+    for (const rapidjson::Value& feature : doc["features"].GetArray())
+        EXPECT_FALSE(feature["properties"]["measurements"].HasMember("late/positive_fraction"));
+}
+
+namespace {
+// Throws from the call that reports every object done.
+class ThrowingAtTheEndObserver : public ProgressObserver {
+public:
+    void onProgress(const char*, double, int64_t completed, int64_t total) override {
+        if (completed == total) throw std::runtime_error("observer failed");
+    }
+};
+} // namespace
+
+TEST_F(GeoJsonExport, ObserverThrowingAtTheEndLeavesAnExistingFile) {
+    writeText(out.path(), "previous export\n");
+    ThrowingAtTheEndObserver observer;
+    EXPECT_THROW(GeoJsonExporter(out.utf8().c_str())
+                     .write(store(), ObjectQuery(), &observer, CancellationToken()),
+                 std::runtime_error);
+    EXPECT_EQ(readText(out.path()), "previous export\n");
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
 }

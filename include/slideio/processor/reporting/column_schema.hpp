@@ -220,9 +220,12 @@ public:
      * (asserting stage, base name) pair, ordered by stage id, then name; without
      * duplicates.
      *
-     * Store names ending in ".um" or ".um2" are skipped: they are calibrated twins, and
-     * units() decides whether a twin column is written beside its base name. Row names
-     * equal to a fixed column name (see measurement()) are skipped too. An asserted pair
+     * A store name ending in ".um" or ".um2" is a calibrated twin, reached through its
+     * base name: units() decides whether a twin column is written beside it. A row twin
+     * whose base no row holds (an importer may write "len.um" alone) counts as that
+     * base, so the unit policy still gives it its column. In a table (CsvWriter), row
+     * names equal to a fixed column name (see measurement()) are skipped; GeoJsonExporter,
+     * whose measurements are a nested object, keeps them. An asserted pair
      * gives the column "<stage name>/<name>", as assertedMeasurement() does. The row names
      * are the store's whole name list, which assertions share: a name that only later
      * stages assert also appears as a row column, empty in every row; its values are in

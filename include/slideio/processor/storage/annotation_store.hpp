@@ -311,9 +311,11 @@ public:
      * among the stored measurement assertions, whatever their visibility.
      *
      * A name and its calibrated twin (for example "area" and "area.um2") count
-     * separately. assertedMeasurementColumnCount() and assertedMeasurementColumnAt()
-     * each read the store afresh, so a write between two calls can change the count
-     * and shift indices; read them while nothing writes, or tolerate the shift.
+     * separately. The call reads every pair in one scan of the stored assertions and
+     * keeps them as this store's snapshot, which assertedMeasurementColumnAt() indexes:
+     * call this first. A later write does not change the snapshot until the next call;
+     * a call from another thread replaces it, so callers sharing a store on several
+     * threads serialise count-then-At sequences themselves.
      * @return The count, 0 for a store without measurement assertions.
      * @throws IoError When the store is closed, or when SQLite fails.
      * @par Thread-safety
@@ -323,9 +325,13 @@ public:
      */
     int32_t assertedMeasurementColumnCount() const;
     /**
-     * @brief Returns the pair at an index, ordered by stage id, then by name in
-     * ascending byte order (SQLite's BINARY collation).
-     * @param index Zero-based, below assertedMeasurementColumnCount().
+     * @brief Returns the pair at an index of the snapshot the most recent
+     * assertedMeasurementColumnCount() took, ordered by stage id, then by name in
+     * ascending byte order (SQLite's BINARY collation). It reads no table, only checks
+     * that the store is open. Before any count() call the snapshot is empty and every
+     * index is out of range.
+     * @param index Zero-based, below the value the most recent
+     * assertedMeasurementColumnCount() returned.
      * @param stage Receives the asserting stage.
      * @param name Receives the measurement name, never null. The pointer stays valid for
      * the life of the store: names are interned like ObjectStore::measurementNameAt()'s.

@@ -92,10 +92,10 @@ std::vector<ResolvedColumn> fixedColumns(const ColumnSchema::Impl& s) {
     return out;
 }
 
-ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
+ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store, ColumnLayout layout) {
     const ColumnSchema::Impl& s = ColumnSchemaAccess::impl(schema);
     ResolvedColumns result;
-    result.columns = fixedColumns(s);
+    if (layout == ColumnLayout::Table) result.columns = fixedColumns(s);
 
     ObjectStore& objects = store.objects();
     // The store lists names in ascending byte order; std::set keeps that order.
@@ -141,9 +141,16 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
     }
     if (s.allMeasurements) {
         for (const std::string& name : held) {
-            // A fixed column name would give the header two columns of that name.
-            if (isTwinName(name) || isFixedColumnName(name)) continue;
-            if (!isWanted(std::string(), name)) wanted.push_back({std::string(), StageId(), name});
+            // A row twin no base name accompanies (an importer may write "len.um" alone)
+            // counts as its base, as an asserted one does below: the unit policy then
+            // picks the twin, the pixel column or both. A twin with its base is reached
+            // through the base.
+            const std::string base = baseName(name);
+            if (base != name && held.count(base) > 0) continue;
+            // In a table a fixed column name would give the header two columns of that
+            // name; nested measurements (GeoJSON) cannot clash with the fixed fields.
+            if (layout == ColumnLayout::Table && isFixedColumnName(base)) continue;
+            if (!isWanted(std::string(), base)) wanted.push_back({std::string(), StageId(), base});
         }
         for (const auto& [stage, name] : assertedPairs) {
             // A twin the stage asserts without its base still gets its column, through

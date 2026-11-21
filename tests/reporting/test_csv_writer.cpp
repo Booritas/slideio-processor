@@ -703,3 +703,27 @@ TEST_F(CsvExportTest, AssertedOnlyTwinDoesNotHideRowPixels) {
     EXPECT_EQ(cell2[3], "0.10000000000000001");
     EXPECT_EQ(cell2[4], "");
 }
+
+// A twin with no base in the store (an importer can write one) gets its column.
+TEST_F(CsvExportTest, RowTwinWithoutBaseIsKept) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("len.um", 5.0, MeasurementUnit::Micrometres);
+    commitOne(store(), "more", record);
+
+    ColumnSchema schema = idsOnly();
+    schema.allMeasurements();
+    const std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    ASSERT_EQ(rows.size(), 5u);
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area.um2", "len.um", "perimeter"}));
+    EXPECT_EQ(rowOf(rows, record.id()), (Row{decimal(record.layer().value()),
+                                             decimal(record.id().anchorPacked()), "", "5", ""}));
+
+    ColumnSchema both = idsOnly();
+    both.allMeasurements().units(UnitPolicy::BothColumns);
+    const std::vector<Row> bothRows = parseCsv(exportAll(store(), out, both));
+    ASSERT_FALSE(bothRows.empty());
+    EXPECT_EQ(bothRows[0], (Row{"layer_id", "anchor_id", "area", "area.um2", "len", "len.um",
+                                "perimeter"}));
+}

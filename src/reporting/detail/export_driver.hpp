@@ -75,7 +75,8 @@ public:
 /**
  * Runs one export: writes through `sink` to "<target>.partial", then renames it onto
  * `target`. Progress is reported to `observer` (stage "export") every 1000 objects and
- * once at the end; cancellation is checked before each object. On cancellation or any
+ * once at the end, before the file is finished and renamed, so an observer that throws
+ * leaves the target untouched; cancellation is checked before each object. On cancellation or any
  * failure the partial file is removed and an existing `target` is left untouched.
  * @param who Prefix of the failure messages, for example "CsvWriter::write".
  * @return The result; a cancelled run reports 0 bytes.
