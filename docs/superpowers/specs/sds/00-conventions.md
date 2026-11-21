@@ -297,4 +297,4 @@ and only tests call them across the library boundary. They are `notifyTileSkippe
 `SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS` (`src/pipeline/detail/engine_test_export.hpp`),
 which is `SLIDEIO_PROCESSOR_ENGINE_EXPORTS` while the option is ON and empty when it is
 OFF, so a release build does not export them; they stay callable inside the engine.
-The check script fails on their names as well as on `Testing`.
+The check script fails on `Testing` and on these exports, matching the three `SeamMergerAccess` functions by their owner (`SeamMerger::Impl` has methods of the same names that GCC exports with the class) and the three `detail::` functions by name.

@@ -4,7 +4,7 @@
 # Two kinds of exported symbol of either shared library fail it: one containing "Testing"
 # (the *ForTesting seams and trackForCloseTesting), and one containing the name of a
 # test-only engine export (SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS), listed in test_only
-# below.
+# below (the three SeamMergerAccess functions by their owner, the others by name).
 #
 # Usage: scripts/check-no-test-seams.sh <build dir>
 # Exit:  0 no test seams exported; 1 a seam is exported; 2 a library or a symbol tool
@@ -69,11 +69,11 @@ else
 fi
 
 # Engine functions that production calls only inside the engine; they are exported only
-# when test seams are on, so tests can reach them. Each name is matched as a substring.
+# when test seams are on, so tests can reach them. Each entry is matched as a substring.
 test_only=(
-    notifyTileSkipped    # SeamMergerAccess: marks a restriction-skipped tile deferred
-    takeAwaitedDeferred  # SeamMergerAccess: returns the deferred tiles open objects expect
-    completeDeferred     # SeamMergerAccess: completes the deferred tiles nobody demanded
+    SeamMergerAccess     # the owner of notifyTileSkipped, takeAwaitedDeferred and completeDeferred;
+                         # matched by owner because SeamMerger::Impl has methods of the same
+                         # names that GCC exports with the class
     stageRecordJson      # detail: serialises a stage definition for the stage registry
     stageFromRecord      # detail: parses a stored stage record back to a definition
     sameDeclaration      # detail: compares two stage declarations
