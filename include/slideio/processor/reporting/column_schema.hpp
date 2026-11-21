@@ -170,7 +170,10 @@ public:
      * @brief Adds a measurement by its base name; columns follow call order.
      *
      * Give the base name ("area"); the unit is chosen by units(), so a name ending in
-     * ".um" or ".um2" is refused.
+     * ".um" or ".um2" is refused. Cells come from the object row's own measurements
+     * only: values asserted by later stages (AnnotationStore::assertedMeasurementAt())
+     * are not exported yet, so an object whose value was only asserted gets an empty
+     * cell.
      * @param name The base name; not null, not empty, not ending in ".um" or ".um2".
      * @return This schema.
      * @throws InvalidArgumentError When name is null, empty or a calibrated twin name,
@@ -184,7 +187,10 @@ public:
      *
      * Store names ending in ".um" or ".um2" are skipped: they are calibrated twins, and
      * units() decides whether a twin column is written beside its base name. Calling it
-     * twice is the same as once.
+     * twice is the same as once. Asserted measurement names share the store's name
+     * list, but asserted values are not exported yet (cells come from the object row's
+     * own measurements only), so a name that was only ever asserted gives a column
+     * that is empty in every row.
      * @return This schema.
      * @throws std::bad_alloc When memory is exhausted.
      */

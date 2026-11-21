@@ -145,6 +145,11 @@ twin under the base name followed by `.um` or `.um2`.
   column too.
 - A value an object lacks is an empty cell. Values are written as `%.17g` in the
   C locale, so they round-trip.
+- Cells come from the object row's own measurements only. Values asserted by
+  later stages (`AnnotationStore::assertedMeasurementCount/At`, SDS 03 §3.7) are
+  not exported yet (open follow-up of reporting plan A). Asserted names share the
+  store's `measurement_names` list, so `allMeasurements()` can produce a column
+  that is empty in every row when a name was only ever asserted.
 
 `columnCount()` and `columnNameAt()` report the fixed columns and the explicit
 names as `PixelsOnly` would. The full list, with twins and the

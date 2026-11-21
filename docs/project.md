@@ -369,6 +369,20 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   writer (SDS 07 §7.4) waits until its dependency is chosen; UR-RES-10 is not
   met by plan A. GeoJSON export and mask rasters are plans B and C.
   **In progress** on `feat/reporting-a`.
+  - **Open (asserted measurements are not exported).** CSV cells come from the
+    object row's own measurements only; values a later stage asserted
+    (`AnnotationStore::assertedMeasurement*`) are left out. Asserted names share
+    `measurement_names`, so `allMeasurements()` can produce a column that is
+    empty in every row. Fix: read the asserted value when the row lacks the name
+    (or exclude asserted-only names), and test both (SDS 07 §7.2).
+  - **Open (per-row store lookups in the CSV export).** Each row runs
+    `AnnotationStore::labelCount`/`labelAt`, which re-run the effective-labels
+    query, and `EdgeStore::parentOf`, which prepares a fresh join
+    (`src/storage/annotation_store.cpp`, `src/storage/edge_store.cpp`): about
+    3–4 statement compiles per row with labels and parents on. Correct, but slow
+    at 10 million objects (UR-RES-8). Fix: a storage-side batched read alongside
+    the object cursor, or cached prepared statements; then a 1-million-object
+    benchmark.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
