@@ -8,8 +8,10 @@
 #include <slideio/processor/storage/store.hpp>
 
 #include <algorithm>
+#include <initializer_list>
 #include <map>
 #include <set>
+#include <string>
 #include <utility>
 
 namespace slideio::processor::detail {
@@ -24,6 +26,18 @@ bool isTwinName(const std::string& name) noexcept {
     };
     return ends(".um", 3) || ends(".um2", 4);
 }
+
+namespace {
+// The base of a twin name ("n.um" or "n.um2" gives "n"); any other name unchanged.
+std::string baseName(const std::string& name) {
+    for (const char* suffix : {".um2", ".um"}) {
+        const size_t n = std::char_traits<char>::length(suffix);
+        if (name.size() > n && name.compare(name.size() - n, n, suffix) == 0)
+            return name.substr(0, name.size() - n);
+    }
+    return name;
+}
+} // namespace
 
 bool isFixedColumnName(const std::string& name) noexcept {
     static const char* const kNames[] = {
@@ -101,6 +115,8 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
         assertedPairs.emplace_back(stage, name);
         assertedHeld[stage.value()].insert(name);
     }
+    std::set<std::string> assertedNames;
+    for (const auto& pair : assertedPairs) assertedNames.insert(pair.second);
 
     // `held` is the store's whole name list, shared with assertions (ruling C): a name
     // only later stages assert is also a row name, and its row column is empty.
@@ -130,9 +146,11 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
             if (!isWanted(std::string(), name)) wanted.push_back({std::string(), StageId(), name});
         }
         for (const auto& [stage, name] : assertedPairs) {
-            if (isTwinName(name)) continue;
+            // A twin the stage asserts without its base still gets its column, through
+            // the base: the unit policy then picks the twin, the pixel column or both.
+            const std::string base = baseName(name);
             std::string stageName = stages.name(stage);
-            if (!isWanted(stageName, name)) wanted.push_back({std::move(stageName), stage, name});
+            if (!isWanted(stageName, base)) wanted.push_back({std::move(stageName), stage, base});
         }
     }
 
@@ -161,6 +179,10 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
             addColumn(w.base);
             break;
         case UnitPolicy::Calibrated:
+            // A row twin name some stage asserts may be held by no row at all (the name
+            // list is shared): the rows' pixel column is written instead, so no row value
+            // is hidden behind an empty twin column.
+            if (!asserted && twin != nullptr && assertedNames.count(*twin) > 0) twin = nullptr;
             addColumn(twin != nullptr ? *twin : w.base);
             break;
         case UnitPolicy::BothColumns:

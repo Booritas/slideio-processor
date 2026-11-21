@@ -28,7 +28,10 @@ enum class LabelPolicy : int32_t {
 
 /** @brief Which unit a measurement column holds. */
 enum class UnitPolicy : int32_t {
-    Calibrated,   ///< The calibrated twin where the store has one, pixels otherwise (default).
+    /// The calibrated twin where the store has one, pixels otherwise (default). For a
+    /// row column, a twin name some later stage asserts is not used (no row may hold
+    /// it): the column holds the rows' pixel values instead, so none is hidden.
+    Calibrated,
     PixelsOnly,   ///< The pixel value only.
     BothColumns   ///< The pixel column and, where the store has one, the calibrated twin.
 };
@@ -223,7 +226,10 @@ public:
      * gives the column "<stage name>/<name>", as assertedMeasurement() does. The row names
      * are the store's whole name list, which assertions share: a name that only later
      * stages assert also appears as a row column, empty in every row; its values are in
-     * the stage-qualified columns. Calling it twice is the same as once.
+     * the stage-qualified columns. A twin a stage asserts without its base counts as
+     * that base, so its value still gets a stage-qualified column. Under
+     * UnitPolicy::Calibrated a row twin name some stage asserts is not used: the row
+     * column holds pixels (see UnitPolicy). Calling it twice is the same as once.
      * @return This schema.
      * @throws std::bad_alloc When memory is exhausted.
      */

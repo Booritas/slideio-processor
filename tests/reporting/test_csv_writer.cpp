@@ -842,3 +842,25 @@ TEST_F(CsvExportTest, ClashingColumnNamesAreRefused) {
     EXPECT_FALSE(std::filesystem::exists(out.path()));
     EXPECT_FALSE(std::filesystem::exists(out.partial()));
 }
+
+TEST_F(CsvExportTest, AssertedOnlyTwinDoesNotHideRowPixels) {
+    const StageId stage = store().stageStateWriter().declare("st", "{}");
+    AnnotationWriterPtr writer = store().annotations().writerForStage(stage);
+    writer->assertMeasurement(cell1Id, "perimeter.um", 10.0, MeasurementUnit::Micrometres);
+    writer->flush();
+    store().stageStateWriter().setStatus(stage, StageStatus::Complete);
+
+    ColumnSchema schema = idsOnly();
+    schema.allMeasurements();
+    const std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    ASSERT_EQ(rows.size(), 4u);
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area.um2", "perimeter", "st/perimeter.um"}));
+    const Row cell1 = rowOf(rows, cell1Id);
+    ASSERT_EQ(cell1.size(), 5u);
+    EXPECT_EQ(cell1[3], "40");
+    EXPECT_EQ(cell1[4], "10");
+    const Row cell2 = rowOf(rows, cell2Id);
+    ASSERT_EQ(cell2.size(), 5u);
+    EXPECT_EQ(cell2[3], "0.10000000000000001");
+    EXPECT_EQ(cell2[4], "");
+}

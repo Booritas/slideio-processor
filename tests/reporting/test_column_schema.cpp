@@ -310,8 +310,9 @@ TEST_F(ColumnResolutionTest, AssertedTwinsFollowTheUnitPolicyPerStage) {
 
     ColumnSchema all;
     all.allMeasurements();
+    // The row twin "size.um2" is asserted, so the row column falls back to pixels.
     EXPECT_EQ(names(detail::resolveColumns(all, store())),
-              withFixed({"area.um2", "perimeter", "size.um2", "ki67/size.um2", "er/size"}));
+              withFixed({"area.um2", "perimeter", "size", "ki67/size.um2", "er/size"}));
 }
 
 TEST_F(ColumnResolutionTest, AssertedMeasurementSelectsOneStage) {
@@ -341,4 +342,37 @@ TEST_F(ColumnResolutionTest, ClashingNamesAreDetected) {
     const detail::ResolvedColumns resolved = detail::resolveColumns(schema, store());
     EXPECT_THROW(detail::requireDistinctNames(resolved, "test"), InvalidArgumentError);
     EXPECT_NO_THROW(detail::requireDistinctNames(detail::resolveColumns(ColumnSchema(), store()), "test"));
+}
+
+TEST_F(ColumnResolutionTest, AssertedOnlyTwinDoesNotHideRowPixels) {
+    // The rows hold "perimeter" alone; only the stage asserts the twin "perimeter.um".
+    assertUnder("st", {{"perimeter.um", 5.0}});
+
+    ColumnSchema calibrated;
+    calibrated.allMeasurements();
+    const detail::ResolvedColumns resolved = detail::resolveColumns(calibrated, store());
+    // The row column falls back to pixels; the stage's twin, asserted without its base,
+    // is still exported through that base.
+    EXPECT_EQ(names(resolved), withFixed({"area.um2", "perimeter", "st/perimeter.um"}));
+    EXPECT_EQ(resolved.columns[11].kind, detail::ColumnKind::Measurement);
+    EXPECT_EQ(resolved.columns[11].measurement, "perimeter");
+    EXPECT_EQ(resolved.columns[12].kind, detail::ColumnKind::AssertedMeasurement);
+    EXPECT_EQ(resolved.columns[12].measurement, "perimeter.um");
+
+    // An explicit row name falls back the same way; a twin no stage asserts is still used.
+    ColumnSchema explicitNames;
+    explicitNames.measurement("perimeter").measurement("area");
+    EXPECT_EQ(names(detail::resolveColumns(explicitNames, store())),
+              withFixed({"perimeter", "area.um2"}));
+
+    // BothColumns and PixelsOnly are unchanged.
+    ColumnSchema both;
+    both.units(UnitPolicy::BothColumns).allMeasurements();
+    EXPECT_EQ(names(detail::resolveColumns(both, store())),
+              withFixed({"area", "area.um2", "perimeter", "perimeter.um", "st/perimeter",
+                         "st/perimeter.um"}));
+    ColumnSchema pixels;
+    pixels.units(UnitPolicy::PixelsOnly).allMeasurements();
+    EXPECT_EQ(names(detail::resolveColumns(pixels, store())),
+              withFixed({"area", "perimeter", "st/perimeter"}));
 }

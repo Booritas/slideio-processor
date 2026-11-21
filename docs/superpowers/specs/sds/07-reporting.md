@@ -147,12 +147,17 @@ twin under the base name followed by `.um` or `.um2`.
   later stages assert also appears as a row column, empty in every row; its
   values are in the stage-qualified columns (below). Telling the two apart
   would need a scan of every row measurement per name, since `measurements` has
-  no index by name. The same sharing lets a twin name only a stage asserted
-  (`n.um`) stand as the row twin of a row name `n` under `Calibrated`, whose row
-  column is then empty (open follow-up in `docs/project.md`).
+  no index by name.
 - Per base name `n`: `PixelsOnly` writes column `n`. `Calibrated` writes one
   column, named after the twin when the store holds that twin name (so the
-  header says which unit it holds) and `n` with the pixel value otherwise.
+  header says which unit it holds) and `n` with the pixel value otherwise. For a
+  row column, a twin name that some stage asserts (it is in
+  `AnnotationStore::assertedMeasurementColumnCount/At`) is not used: the name
+  list is shared, so no row may hold it, and an empty twin column would hide the
+  rows' values. `Calibrated` then writes `n` with the rows' pixel values. When
+  rows do hold that twin too, `Calibrated` shows pixels rather than µm; no row
+  value is lost, and `BothColumns` gives both. Stage-qualified columns are
+  unaffected: a stage's own twins resolve per stage (below).
   `BothColumns` writes `n` and, when the store holds a twin name, the twin
   column too.
 - A value an object lacks is an empty cell. Values are written as `%.17g` in the
@@ -172,7 +177,8 @@ asserting one name give two columns and a row value never hides an asserted one.
   The stage name is looked up per store when a writer starts; a stage the store
   lacks gives a column that is empty in every row.
 - `allMeasurements()` adds, after the row columns, every `(stage, base name)`
-  pair the store's assertions hold, in the order of
+  pair the store's assertions hold (a twin a stage asserts without its base
+  counts as that base, so its value still has a column), in the order of
   `AnnotationStore::assertedMeasurementColumnCount/At` (stage id, then name),
   without duplicates. The listing includes assertions whatever their
   visibility, so the columns do not depend on stage status; the cells do.

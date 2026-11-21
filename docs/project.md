@@ -375,16 +375,9 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     and selected by `ColumnSchema::assertedMeasurement()` or `allMeasurements()`
     (plan B decision 9, user decision 2026-11-21; SDS 07 §7.2). By ruling C a
     name only later stages assert still gives a row column, empty in every row
-    (no row values are lost, and no scan is needed).
-  - **Open (asserted-only twin hides a row column under `Calibrated`).** Row
-    names and twins come from the shared `measurement_names` list, so when a
-    later stage asserts `n.um` (or `n.um2`) and no row holds it, a row name `n`
-    resolves under `UnitPolicy::Calibrated` to a row column `n.um` that is
-    empty in every row, and the row's pixel values of `n` are not exported
-    (`BothColumns` and `PixelsOnly` keep them). Pre-existing since plan A.
-    Fix: a row-name listing that excludes asserted-only names, which needs an
-    index on `measurements(name_id)` (a store-format change) or a per-name row
-    count kept by the writers (SDS 07 §7.2).
+    (no row values are lost, and no scan is needed). Under `Calibrated` a row
+    twin name some stage asserts is not used, so an asserted-only `n.um` no
+    longer hides the rows' pixel values of `n` (SDS 07 §7.2).
   - **Open (per-row store lookups in the CSV export).** Each row runs
     `AnnotationStore::labelCount`/`labelAt`, which re-run the effective-labels
     query, and `EdgeStore::parentOf`, which prepares a fresh join
