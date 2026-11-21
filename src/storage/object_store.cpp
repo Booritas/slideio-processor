@@ -137,6 +137,7 @@ int64_t ObjectStore::objectCountInLayer(LayerId layer) const {
 int32_t ObjectStore::measurementNameCount() const {
     return impl_->store.withReadConnection("ObjectStore::measurementNameCount", [](sqlite3* db) {
         detail::Statement count(db, "SELECT COUNT(*) FROM measurement_names");
+        // Safe: measurement names are far fewer than 2^31 (one row per distinct name).
         return count.step() ? static_cast<int32_t>(count.columnInt64(0)) : 0;
     });
 }
