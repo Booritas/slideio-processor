@@ -38,6 +38,9 @@ CREATE TABLE labels(
     ontology_ref TEXT    NOT NULL DEFAULT ''
 );
 
+-- stale_since_ms (version 2) is written as kAddStaleSinceColumn's ALTER TABLE leaves it in
+-- a migrated version 1 store, so both hold the same sqlite_master sql: SQLite inserts ", "
+-- and the column definition before the closing parenthesis. 0: not stale, or not known.
 CREATE TABLE stages(
     id                INTEGER PRIMARY KEY,
     name              TEXT    NOT NULL UNIQUE,
@@ -45,7 +48,7 @@ CREATE TABLE stages(
     stale             INTEGER NOT NULL DEFAULT 0,
     configuration     TEXT    NOT NULL DEFAULT '',
     completed_at_ms   INTEGER NOT NULL DEFAULT 0
-);
+, stale_since_ms INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE stage_deps(
     stage_id      INTEGER NOT NULL REFERENCES stages(id),
@@ -164,6 +167,10 @@ CREATE TABLE events(
 );
 )sql";
 
+// The version 1 to 2 migration. kDdl's stages table ends with the text this leaves.
+constexpr const char* kAddStaleSinceColumn =
+    "ALTER TABLE stages ADD COLUMN stale_since_ms INTEGER NOT NULL DEFAULT 0";
+
 } // namespace
 
 void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid) {
@@ -197,6 +204,11 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     StoreImpl::setMetaText(db, kMetaStoreUuid, storeUuid);
     StoreImpl::setMetaInt64(db, kMetaLayersRevision, 0);
     StoreImpl::setMetaInt64(db, kMetaRastersRevision, 0);
+}
+
+void migrateSchemaFromVersion1(sqlite3* db) {
+    exec(db, kAddStaleSinceColumn);
+    StoreImpl::setMetaInt64(db, kMetaFormatVersion, 2);
 }
 
 namespace {

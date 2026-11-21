@@ -66,7 +66,7 @@ TEST(Store, CreateReopenAndModes) {
     const Configuration cfg;
 
     auto s = Store::open(path.c_str(), OpenMode::CreateNew, cfg);
-    EXPECT_EQ(s->formatVersion(), 1);
+    EXPECT_EQ(s->formatVersion(), 2);
     EXPECT_EQ(s->mode(), OpenMode::CreateNew);
     EXPECT_FALSE(s->isReadOnly());
     EXPECT_STREQ(s->path(), path.c_str());
@@ -77,7 +77,7 @@ TEST(Store, CreateReopenAndModes) {
     auto r = Store::open(path.c_str(), OpenMode::ReadOnly, cfg);
     EXPECT_TRUE(r->isReadOnly());
     EXPECT_EQ(r->mode(), OpenMode::ReadOnly);
-    EXPECT_EQ(r->formatVersion(), 1);
+    EXPECT_EQ(r->formatVersion(), 2);
     r->close();
 
     auto w = Store::open(path.c_str(), OpenMode::ReadWrite, cfg);
@@ -109,7 +109,7 @@ TEST(Store, SchemaAndMetaAreWrittenAtCreation) {
         EXPECT_EQ(rawQueryText(path, sql.c_str()), table);
     }
     EXPECT_EQ(rawQueryText(path, "PRAGMA journal_mode"), "wal");
-    EXPECT_EQ(rawQueryText(path, "SELECT value FROM meta WHERE key = 'format_version'"), "1");
+    EXPECT_EQ(rawQueryText(path, "SELECT value FROM meta WHERE key = 'format_version'"), "2");
     EXPECT_EQ(rawQueryText(path, "SELECT value FROM meta WHERE key = 'import_policy'"), "0");
     EXPECT_FALSE(rawQueryText(path, "SELECT value FROM meta WHERE key = 'vocabulary_version'").empty());
     EXPECT_FALSE(rawQueryText(path, "SELECT value FROM meta WHERE key = 'journal_truncated_below'").empty());
@@ -130,21 +130,21 @@ TEST(Store, IncompatibleVersionIsRefusedNamingBoth) {  // UR-RES-12
     const std::string path = files.utf8();
     const Configuration cfg;
     Store::open(path.c_str(), OpenMode::CreateNew, cfg)->close();
-    rawExec(path, "UPDATE meta SET value = 2 WHERE key = 'format_version'");
+    rawExec(path, "UPDATE meta SET value = 3 WHERE key = 'format_version'");
 
     for (OpenMode mode : {OpenMode::ReadOnly, OpenMode::ReadWrite}) {
         try {
             Store::open(path.c_str(), mode, cfg);
-            FAIL() << "opened a version-2 store";
+            FAIL() << "opened a version-3 store";
         } catch (const StoreFormatError& e) {
-            EXPECT_EQ(e.storeVersion(), 2);
-            EXPECT_EQ(e.libraryVersion(), 1);
-            EXPECT_TRUE(contains(e.what(), "2")) << e.what();
-            EXPECT_TRUE(contains(e.what(), "1")) << e.what();
+            EXPECT_EQ(e.storeVersion(), 3);
+            EXPECT_EQ(e.libraryVersion(), 2);
+            EXPECT_TRUE(contains(e.what(), "version 3")) << e.what();
+            EXPECT_TRUE(contains(e.what(), "reads version 2 and upgrades version 1")) << e.what();
         }
     }
     // The refusal changed nothing in the file.
-    EXPECT_EQ(rawQueryText(path, "SELECT value FROM meta WHERE key = 'format_version'"), "2");
+    EXPECT_EQ(rawQueryText(path, "SELECT value FROM meta WHERE key = 'format_version'"), "3");
 }
 
 TEST(Store, NonStoreFileIsAFormatError) {
@@ -157,7 +157,7 @@ TEST(Store, NonStoreFileIsAFormatError) {
             FAIL() << "opened a text file";
         } catch (const StoreFormatError& e) {
             EXPECT_EQ(e.storeVersion(), 0);
-            EXPECT_EQ(e.libraryVersion(), 1);
+            EXPECT_EQ(e.libraryVersion(), 2);
         }
     }
     EXPECT_EQ(readFile(files.path()), "hello");
@@ -230,7 +230,7 @@ TEST(Store, ClosedAndReadOnlyRefuseWork) {
     }
     EXPECT_THROW(s->setProvenance(Provenance()), IoError);
     EXPECT_STREQ(s->path(), path.c_str());
-    EXPECT_EQ(s->formatVersion(), 1);
+    EXPECT_EQ(s->formatVersion(), 2);
     EXPECT_EQ(s->mode(), OpenMode::CreateNew);
 
     auto r = Store::open(path.c_str(), OpenMode::ReadOnly, cfg);

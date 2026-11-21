@@ -15,8 +15,8 @@ TEST(StorageTypes, EnumeratorValuesArePinned) {  // persisted: never renumber
     EXPECT_EQ(static_cast<int32_t>(EventKind::RasterDropped), 10);
 }
 
-TEST(StorageTypes, StoreFormatVersionIsOne) {
-    EXPECT_EQ(storeFormatVersion(), 1);
+TEST(StorageTypes, StoreFormatVersionIsTwo) {
+    EXPECT_EQ(storeFormatVersion(), 2);
 }
 
 TEST(StorageTypes, SqliteHasRtree) {  // UR-BLD-5

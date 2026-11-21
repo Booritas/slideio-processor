@@ -67,6 +67,10 @@ public:
     void setStatus(StageId stage, StageStatus status);
     /**
      * @brief Marks a stage stale or fresh. No event is appended.
+     *
+     * Setting a flag that was clear records the stale-since time, now, on the clock of
+     * the completion time (StageStateReader::staleSinceUnixMs); setting it again keeps
+     * that time. Clearing the flag clears the time.
      * @param stage The stage.
      * @param stale True when the stage output is out of date with its inputs.
      * @throws InvalidArgumentError When the stage is unknown.

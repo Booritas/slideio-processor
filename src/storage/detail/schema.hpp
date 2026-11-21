@@ -1,7 +1,8 @@
 // Requirements: UR-RES-12
 #pragma once
 
-// The v1 schema (SDS 03 §3.12) and the meta keys.
+// The store schema, format version 2, its migration from version 1 (SDS 03 §3.12),
+// and the meta keys.
 
 #include <sqlite3.h>
 
@@ -36,6 +37,11 @@ inline constexpr int32_t kFirstLocalLabelId = 65536;
 // rows. Runs inside the caller's write transaction on `db`. `provenanceJson` is the
 // initial meta.provenance, `storeUuid` the initial meta.store_uuid. Throws IoError.
 void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid);
+
+// Upgrades a version 1 store to version 2: adds stages.stale_since_ms and sets
+// meta.format_version to 2. Runs inside the caller's write transaction on `db`, which
+// must be durable: the caller commits it with synchronous=FULL. Throws IoError.
+void migrateSchemaFromVersion1(sqlite3* db);
 
 // Adds one to meta.layers_revision. Runs inside the caller's write transaction, which
 // has just changed the layers table. Throws IoError.

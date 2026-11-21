@@ -31,7 +31,9 @@ add_executable(slideio_processor_storage_tests
     test_raster_source.cpp
     test_raster_writer.cpp
     test_store.cpp
+    store_format_golden.cpp
     test_store_format_v1.cpp
+    test_store_format_v2.cpp
     test_store_impl.cpp
     test_tiff_io.cpp
     test_types.cpp
@@ -65,7 +67,7 @@ target_include_directories(slideio_processor_storage_tests PRIVATE
 add_dependencies(slideio_processor_storage_tests store_observer_helper)
 target_compile_definitions(slideio_processor_storage_tests PRIVATE
     SLIDEIO_PROCESSOR_TEST_OBSERVER_HELPER="$<TARGET_FILE:store_observer_helper>"
-    # The format-v1 fixtures (ruling S53), and where a failing snapshot test writes its dump.
+    # The store format fixtures (ruling S53), and where a failing snapshot test writes its dump.
     SLIDEIO_PROCESSOR_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
     SLIDEIO_PROCESSOR_TEST_BUILD_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 # A hung waiter fails after 60 s instead of blocking the run.

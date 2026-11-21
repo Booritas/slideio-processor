@@ -122,9 +122,13 @@ void StageStateWriter::setStale(StageId stage, bool stale) {
     constexpr const char* kOperation = "StageStateWriter::setStale";
     impl_->store.withWriteTransaction(kOperation, [&](sqlite3* db) {
         requireStage(db, kOperation, stage);
-        detail::Statement update(db, "UPDATE stages SET stale = ? WHERE id = ?");
+        // The right-hand sides read the row as it was: a flag already set keeps its time.
+        detail::Statement update(db,
+                                 "UPDATE stages SET stale_since_ms = CASE WHEN ?1 = 0 THEN 0 WHEN stale = 0 THEN ?2 "
+                                 "ELSE stale_since_ms END, stale = ?1 WHERE id = ?3");
         update.bindInt64(1, stale ? 1 : 0);
-        update.bindInt64(2, stage.value());
+        update.bindInt64(2, nowMs());
+        update.bindInt64(3, stage.value());
         update.run();
     });
     impl_->revision.fetch_add(1);

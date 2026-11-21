@@ -1,6 +1,6 @@
 # Shell scripts must keep LF endings, or bash fails on a Windows checkout.
 *.sh text eol=lf
 
-# The store format v1 golden store and its raster (ruling S53): a line-ending conversion would corrupt them.
+# The store format golden stores and their rasters (ruling S53): a line-ending conversion would corrupt them.
 tests/storage/data/*.store binary
 tests/storage/data/**/*.tif binary

@@ -173,7 +173,9 @@ public:
     // Opens or creates the store per S2-S4. Throws InvalidArgumentError for a null or
     // empty path or an unknown mode; IoError when the path exists (CreateNew) or is
     // missing (otherwise), when the writer lock is held, or on a SQLite failure;
-    // StoreFormatError when the file is not a store of this format version.
+    // StoreFormatError when the file is not a store of format version 1 or 2. A writable
+    // open of a version 1 store upgrades it to version 2 in one durable transaction
+    // (SDS 03 §3.12), and throws IoError, leaving it at version 1, when that fails.
     StoreImpl(const char* path, OpenMode mode, const Configuration& configuration);
     StoreImpl(const StoreImpl&) = delete;
     StoreImpl& operator=(const StoreImpl&) = delete;
@@ -283,7 +285,11 @@ private:
     void openChangeSignal() noexcept;
     void openWriteConnection(int flags);
     void configureWriteConnection();
+    // Returns the stored format version, 1 or 2; throws StoreFormatError for any other.
     int32_t readFormatVersion(sqlite3* db) const;
+    // Upgrades the version 1 store just opened for writing to version 2, durably, and sets
+    // formatVersion_. Throws IoError, the transaction rolled back, when that fails.
+    void migrateFromVersion1();
     // Raises the write connection to synchronous=FULL for one durable transaction, and
     // restores NORMAL when it ends; does nothing for any other. Caller holds writeMutex_
     // and is outside a transaction. The constructor throws IoError when the pragma

@@ -111,6 +111,19 @@ public:
      * @throws IoError When the store is closed, or when SQLite fails.
      */
     int64_t completedAtUnixMs(StageId stage) const;
+    /**
+     * @brief Returns when a stage's stale flag was last set.
+     *
+     * StageStateWriter::setStale records the time when it sets a flag that was clear; a
+     * flag set again keeps its time, and clearing the flag clears the time.
+     * @param stage The stage.
+     * @return Milliseconds since the Unix epoch, on the clock of completedAtUnixMs(); 0
+     * when the stage is not stale, when its flag was set before the store was upgraded to
+     * format version 2, and always on a version 1 store opened read-only.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     */
+    int64_t staleSinceUnixMs(StageId stage) const;
 
     /**
      * @brief Returns the number of stages a stage depends on.

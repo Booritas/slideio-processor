@@ -127,6 +127,15 @@ int64_t StageStateReader::completedAtUnixMs(StageId stage) const {
                             [](detail::Statement& s) { return s.columnInt64(0); });
 }
 
+int64_t StageStateReader::staleSinceUnixMs(StageId stage) const {
+    // A version 1 store, opened read-only and so not migrated, has no stale_since_ms: every
+    // stage reads 0 there. Any other open store is version 2.
+    const char* sql = impl_->store.formatVersion() == 1 ? "SELECT 0 FROM stages WHERE id = ?"
+                                                        : "SELECT stale_since_ms FROM stages WHERE id = ?";
+    return impl_->readStage("StageStateReader::staleSinceUnixMs", stage, sql,
+                            [](detail::Statement& s) { return s.columnInt64(0); });
+}
+
 int32_t StageStateReader::dependencyCount(StageId stage) const {
     return impl_->readStage(
         "StageStateReader::dependencyCount", stage,

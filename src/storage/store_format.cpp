@@ -3,7 +3,7 @@
 namespace slideio::processor {
 
 int32_t storeFormatVersion() noexcept {
-    return 1;
+    return 2;
 }
 
 }  // namespace slideio::processor

@@ -754,6 +754,7 @@ classDiagram
         +isStale(StageId) bool
         +configuration(StageId) cstr
         +completedAtUnixMs(StageId) int64_t
+        +staleSinceUnixMs(StageId) int64_t
         +dependencyAt(StageId, int32_t) StageId
         +writtenLayerAt(StageId, int32_t) LayerId
     }

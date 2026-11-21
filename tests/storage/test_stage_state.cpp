@@ -180,6 +180,37 @@ TEST_F(StageState, RevisionCountsStatusAndStaleChanges) {
     EXPECT_EQ(w.revision(), 2u);
 }
 
+// setStale(true) records the time only when the flag was clear; setStale(false) clears both.
+TEST_F(StageState, StaleSinceIsSetOnceAndClearedWithTheFlag) {
+    StageStateWriter& w = store().stageStateWriter();
+    const StageStateReader& r = store().stageStates();
+    const auto nowMs = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    };
+    const StageId a = w.declare("nuclei", "");
+    EXPECT_EQ(r.staleSinceUnixMs(a), 0);
+
+    const int64_t before = nowMs();
+    w.setStale(a, true);
+    const int64_t t = r.staleSinceUnixMs(a);
+    EXPECT_GE(t, before);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    w.setStale(a, true);
+    EXPECT_EQ(r.staleSinceUnixMs(a), t);  // a flag already set keeps its time
+
+    w.setStale(a, false);
+    EXPECT_EQ(r.staleSinceUnixMs(a), 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    w.setStale(a, true);
+    EXPECT_GT(r.staleSinceUnixMs(a), t);
+
+    EXPECT_THROW(r.staleSinceUnixMs(StageId(99)), InvalidArgumentError);
+}
+
 TEST_F(StageState, WrittenLayerValidation) {
     StageStateWriter& w = store().stageStateWriter();
     const StageStateReader& r = store().stageStates();

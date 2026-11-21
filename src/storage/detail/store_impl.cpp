@@ -190,6 +190,32 @@ void StoreImpl::openExisting() {
     storeUuid_ = metaText(writeConnection_.get(), kMetaStoreUuid).value_or(std::string());
     writerLock_ = WriterLock::acquire(path_);
     configureWriteConnection();
+    if (formatVersion_ == 1) migrateFromVersion1();
+}
+
+void StoreImpl::migrateFromVersion1() {
+    constexpr const char* kOperation = "Store::open";
+    try {
+        // No other handle can reach the store yet: the write mutex is not needed.
+        const SynchronousScope synchronous(*this, kOperation, true);
+        beginWrite(kOperation);
+        try {
+            migrateSchemaFromVersion1(writeConnection_.get());
+            commitWrite(kOperation);
+        } catch (...) {
+            rollbackWrite();
+            throw;
+        }
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& e) {
+        // The transaction rolled back: the file is still version 1. The connection and the
+        // writer lock are released as the constructor unwinds.
+        throwIo("Store::open: cannot upgrade '" + path_ + "' from store format version 1 to " +
+                    std::to_string(storeFormatVersion()),
+                e.what());
+    }
+    formatVersion_ = storeFormatVersion();
 }
 
 WriterLock lockForCreateNew(const std::string& path) {
@@ -261,7 +287,7 @@ int32_t StoreImpl::readFormatVersion(sqlite3* db) const {
         // Not a SQLite database, or one without a meta table.
         const std::string message = "Store::open: '" + path_ +
                                     "' is not a slideio-processor store (store format version 0; this library "
-                                    "reads version " + std::to_string(library) + ")";
+                                    "reads version " + std::to_string(library) + " and upgrades version 1)";
         ErrorContext context;
         context.cause = sqlite3_errmsg(db);
         throw StoreFormatError(message.c_str(), 0, library, context);
@@ -271,10 +297,11 @@ int32_t StoreImpl::readFormatVersion(sqlite3* db) const {
     const std::optional<int64_t> stored = metaInt64(db, kMetaFormatVersion);
     const int32_t version =
         stored && *stored > 0 && *stored <= INT32_MAX ? static_cast<int32_t>(*stored) : 0;
-    if (version != library) {
+    // Version 1 is read as it is, and upgraded by a writable open (migrateFromVersion1).
+    if (version != library && version != 1) {
         const std::string message = "Store::open: '" + path_ + "' has store format version " +
                                     std::to_string(version) + "; this library reads version " +
-                                    std::to_string(library);
+                                    std::to_string(library) + " and upgrades version 1";
         throw StoreFormatError(message.c_str(), version, library);
     }
     return version;

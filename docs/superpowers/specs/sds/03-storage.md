@@ -24,16 +24,18 @@ to the same creation DDL and `format_version` stayed 1 throughout; the third par
 closed it. Any schema change from here on, additive ones included, needs
 `format_version` 2 and a migration. Two checked-in fixtures under
 `tests/storage/data/` hold v1 (ruling S53). `store-v1.schema.sql` is a snapshot of
-every `sqlite_master` row and of the `meta` keys, which a fresh store must match;
-it catches drift in new stores. `store-v1.golden.store`, with its
-`store-v1.golden.store-rasters/` directory, is a store written by v1 that must
-still open `ReadOnly` and `ReadWrite` and read back its content; it catches a
-change that would leave stores already written unreadable. The v1 fixtures are
-never regenerated: a version 2 gets `store-v2.*` fixtures of its own and keeps the
-v1 golden store as the input its migration is tested on. A SQLite upgrade may
-change the three R\*Tree shadow-table `sql` lines of the snapshot
-(`object_rtree_node`, `_parent` and `_rowid`); the snapshot is then regenerated,
-deliberately.
+every `sqlite_master` row and of the `meta` keys, which the v1 golden store must
+match. `store-v1.golden.store`, with its `store-v1.golden.store-rasters/`
+directory, is a store written by v1 that must still open `ReadOnly`, unchanged,
+and read back its content; it catches a change that would leave stores already
+written unreadable. The v1 fixtures are never regenerated. **Format version 2 is
+current** (3.12, "Version 2"): a fresh store is version 2 and must match
+`store-v2.schema.sql`, `store-v2.golden.store` must open `ReadOnly` and
+`ReadWrite` and read back, and the v1 golden store is the input the migration is
+tested on. The library no longer writes version 1, so the v1 generator is gone.
+A SQLite upgrade may change the three R\*Tree shadow-table `sql` lines of the
+current snapshot (`object_rtree_node`, `_parent` and `_rowid`); that snapshot is
+then regenerated, deliberately.
 **A store created before the second part lacks its tables and the two new
 `layers` columns, and one created before the third lacks the raster tables, the
 `events.raster_id` column and the `rasters_revision` meta key. Such a store is a
@@ -122,7 +124,7 @@ public:
     void close();
 };
 
-int32_t storeFormatVersion() noexcept;   // storage/store_format.hpp; returns 1
+int32_t storeFormatVersion() noexcept;   // storage/store_format.hpp; returns 2
 ```
 
 **Thread-safety:** ThreadSafe. All methods callable from any thread with no
@@ -132,8 +134,11 @@ usable until `close()`.
 
 `open` gates on the format version and throws `StoreFormatError` naming both
 the store's version and the library's when they are incompatible, rather than
-misreading the file (UR-RES-12). A file that is not a SQLite database, or has
-no `meta` table, is refused the same way with store version 0.
+misreading the file (UR-RES-12). Versions 1 and 2 are accepted; any other is
+refused, the message saying this library reads version 2 and upgrades version
+1. A writable open of a version 1 store upgrades it first (3.12, "Version 2").
+A file that is not a SQLite database, or has no `meta` table, is refused the
+same way with store version 0.
 
 **Modes.** `CreateNew` creates the file and throws `IoError` if the path
 exists. `ReadWrite` and `ReadOnly` require an existing file and throw `IoError`
@@ -1743,6 +1748,7 @@ public:
     bool        isStale(StageId stage) const;
     const char* configuration(StageId stage) const;     // JSON, "" if none
     int64_t     completedAtUnixMs(StageId stage) const; // 0 if never completed
+    int64_t     staleSinceUnixMs(StageId stage) const;  // 0 if not stale, or unknown
 
     int32_t dependencyCount(StageId stage) const;
     StageId dependencyAt(StageId stage, int32_t index) const;
@@ -1765,6 +1771,11 @@ satisfies directly — a `ReadOnly` store answers every method here.
 Stages are listed in ascending `StageId`, dependencies in ascending dependency
 id, and written layers in ascending `LayerId`. `find` compares names exactly.
 Members taking a stage throw `InvalidArgumentError` for an unknown one.
+
+**`staleSinceUnixMs` is when the stage's stale flag was last set** (3.10a,
+`setStale`). It is 0 for a stage that is not stale, for a flag set before the
+store was upgraded to version 2, and for every stage of a version 1 store opened
+`ReadOnly`, which has no such column (3.12, "Version 2").
 
 **`configuration` returns a pointer that stays valid while the reader lives**,
 and always holds the value that call read: a later change is seen by a later
@@ -1818,7 +1829,11 @@ refuses everything — and `InvalidArgumentError` for an unknown stage.
   `Complete` sets `completedAtUnixMs` to now, and re-entering it refreshes the
   time**; no other transition changes it. **An unchanged status still appends
   an event**: every `setStatus` call is a transition the journal records.
-- `setStale` and `setConfiguration` append no event.
+- `setStale` and `setConfiguration` append no event. **`setStale(stage, true)`
+  records the stale-since time** (now, on the clock of `completedAtUnixMs`) only
+  when the flag was clear; a flag already set keeps its time.
+  `setStale(stage, false)` clears both. It is one `UPDATE`, and no other write
+  changes either column.
 - `addDependency` and `addWrittenLayer` are idempotent. A stage cannot depend
   on itself, and the pixel layer cannot be written. `clearDependencies`
   removes every dependency of a stage.
@@ -2047,12 +2062,31 @@ the top). A store created before the second part lacks the added tables and
 columns and is unsupported; nothing migrates it, and the same holds for one
 created before the third.
 
+**Version 2** adds one column, `stages.stale_since_ms INTEGER NOT NULL DEFAULT 0`,
+the last of `stages`: when the stale flag was last set, 0 when it is clear or
+the time is not known (3.10, 3.10a). The creation DDL declares it with exactly the
+text `ALTER TABLE stages ADD COLUMN stale_since_ms INTEGER NOT NULL DEFAULT 0`
+leaves in `sqlite_master`, so a migrated store and a fresh one hold identical
+schema SQL; the `store-v2.schema.sql` snapshot test of a migrated v1 golden store
+proves it. **A writable open of a version 1 store migrates it** after the format
+check and before anything else uses the store: one durable transaction
+(`synchronous=FULL` for its commit) runs that `ALTER TABLE` and sets
+`meta.format_version` to 2, and `formatVersion()` then reports 2. Flags set
+before the migration read 0. If the transaction fails it rolls back, the store
+stays at version 1, and the open throws `IoError` after releasing its
+connection and the writer lock. **A `ReadOnly` open of a version 1 store changes
+nothing:** `formatVersion()` reports 1, and `StageStateReader` reads without the
+column, `staleSinceUnixMs` answering 0. No writer exists on a version 1 store,
+since a writable open migrates it. **A migrated store is version 2, and a library
+that reads only version 1 refuses it**; archive a copy before a writable open if
+an older release must still read it.
+
 | Table | Holds |
 |---|---|
 | `meta` | Key–value, `WITHOUT ROWID`: `format_version`, `vocabulary_version`, `provenance`, `import_policy`, `journal_truncated_below` (starts at 1), `store_uuid`, `layers_revision` (bumped by every `layers` mutation; the registry cache key, 3.3), `rasters_revision` (bumped by every `rasters` mutation: declare, publish and discard; the registry cache key, 3.8) |
 | `layers` | Name, kind, parent, depth, dropped flag, coarsest analysis level, `ever_populated` (set by an `ObjectWriter` commit, never cleared; 3.3) and `dropped_object_count` (objects deleted by `dropPrimitive`; 3.3) |
 | `labels` | Name, origin, `ontology_ref` (reserved, empty in v1 — 02 §2.2). No recognised flag: `isRecognised` is computed (3.4) |
-| `stages` | Name, status, stale flag, configuration, completion time |
+| `stages` | Name, status, stale flag, configuration, completion time, and (version 2) `stale_since_ms`, when the stale flag was last set (0: not stale, or not known) |
 | `stage_deps` | Declared dependencies, keyed `(stage_id, depends_on_id)` |
 | `stage_layers` | Layers each stage writes, keyed `(layer_id, stage_id)` |
 | `objects` | Rowid key (not `AUTOINCREMENT`, so reused after the highest rows are deleted), unique index on `(layer_id, anchor_id)`, stage (indexed), label, exact `int64` half-open bbox, geometry blob |
