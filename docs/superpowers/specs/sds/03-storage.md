@@ -1397,6 +1397,55 @@ twice. The rule is decided by sample type alone, because the declaration
 carries no semantics: a continuous Byte map gets nearest too, which loses
 smoothness and never correctness.
 
+**Opt-in OME-TIFF layout (reporting plan C, decision 1).** The writer,
+`detail::writePyramidTiff`, takes a `PyramidLayout`. `Sequential`, the
+default, is the layout above; `RasterRegistry` always uses it, so store format
+v2 is unchanged, and a golden test pins its bytes. `OmeSubIfds` is for exported
+rasters (`RasterTiffWriter`, `MaskWriter`, SDS 07 §7.6), which SlideIO's
+`OMETIFF` driver must open with every level. Compression, predictor, planes,
+sample format and downsampling are those of S41–S43; what differs:
+
+- Page 0, full resolution, is the only top-level IFD. Pages 1.. are its
+  SubIFDs (`TIFFTAG_SUBIFD`, filled by libtiff as each is written), each
+  `FILETYPE_REDUCEDIMAGE`.
+- A page that fits in one tile (both sides at most 512, which is only ever the
+  last) is written as one strip per plane, `RowsPerStrip` its height, instead
+  of one 512×512 tile. SlideIO takes a one-tile level's tile rectangle to be
+  the level itself (`LevelInfo::getTileRect`) while its OME-TIFF driver
+  returns the whole 512×512 TIFF tile (`TiffTools::readRegularTile`), and
+  `TileComposer::composeRect` then stretches the tile onto the level; a strip
+  is read at the level's own size (`TiffData::readTileChannels`). With tiles
+  the coarsest level of every pyramid, and the only level of a raster of at
+  most 512×512, would read wrong. Remove the case once SlideIO is fixed.
+- Page 0's `ImageDescription` is minimal OME-XML (schema 2016-06) instead of
+  the S41 JSON: one `Image ID="Image:0"` whose `Name` is the caller's name
+  (markup escaped, tab, line feed and carriage return as character
+  references, other control characters dropped; possibly empty), with one
+  `Pixels ID="Pixels:0"` carrying
+  `DimensionOrder="XYCZT"`, `Type`, `SizeX`, `SizeY`, `SizeC` = plane count,
+  `SizeZ="1"`, `SizeT="1"` and `Interleaved="false"`, and, when the caller
+  gives a pixel size above 0, `PhysicalSizeX`/`PhysicalSizeY` in µm with
+  `PhysicalSizeXUnit`/`PhysicalSizeYUnit="µm"`; and inside it one
+  `<TiffData IFD="0" PlaneCount="1"/>`. `Type` is `uint8`, `int8`, `uint16`,
+  `int16`, `uint32`, `int32`, `float` or `double`, and `uint64` or `int64`,
+  which SlideIO reads though the schema lacks them. OME-XML has no half-float
+  type, so a `Float16` raster is refused (`UnsupportedDataTypeError`) before
+  the file is created.
+- No path, file name, UUID or other identifier is written: the OME-XML names
+  nothing outside the file.
+
+What SlideIO's driver requires (`extern/slideio/src/slideio/drivers/ome-tiff`):
+an `Image` with an `ID` (`otslide.cpp`, `createSlide`); `Pixels` with
+`DimensionOrder`, `Type`, and `SizeC`, `SizeZ`, `SizeT`, `SizeX`, `SizeY` all
+above 0 (`otscene.cpp`, `initialize`); at least one valid `TiffData`
+(`otscene.cpp`, `extractTiffData`; `IFD` and `PlaneCount` default to 0 and 1,
+and without a `UUID` the file itself is read, with a logged warning,
+`tiffdata.cpp`); both units for a physical size to count (`otscene.cpp`,
+`initialize`); and the reduced levels as SubIFDs of the first directory
+(`otscene.cpp`, `extractImagePyramids`; `tifftools.cpp`, `scanTiffDir`).
+`Interleaved` and the `Pixels` `ID` are not read by SlideIO; they are written
+for the schema and other OME readers.
+
 **Location and names (S44).** The directory is `<store path>-rasters/`, the store
 path with `-rasters` appended, as with `-wal`, `-shm` and `-writer.lock`; two
 stores in one directory therefore never share one, and it sits inside the

@@ -8,6 +8,7 @@
 #include "storage/detail/tile_spool.hpp"
 
 #include "common/temp_path.hpp"
+#include "storage/ome_raster_fixture.hpp"
 
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -140,7 +141,7 @@ TEST(PyramidTiffWriter, LayoutTagsMatchS41) {
                     for (int64_t x = 0; x < width; ++x) data[p][y * width + x] = value(p, x, band.first + y);
             appendBlock(spool, 0, band.first, width, band.second, data);
         }
-        const detail::PyramidMetadata metadata{"nuclei", "a \"quoted\" description", 2, 4.0, 4.5};
+        const detail::PyramidMetadata metadata{"nuclei", "a \"quoted\" description", 2, 4.0, 4.5, 0.0};
         spool.place(1.0, 1.0);
         const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, metadata);
         EXPECT_EQ(info.pages, 3);
@@ -253,7 +254,7 @@ TEST(PyramidTiffWriter, CompressionAndPredictorMapping) {
             const int64_t strides[] = {width * static_cast<int64_t>(sampleBytes), width * static_cast<int64_t>(sampleBytes)};
             spool.append(Rect64{0, 0, width, height}, width, height, planes, strides);
             spool.place(1.0, 1.0);
-            detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
+            detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0, 0.0});
         }
         detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(files.tif));
         TIFF* tif = handle.get();
@@ -303,7 +304,7 @@ TEST(PyramidTiffWriter, IntegersTakeTopLeftFloatsTakeTheMean) {
         const int64_t strides[] = {3 * dataTypeSizeBytes(type)};
         spool.append(Rect64{patch, patch, 3, 3}, 3, 3, planes, strides);
         spool.place(1.0, 1.0);
-        const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
+        const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0, 0.0});
         EXPECT_EQ(info.pages, 4);
         EXPECT_EQ(info.width, extent);
         EXPECT_EQ(info.height, extent);
@@ -396,7 +397,7 @@ TEST(PyramidTiffWriter, TinyAndThinExtents) {
                 detail::TileSpool spool(files.spoolPath, format);
                 appendBlock<uint16_t>(spool, 0, 0, 1, 1, {{7}, {9}});
                 spool.place(1.0, 1.0);
-                const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
+                const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0, 0.0});
                 EXPECT_EQ(info.pages, 1);
                 EXPECT_EQ(info.width, 1);
                 EXPECT_EQ(info.height, 1);
@@ -420,7 +421,7 @@ TEST(PyramidTiffWriter, TinyAndThinExtents) {
                 // Only the last pixel is written: the first tile is never touched.
                 appendBlock<uint16_t>(spool, 512, 0, 1, 1, {{300}, {301}});
                 spool.place(1.0, 1.0);
-                const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0});
+                const detail::PyramidInfo info = detail::writePyramidTiff(files.tif, spool, format, {"r", "", 0, 1.0, 1.0, 0.0});
                 EXPECT_EQ(info.pages, 2);
                 EXPECT_EQ(info.width, 513);
                 EXPECT_EQ(info.height, 1);
@@ -443,6 +444,258 @@ TEST(PyramidTiffWriter, TinyAndThinExtents) {
                 expectEveryTilePresent(tif, page);
             }
         }
+    }
+}
+
+namespace {
+
+// FNV-1a over a whole file: a golden fingerprint that needs no hashing library.
+uint64_t fileFingerprint(const std::filesystem::path& path) {
+    const std::string bytes = readFile(path);
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (const char c : bytes) {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+// A 700x600 spool, two pages, whose samples are a function of their coordinates, written with
+// the default layout.
+template <typename T>
+void writeGoldenRaster(const TempRaster& files, DataType type, RasterCompression compression) {
+    constexpr int64_t width = 700, height = 600;
+    const detail::RasterFormat format{type, 1, compression};
+    std::vector<T> plane(static_cast<size_t>(width * height));
+    for (int64_t y = 0; y < height; ++y)
+        for (int64_t x = 0; x < width; ++x)
+            plane[static_cast<size_t>(y * width + x)] = static_cast<T>((x * 31 + y * 17) % 1000 - 300);
+    detail::TileSpool spool(files.spoolPath, format);
+    appendBlock<T>(spool, 0, 0, width, height, {plane});
+    spool.place(1.0, 1.0);
+    detail::writePyramidTiff(files.tif, spool, format, {"golden", "", 0, 1.0, 1.0, 0.0});
+}
+
+} // namespace
+
+// The default layout's bytes, captured from the writer before the OME-TIFF layout was added:
+// RasterRegistry's files (store format v2) must not change. None and LZW only: both are
+// libtiff's own code, so the bytes do not depend on the zlib build.
+TEST(StorageRaster, SequentialLayoutUnchanged) {
+    {
+        SCOPED_TRACE("Int32, None");
+        TempRaster files;
+        writeGoldenRaster<int32_t>(files, DataType::Int32, RasterCompression::None);
+        EXPECT_EQ(std::filesystem::file_size(files.tif), 5243614u);
+        EXPECT_EQ(fileFingerprint(files.tif), 15712276326121411604ull);
+    }
+    {
+        SCOPED_TRACE("Float32, LZW");
+        TempRaster files;
+        writeGoldenRaster<float>(files, DataType::Float32, RasterCompression::Lzw);
+        EXPECT_EQ(std::filesystem::file_size(files.tif), 401140u);
+        EXPECT_EQ(fileFingerprint(files.tif), 15631184123081310431ull);
+    }
+}
+
+namespace {
+
+// One plane of the current directory (a page or a SubIFD): plane `plane`'s one strip of a
+// striped directory, read whole.
+template <typename T>
+std::vector<T> readStripPlane(TIFF* tif, uint32_t width, uint32_t height, uint16_t plane) {
+    std::vector<T> result(static_cast<size_t>(width) * height);
+    const tmsize_t bytes = static_cast<tmsize_t>(result.size() * sizeof(T));
+    EXPECT_EQ(TIFFReadEncodedStrip(tif, TIFFComputeStrip(tif, 0, plane), result.data(), bytes), bytes);
+    return result;
+}
+
+// One plane of the current directory (a page or a SubIFD), read tile by tile, or as its one
+// strip when it is striped.
+std::vector<int32_t> readCurrentInt32Plane(TIFF* tif, uint32_t width, uint32_t height) {
+    if (TIFFIsTiled(tif) == 0) return readStripPlane<int32_t>(tif, width, height, 0);
+    std::vector<int32_t> result(static_cast<size_t>(width) * height);
+    std::vector<int32_t> tile(static_cast<size_t>(kTile * kTile));
+    const tmsize_t bytes = static_cast<tmsize_t>(tile.size() * sizeof(int32_t));
+    for (uint32_t ty = 0; ty < height; ty += kTile)
+        for (uint32_t tx = 0; tx < width; tx += kTile) {
+            EXPECT_EQ(TIFFReadEncodedTile(tif, TIFFComputeTile(tif, tx, ty, 0, 0), tile.data(), bytes), bytes);
+            for (uint32_t y = ty; y < std::min<uint32_t>(height, ty + kTile); ++y)
+                for (uint32_t x = tx; x < std::min<uint32_t>(width, tx + kTile); ++x)
+                    result[static_cast<size_t>(y) * width + x] = tile[(y - ty) * kTile + (x - tx)];
+        }
+    return result;
+}
+
+// The current directory's size, tiling, planes and type. A level that fits in one tile is
+// one strip per plane instead (SDS 03 §3.8: SlideIO's OME-TIFF driver stretches a one-tile
+// level's tile).
+void expectOmeLevel(TIFF* tif, uint32_t width, uint32_t height, bool reduced) {
+    uint32_t w = 0, h = 0, tileW = 0, tileH = 0, subfile = 0, rowsPerStrip = 0;
+    uint16_t planar = 0, samples = 0, bits = 0, sampleFormat = 0, compression = 0;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    EXPECT_EQ(w, width);
+    EXPECT_EQ(h, height);
+    const bool oneTile = width <= 512 && height <= 512;
+    if (oneTile) {
+        EXPECT_EQ(TIFFIsTiled(tif), 0);
+        TIFFGetField(tif, TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
+        EXPECT_EQ(rowsPerStrip, height);
+        EXPECT_EQ(TIFFNumberOfStrips(tif), 1u);
+    } else {
+        EXPECT_NE(TIFFIsTiled(tif), 0);
+        TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tileW);
+        TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH);
+        EXPECT_EQ(tileW, 512u);
+        EXPECT_EQ(tileH, 512u);
+    }
+    TIFFGetField(tif, TIFFTAG_SUBFILETYPE, &subfile);
+    EXPECT_EQ(subfile, reduced ? static_cast<uint32_t>(FILETYPE_REDUCEDIMAGE) : 0u);
+    TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planar);
+    EXPECT_EQ(planar, PLANARCONFIG_SEPARATE);
+    TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
+    EXPECT_EQ(samples, 1);
+    TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bits);
+    EXPECT_EQ(bits, 32);
+    TIFFGetField(tif, TIFFTAG_SAMPLEFORMAT, &sampleFormat);
+    EXPECT_EQ(sampleFormat, SAMPLEFORMAT_INT);
+    TIFFGetField(tif, TIFFTAG_COMPRESSION, &compression);
+    EXPECT_EQ(compression, COMPRESSION_ADOBE_DEFLATE);
+    if (!oneTile) expectEveryTilePresent(tif, reduced ? 1 : 0);
+}
+
+} // namespace
+
+// Decision 1 of reporting plan C: one top-level IFD at full resolution, its reduced levels as
+// SubIFDs, and minimal OME-XML in its ImageDescription.
+TEST(PyramidTiffWriter, OmeLayoutUsesSubIfds) {
+    TempRaster files;
+    detail::PyramidMetadata metadata;
+    // Markup is escaped; whitespace other than a space is kept as a character reference, which
+    // attribute normalisation would otherwise turn into a space; any other control character,
+    // which XML 1.0 cannot carry at all, is dropped.
+    metadata.name = "mask <&\"'>\t\n\r\x01";
+    metadata.micronsPerPixel = 0.25;
+    const detail::PyramidInfo info = test::writeOmeRaster(files.tif, files.spoolPath, metadata);
+    EXPECT_EQ(info.pages, 3);
+    EXPECT_EQ(info.width, test::kOmeWidth);
+    EXPECT_EQ(info.height, test::kOmeHeight);
+
+    detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(files.tif));
+    TIFF* tif = handle.get();
+    ASSERT_NE(tif, nullptr);
+    EXPECT_NE(TIFFIsBigTIFF(tif), 0);
+    ASSERT_EQ(TIFFNumberOfDirectories(tif), 1u);
+    ASSERT_EQ(TIFFSetDirectory(tif, 0), 1);
+    {
+        SCOPED_TRACE("level 0");
+        expectOmeLevel(tif, 1500, 900, false);
+        const std::vector<int32_t> actual = readCurrentInt32Plane(tif, 1500, 900);
+        size_t mismatches = 0;
+        for (uint32_t y = 0; y < 900; ++y)
+            for (uint32_t x = 0; x < 1500; ++x)
+                if (actual[static_cast<size_t>(y) * 1500 + x] != test::omeSample(x, y)) ++mismatches;
+        EXPECT_EQ(mismatches, 0u);
+    }
+
+    char* text = nullptr;
+    ASSERT_EQ(TIFFGetField(tif, TIFFTAG_IMAGEDESCRIPTION, &text), 1);
+    const std::string description = text;
+    for (const char* expected :
+         {"<OME ", "<Image ID=\"Image:0\" Name=\"mask &lt;&amp;&quot;&apos;&gt;&#9;&#10;&#13;\"", "DimensionOrder=\"XYCZT\"",
+          "Type=\"int32\"", "SizeX=\"1500\"", "SizeY=\"900\"", "SizeC=\"1\"", "SizeZ=\"1\"", "SizeT=\"1\"",
+          "Interleaved=\"false\"", "PhysicalSizeX=\"0.25\"", "PhysicalSizeXUnit=\"\xC2\xB5m\"",
+          "PhysicalSizeY=\"0.25\"", "PhysicalSizeYUnit=\"\xC2\xB5m\"", "<TiffData IFD=\"0\" PlaneCount=\"1\"/>"})
+        EXPECT_NE(description.find(expected), std::string::npos) << expected << " in " << description;
+    // No path, file name or other identifier: nothing of the file's location, and no UUID.
+    EXPECT_EQ(description.find(files.tif.filename().u8string()), std::string::npos) << description;
+    EXPECT_EQ(description.find(files.tif.parent_path().filename().u8string()), std::string::npos) << description;
+    EXPECT_EQ(description.find("UUID"), std::string::npos) << description;
+    EXPECT_EQ(description.find("FileName"), std::string::npos) << description;
+
+    uint16_t count = 0;
+    uint64_t* offsetsRaw = nullptr;
+    ASSERT_EQ(TIFFGetField(tif, TIFFTAG_SUBIFD, &count, &offsetsRaw), 1);
+    ASSERT_EQ(count, 2);
+    const std::vector<uint64_t> offsets(offsetsRaw, offsetsRaw + count);
+    const uint32_t sizes[2][2] = {{750, 450}, {375, 225}};
+    for (int level = 1; level <= 2; ++level) {
+        SCOPED_TRACE("level " + std::to_string(level));
+        ASSERT_NE(offsets[level - 1], 0u);
+        ASSERT_EQ(TIFFSetSubDirectory(tif, offsets[level - 1]), 1);
+        expectOmeLevel(tif, sizes[level - 1][0], sizes[level - 1][1], true);
+        EXPECT_EQ(TIFFGetField(tif, TIFFTAG_IMAGEDESCRIPTION, &text), 0);
+        // Integers take the top-left sample, as in the default layout.
+        const std::vector<int32_t> actual = readCurrentInt32Plane(tif, sizes[level - 1][0], sizes[level - 1][1]);
+        size_t mismatches = 0;
+        for (uint32_t y = 0; y < sizes[level - 1][1]; ++y)
+            for (uint32_t x = 0; x < sizes[level - 1][0]; ++x)
+                if (actual[static_cast<size_t>(y) * sizes[level - 1][0] + x] !=
+                    test::omeSample(static_cast<int64_t>(x) << level, static_cast<int64_t>(y) << level))
+                    ++mismatches;
+        EXPECT_EQ(mismatches, 0u);
+    }
+}
+
+// Without a resolution the OME-XML has no physical size, and an empty name is written empty.
+// Two writes of the same spool are byte-identical (UR-QA-3).
+TEST(PyramidTiffWriter, OmeLayoutWithoutResolutionIsReproducible) {
+    TempRaster first, second;
+    test::writeOmeRaster(first.tif, first.spoolPath, detail::PyramidMetadata{});
+    test::writeOmeRaster(second.tif, second.spoolPath, detail::PyramidMetadata{});
+    EXPECT_EQ(readFile(first.tif), readFile(second.tif));
+
+    detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(first.tif));
+    TIFF* tif = handle.get();
+    ASSERT_NE(tif, nullptr);
+    char* text = nullptr;
+    ASSERT_EQ(TIFFGetField(tif, TIFFTAG_IMAGEDESCRIPTION, &text), 1);
+    const std::string description = text;
+    EXPECT_NE(description.find("<Image ID=\"Image:0\" Name=\"\""), std::string::npos) << description;
+    EXPECT_EQ(description.find("PhysicalSize"), std::string::npos) << description;
+}
+
+// A single-tile raster has no reduced level, so no SubIFD tag, and is one strip per plane (an
+// all-zero plane included); and OME-XML has no Float16.
+TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndFloat16) {
+    {
+        TempRaster files;
+        const detail::RasterFormat format{DataType::Float32, 2, RasterCompression::Lzw};
+        {
+            detail::TileSpool spool(files.spoolPath, format);
+            appendBlock<float>(spool, 0, 0, 3, 2, {{1.5f, -2.0f, 3.0f, 4.0f, 5.0f, 6.0f}, {0, 0, 0, 0, 0, 0}});
+            spool.place(1.0, 1.0);
+            const detail::PyramidInfo info =
+                detail::writePyramidTiff(files.tif, spool, format, {}, detail::PyramidLayout::OmeSubIfds);
+            EXPECT_EQ(info.pages, 1);
+        }
+        detail::TiffHandle handle = detail::TiffHandle::openRead(utf8(files.tif));
+        TIFF* tif = handle.get();
+        ASSERT_NE(tif, nullptr);
+        EXPECT_EQ(TIFFNumberOfDirectories(tif), 1u);
+        uint16_t count = 0;
+        uint64_t* offsets = nullptr;
+        EXPECT_EQ(TIFFGetField(tif, TIFFTAG_SUBIFD, &count, &offsets), 0);
+        char* text = nullptr;
+        ASSERT_EQ(TIFFGetField(tif, TIFFTAG_IMAGEDESCRIPTION, &text), 1);
+        const std::string description = text;
+        EXPECT_NE(description.find("Type=\"float\""), std::string::npos) << description;
+        EXPECT_NE(description.find("SizeC=\"2\""), std::string::npos) << description;
+        EXPECT_EQ(TIFFIsTiled(tif), 0);
+        EXPECT_EQ(TIFFNumberOfStrips(tif), 2u);
+        EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 0), (std::vector<float>{1.5f, -2.0f, 3.0f, 4.0f, 5.0f, 6.0f}));
+        EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 1), (std::vector<float>(6, 0.0f)));
+    }
+    {
+        TempRaster files;
+        const detail::RasterFormat format{DataType::Float16, 1, RasterCompression::None};
+        detail::TileSpool spool(files.spoolPath, format);
+        appendBlock<uint16_t>(spool, 0, 0, 1, 1, {{0x3C00}});
+        spool.place(1.0, 1.0);
+        EXPECT_THROW(detail::writePyramidTiff(files.tif, spool, format, {}, detail::PyramidLayout::OmeSubIfds),
+                     UnsupportedDataTypeError);
+        EXPECT_FALSE(std::filesystem::exists(files.tif));
     }
 }
 
