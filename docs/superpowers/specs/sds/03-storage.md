@@ -536,6 +536,9 @@ public:
     /// (SQLite BINARY collation). Pointers live as long as the store.
     int32_t     measurementNameCount() const;
     const char* measurementNameAt(int32_t index) const;
+    /// True when some object row holds a measurement of this name (the name
+    /// list above also holds names only ever asserted, 3.7).
+    bool        hasRowMeasurementName(const char* name) const;
 };
 ```
 
@@ -693,7 +696,12 @@ memcmp of the UTF-8 bytes. Each call reads a snapshot, so a write between two
 calls can shift indices. Returned pointers are interned in a set under a mutex,
 as `StageStateReader`'s are, and stay valid for the store's life. `IoError` on a
 closed store, `InvalidArgumentError` for an index out of range. `reporting` uses
-them to expand `allMeasurements()`.
+them to expand `allMeasurements()`. `hasRowMeasurementName` (reporting plan B)
+tells a name some object row holds from one only ever asserted (3.7): `SELECT 1
+FROM measurements WHERE name_id = … LIMIT 1`. `measurements` has no index on
+`name_id`, so a name no row holds costs a scan of every row measurement;
+`reporting` calls it only for asserted names. A null name is never held;
+`IoError` on a closed store.
 
 `totalObjectCount` and `objectCountInLayer` count every stored row, whatever
 its stage's status; the latter is 0 for an unknown layer. `discardStage`
@@ -997,6 +1005,14 @@ public:
     int64_t labelAnnotationCount() const;
     int64_t measurementAnnotationCount() const;
 
+    /// The distinct (asserting stage, name) pairs among the measurement
+    /// assertions, whatever their visibility, ordered by stage id, then name
+    /// bytewise. The name is interned for the store's life. Reporting builds
+    /// its stage-qualified columns from it (`07-reporting.md` 7.2).
+    int32_t assertedMeasurementColumnCount() const;
+    void    assertedMeasurementColumnAt(int32_t index, StageId& stage,
+                                        const char*& name) const;
+
     /// A raster source over `layer` whose Label content carries the effective
     /// label. Takes `core::makeLayerRasterSource`'s parameters minus the
     /// `ObjectSource&`, because the store is the source.
@@ -1138,6 +1154,10 @@ stages, and `labelAssertedBy` names the smallest stage id among the stages that
 asserted that label. Asserted measurements are ordered by name, then by stage
 id. An indexed accessor with an out-of-range index throws
 `InvalidArgumentError`, and each call is its own snapshot.
+`assertedMeasurementColumnCount/At` (reporting plan B, decision 9) ignore
+visibility: they list every stored `(stage_id, name)` pair, so a report's
+columns do not change with stage status; a stage's discard removes its pairs.
+Their errors are `ObjectStore::measurementNameAt`'s.
 
 **Both annotation tables are `WITHOUT ROWID`, keyed by their natural key, and
 measurement names are interned.** `label_assertions` is keyed

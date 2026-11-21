@@ -859,6 +859,7 @@ classDiagram
         +objectCountInLayer(LayerId) int64_t
         +measurementNameCount() int32_t
         +measurementNameAt(int32_t) const char*
+        +hasRowMeasurementName(cstr) bool
     }
 
     class ObjectWriter {
@@ -907,6 +908,8 @@ classDiagram
         +labelAssertedBy(ObjectId, int32_t) StageId
         +assertedMeasurementCount(ObjectId) int32_t
         +assertedMeasurementAt(ObjectId, int32_t) Measurement
+        +assertedMeasurementColumnCount() int32_t
+        +assertedMeasurementColumnAt(int32_t, StageId&, cstr&) void
         +discardAnnotationsOfStage(StageId) void
     }
 
@@ -2098,6 +2101,7 @@ classDiagram
         +includeGeometryWkt(bool) ColumnSchema
         +includeParent(bool) ColumnSchema
         +measurement(cstr name) ColumnSchema
+        +assertedMeasurement(cstr stageName, cstr name) ColumnSchema
         +allMeasurements() ColumnSchema
         +toHeaderLine(char* buf, int32_t cap) int32_t
     }

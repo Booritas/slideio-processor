@@ -15,21 +15,17 @@
 #include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/edge_store.hpp>
-#include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
 #include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/storage/types.hpp>
-#include <slideio/processor/storage/vocabulary_registry.hpp>
 
-#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -117,6 +113,9 @@ void appendRow(std::string& line, const ObjectRecord& record,
     bool parentRead = false;
     bool hasParent = false;
     ObjectId parent;
+    // So are the visible asserted measurements.
+    bool assertedRead = false;
+    detail::AssertedValues asserted;
 
     for (size_t c = 0; c < resolved.columns.size(); ++c) {
         const detail::ResolvedColumn& column = resolved.columns[c];
@@ -197,6 +196,16 @@ void appendRow(std::string& line, const ObjectRecord& record,
             Measurement value;
             if (record.measurements().find(column.measurement.c_str(), value))
                 detail::appendDouble(cell, value.value());
+            break;
+        }
+        case detail::ColumnKind::AssertedMeasurement: {
+            if (!column.stage.isValid()) break;  // a stage the store lacks
+            if (!assertedRead) {
+                assertedRead = true;
+                detail::readAssertedValues(store, id, asserted);
+            }
+            const auto it = asserted.find({column.stage.value(), column.measurement});
+            if (it != asserted.end()) detail::appendDouble(cell, it->second.value());
             break;
         }
         }
@@ -303,6 +312,7 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query) {
 ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressObserver* observer,
                               const CancellationToken& token) {
     const detail::ResolvedColumns resolved = detail::resolveColumns(impl_->schema, store);
+    detail::requireDistinctNames(resolved, "CsvWriter::write");
     CsvSink sink(store, resolved, impl_->delimiter, impl_->provenance);
     return detail::runExport(store, query, std::filesystem::u8path(impl_->path),
                              "CsvWriter::write", sink, observer, token);

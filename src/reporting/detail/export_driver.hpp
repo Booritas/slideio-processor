@@ -50,6 +50,7 @@ private:
  * What a writer supplies to runExport. The sink need not own a stream: it may stream
  * into its own file or let another component write the file at the given path.
  * Methods other than close() report failure by throwing IoError.
+ * A sink is single-use: create one per runExport call and do not pass it to another.
  */
 class ExportSink {
 public:

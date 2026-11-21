@@ -218,6 +218,39 @@ int64_t AnnotationStore::measurementAnnotationCount() const {
     return impl_->total("AnnotationStore::measurementAnnotationCount", "SELECT COUNT(*) FROM measurement_assertions");
 }
 
+int32_t AnnotationStore::assertedMeasurementColumnCount() const {
+    // Safe: the pairs are far fewer than 2^31 (stages times distinct names).
+    return static_cast<int32_t>(
+        impl_->total("AnnotationStore::assertedMeasurementColumnCount",
+                     "SELECT COUNT(*) FROM (SELECT DISTINCT stage_id, name_id FROM measurement_assertions)"));
+}
+
+void AnnotationStore::assertedMeasurementColumnAt(int32_t index, StageId& stage, const char*& name) const {
+    constexpr const char* kOperation = "AnnotationStore::assertedMeasurementColumnAt";
+    StageId foundStage;
+    std::string foundName;
+    const bool found = impl_->store.withReadConnection(kOperation, [&](sqlite3* db) {
+        if (index < 0) return false;
+        detail::Statement select(db,
+                                 "SELECT m.stage_id, n.name FROM (SELECT DISTINCT stage_id, name_id "
+                                 "FROM measurement_assertions) m JOIN measurement_names n ON n.id = m.name_id "
+                                 "ORDER BY m.stage_id, n.name LIMIT 1 OFFSET ?");
+        select.bindInt64(1, index);
+        if (!select.step()) return false;
+        foundStage = StageId(static_cast<int32_t>(select.columnInt64(0)));
+        foundName = select.columnText(1);
+        return true;
+    });
+    if (!found) {
+        const std::string message =
+            std::string(kOperation) + ": index " + std::to_string(index) + " is out of range";
+        throw InvalidArgumentError(message.c_str());
+    }
+    const char* interned = impl_->pooledName(std::move(foundName));
+    stage = foundStage;
+    name = interned;
+}
+
 TileRasterSourcePtr AnnotationStore::layerRasterSource(LayerId layer, LayerRasterContent content) const {
     constexpr const char* kOperation = "AnnotationStore::layerRasterSource";
     detail::StoreImpl& store = impl_->store;

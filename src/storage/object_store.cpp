@@ -161,4 +161,16 @@ const char* ObjectStore::measurementNameAt(int32_t index) const {
     return impl_->intern(std::move(name));
 }
 
+bool ObjectStore::hasRowMeasurementName(const char* name) const {
+    return impl_->store.withReadConnection("ObjectStore::hasRowMeasurementName", [name](sqlite3* db) {
+        if (name == nullptr) return false;
+        // No index on measurements(name_id): a name no row holds scans the whole table.
+        detail::Statement select(db,
+                                 "SELECT 1 FROM measurements WHERE name_id = "
+                                 "(SELECT id FROM measurement_names WHERE name = ?) LIMIT 1");
+        select.bindText(1, name);
+        return select.step();
+    });
+}
+
 } // namespace slideio::processor

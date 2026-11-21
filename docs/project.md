@@ -369,17 +369,29 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   writer (SDS 07 §7.4) waits until its dependency is chosen; UR-RES-10 is not
   met by plan A. GeoJSON export and mask rasters are plans B and C.
   **In progress** on `feat/reporting-a`.
-  - **Open (asserted measurements are not exported).** CSV cells come from the
-    object row's own measurements only; values a later stage asserted
-    (`AnnotationStore::assertedMeasurement*`) are left out. Asserted names share
-    `measurement_names`, so `allMeasurements()` can produce a column that is
-    empty in every row. Fix: read the asserted value when the row lacks the name
-    (or exclude asserted-only names), and test both (SDS 07 §7.2).
+  - **Resolved in reporting plan B (asserted measurements are not exported).**
+    Values a later stage asserted are exported in stage-qualified columns
+    `<stage name>/<name>`, listed by `AnnotationStore::assertedMeasurementColumnCount/At`
+    and selected by `ColumnSchema::assertedMeasurement()` or `allMeasurements()`
+    (plan B decision 9, user decision 2026-11-21; SDS 07 §7.2). A name only
+    ever asserted no longer gives an empty row column: `allMeasurements()`
+    keeps an asserted name as a row name only when
+    `ObjectStore::hasRowMeasurementName` finds it on a row.
+  - **Open (row-name check scans `measurements`).** `hasRowMeasurementName`
+    has no index on `measurements(name_id)`, so each asserted-only name costs
+    one full scan of the row measurements per export that resolves row columns
+    (UR-RES-8). Fix when it shows in the 1-million-object benchmark: an index on
+    `measurements(name_id)` (a store-format change) or a per-name row count kept
+    by the writers.
   - **Open (per-row store lookups in the CSV export).** Each row runs
     `AnnotationStore::labelCount`/`labelAt`, which re-run the effective-labels
     query, and `EdgeStore::parentOf`, which prepares a fresh join
     (`src/storage/annotation_store.cpp`, `src/storage/edge_store.cpp`): about
-    3–4 statement compiles per row with labels and parents on. Correct, but slow
+    3–4 statement compiles per row with labels and parents on. Since reporting
+    plan B, a schema with asserted-measurement columns adds
+    `assertedMeasurementCount` plus `assertedMeasurementAt` and
+    `measurementAssertedBy` for each visible assertion, read once per row
+    (`src/reporting/detail/columns.cpp`, `readAssertedValues`). Correct, but slow
     at 10 million objects (UR-RES-8). Fix: a storage-side batched read alongside
     the object cursor, or cached prepared statements; then a 1-million-object
     benchmark.

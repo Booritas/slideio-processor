@@ -15,7 +15,8 @@ namespace {
 void rebuild(ColumnSchema::Impl& s) {
     std::vector<std::string> names;
     for (const detail::ResolvedColumn& c : detail::fixedColumns(s)) names.push_back(c.name);
-    for (const std::string& m : s.measurements) names.push_back(m);
+    for (const ColumnSchema::Impl::Explicit& m : s.measurements)
+        names.push_back(m.stage.empty() ? m.name : detail::assertedColumnName(m.stage, m.name));
     s.names = std::move(names);
 }
 
@@ -113,10 +114,29 @@ ColumnSchema& ColumnSchema::measurement(const char* name) {
     if (detail::isFixedColumnName(base))
         throw InvalidArgumentError(
             "ColumnSchema::measurement: the name is that of a fixed column");
+    const Impl::Explicit entry{std::string(), base};
     const auto& held = impl_->measurements;
-    if (std::find(held.begin(), held.end(), base) != held.end())
+    if (std::find(held.begin(), held.end(), entry) != held.end())
         throw InvalidArgumentError("ColumnSchema::measurement: the measurement was already added");
-    modify(impl_, [&](Impl& s) { s.measurements.push_back(base); });
+    modify(impl_, [&](Impl& s) { s.measurements.push_back(entry); });
+    return *this;
+}
+
+ColumnSchema& ColumnSchema::assertedMeasurement(const char* stageName, const char* name) {
+    if (stageName == nullptr || stageName[0] == '\0')
+        throw InvalidArgumentError(
+            "ColumnSchema::assertedMeasurement: the stage name is null or empty");
+    if (name == nullptr || name[0] == '\0')
+        throw InvalidArgumentError("ColumnSchema::assertedMeasurement: the name is null or empty");
+    const Impl::Explicit entry{std::string(stageName), std::string(name)};
+    if (detail::isTwinName(entry.name))
+        throw InvalidArgumentError("ColumnSchema::assertedMeasurement: give the base name; units "
+                                   "are chosen by the unit policy");
+    const auto& held = impl_->measurements;
+    if (std::find(held.begin(), held.end(), entry) != held.end())
+        throw InvalidArgumentError(
+            "ColumnSchema::assertedMeasurement: the measurement was already added");
+    modify(impl_, [&](Impl& s) { s.measurements.push_back(entry); });
     return *this;
 }
 

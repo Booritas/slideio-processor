@@ -6,13 +6,17 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/reporting/reporting.hpp>
+#include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/store.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -51,9 +55,35 @@ protected:
         ObjectWriterPtr writer = store().objects().writerForStage(stage);
         writer->emit(record);
         writer->flush();
+        object = record.id();
         store().stageStateWriter().setStatus(stage, StageStatus::Complete);
     }
+
+    // Declares `stageName`, asserts each (name, value) on the object under it, and
+    // completes the stage.
+    StageId assertUnder(const char* stageName,
+                        std::initializer_list<std::pair<const char*, double>> values) {
+        const StageId stage = store().stageStateWriter().declare(stageName, "");
+        AnnotationWriterPtr writer = store().annotations().writerForStage(stage);
+        for (const auto& [name, value] : values)
+            writer->assertMeasurement(object, name, value, MeasurementUnit::Dimensionless);
+        writer->flush();
+        store().stageStateWriter().setStatus(stage, StageStatus::Complete);
+        return stage;
+    }
+
+    ObjectId object;
 };
+
+const std::vector<std::string> kFixed = {"layer_id", "anchor_id", "layer", "stage", "labels",
+                                         "labels_local", "bbox_x", "bbox_y", "bbox_width",
+                                         "bbox_height"};
+
+std::vector<std::string> withFixed(std::vector<std::string> tail) {
+    std::vector<std::string> all = kFixed;
+    all.insert(all.end(), tail.begin(), tail.end());
+    return all;
+}
 
 } // namespace
 
@@ -203,4 +233,111 @@ TEST_F(ColumnResolutionTest, AnExplicitNameTheStoreLacksStaysAColumn) {
     ASSERT_EQ(resolved.columns.size(), 11u);
     EXPECT_EQ(resolved.columns[10].name, "circularity");
     EXPECT_EQ(resolved.columns[10].measurement, "circularity");
+}
+
+TEST(ColumnSchema, AssertedMeasurementRefusals) {
+    ColumnSchema schema;
+    EXPECT_THROW(schema.assertedMeasurement(nullptr, "positive_fraction"), InvalidArgumentError);
+    EXPECT_THROW(schema.assertedMeasurement("", "positive_fraction"), InvalidArgumentError);
+    EXPECT_THROW(schema.assertedMeasurement("ki67", nullptr), InvalidArgumentError);
+    EXPECT_THROW(schema.assertedMeasurement("ki67", ""), InvalidArgumentError);
+    EXPECT_THROW(schema.assertedMeasurement("ki67", "size.um"), InvalidArgumentError);
+    EXPECT_THROW(schema.assertedMeasurement("ki67", "size.um2"), InvalidArgumentError);
+    EXPECT_EQ(schema.columnCount(), 10);
+
+    schema.assertedMeasurement("ki67", "positive_fraction");
+    EXPECT_THROW(schema.assertedMeasurement("ki67", "positive_fraction"), InvalidArgumentError);
+    EXPECT_EQ(schema.columnCount(), 11);
+    EXPECT_STREQ(schema.columnNameAt(10), "ki67/positive_fraction");
+    // The same name from another stage, or on the row, is another column.
+    EXPECT_NO_THROW(schema.assertedMeasurement("er", "positive_fraction"));
+    EXPECT_NO_THROW(schema.measurement("positive_fraction"));
+    EXPECT_EQ(header(schema).substr(header(ColumnSchema()).size()),
+              ",ki67/positive_fraction,er/positive_fraction,positive_fraction");
+}
+
+TEST_F(ColumnResolutionTest, AllMeasurementsAddsStageQualifiedColumns) {
+    // perimeter is also a row measurement; positive_fraction is only asserted.
+    assertUnder("ki67", {{"positive_fraction", 0.5}, {"perimeter", 21.0}});
+
+    ColumnSchema calibrated;
+    calibrated.allMeasurements();
+    const detail::ResolvedColumns resolved = detail::resolveColumns(calibrated, store());
+    // A name only ever asserted gives no row column; a row name asserted too keeps its own.
+    EXPECT_EQ(names(resolved), withFixed({"area.um2", "perimeter", "ki67/perimeter", "ki67/positive_fraction"}));
+    const detail::ResolvedColumn& asserted = resolved.columns.back();
+    EXPECT_EQ(asserted.kind, detail::ColumnKind::AssertedMeasurement);
+    EXPECT_EQ(asserted.measurement, "positive_fraction");
+    StageId ki67;
+    ASSERT_TRUE(store().stageStates().find("ki67", ki67));
+    EXPECT_EQ(asserted.stage, ki67);
+    EXPECT_FALSE(resolved.columns[10].stage.isValid());
+
+    ColumnSchema both;
+    both.units(UnitPolicy::BothColumns).allMeasurements();
+    EXPECT_EQ(names(detail::resolveColumns(both, store())),
+              withFixed({"area", "area.um2", "perimeter", "ki67/perimeter", "ki67/positive_fraction"}));
+}
+
+TEST_F(ColumnResolutionTest, AllMeasurementsOrdersStagesByIdAndKeepsExplicitOnesFirst) {
+    // Declared first, so "zeta" has the smaller stage id and comes first.
+    assertUnder("zeta", {{"b", 1.0}, {"a", 2.0}});
+    assertUnder("alpha", {{"a", 3.0}});
+
+    ColumnSchema schema;
+    schema.units(UnitPolicy::PixelsOnly).assertedMeasurement("alpha", "a").allMeasurements();
+    EXPECT_EQ(names(detail::resolveColumns(schema, store())),
+              withFixed({"alpha/a", "area", "perimeter", "zeta/a", "zeta/b"}));
+}
+
+TEST_F(ColumnResolutionTest, AssertedTwinsFollowTheUnitPolicyPerStage) {
+    assertUnder("ki67", {{"size", 4.0}, {"size.um2", 1.0}});
+    // No size twin from er; its "perimeter.um" twins no row value, so the row keeps
+    // "perimeter" under Calibrated.
+    assertUnder("er", {{"size", 5.0}, {"perimeter.um", 5.0}});
+
+    auto tail = [&](UnitPolicy policy) {
+        ColumnSchema schema;
+        schema.units(policy).assertedMeasurement("ki67", "size").assertedMeasurement("er", "size");
+        std::vector<std::string> all = names(detail::resolveColumns(schema, store()));
+        return std::vector<std::string>(all.begin() + 10, all.end());
+    };
+    EXPECT_EQ(tail(UnitPolicy::Calibrated), (std::vector<std::string>{"ki67/size.um2", "er/size"}));
+    EXPECT_EQ(tail(UnitPolicy::PixelsOnly), (std::vector<std::string>{"ki67/size", "er/size"}));
+    EXPECT_EQ(tail(UnitPolicy::BothColumns),
+              (std::vector<std::string>{"ki67/size", "ki67/size.um2", "er/size"}));
+
+    ColumnSchema all;
+    all.allMeasurements();
+    EXPECT_EQ(names(detail::resolveColumns(all, store())),
+              withFixed({"area.um2", "perimeter", "ki67/size.um2", "er/size"}));
+}
+
+TEST_F(ColumnResolutionTest, AssertedMeasurementSelectsOneStage) {
+    const StageId ki67 = assertUnder("ki67", {{"positive_fraction", 0.5}});
+    assertUnder("er", {{"positive_fraction", 0.7}});
+
+    ColumnSchema schema;
+    schema.assertedMeasurement("ki67", "positive_fraction");
+    const detail::ResolvedColumns resolved = detail::resolveColumns(schema, store());
+    EXPECT_EQ(names(resolved), withFixed({"ki67/positive_fraction"}));
+    EXPECT_EQ(resolved.columns[10].kind, detail::ColumnKind::AssertedMeasurement);
+    EXPECT_EQ(resolved.columns[10].stage, ki67);
+    EXPECT_EQ(resolved.columns[10].measurement, "positive_fraction");
+
+    // A stage the store lacks still gives its column, with no stage to read.
+    ColumnSchema unknown;
+    unknown.assertedMeasurement("nosuch", "positive_fraction");
+    const detail::ResolvedColumns empty = detail::resolveColumns(unknown, store());
+    EXPECT_EQ(names(empty), withFixed({"nosuch/positive_fraction"}));
+    EXPECT_FALSE(empty.columns[10].stage.isValid());
+}
+
+TEST_F(ColumnResolutionTest, ClashingNamesAreDetected) {
+    assertUnder("ki67", {{"positive_fraction", 0.5}});
+    ColumnSchema schema;
+    schema.measurement("ki67/positive_fraction").assertedMeasurement("ki67", "positive_fraction");
+    const detail::ResolvedColumns resolved = detail::resolveColumns(schema, store());
+    EXPECT_THROW(detail::requireDistinctNames(resolved, "test"), InvalidArgumentError);
+    EXPECT_NO_THROW(detail::requireDistinctNames(detail::resolveColumns(ColumnSchema(), store()), "test"));
 }

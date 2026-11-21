@@ -291,6 +291,23 @@ public:
      * UR-RES-9.
      */
     const char* measurementNameAt(int32_t index) const;
+    /**
+     * @brief Tells whether any object row holds a measurement of this name.
+     *
+     * measurementNameAt() lists every interned name, including names only ever
+     * asserted by later stages (AnnotationStore); this tells the two apart. Object
+     * visibility is not consulted. The store keeps no index by name, so a name that no
+     * row holds costs one scan of every stored row measurement; reporting calls it only
+     * for asserted names (SDS 07 section 7.2).
+     * @param name UTF-8 measurement name; null is never held.
+     * @return True when at least one object row holds a measurement of that name.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @par Thread-safety
+     * Safe to call from any thread.
+     * @par Requirements
+     * UR-RES-9.
+     */
+    bool hasRowMeasurementName(const char* name) const;
 
 private:
     friend class Store;

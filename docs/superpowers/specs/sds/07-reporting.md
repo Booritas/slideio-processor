@@ -66,6 +66,7 @@ public:
     ColumnSchema& includeGeometryWkt(bool);     // default false
     ColumnSchema& includeParent(bool);          // default false
     ColumnSchema& measurement(const char* name);
+    ColumnSchema& assertedMeasurement(const char* stageName, const char* name);
     ColumnSchema& allMeasurements();
 
     int32_t columnCount() const noexcept;
@@ -141,7 +142,13 @@ twin under the base name followed by `.um` or `.um2`.
 - `allMeasurements()` adds, when a writer starts, every store measurement name
   that does not end in `.um` or `.um2` and is not a fixed column name, in
   ascending byte order, after the explicit names and without duplicates. Storage
-  lists the names with `ObjectStore::measurementNameCount/At` (SDS 03).
+  lists the names with `ObjectStore::measurementNameCount/At` (SDS 03). That
+  list is shared with assertions, so a name some stage asserted is kept as a row
+  name (a row column, or a row twin) only when
+  `ObjectStore::hasRowMeasurementName` finds it on an object row; a name only
+  ever asserted gets its stage-qualified columns alone (below). Only asserted
+  names are checked, because the store has no index by name and the check of a
+  name no row holds scans every row measurement, once per such name per export.
 - Per base name `n`: `PixelsOnly` writes column `n`. `Calibrated` writes one
   column, named after the twin when the store holds that twin name (so the
   header says which unit it holds) and `n` with the pixel value otherwise.
@@ -151,14 +158,43 @@ twin under the base name followed by `.um` or `.um2`.
   C locale, so they round-trip. Non-finite values are spelled explicitly, the
   same on every platform: NaN as `nan`, +Inf as `inf`, -Inf as `-inf`, which
   pandas parses.
-- Cells come from the object row's own measurements only. Values asserted by
-  later stages (`AnnotationStore::assertedMeasurementCount/At`, SDS 03 §3.7) are
-  not exported yet (open follow-up of reporting plan A). Asserted names share the
-  store's `measurement_names` list, so `allMeasurements()` can produce a column
-  that is empty in every row when a name was only ever asserted.
+
+**Later-stage (asserted) measurements** (reporting plan B, decision 9; user
+decision 2026-11-21). A measurement a later stage asserted on an object
+(`AnnotationStore`, SDS 03 §3.7) is exported in a stage-qualified column named
+`<stage name>/<name>`, the stage name from `StageStateReader`, so two stages
+asserting one name give two columns and a row value never hides an asserted one.
+
+- `assertedMeasurement(stageName, name)` adds one stage's base name, in call
+  order together with `measurement()`'s. A null or empty stage name or name, a
+  name ending in `.um` or `.um2`, or a pair added twice is `InvalidArgumentError`.
+  The stage name is looked up per store when a writer starts; a stage the store
+  lacks gives a column that is empty in every row.
+- `allMeasurements()` adds, after the row columns, every `(stage, base name)`
+  pair the store's assertions hold, in the order of
+  `AnnotationStore::assertedMeasurementColumnCount/At` (stage id, then name),
+  without duplicates. The listing includes assertions whatever their
+  visibility, so the columns do not depend on stage status; the cells do.
+- The unit policy applies per stage exactly as it does per row: a stage's `n`
+  and `n.um`/`n.um2` assertions are base and twin. `Calibrated` writes
+  `<stage>/n.um2` (or `.um`) when that stage asserts the twin, `BothColumns`
+  writes both, `PixelsOnly` writes `<stage>/n`.
+- Per object, a writer reads the visible asserted measurements once
+  (`assertedMeasurementCount`, `assertedMeasurementAt`, `measurementAssertedBy`)
+  and serves every asserted column from them. A column the object lacks, or
+  whose assertion is not visible (the asserting stage is not `Complete`), is an
+  empty cell (CSV) or an absent key (GeoJSON).
+- **Name clashes.** A resolved column name equal to another column's — for
+  example a row measurement literally named `ki67/positive_fraction` beside
+  that stage's assertion — is `InvalidArgumentError` at `write()`, after
+  resolution and before any file is created. The message carries no name.
+
+The resolved column list marks each asserted column with its own kind,
+carrying the asserting stage id (invalid for a stage the store lacks) and the
+store name to read.
 
 `columnCount()` and `columnNameAt()` report the fixed columns and the explicit
-names as `PixelsOnly` would. The full list, with twins and the
+names (an asserted one as `<stageName>/<name>`) as `PixelsOnly` would. The full list, with twins and the
 `allMeasurements()` expansion, is resolved per store by the internal
 `detail::resolveColumns(const ColumnSchema&, Store&)` (`src/reporting/detail/columns.hpp`;
 it takes a non-const `Store` because `Store::objects()` is non-const), which

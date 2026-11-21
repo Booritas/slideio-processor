@@ -15,6 +15,7 @@
 #include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/object_store.hpp>
+#include <slideio/processor/storage/stage_state_reader.hpp>
 #include <slideio/processor/storage/stage_state_writer.hpp>
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/storage/vocabulary_registry.hpp>
@@ -23,6 +24,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -725,4 +727,115 @@ TEST_F(CsvExportTest, FixedColumnNamedMeasurementIsSkipped) {
     EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "layer", "stage", "labels",
                             "labels_local", "bbox_x", "bbox_y", "bbox_width", "bbox_height",
                             "area.um2", "perimeter"}));
+}
+
+namespace {
+// Declares `stageName`, asserts each (object, value) of "positive_fraction" under it and,
+// when `complete`, completes the stage.
+StageId assertFraction(Store& store, const char* stageName,
+                       std::initializer_list<std::pair<ObjectId, double>> values,
+                       bool complete = true) {
+    const StageId stage = store.stageStateWriter().declare(stageName, "{}");
+    AnnotationWriterPtr writer = store.annotations().writerForStage(stage);
+    for (const auto& [object, value] : values)
+        writer->assertMeasurement(object, "positive_fraction", value,
+                                  MeasurementUnit::Dimensionless);
+    writer->flush();
+    if (complete) store.stageStateWriter().setStatus(stage, StageStatus::Complete);
+    return stage;
+}
+
+// The schema with only the identifier columns.
+ColumnSchema idsOnly() {
+    ColumnSchema schema;
+    schema.includeLayer(false).includeStage(false).includeLabel(false).includeBoundingBox(false);
+    return schema;
+}
+
+// The row of `id` (TwoColumns identifiers), or an empty row.
+Row rowOf(const std::vector<Row>& rows, ObjectId id) {
+    for (const Row& row : rows) {
+        if (row.size() >= 2 && row[0] == decimal(id.layer().value()) &&
+            row[1] == decimal(id.anchorPacked()))
+            return row;
+    }
+    return Row();
+}
+} // namespace
+
+TEST_F(CsvExportTest, LaterStageMeasurementsAreExported) {
+    // ki67 is declared first, so it has the smaller stage id.
+    assertFraction(store(), "ki67", {{cell1Id, 0.25}});
+    assertFraction(store(), "er", {{cell1Id, 0.75}});
+
+    ColumnSchema schema = idsOnly();
+    schema.units(UnitPolicy::PixelsOnly)
+        .measurement("area")
+        .assertedMeasurement("er", "positive_fraction")
+        .assertedMeasurement("ki67", "positive_fraction")
+        .assertedMeasurement("nosuch", "positive_fraction");
+    std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    ASSERT_EQ(rows.size(), 4u);
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area", "er/positive_fraction",
+                            "ki67/positive_fraction", "nosuch/positive_fraction"}));
+    const Row cell1 = rowOf(rows, cell1Id);
+    ASSERT_EQ(cell1.size(), 6u);
+    EXPECT_EQ(Row(cell1.begin() + 2, cell1.end()), (Row{"100", "0.75", "0.25", ""}));
+    const Row cell2 = rowOf(rows, cell2Id);
+    ASSERT_EQ(cell2.size(), 6u);
+    EXPECT_EQ(Row(cell2.begin() + 2, cell2.end()), (Row{"100", "", "", ""}));
+
+    // allMeasurements: stage-qualified columns follow the row columns, by stage id.
+    ColumnSchema all = idsOnly();
+    all.units(UnitPolicy::PixelsOnly).allMeasurements();
+    rows = parseCsv(exportAll(store(), out, all));
+    ASSERT_EQ(rows.size(), 4u);
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area", "perimeter",
+                            "ki67/positive_fraction", "er/positive_fraction"}));
+    const Row allCell1 = rowOf(rows, cell1Id);
+    ASSERT_EQ(allCell1.size(), 6u);
+    EXPECT_EQ(allCell1[4], "0.25");
+    EXPECT_EQ(allCell1[5], "0.75");
+    const Row region = rowOf(rows, regionId);
+    ASSERT_EQ(region.size(), 6u);
+    EXPECT_EQ(region[4], "");
+    EXPECT_EQ(region[5], "");
+}
+
+TEST_F(CsvExportTest, InvisibleAssertionIsEmpty) {
+    const StageId late = assertFraction(store(), "late", {{cell1Id, 0.5}}, /*complete=*/false);
+
+    ColumnSchema schema = idsOnly();
+    schema.assertedMeasurement("late", "positive_fraction");
+    const std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    ASSERT_EQ(rows.size(), 4u);
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "late/positive_fraction"}));
+    EXPECT_EQ(rowOf(rows, cell1Id), (Row{decimal(cell1Id.layer().value()),
+                                         decimal(cell1Id.anchorPacked()), ""}));
+
+    store().stageStateWriter().setStatus(late, StageStatus::Complete);
+    EXPECT_EQ(rowOf(parseCsv(exportAll(store(), out, schema)), cell1Id).back(), "0.5");
+}
+
+TEST_F(CsvExportTest, ClashingColumnNamesAreRefused) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("ki67/positive_fraction", 1.0, MeasurementUnit::Dimensionless);
+    commitOne(store(), "more", record);
+    assertFraction(store(), "ki67", {{cell1Id, 0.25}});
+
+    ColumnSchema all;
+    all.allMeasurements();
+    EXPECT_THROW(CsvWriter(out.utf8().c_str()).schema(all).write(store(), ObjectQuery()),
+                 InvalidArgumentError);
+    EXPECT_FALSE(std::filesystem::exists(out.path()));
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
+
+    ColumnSchema explicitNames;
+    explicitNames.measurement("ki67/positive_fraction").assertedMeasurement("ki67", "positive_fraction");
+    EXPECT_THROW(CsvWriter(out.utf8().c_str()).schema(explicitNames).write(store(), ObjectQuery()),
+                 InvalidArgumentError);
+    EXPECT_FALSE(std::filesystem::exists(out.path()));
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
 }

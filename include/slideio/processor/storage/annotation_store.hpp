@@ -307,6 +307,40 @@ public:
     int64_t measurementAnnotationCount() const;
 
     /**
+     * @brief Returns the number of distinct (asserting stage, measurement name) pairs
+     * among the stored measurement assertions, whatever their visibility.
+     *
+     * A name and its calibrated twin (for example "area" and "area.um2") count
+     * separately. assertedMeasurementColumnCount() and assertedMeasurementColumnAt()
+     * each read the store afresh, so a write between two calls can change the count
+     * and shift indices; read them while nothing writes, or tolerate the shift.
+     * @return The count, 0 for a store without measurement assertions.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @par Thread-safety
+     * Safe to call from any thread.
+     * @par Requirements
+     * UR-RES-9, UR-RES-18.
+     */
+    int32_t assertedMeasurementColumnCount() const;
+    /**
+     * @brief Returns the pair at an index, ordered by stage id, then by name in
+     * ascending byte order (SQLite's BINARY collation).
+     * @param index Zero-based, below assertedMeasurementColumnCount().
+     * @param stage Receives the asserting stage.
+     * @param name Receives the measurement name, never null. The pointer stays valid for
+     * the life of the store: names are interned like ObjectStore::measurementNameAt()'s.
+     * @throws InvalidArgumentError When the index is negative or not below the count;
+     * `stage` and `name` are unchanged.
+     * @throws IoError When the store is closed, or when SQLite fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * Safe to call from any thread.
+     * @par Requirements
+     * UR-RES-9, UR-RES-18.
+     */
+    void assertedMeasurementColumnAt(int32_t index, StageId& stage, const char*& name) const;
+
+    /**
      * @brief Makes a raster source backed by the objects of one layer, whose Label
      * content is the effective label.
      *

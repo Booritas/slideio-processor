@@ -1,4 +1,4 @@
-// Requirements: UR-RES-4, UR-RES-17, UR-RES-18, UR-STG-4, UR-STG-6, UR-QA-3
+// Requirements: UR-RES-4, UR-RES-9, UR-RES-17, UR-RES-18, UR-STG-4, UR-STG-6, UR-QA-3
 #include "storage/detail/store_impl.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -386,6 +387,71 @@ TEST_F(AnnotationStoreTest, VisibilityEventAndDiscard) {
     EXPECT_EQ(discarded[0].stage(), c);
     EXPECT_EQ(discarded[0].objectCount(), 0);
     EXPECT_THROW(annotations().discardAnnotationsOfStage(StageId(99)), InvalidArgumentError);
+}
+
+TEST_F(AnnotationStoreTest, AssertedMeasurementColumnsAreListed) {
+    const std::vector<ObjectId> ids = commit(a, {rec(cells, 0, 0, 4), rec(cells, 10, 0, 4)});
+    complete(a);
+    EXPECT_EQ(annotations().assertedMeasurementColumnCount(), 0);
+
+    // Written by d before c, so the listing's order is its own, not the insertion order.
+    AnnotationWriterPtr wd = annotations().writerForStage(d);
+    wd->assertMeasurement(ids[0], "positive_fraction", 0.5, MeasurementUnit::Dimensionless);
+    wd->assertMeasurement(ids[1], "positive_fraction", 0.6, MeasurementUnit::Dimensionless);
+    wd->flush();
+    AnnotationWriterPtr wc = annotations().writerForStage(c);
+    wc->assertMeasurement(ids[0], "positive_fraction", 0.1, MeasurementUnit::Dimensionless);
+    wc->assertMeasurement(ids[0], "area.um2", 2.0, MeasurementUnit::SquareMicrometres);
+    wc->assertMeasurement(ids[1], "area", 3.0, MeasurementUnit::SquarePixels);
+    wc->flush();
+    // Not complete: the listing ignores visibility.
+    complete(d);
+
+    ASSERT_EQ(annotations().assertedMeasurementColumnCount(), 4);
+    const std::pair<StageId, std::string> expected[] = {
+        {c, "area"}, {c, "area.um2"}, {c, "positive_fraction"}, {d, "positive_fraction"}};
+    for (int32_t i = 0; i < 4; ++i) {
+        StageId stage;
+        const char* name = nullptr;
+        annotations().assertedMeasurementColumnAt(i, stage, name);
+        EXPECT_EQ(stage, expected[i].first) << i;
+        ASSERT_NE(name, nullptr);
+        EXPECT_EQ(std::string(name), expected[i].second) << i;
+    }
+    StageId stage;
+    const char* first = nullptr;
+    const char* again = nullptr;
+    annotations().assertedMeasurementColumnAt(0, stage, first);
+    annotations().assertedMeasurementColumnAt(0, stage, again);
+    EXPECT_EQ(first, again);  // interned: one stable pointer
+    const char* name = nullptr;
+    EXPECT_THROW(annotations().assertedMeasurementColumnAt(4, stage, name), InvalidArgumentError);
+    EXPECT_THROW(annotations().assertedMeasurementColumnAt(-1, stage, name), InvalidArgumentError);
+
+    store().close();
+    EXPECT_THROW(annotations().assertedMeasurementColumnCount(), IoError);
+    EXPECT_THROW(annotations().assertedMeasurementColumnAt(0, stage, name), IoError);
+}
+
+TEST_F(AnnotationStoreTest, AssertedOnlyNamesAreNotRowMeasurementNames) {
+    ObjectRecord record = rec(cells, 0, 0, 4);
+    record.measurements().set("area", 16.0, MeasurementUnit::SquarePixels);
+    const ObjectId o = commit(a, {record})[0];
+    complete(a);
+    AnnotationWriterPtr w = annotations().writerForStage(c);
+    w->assertMeasurement(o, "positive_fraction", 0.5, MeasurementUnit::Dimensionless);
+    w->assertMeasurement(o, "area", 15.0, MeasurementUnit::SquarePixels);
+    w->flush();
+
+    // Both names are interned, but only "area" is on an object row.
+    ASSERT_EQ(store().objects().measurementNameCount(), 2);
+    EXPECT_TRUE(store().objects().hasRowMeasurementName("area"));
+    EXPECT_FALSE(store().objects().hasRowMeasurementName("positive_fraction"));
+    EXPECT_FALSE(store().objects().hasRowMeasurementName("never_written"));
+    EXPECT_FALSE(store().objects().hasRowMeasurementName(nullptr));
+
+    store().close();
+    EXPECT_THROW(store().objects().hasRowMeasurementName("area"), IoError);
 }
 
 TEST_F(AnnotationStoreTest, WriterBatchingAndLifecycle) {

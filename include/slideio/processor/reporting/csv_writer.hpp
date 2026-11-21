@@ -65,7 +65,9 @@ class Store;
  *   parent edge; empty for an object without one.
  * - measurements: the value as printf's "%.17g" in the C locale, so it round-trips;
  *   NaN as "nan", +Inf as "inf" and -Inf as "-inf", which pandas parses; empty when
- *   the object lacks it.
+ *   the object lacks it. A stage-qualified column ("<stage>/<name>",
+ *   ColumnSchema::assertedMeasurement()) holds the value that stage asserted on the
+ *   object, empty when it asserted none or its assertion is not visible.
  *
  * The export goes to "<path>.partial", renamed onto path, replacing any file there,
  * only when it completes. A cancelled or failed export removes the partial file and
@@ -119,7 +121,9 @@ public:
      * @return What was written.
      * @throws IoError When the store is closed, SQLite fails, or the file cannot be
      * written or renamed; the partial file is removed. Messages carry no paths.
-     * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query.
+     * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query, or
+     * when two resolved columns share a name (ColumnSchema::assertedMeasurement()); the
+     * latter before any file is created.
      * @throws std::bad_alloc When memory is exhausted; the partial file is removed.
      */
     ExportResult write(Store& store, const ObjectQuery& query);
@@ -138,7 +142,9 @@ public:
      * bytesWritten() is 0.
      * @throws IoError When the store is closed, SQLite fails, or the file cannot be
      * written or renamed; the partial file is removed. Messages carry no paths.
-     * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query.
+     * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query, or
+     * when two resolved columns share a name (ColumnSchema::assertedMeasurement()); the
+     * latter before any file is created.
      * @throws std::bad_alloc When memory is exhausted; the partial file is removed.
      */
     ExportResult write(Store& store, const ObjectQuery& query, ProgressObserver* observer,
