@@ -77,6 +77,7 @@ test_only=(
     stageRecordJson      # detail: serialises a stage definition for the stage registry
     stageFromRecord      # detail: parses a stored stage record back to a definition
     sameDeclaration      # detail: compares two stage declarations
+    resolveColumns       # detail: resolves a reporting column schema against a store
 )
 pattern="Testing"
 for name in "${test_only[@]}"; do pattern+="|$name"; done

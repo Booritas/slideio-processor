@@ -1,6 +1,8 @@
 add_library(slideio-processor-reporting OBJECT
     export_result.cpp
     materialise.cpp
+    column_schema.cpp
+    detail/columns.cpp
 )
 set_target_properties(slideio-processor-reporting PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(slideio-processor-reporting PRIVATE SLIDEIO_PROCESSOR_DATA_API)

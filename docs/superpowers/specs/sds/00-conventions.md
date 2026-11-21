@@ -286,7 +286,7 @@ declarations do not change the class layout, so ABI is unaffected.
 
 A release package is built with `./build.sh --no-test-seams` (into `build-noseams`),
 and `scripts/check-no-test-seams.sh <build dir>` verifies that neither shared library
-exports a symbol containing `Testing`, nor one of the six test-only engine exports below. CI runs both steps on Ubuntu, after the tests, reusing the main build's Conan cache and SlideIO install.
+exports a symbol containing `Testing`, nor one of the test-only exports below (the engine's six, and the data library's `detail::resolveColumns`, marked `SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS`). CI runs both steps on Ubuntu, after the tests, reusing the main build's Conan cache and SlideIO install.
 
 Six more functions are test-only exports: production calls them only inside the engine,
 and only tests call them across the library boundary. They are `notifyTileSkipped`,

@@ -74,7 +74,8 @@ public:
     const ObjectRecord& at(int64_t index) const;
 
 private:
-    friend SLIDEIO_PROCESSOR_DATA_EXPORTS ObjectArrayPtr materialise(Store&, const ObjectQuery&, int64_t);
+    friend SLIDEIO_PROCESSOR_DATA_EXPORTS ObjectArrayPtr materialise(Store&, const ObjectQuery&,
+                                                                     int64_t);
     ObjectArray();
     class Impl;
     std::unique_ptr<Impl> impl_;
