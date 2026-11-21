@@ -43,7 +43,7 @@
   - No signature changes; SDS 08 is untouched.
 - **What stays the same:**
   - At level 0, and at every integer scale, every result is unchanged: there `llround(L × s) = L × s`, so the new inverse equals `floor`.
-  - Unrestricted runs and ROI-only runs are unchanged, because ROI admission is already exact in level 0.
+  - Unrestricted runs are unchanged. ROI admission is unchanged (already exact in level 0), but the advisory ROI mask operations see loses the left/top column/row that e45ce9b added, which can change mask-honouring global-context operations such as `threshold.otsu`.
   - `RasterMask::test`, `rasteriseInto` and `dilateMask` are unchanged.
 - **Determinism:**
   - Results must stay identical across worker counts.
@@ -61,7 +61,7 @@
    - For `scale ≥ 1` the mapping is strictly increasing, so for every P, `L(levelToLevel0(P)) = P`.
    - For `scale < 1` (`RasterMask` accepts down to 1e-6) it stays well defined.
    - Integer arithmetic decides the answer; a double division only seeds it:
-     - Seed `floor((x + 0.5) / scale)`, which is within a step or two for every scale.
+     - Seed `floor((x + 0.5) / scale)`, which is a few steps from the answer at practical magnitudes, and bounded at the 2^62 guard.
      - Then step down while `levelToLevel0(L) > x`, and up while `levelToLevel0(L + 1) ≤ x`.
      - Return false when the seed's magnitude reaches 2^62, or when a product `|L × scale|` reaches 2^63.
 2. **One mapping, in core.**

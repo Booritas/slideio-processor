@@ -608,6 +608,26 @@ TEST(RasterMask, TestLevel0FindsThePixelWhoseMappedCornersHoldThePoint) {
     EXPECT_FALSE(b.testLevel0({-4, 0}));
 }
 
+// Scale 0.5, where the mapping is not injective: llround(5 x 0.5) = llround(2.5) = 3,
+// llround(6 x 0.5) = 3, llround(7 x 0.5) = llround(3.5) = 4. The largest L with
+// llround(L x 0.5) <= 3 is 6, so level-0 3 is tested at pixel 6, not 5. For x = 0: llround(0) = 0
+// and llround(1 x 0.5) = 1 > 0, so pixel 0.
+TEST(RasterMask, TestLevel0AtAScaleBelowOne) {
+    RasterMask six(Rect64{0, 0, 10, 1}, 1, 0.5);
+    six.row(0)[6] = 255;
+    EXPECT_TRUE(six.testLevel0({3, 0}));
+    EXPECT_FALSE(six.testLevel0({4, 0}));
+    RasterMask five(Rect64{0, 0, 10, 1}, 1, 0.5);
+    five.row(0)[5] = 255;
+    EXPECT_FALSE(five.testLevel0({3, 0}));
+    RasterMask zero(Rect64{0, 0, 10, 1}, 1, 0.5);
+    zero.row(0)[0] = 255;
+    EXPECT_TRUE(zero.testLevel0({0, 0}));
+    RasterMask one(Rect64{0, 0, 10, 1}, 1, 0.5);
+    one.row(0)[1] = 255;
+    EXPECT_FALSE(one.testLevel0({0, 0}));
+}
+
 TEST(RasterMask, TestLevel0InvertsTheLevelMapping) {
     for (const double scale : {1.0, 1.5, 2.0, 2.4, 2.5, 3.7, 4.0}) {
         for (int64_t p = -300; p <= 300; ++p) {

@@ -269,7 +269,8 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     over different tile boundaries, so its result, and any objects thresholded
     by it, can differ in the last bits from earlier runs.
   - **Resolved (ROI restrictions): ROI admission was not exact at levels above
-    0.** The ROI's anchor test floored the anchor to a level pixel and read the
+    0.** (The widened ROI mask described below is superseded in part by the
+    anchor-level-pixel entry after it: the ROI mask is `mapToLevel(roi)` again.) The ROI's anchor test floored the anchor to a level pixel and read the
     level mask, whose edges come from the `llround` level mapping of the
     rectangle. At a non-integer scale the two disagreed by up to one level-0
     column or row at the ROI's edges: an anchor on the ROI's first column could
@@ -310,9 +311,13 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     (workspace restrict-to-layer) can keep or drop different objects along the
     restriction's edges. The mask an ROI-restricted operation sees loses the
     extra left/top column or row added on 2026-11-21, and `tilesSkipped` can
-    change. Level 0 and integer scales are unchanged. Re-run affected stages and
-    record the change in the verification evidence; stored results are not
-    marked stale automatically.
+    change. At such levels a global-context operation that honours `mask()`
+    (`threshold.otsu`) in an ROI-restricted run accumulates over one column and
+    one row fewer at the ROI's left and top edges than on main since e45ce9b, so
+    its threshold and the objects it yields can change; re-run those stages too
+    and record the change in the verification evidence. Level 0 and integer
+    scales are unchanged. Re-run affected stages and record the change in the
+    verification evidence; stored results are not marked stale automatically.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

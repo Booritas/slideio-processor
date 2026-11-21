@@ -24,7 +24,7 @@ bool forward(int64_t levelOrdinate, double scale, int64_t& out) noexcept {
 } // namespace
 
 bool levelOrdinateAtOrBelow(int64_t level0, double scale, int64_t& out) noexcept {
-    // A seed within a step or two of the answer, kept clear of int64's ends so the
+    // A seed a few steps from the answer at practical magnitudes (bounded at the 2^62 guard), kept clear of int64's ends so the
     // steps cannot overflow.
     const double estimate = std::floor((static_cast<double>(level0) + 0.5) / scale);
     if (!(std::fabs(estimate) < 4611686018427387904.0)) { // 2^62
