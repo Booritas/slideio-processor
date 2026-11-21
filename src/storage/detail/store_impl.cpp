@@ -341,6 +341,10 @@ void StoreImpl::rollbackWrite() noexcept {
 // single write, and a write never starts another.
 void StoreImpl::beginJoin(const char* operation) {
     sqlite3* db = writeConnection_.get();
+    // SQLite rolls the whole transaction back on some errors (SQLITE_FULL, IOERR, NOMEM,
+    // BUSY, INTERRUPT). A SAVEPOINT now would start a transaction of its own and its
+    // RELEASE would commit it, so later writes of the batch would be stored alone.
+    if (sqlite3_get_autocommit(db) != 0) throwIo(std::string(operation) + ": the batch's transaction was rolled back");
     const int rc = sqlite3_exec(db, "SAVEPOINT slideio_join", nullptr, nullptr, nullptr);
     if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
 }
@@ -373,6 +377,9 @@ void StoreImpl::commitBatch() {
     const char* operation = "StageStateWriter::Batch::commit";
     if (!batchOpenOnThisThread()) throwInvalidArgument(operation, "the batch is not open on this thread");
     try {
+        if (sqlite3_get_autocommit(writeConnection_.get()) != 0) {
+            throwIo(std::string(operation) + ": the batch's transaction was rolled back");
+        }
         commitWrite(operation);
     } catch (...) {
         rollbackWrite();

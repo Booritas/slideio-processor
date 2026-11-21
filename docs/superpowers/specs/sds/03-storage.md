@@ -1862,6 +1862,13 @@ processes, see none of its writes before `commit()` and all of them after.
   does, 3.8) throws `InvalidArgumentError` "`<operation>`: a durable write
   cannot join a batch" on the batch's thread: `synchronous` cannot change inside
   a transaction. The batch is unaffected.
+- **A transaction SQLite aborted.** On some errors (`SQLITE_FULL`, `IOERR`,
+  `NOMEM`, `BUSY`, `INTERRUPT`) SQLite rolls back the whole transaction, not
+  only the statement. The failing write throws; the batch notices the
+  connection is no longer in a transaction, so every later write in it and
+  `commit()` throw `IoError` "the batch's transaction was rolled back", and
+  nothing of the batch is stored. Without this a later join's `SAVEPOINT`
+  would start a transaction of its own and commit alone.
 - **Other threads** wait on the write mutex until the batch ends, as they wait
   for any write.
 - **`commit()`** runs `COMMIT`. When that fails it rolls back and throws

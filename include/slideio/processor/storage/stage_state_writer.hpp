@@ -141,6 +141,10 @@ public:
      *   RasterRegistry::discardRasterOfStage makes) cannot join and throws
      *   InvalidArgumentError, since the synchronous level cannot change inside a
      *   transaction. The batch is unaffected.
+     * - SQLite may abort the whole transaction on an error such as a full disk or an
+     *   I/O failure, not only the failing statement. The failing write throws; every
+     *   later write in the batch and commit() then throw IoError, and nothing of the
+     *   batch is stored.
      * - Create, commit() and destroy a Batch on one thread, and close the store on
      *   another or after the batch has ended: Store::close() waits for a batch of another
      *   thread, and deadlocks against one held by the thread that calls it.

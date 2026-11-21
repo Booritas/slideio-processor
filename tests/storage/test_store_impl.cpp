@@ -185,3 +185,25 @@ TEST(StoreImpl, CreateNewLosingToAClosedCreatorReportsTheExistingStoreAndRelease
     detail::StoreImpl reopened(files.utf8().c_str(), OpenMode::ReadWrite, Configuration());
     reopened.close();
 }
+
+// SQLite may roll back a whole transaction on SQLITE_FULL, IOERR and the like; a ROLLBACK
+// on the write connection stands in for it. The batch must then refuse every later write
+// and its commit, so nothing of it is stored.
+TEST(StoreImpl, BatchWhoseTransactionWasRolledBackRefusesFurtherWrites) {
+    StoreFilesGuard files;
+    detail::StoreImpl store(files.utf8().c_str(), OpenMode::CreateNew, Configuration());
+    store.beginBatch("test");
+    store.withWriteTransaction("test", [](sqlite3* db) { detail::StoreImpl::setMetaText(db, "probe", "first"); });
+    EXPECT_THROW(store.withWriteTransaction("test",
+                                            [](sqlite3* db) {
+                                                detail::exec(db, "ROLLBACK");
+                                                throw IoError("aborted by SQLite");
+                                            }),
+                 IoError);
+    EXPECT_THROW(store.withWriteTransaction("test", [](sqlite3* db) { detail::StoreImpl::setMetaText(db, "probe", "later"); }),
+                 IoError);
+    EXPECT_THROW(store.commitBatch(), IoError);
+    EXPECT_FALSE(store.batchOpenOnThisThread());
+    store.withReadConnection("test", [](sqlite3* db) { EXPECT_FALSE(detail::StoreImpl::metaText(db, "probe")); });
+    store.withWriteTransaction("test", [](sqlite3* db) { detail::StoreImpl::setMetaText(db, "probe", "after"); });
+}
