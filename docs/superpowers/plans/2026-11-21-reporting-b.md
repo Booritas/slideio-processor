@@ -8,6 +8,7 @@
 - **One emitter.** Every feature goes through `core::GeoJsonWriter`, so the library keeps one GeoJSON emitter (SDS 07 §7.5). It gains an overload that also writes `parentId`.
 - **One export driver.** The streaming loop `CsvWriter` already has is moved into `src/reporting/detail/export_driver`, so both writers share it. It covers the `.partial` file and rename, progress, cancellation, and the name cache. `CsvWriter`'s behaviour is unchanged.
 - **Hierarchy deferred (user decision, 2026-11-21).** Writing `parentId` makes the files ready for it, but this plan does not make re-import restore layers and parents (UR-RES-15, Should). That needs a layered import mode in `storage`, recorded as a follow-up.
+- **Later-stage measurements (user decision, 2026-11-21, added after the plan was approved).** Measurements a later stage asserted on an object are exported, by CSV and GeoJSON alike, in stage-qualified columns named `<stage name>/<measurement name>`, so no value is hidden and each stays traceable to its stage. Task 3 adds them; the GeoJSON exporter becomes Task 4.
 
 **Tech Stack:** C++17, CMake, RapidJSON (already used by core's GeoJSON codec), GoogleTest.
 
@@ -69,6 +70,20 @@
 5. **Non-finite measurement values.** JSON has no NaN or Inf, and the writer refuses them. A non-finite value is left out of that feature's `measurements`, and the rest of the feature is written. This is documented in the header and in SDS 07.
 6. **Bytes and atomicity.** The file is written to `<path>.partial` through `GeoJsonWriter`, then `end()`. `bytesWritten` is the partial file's size taken before the rename, so nothing can throw after it. Then rename onto `path`. Cancel and failure behave as in `CsvWriter`.
 7. **Provenance and PHI.** `GeoJsonWriter::begin` writes the store's provenance, whose `slideId` is the slide path. The exporter's Doxygen and SDS 07 §7.5 carry the same PHI/PII note as `CsvWriter` (HIPAA, GDPR) and point to the existing redaction follow-up in `docs/project.md`.
+9. **Later-stage (asserted) measurements**, Task 3. They appear in every export, in stage-qualified columns.
+   - **Storage listing.** Add to `AnnotationStore`:
+     - `int32_t assertedMeasurementColumnCount() const;`
+     - `void assertedMeasurementColumnAt(int32_t index, StageId& stage, const char*& name) const;`
+
+     These list the distinct `(stage, name)` pairs in `measurement_assertions`, whatever their visibility, ordered by stage id, then name bytewise. Names are interned for the store's life. Errors as `ObjectStore::measurementNameAt`. SDS 03 and SDS 08 are updated.
+   - **Column naming.** An asserted measurement's column is `<stage name>/<name>`, with the stage name from `StageStateReader`.
+   - **Units.** The unit policy applies per stage exactly as decision 5 of Plan A does per row: a stage's `n` and `n.um`/`n.um2` assertions are base and twin.
+   - **Selection.** `ColumnSchema` gains `ColumnSchema& assertedMeasurement(const char* stageName, const char* name);`, with the same refusals as `measurement()` (null or empty, a `.um`/`.um2` name, a duplicate). It selects one stage's base name; the stage name is resolved per store, and an unknown stage gives an empty column.
+   - **`allMeasurements()`** now adds, after the row columns, every asserted `(stage, base name)` pair in the listing's order, without duplicates.
+   - **Resolution.** `detail::resolveColumns` gains an asserted-measurement column kind, carrying the stage id and the store name to read.
+   - **Values.** Per object, each writer reads the object's visible asserted measurements once: `assertedMeasurementCount`, `assertedMeasurementAt`, `measurementAssertedBy`. A column the object lacks, or whose assertion is not visible, is an empty cell (CSV) or an absent key (GeoJSON).
+   - **Name clashes.** A resolved column name equal to another column's name (for example a row measurement literally named `a/b`) is an `InvalidArgumentError` at `write`, before the file is created. It is documented.
+   - **Documentation.** SDS 07 §7.2 drops the "asserted measurements are not exported" note and documents this decision. `docs/project.md` marks that follow-up resolved and notes that per-row lookups grow by the assertion reads, under the existing per-row lookup follow-up.
 8. **Docs.**
    - SDS 07 §7.5 records decisions 3–7.
    - SDS 01 and SDS 08 record decision 2.
@@ -77,10 +92,10 @@
 
 ## Review Focus
 
-1. **Default export:** a default exporter writes every measurement in both units, and a re-import keeps each value (`GeoJsonExport.DefaultSchemaKeepsEveryMeasurement`, Task 3).
-2. **Round trip:** export, then `GeoJsonImporter` into a fresh layer, gives the same object count, geometry, classification label and measurement values (`GeoJsonExport.RoundTripsThroughTheImporter`, Task 3).
-3. **Awkward text:** a layer or label name with quotes, backslashes or non-ASCII characters is valid JSON, and the round trip keeps it (`GeoJsonExport.NamesNeedingEscapesRoundTrip`, Task 3).
-4. **Cancel and failure** leave no file at `path`, and an existing file survives (`GeoJsonExport.CancelledExportLeavesNoFile`, `GeoJsonExport.CancelledExportKeepsAnExistingFile`, Task 3).
+1. **Default export:** a default exporter writes every measurement in both units, and a re-import keeps each value (`GeoJsonExport.DefaultSchemaKeepsEveryMeasurement`, Task 4).
+2. **Round trip:** export, then `GeoJsonImporter` into a fresh layer, gives the same object count, geometry, classification label and measurement values (`GeoJsonExport.RoundTripsThroughTheImporter`, Task 4).
+3. **Awkward text:** a layer or label name with quotes, backslashes or non-ASCII characters is valid JSON, and the round trip keeps it (`GeoJsonExport.NamesNeedingEscapesRoundTrip`, Task 4).
+4. **Cancel and failure** leave no file at `path`, and an existing file survives (`GeoJsonExport.CancelledExportLeavesNoFile`, `GeoJsonExport.CancelledExportKeepsAnExistingFile`, Task 4).
 5. **Refactor safety:** after the driver extraction, every CSV test passes unchanged, and an export of the CSV fixture is byte-identical to before the refactor (`CsvExportTest.OutputUnchangedByTheSharedDriver`, Task 1).
 
 ---
@@ -93,7 +108,7 @@
 - Test: `tests/reporting/test_csv_writer.cpp`.
 
 **Interfaces:**
-- Produces: the driver (decision 1), used by `CsvWriter` now and `GeoJsonExporter` in Task 3.
+- Produces: the driver (decision 1), used by `CsvWriter` now and `GeoJsonExporter` in Task 4.
 
 - [ ] **Step 1: Add `CsvExportTest.OutputUnchangedByTheSharedDriver`** before refactoring.
   - Export the richest existing CSV fixture: labels, parents, WKT, twins.
@@ -128,14 +143,52 @@ git add include src tests docs
 git commit -m "feat(core): GeoJsonWriter writes an optional parent id"
 ```
 
-### Task 3: `GeoJsonExporter`
+### Task 3: Later-stage measurements in exports
+
+**Files:**
+- Modify:
+  - `include/slideio/processor/storage/annotation_store.hpp` and `src/storage/annotation_store.cpp` (the listing);
+  - `include/slideio/processor/reporting/column_schema.hpp`, `src/reporting/column_schema.cpp` and `src/reporting/detail/columns.{hpp,cpp}`;
+  - `src/reporting/csv_writer.cpp`;
+  - SDS 03, SDS 07 and SDS 08, `docs/project.md` and `docs/traceability.md`.
+- Test: the existing annotation store test file, `tests/reporting/test_column_schema.cpp` and `tests/reporting/test_csv_writer.cpp`.
+
+**Interfaces:**
+- Produces:
+  - `AnnotationStore::assertedMeasurementColumnCount/At`;
+  - `ColumnSchema::assertedMeasurement(stageName, name)`;
+  - the asserted column kind in `detail::ResolvedColumns`.
+
+  Task 4 relies on all three.
+
+- [ ] **Step 1: Write the failing tests**
+  - `AnnotationStore.AssertedMeasurementColumnsAreListed`: two stages assert `positive_fraction`, and one also asserts `area` and `area.um2`. The listing gives the four `(stage, name)` pairs ordered by stage id, then name.
+  - `ColumnSchema.AllMeasurementsAddsStageQualifiedColumns`, on a store with row `area`, `area.um2`, and stage `ki67` asserting `positive_fraction`:
+    - `allMeasurements()` with `Calibrated` gives `area.um2`, `ki67/positive_fraction`;
+    - with `BothColumns` gives `area`, `area.um2`, `ki67/positive_fraction`.
+  - `ColumnSchema.AssertedMeasurementSelectsOneStage`: `assertedMeasurement("ki67", "positive_fraction")` alone gives exactly that column.
+  - `ColumnSchema.AssertedMeasurementRefusals`: null or empty stage, null or empty name, a `.um` name, and a duplicate each throw.
+  - `CsvExportTest.LaterStageMeasurementsAreExported`:
+    - an object with a row `area` and assertions of `positive_fraction` by stages `ki67` and `er` gives cells for `area`, `er/positive_fraction` and `ki67/positive_fraction`, each with its own value;
+    - an object without assertions gives empty cells there.
+  - `CsvExportTest.InvisibleAssertionIsEmpty`: an assertion by a stage that is not `Complete` gives an empty cell.
+  - `CsvExportTest.ClashingColumnNamesAreRefused`: a row measurement named `ki67/positive_fraction` together with that assertion makes `write` throw `InvalidArgumentError`, and no file is created.
+- [ ] **Step 2: Run, see them fail. Step 3: Implement decision 9. Step 4: `./run-tests.sh`, the docs target and the no-seams check pass.**
+- [ ] **Step 5: Commit**
+
+```bash
+git add include src tests docs
+git commit -m "feat(reporting): export later-stage measurements in stage-qualified columns"
+```
+
+### Task 4: `GeoJsonExporter`
 
 **Files:**
 - Create: `include/slideio/processor/reporting/geojson_exporter.hpp`, `src/reporting/geojson_exporter.cpp`, `tests/reporting/test_geojson_exporter.cpp`.
 - Modify: `include/slideio/processor/reporting/reporting.hpp`, `src/reporting/CMakeLists.txt`, `tests/reporting/CMakeLists.txt`, SDS 07, `docs/project.md`, `docs/traceability.md`.
 
 **Interfaces:**
-- Consumes: the export driver (Task 1); `writeFeature(…, parent)` (Task 2); `ColumnSchema`, `detail::resolveColumns` and `ExportResult` (Plan A).
+- Consumes: the export driver (Task 1); `writeFeature(…, parent)` (Task 2); the asserted-measurement columns (Task 3); `ColumnSchema`, `detail::resolveColumns` and `ExportResult` (Plan A).
 - Produces: `GeoJsonExporter` (decision 3).
 
 - [ ] **Step 1: Write the failing tests.**
@@ -166,6 +219,7 @@ git commit -m "feat(core): GeoJsonWriter writes an optional parent id"
     - `GeoJsonExport.CancelledExportLeavesNoFile` and `GeoJsonExport.CancelledExportKeepsAnExistingFile`.
     - `GeoJsonExport.ReportsProgress`: progress after 1000, 2000 and at the end for 2500 objects.
     - `GeoJsonExport.BytesWrittenIsTheFileSize`.
+    - `GeoJsonExport.LaterStageMeasurementsAreKeys`: an object with a `ki67` assertion of `positive_fraction` has the key `ki67/positive_fraction` in its `measurements`, with the asserted value.
 - [ ] **Step 2: Run, see them fail. Step 3: Implement decisions 3–8. Step 4: `./run-tests.sh`, the docs target and the no-seams check pass.**
 - [ ] **Step 5: Commit**
 
