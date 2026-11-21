@@ -296,6 +296,8 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressOb
     }
     line += '\n';
     out.write(line.data(), static_cast<std::streamsize>(line.size()));
+    // Counted as written, so nothing can fail once the finished file is in place.
+    int64_t bytes = static_cast<int64_t>(line.size());
 
     auto report = [&](int64_t completed) {
         if (observer == nullptr) return;
@@ -317,6 +319,7 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressOb
         appendRow(line, cursor->current(), resolved, impl_->delimiter, store, names);
         out.write(line.data(), static_cast<std::streamsize>(line.size()));
         if (!out) throw IoError("CsvWriter::write: writing the output file failed");
+        bytes += static_cast<int64_t>(line.size());
         ++written;
         if (written % kProgressEvery == 0) report(written);
     }
@@ -328,11 +331,9 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressOb
     std::filesystem::rename(partial, target, ec);
     if (ec) throw IoError("CsvWriter::write: replacing the output file failed");
     guard.release();
-    const std::uintmax_t size = std::filesystem::file_size(target, ec);
-    if (ec) throw IoError("CsvWriter::write: reading the output file size failed");
 
     if (written == 0 || written % kProgressEvery != 0) report(written);
-    return ExportResult(written, static_cast<int64_t>(size), false);
+    return ExportResult(written, bytes, false);
 }
 
 } // namespace slideio::processor

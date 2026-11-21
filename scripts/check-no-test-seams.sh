@@ -3,8 +3,9 @@
 # Checks that a build made with -DSLIDEIO_PROCESSOR_TEST_SEAMS=OFF exports no test seam.
 # Two kinds of exported symbol of either shared library fail it: one containing "Testing"
 # (the *ForTesting seams and trackForCloseTesting), and one containing the name of a
-# test-only engine export (SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS), listed in test_only
-# below (the three SeamMergerAccess functions by their owner, the others by name).
+# test-only export (SLIDEIO_PROCESSOR_ENGINE_TEST_EXPORTS in the engine library,
+# SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS in the data library), listed in test_only below.
+# The three SeamMergerAccess functions are matched by their owner, the others by name.
 #
 # Usage: scripts/check-no-test-seams.sh <build dir>
 # Exit:  0 no test seams exported; 1 a seam is exported; 2 a library or a symbol tool
@@ -78,6 +79,7 @@ test_only=(
     stageFromRecord      # detail: parses a stored stage record back to a definition
     sameDeclaration      # detail: compares two stage declarations
     resolveColumns       # detail: resolves a reporting column schema against a store
+    appendDouble         # detail: formats a CSV measurement value (reporting)
 )
 pattern="Testing"
 for name in "${test_only[@]}"; do pattern+="|$name"; done

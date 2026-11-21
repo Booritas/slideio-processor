@@ -108,6 +108,19 @@ TEST(ColumnSchema, BadMeasurementNamesThrow) {
     EXPECT_EQ(schema.columnCount(), 10);
 }
 
+TEST(ColumnSchema, FixedColumnNameMeasurementThrows) {
+    ColumnSchema schema;
+    for (const char* name : {"layer_id", "anchor_id", "object_id", "layer", "stage", "labels",
+                             "labels_local", "label", "label_local", "bbox_x", "bbox_y",
+                             "bbox_width", "bbox_height", "geometry_wkt", "parent_layer_id",
+                             "parent_anchor_id", "parent_id"}) {
+        EXPECT_THROW(schema.measurement(name), InvalidArgumentError) << name;
+    }
+    EXPECT_EQ(schema.columnCount(), 10);
+    EXPECT_NO_THROW(schema.measurement("labels_count"));
+    EXPECT_EQ(schema.columnCount(), 11);
+}
+
 TEST(ColumnSchema, HeaderBufferTooSmall) {
     const ColumnSchema schema = ColumnSchema::standard();
     const std::string full = header(schema);

@@ -127,24 +127,30 @@ The WKT is `POLYGON((outer),(hole),…)` for one outer ring and
 `MULTIPOLYGON(((outer),(hole),…),…)` for several; rings are closed by
 repeating the first point. Each hole joins the first outer ring, in ring order,
 that contains the hole's first vertex by an even-odd test on that ring alone.
+A hole inside no outer ring (a degenerate polygon) joins the nearest outer ring
+before it in ring order. An empty polygon is `POLYGON EMPTY`.
 
 **Measurements and units** (decision 5, UR-SEG-6). Storage keeps each
 measurement in pixels under its base name and, when the scene was calibrated, a
 twin under the base name followed by `.um` or `.um2`.
 
-- `measurement(name)` adds base names in call order; a name added twice, or one
-  ending in `.um` or `.um2`, is `InvalidArgumentError`.
+- `measurement(name)` adds base names in call order; a name added twice, one
+  ending in `.um` or `.um2`, or one equal to any fixed column name in the table
+  above (whether or not that column is included) is `InvalidArgumentError`, so a
+  header never holds two columns of one name.
 - `allMeasurements()` adds, when a writer starts, every store measurement name
-  that does not end in `.um` or `.um2`, in ascending byte order, after the
-  explicit names and without duplicates. Storage lists the names with
-  `ObjectStore::measurementNameCount/At` (SDS 03).
+  that does not end in `.um` or `.um2` and is not a fixed column name, in
+  ascending byte order, after the explicit names and without duplicates. Storage
+  lists the names with `ObjectStore::measurementNameCount/At` (SDS 03).
 - Per base name `n`: `PixelsOnly` writes column `n`. `Calibrated` writes one
   column, named after the twin when the store holds that twin name (so the
   header says which unit it holds) and `n` with the pixel value otherwise.
   `BothColumns` writes `n` and, when the store holds a twin name, the twin
   column too.
 - A value an object lacks is an empty cell. Values are written as `%.17g` in the
-  C locale, so they round-trip.
+  C locale, so they round-trip. Non-finite values are spelled explicitly, the
+  same on every platform: NaN as `nan`, +Inf as `inf`, -Inf as `-inf`, which
+  pandas parses.
 - Cells come from the object row's own measurements only. Values asserted by
   later stages (`AnnotationStore::assertedMeasurementCount/At`, SDS 03 §3.7) are
   not exported yet (open follow-up of reporting plan A). Asserted names share the
@@ -174,6 +180,9 @@ public:
 };
 ```
 
+`ExportResult` is a plain value type with its fields inline (no pimpl): adding a
+field later is an ABI change.
+
 ```cpp
 class CsvWriter {
 public:
@@ -198,11 +207,14 @@ column schema, so the provenance header uses `#` comment lines that
 `pandas.read_csv(comment='#')` skips by default rather than a separate sidecar
 file.
 
-**Format** (decision 6). RFC 4180: a field holding the delimiter, `"`, CR or LF
-is quoted, with `"` doubled. Lines end in `\n`; the file is UTF-8 without a BOM.
-The header line comes first, after any provenance lines. `delimiter(c)` refuses
-`"`, CR, LF and `#` with `InvalidArgumentError`; the path may not be null or
-empty.
+**Format** (decision 6). RFC 4180: a field or header name holding the
+delimiter, `"`, CR, LF or `#` is quoted, with `"` doubled. `#` is quoted because
+`pandas.read_csv(comment='#')` cuts a line at an unquoted `#`, so a name such as
+`Tumour #2` would otherwise truncate the row. Lines end in `\n`; the file is
+UTF-8 without a BOM. The header line comes first, after any provenance lines.
+`delimiter(c)` refuses `"`, CR, LF and `#` with `InvalidArgumentError`; the path
+may not be null or empty. One writer per path: two writers on the same path
+share `<path>.partial` and must not run at once.
 
 **Provenance** (decision 7, `provenanceHeader(true)`, the default):
 
@@ -222,6 +234,14 @@ the two characters `\r` and `\n`, so each stays on one line. Nothing else is
 written — no export time, random value or address — so two exports of an
 unchanged store with the same query and schema are byte-identical (UR-QA-3).
 
+`slide_id` is the slide path as the store holds it (the workspace records the
+path it opened). A path may contain identifiers, such as an accession number, a
+medical record number, a patient's name or a user name, that count as PHI or
+personal data under HIPAA and GDPR; consumers who share an export must treat it
+accordingly. `provenanceHeader(false)` drops every provenance line, and with it
+the provenance UR-RES-11 asks for. Redaction is an open follow-up
+(`docs/project.md`, reporting plan A).
+
 **Writing, progress, cancellation** (decision 8).
 
 - `write(store, q, observer, token)` resolves the columns, takes
@@ -233,9 +253,12 @@ unchanged store with the same query and schema are byte-identical (UR-QA-3).
 - It checks `token.isCancelled()` before writing each object. On cancel the
   partial file is removed, any file already at `path` is untouched, and the
   result has `wasCancelled() == true`, the objects written before the check, and
-  `bytesWritten() == 0`.
+  `bytesWritten() == 0`. The check comes after the cursor yields an object, so an
+  empty result, or a cancel that arrives after the last object, completes
+  normally.
 - On success the partial file is renamed onto `path`, replacing any file there;
-  `bytesWritten()` is the final file's size.
+  `bytesWritten()` is the final file's size, counted as the bytes were written,
+  so nothing can fail once the finished file is in place.
 - On any exception the partial file is removed and the exception propagates;
   failures of the file itself are `IoError`, whose messages carry no path.
 - The two-argument `write` calls the four-argument one with no observer and a

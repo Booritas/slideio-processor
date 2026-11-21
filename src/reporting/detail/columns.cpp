@@ -20,6 +20,19 @@ bool isTwinName(const std::string& name) noexcept {
     return ends(".um", 3) || ends(".um2", 4);
 }
 
+bool isFixedColumnName(const std::string& name) noexcept {
+    static const char* const kNames[] = {
+        "layer_id",    "anchor_id",    "object_id",       "layer",
+        "stage",       "labels",       "labels_local",    "label",
+        "label_local", "bbox_x",       "bbox_y",          "bbox_width",
+        "bbox_height", "geometry_wkt", "parent_layer_id", "parent_anchor_id",
+        "parent_id"};
+    for (const char* fixed : kNames) {
+        if (name == fixed) return true;
+    }
+    return false;
+}
+
 std::vector<ResolvedColumn> fixedColumns(const ColumnSchema::Impl& s) {
     std::vector<ResolvedColumn> out;
     auto add = [&](const char* name, ColumnKind kind) {
@@ -74,7 +87,8 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
     std::vector<std::string> bases = s.measurements;
     if (s.allMeasurements) {
         for (const std::string& name : held) {
-            if (isTwinName(name)) continue;
+            // A fixed column name would give the header two columns of that name.
+            if (isTwinName(name) || isFixedColumnName(name)) continue;
             if (std::find(bases.begin(), bases.end(), name) == bases.end()) bases.push_back(name);
         }
     }

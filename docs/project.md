@@ -383,6 +383,15 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     at 10 million objects (UR-RES-8). Fix: a storage-side batched read alongside
     the object cursor, or cached prepared statements; then a 1-million-object
     benchmark.
+  - **Open (PHI/PII: slide identifier in export provenance).** The CSV
+    provenance line `slide_id` is the slide path as the store holds it (the
+    workspace stores the path it opened), and a path may carry identifiers
+    (accession number, medical record number, patient name, user name) that are
+    PHI or personal data under HIPAA and GDPR. Today the only control is
+    `provenanceHeader(false)`, which drops all provenance (UR-RES-11). Fix: an
+    option to redact the slide identifier, or to write only its basename or a
+    hash, so provenance can travel without the path (SDS 07 §7.3). Belongs with
+    the other pre-release PHI items.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

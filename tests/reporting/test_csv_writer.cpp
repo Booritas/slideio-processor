@@ -2,6 +2,8 @@
 #include "common/temp_path.hpp"
 #include "storage/store_fixture.hpp"
 
+#include "reporting/detail/csv_format.hpp"
+
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -23,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -68,8 +71,9 @@ void writeText(const std::filesystem::path& path, const std::string& text) {
 }
 
 // A minimal RFC 4180 reader: records end in "\n"; a quoted field may hold the
-// delimiter, "\n" and doubled quotes. Lines starting with '#' at a record start are
-// skipped as comments.
+// delimiter, "\n" and doubled quotes. As pandas.read_csv(comment='#') does, an
+// unquoted '#' starts a comment: at a record start the whole line is skipped, and
+// mid-record the rest of the line is dropped. A quoted '#' stays data.
 std::vector<Row> parseCsv(const std::string& text, char delimiter = ',') {
     std::vector<Row> rows;
     size_t i = 0;
@@ -97,6 +101,11 @@ std::vector<Row> parseCsv(const std::string& text, char delimiter = ',') {
                 }
             } else if (c == '"') {
                 quoted = true;
+            } else if (c == '#') {
+                // The rest of the line is a comment; the record ends here.
+                i = text.find('\n', i);
+                i = i == std::string::npos ? text.size() : i + 1;
+                break;
             } else if (c == delimiter) {
                 row.push_back(field);
                 field.clear();
@@ -148,6 +157,14 @@ Polygon square(int64_t x, int64_t y, int64_t side) {
 }
 
 std::string decimal(int64_t value) { return std::to_string(value); }
+
+// ColumnSchema::toHeaderLine() as a string.
+std::string header(const ColumnSchema& schema) {
+    const int32_t n = schema.toHeaderLine(nullptr, 0);
+    std::vector<char> buffer(static_cast<size_t>(n) + 1);
+    schema.toHeaderLine(buffer.data(), static_cast<int32_t>(buffer.size()));
+    return std::string(buffer.data());
+}
 
 class RecordingObserver : public ProgressObserver {
 public:
@@ -559,4 +576,122 @@ TEST_F(CsvExportTest, CustomDelimiter) {
     EXPECT_NE(all[3].find(";\"tumour;myLocal\";\"0;1\";"), std::string::npos) << all[3];
     const std::vector<Row> rows = parseCsv(text, ';');
     EXPECT_EQ(rows[3][4], "tumour;myLocal");
+}
+
+namespace {
+// Commits one record under a new, completed stage.
+void commitOne(Store& store, const char* stageName, const ObjectRecord& record) {
+    const StageId stage = store.stageStateWriter().declare(stageName, "{}");
+    ObjectWriterPtr writer = store.objects().writerForStage(stage);
+    writer->emit(record);
+    writer->flush();
+    store.stageStateWriter().setStatus(stage, StageStatus::Complete);
+}
+
+// Exports every object with `schema`, without provenance, and returns the text.
+std::string exportAll(Store& store, const OutputPath& out, const ColumnSchema& schema) {
+    const ExportResult result =
+        CsvWriter(out.utf8().c_str()).schema(schema).provenanceHeader(false).write(store,
+                                                                                   ObjectQuery());
+    EXPECT_FALSE(result.wasCancelled());
+    const std::string text = readText(out.path());
+    EXPECT_EQ(result.bytesWritten(), static_cast<int64_t>(text.size()));
+    return text;
+}
+} // namespace
+
+// pandas.read_csv(comment='#') cuts a line at an unquoted '#': such names are quoted.
+TEST_F(CsvExportTest, HashInNamesIsQuoted) {
+    const LayerId hashLayer = store().layers().declareSemantic("cells #2", regions);
+    const LabelId hashLabel = store().vocabulary().addLocal("class #1");
+    ObjectRecord record;
+    record.setLayer(hashLayer);
+    record.setGeometry(square(300, 0, 4));
+    record.setLabel(hashLabel);
+    record.measurements().set("size #", 16.0, MeasurementUnit::SquarePixels);
+    commitOne(store(), "more", record);
+
+    ColumnSchema schema;
+    schema.measurement("size #");
+    const std::string text = exportAll(store(), out, schema);
+    EXPECT_NE(text.find(",\"size #\"\n"), std::string::npos) << text;
+    EXPECT_NE(text.find(",\"cells #2\",more,\"class #1\",1,"), std::string::npos) << text;
+
+    const std::vector<Row> rows = parseCsv(text);
+    ASSERT_EQ(rows.size(), 5u);
+    EXPECT_EQ(rows[0].back(), "size #");
+    bool found = false;
+    for (const Row& row : rows) {
+        if (row.size() > 2 && row[2] == "cells #2") {
+            found = true;
+            ASSERT_EQ(row.size(), 11u);
+            EXPECT_EQ(row[4], "class #1");
+            EXPECT_EQ(row[10], "16");
+        }
+    }
+    EXPECT_TRUE(found);
+    const std::string line = header(schema);
+    EXPECT_EQ(line.substr(line.size() - 9), ",\"size #\"") << line;
+}
+
+// Infinities go through the store end to end. A store cannot hold NaN (SQLite binds it
+// as NULL), so the "nan" spelling is checked on the formatter directly.
+TEST_F(CsvExportTest, NonFiniteMeasurements) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("m_pinf", std::numeric_limits<double>::infinity(),
+                              MeasurementUnit::Pixels);
+    record.measurements().set("m_ninf", -std::numeric_limits<double>::infinity(),
+                              MeasurementUnit::Pixels);
+    commitOne(store(), "more", record);
+
+    ColumnSchema schema;
+    schema.includeLayer(false).includeStage(false).includeLabel(false).includeBoundingBox(false)
+        .measurement("m_pinf").measurement("m_ninf");
+    const std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    bool found = false;
+    for (const Row& row : rows) {
+        if (row.size() == 4 && row[2] == "inf") {
+            found = true;
+            EXPECT_EQ(row[3], "-inf");
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(CsvFormat, NonFiniteValues) {
+    std::string out;
+    detail::appendDouble(out, std::numeric_limits<double>::quiet_NaN());
+    EXPECT_EQ(out, "nan");
+    out.clear();
+    detail::appendDouble(out, -std::numeric_limits<double>::quiet_NaN());
+    EXPECT_EQ(out, "nan");
+    out.clear();
+    detail::appendDouble(out, std::numeric_limits<double>::infinity());
+    EXPECT_EQ(out, "inf");
+    out.clear();
+    detail::appendDouble(out, -std::numeric_limits<double>::infinity());
+    EXPECT_EQ(out, "-inf");
+    out.clear();
+    detail::appendDouble(out, 0.1);
+    EXPECT_EQ(out, "0.10000000000000001");
+}
+
+TEST_F(CsvExportTest, FixedColumnNamedMeasurementIsSkipped) {
+    ObjectRecord record;
+    record.setLayer(cells);
+    record.setGeometry(square(300, 0, 4));
+    record.measurements().set("labels", 1.0, MeasurementUnit::Dimensionless);
+    record.measurements().set("layer_id", 2.0, MeasurementUnit::Dimensionless);
+    record.measurements().set("parent_id", 3.0, MeasurementUnit::Dimensionless);
+    commitOne(store(), "more", record);
+
+    ColumnSchema schema;
+    schema.allMeasurements();
+    const std::vector<Row> rows = parseCsv(exportAll(store(), out, schema));
+    ASSERT_FALSE(rows.empty());
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "layer", "stage", "labels",
+                            "labels_local", "bbox_x", "bbox_y", "bbox_width", "bbox_height",
+                            "area.um2", "perimeter"}));
 }

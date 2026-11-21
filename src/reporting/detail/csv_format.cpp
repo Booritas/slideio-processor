@@ -6,6 +6,7 @@
 #if __has_include(<charconv>)
 #include <charconv>
 #endif
+#include <cmath>
 #include <locale>
 #include <sstream>
 
@@ -37,7 +38,8 @@ void appendOneLine(std::string& out, const char* text) {
 void appendField(std::string& line, const std::string& field, char delimiter) {
     bool quote = false;
     for (const char c : field) {
-        if (c == delimiter || c == '"' || c == '\r' || c == '\n') {
+        // '#' too: pandas.read_csv(comment='#') cuts a line at an unquoted '#'.
+        if (c == delimiter || c == '"' || c == '\r' || c == '\n' || c == '#') {
             quote = true;
             break;
         }
@@ -55,6 +57,16 @@ void appendField(std::string& line, const std::string& field, char delimiter) {
 }
 
 void appendDouble(std::string& out, double value) {
+    // Non-finite values are spelled explicitly, the same on every platform, in the
+    // forms pandas parses.
+    if (std::isnan(value)) {
+        out += "nan";
+        return;
+    }
+    if (std::isinf(value)) {
+        out += value > 0 ? "inf" : "-inf";
+        return;
+    }
 #if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
     // The standard defines this conversion as printf's "%.17g" in the C locale.
     char buffer[64];

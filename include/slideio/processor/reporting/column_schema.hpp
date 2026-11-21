@@ -173,11 +173,17 @@ public:
      * ".um" or ".um2" is refused. Cells come from the object row's own measurements
      * only: values asserted by later stages (AnnotationStore::assertedMeasurementAt())
      * are not exported yet, so an object whose value was only asserted gets an empty
-     * cell.
-     * @param name The base name; not null, not empty, not ending in ".um" or ".um2".
+     * cell. A name equal to a fixed column name (layer_id, anchor_id, object_id, layer,
+     * stage, labels, labels_local, label, label_local, bbox_x, bbox_y, bbox_width,
+     * bbox_height, geometry_wkt, parent_layer_id, parent_anchor_id, parent_id) is
+     * refused, whether or not that column is included, so a header never holds two
+     * columns of one name.
+     * @param name The base name; not null, not empty, not ending in ".um" or ".um2",
+     * not a fixed column name.
      * @return This schema.
-     * @throws InvalidArgumentError When name is null, empty or a calibrated twin name,
-     * or was already added; the schema is unchanged. Messages carry no names.
+     * @throws InvalidArgumentError When name is null, empty, a calibrated twin name or a
+     * fixed column name, or was already added; the schema is unchanged. Messages carry
+     * no names.
      * @throws std::bad_alloc When memory is exhausted.
      */
     ColumnSchema& measurement(const char* name);
@@ -186,7 +192,8 @@ public:
      * explicit names, in ascending byte order and without duplicates.
      *
      * Store names ending in ".um" or ".um2" are skipped: they are calibrated twins, and
-     * units() decides whether a twin column is written beside its base name. Calling it
+     * units() decides whether a twin column is written beside its base name. Store
+     * names equal to a fixed column name (see measurement()) are skipped too. Calling it
      * twice is the same as once. Asserted measurement names share the store's name
      * list, but asserted values are not exported yet (cells come from the object row's
      * own measurements only), so a name that was only ever asserted gives a column
@@ -214,7 +221,8 @@ public:
      * @brief Writes the comma-separated header line, without a line terminator, for the
      * columns columnCount() counts.
      *
-     * A name containing a comma, a quote, CR or LF is quoted as RFC 4180 does.
+     * A name containing a comma, a quote, CR, LF or '#' is quoted as RFC 4180 does
+     * ('#' because pandas.read_csv(comment='#') cuts a line at an unquoted '#').
      * @param buffer Receives the null-terminated UTF-8 text; null queries the length.
      * @param capacity The buffer size in bytes including the terminator. When too small,
      * the text is truncated and still terminated; when 0, nothing is written.

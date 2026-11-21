@@ -86,5 +86,8 @@ std::vector<ResolvedColumn> fixedColumns(const ColumnSchema::Impl& settings);
 /** True when the name ends in ".um" or ".um2". */
 bool isTwinName(const std::string& name) noexcept;
 
+/** True when the name is one of the fixed column names, under any setting. */
+bool isFixedColumnName(const std::string& name) noexcept;
+
 } // namespace detail
 } // namespace slideio::processor

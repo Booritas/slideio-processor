@@ -22,8 +22,9 @@ class Store;
  * @brief Writes the objects a query selects to a CSV file, one row per object.
  *
  * The file is UTF-8 without a byte-order mark, lines end in LF, and fields follow
- * RFC 4180: a field holding the delimiter, a double quote, CR or LF is quoted, with
- * quotes doubled. Rows come in the query cursor's order.
+ * RFC 4180: a field holding the delimiter, a double quote, CR, LF or '#' is quoted,
+ * with quotes doubled. '#' is quoted because pandas.read_csv(comment='#') cuts a line
+ * at an unquoted '#'. Rows come in the query cursor's order.
  *
  * Unless provenanceHeader(false) is set, the file starts with '#' comment lines that
  * pandas.read_csv(comment='#') skips:
@@ -41,6 +42,12 @@ class Store;
  * written, in particular no export time, so two exports of an unchanged store with the
  * same query and schema are byte-identical (UR-QA-3).
  *
+ * slide_id is the slide path as the store holds it. A path may contain identifiers,
+ * such as an accession number, a medical record number, a patient's name or a user
+ * name, that count as PHI or personal data under HIPAA and GDPR; consumers who share
+ * an export must treat it accordingly. provenanceHeader(false) drops every provenance
+ * line (and with it the provenance UR-RES-11 asks for).
+ *
  * The header line follows, then the rows. Cell contents, per ColumnSchema column:
  * - layer_id, anchor_id: the decimal LayerId value and the decimal packed anchor
  *   (ObjectId::anchorPacked()); object_id: ObjectId::toString().
@@ -57,13 +64,15 @@ class Store;
  * - parent_layer_id, parent_anchor_id or parent_id: the parent through a visible
  *   parent edge; empty for an object without one.
  * - measurements: the value as printf's "%.17g" in the C locale, so it round-trips;
- *   empty when the object lacks it.
+ *   NaN as "nan", +Inf as "inf" and -Inf as "-inf", which pandas parses; empty when
+ *   the object lacks it.
  *
  * The export goes to "<path>.partial", renamed onto path, replacing any file there,
  * only when it completes. A cancelled or failed export removes the partial file and
  * leaves any file already at path untouched.
  * @par Thread-safety
  * ThreadConfined: one thread at a time; the store is used as its own contract allows.
+ * Two writers on the same path share "<path>.partial" and must not run at once.
  * @par Requirements
  * UR-RES-9, UR-RES-11, UR-RES-15, UR-RES-18, UR-SEG-6, UR-QA-3 (SDS 07 section 7.3).
  */

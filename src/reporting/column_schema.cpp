@@ -35,7 +35,8 @@ std::unique_ptr<ColumnSchema::Impl> makeDefault() {
 }
 
 bool needsQuoting(const std::string& s) {
-    return s.find_first_of(",\"\r\n") != std::string::npos;
+    // '#' too: pandas.read_csv(comment='#') cuts a line at an unquoted '#'.
+    return s.find_first_of(",\"\r\n#") != std::string::npos;
 }
 
 } // namespace
@@ -109,6 +110,9 @@ ColumnSchema& ColumnSchema::measurement(const char* name) {
     if (detail::isTwinName(base))
         throw InvalidArgumentError(
             "ColumnSchema::measurement: give the base name; units are chosen by the unit policy");
+    if (detail::isFixedColumnName(base))
+        throw InvalidArgumentError(
+            "ColumnSchema::measurement: the name is that of a fixed column");
     const auto& held = impl_->measurements;
     if (std::find(held.begin(), held.end(), base) != held.end())
         throw InvalidArgumentError("ColumnSchema::measurement: the measurement was already added");
