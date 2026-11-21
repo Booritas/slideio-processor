@@ -114,8 +114,38 @@ SLIDEIO_PROCESSOR_DATA_TEST_EXPORTS void requireDistinctNames(const ResolvedColu
 /** The column name of one stage's asserted measurement: "<stage name>/<name>". */
 std::string assertedColumnName(const std::string& stageName, const std::string& name);
 
-/** One object's visible asserted measurements, keyed by (asserting stage id, name). */
-using AssertedValues = std::map<std::pair<int32_t, std::string>, Measurement>;
+/** A borrowed (asserting stage id, name) key: looks a value up without copying the name. */
+struct AssertedKeyView {
+    int32_t stage;
+    const std::string& name;
+};
+
+/** Orders (stage id, name) keys, owned or borrowed, by stage id, then name bytewise. */
+struct AssertedKeyLess {
+    using is_transparent = void;  ///< Lets find() take an AssertedKeyView.
+    using Key = std::pair<int32_t, std::string>;
+    bool operator()(const Key& a, const Key& b) const noexcept {
+        return a.first != b.first ? a.first < b.first : a.second < b.second;
+    }
+    bool operator()(const Key& a, const AssertedKeyView& b) const noexcept {
+        return a.first != b.stage ? a.first < b.stage : a.second < b.name;
+    }
+    bool operator()(const AssertedKeyView& a, const Key& b) const noexcept {
+        return a.stage != b.first ? a.stage < b.first : a.name < b.second;
+    }
+};
+
+/**
+ * One object's visible asserted measurements, keyed by (asserting stage id, name).
+ * Look a column up with find(AssertedKeyView{stage, name}), which copies nothing.
+ */
+using AssertedValues = std::map<std::pair<int32_t, std::string>, Measurement, AssertedKeyLess>;
+
+/**
+ * The value of an asserted-measurement column in `values`, or null when the object has
+ * none (the column's stage is invalid, or the stage asserted no visible value).
+ */
+const Measurement* findAsserted(const AssertedValues& values, const ResolvedColumn& column);
 
 /**
  * Replaces `out` with the object's visible asserted measurements, read once through

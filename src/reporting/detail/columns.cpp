@@ -209,6 +209,12 @@ void readAssertedValues(Store& store, ObjectId object, AssertedValues& out) {
     }
 }
 
+const Measurement* findAsserted(const AssertedValues& values, const ResolvedColumn& column) {
+    if (!column.stage.isValid()) return nullptr;
+    const auto it = values.find(AssertedKeyView{column.stage.value(), column.measurement});
+    return it == values.end() ? nullptr : &it->second;
+}
+
 void requireDistinctNames(const ResolvedColumns& resolved, const char* who) {
     std::set<std::string> seen;
     for (const ResolvedColumn& column : resolved.columns) {

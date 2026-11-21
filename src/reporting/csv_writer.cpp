@@ -204,8 +204,8 @@ void appendRow(std::string& line, const ObjectRecord& record,
                 assertedRead = true;
                 detail::readAssertedValues(store, id, asserted);
             }
-            const auto it = asserted.find({column.stage.value(), column.measurement});
-            if (it != asserted.end()) detail::appendDouble(cell, it->second.value());
+            if (const Measurement* value = detail::findAsserted(asserted, column))
+                detail::appendDouble(cell, value->value());
             break;
         }
         }

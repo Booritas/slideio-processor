@@ -404,7 +404,7 @@ TEST_F(AnnotationStoreTest, AssertedMeasurementColumnsAreListed) {
     wc->assertMeasurement(ids[0], "area.um2", 2.0, MeasurementUnit::SquareMicrometres);
     wc->assertMeasurement(ids[1], "area", 3.0, MeasurementUnit::SquarePixels);
     wc->flush();
-    // Not complete: the listing ignores visibility.
+    // c stays incomplete: the listing ignores visibility.
     complete(d);
 
     ASSERT_EQ(annotations().assertedMeasurementColumnCount(), 4);
