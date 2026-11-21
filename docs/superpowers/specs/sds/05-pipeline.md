@@ -978,6 +978,17 @@ include. Anchor is one `RasterMask::testLevel0` call, it cannot split an
 object, and it gives the same answer in every worker regardless of which tile
 produced the object, so UR-QA-3's worker-count invariance survives unchanged.
 
+An ROI is tested exactly: in level 0, at the anchor, half-open
+(`x <= anchor.x < x + width`, likewise in y), whatever the analysis level. The
+mask built from an ROI is a skipping aid and what an operation sees through
+`Operation::mask()`, and it is widened to cover both rules: the level mapping
+of the rectangle and every level pixel holding an ROI anchor. At an integer
+scale the second is contained in the first; at a non-integer scale the mask
+grows by at most one level pixel on a side, so an operation that honours its
+advisory mask can see one more edge column or row, never fewer. A polygon or a
+mask source is tested on the level mask, at the level pixel of the anchor, and
+an ROI combined with one of them must pass both.
+
 One consequence worth stating because a test will find it: an object whose
 anchor falls just outside the mask is dropped whole, including the part inside.
 With the fill rule's sub-pixel conservatism and `dilateMask`'s margin

@@ -268,15 +268,37 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     same message); and a float accumulation (a global-context reduction) folds
     over different tile boundaries, so its result, and any objects thresholded
     by it, can differ in the last bits from earlier runs.
-  - **Open follow-up (not fixed): the ROI admission rule at a non-integer level
-    scale is exact only to one level-0 column.** Pre-existing. At a non-integer
-    scale the ROI's anchor test floors the anchor to a level pixel, while the
-    ROI's level mapping rounds outward by `llround`, so the two disagree by up
-    to one level-0 column at the ROI's edges: an anchor on the ROI's first
-    column can be refused, and one just past its far edge admitted. At an
-    integer scale, and at level 0, the rule is exact. The edge-truncation fix
-    above does not change this; "Resolved" there means objects are whole, not
-    that ROI admission is exact at every scale.
+  - **Resolved (ROI restrictions): ROI admission was not exact at levels above
+    0.** The ROI's anchor test floored the anchor to a level pixel and read the
+    level mask, whose edges come from the `llround` level mapping of the
+    rectangle. At a non-integer scale the two disagreed by up to one level-0
+    column or row at the ROI's edges: an anchor on the ROI's first column could
+    be refused and one just past its far edge admitted. At an integer scale
+    above 1 the rule was not exact either, contrary to what this entry said
+    before: an ROI edge inside a level pixel also admitted anchors up to one
+    level pixel outside it. Fixed by the
+    [exact ROI admission plan](superpowers/plans/2026-11-21-roi-exact-admission.md):
+    an ROI is tested in level 0, at the anchor, half-open, in
+    `RestrictionFilter::inRoi`, applied by `admits` (so by the seam merger) and
+    by the tile object filter; the level mask's ROI part is widened to cover
+    every level pixel holding an ROI anchor, so skipping stays sound. Level 0
+    and runs restricted only by a polygon or a mask source are unchanged; the
+    ROI mask an operation sees through `mask()` can be one level pixel wider
+    per side at a non-integer scale (advisory, SDS 05 §5.5). **Effect on stored
+    results (QA/regulatory):** at levels above 0, objects anchored just outside
+    an ROI edge are no longer stored, and objects on its first column or row
+    are no longer dropped, so counts at an ROI's edges can change. Re-run
+    ROI-restricted stages at levels above 0 and record the change in the
+    verification evidence.
+  - **Open follow-up (not fixed): the level pixel of an anchor tested against a
+    polygon or a mask source.** A polygon or a mask source is still tested at
+    `floor(anchor / scale)`, while the level-to-level-0 mapping uses
+    `llround(L * scale)` for pixel corners. At a non-integer scale, roughly half
+    the time that pixel is the one before the level pixel whose corner the
+    anchor is, so a mask-source restriction (the workspace restrict-to-layer
+    path) can test an object's anchor one level pixel to its left or above.
+    This is a core convention question (`RasterMask::testLevel0`, a public
+    header), not an ROI one, and is recorded here for a decision.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

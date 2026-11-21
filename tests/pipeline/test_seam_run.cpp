@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -373,6 +374,73 @@ TEST(SeamRun, RoiEdgeObjectIsNotTruncated) {
             << workers << " workers: an object crossing the edge is stored cut";
         EXPECT_GT(run.onDemand, 0) << workers << " workers: tiles outside the ROI are evaluated for crossing objects";
     }
+}
+
+namespace {
+
+// The objects of an unrestricted single-tile run of `components` at level 1.
+std::vector<ObjectRecord> unrestrictedObjectsAtLevelOne(const std::shared_ptr<slideio::Scene>& scene) {
+    ts::CollectingObjectSink all;
+    PipelineSpec spec = components(false);
+    spec.analysisLevel(1);
+    Pipeline open(scene, config(static_cast<int32_t>(kSide), 1), spec);
+    open.bindLayer("objects", LayerId(3));
+    open.runInto(all, nullptr, CancellationToken());
+    return all.records();
+}
+
+// An ROI run at level 1 (seam merging on, 64-pixel tiles) stores exactly the unrestricted objects
+// whose level-0 anchor lies in the ROI, whole, at 1 and 4 workers.
+void expectRoiAtLevelOneKeepsItsAnchors(int64_t level0Side, int64_t level1Side, const Rect64& roi) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{level0Side, level0Side, 0, 0}, {level1Side, level1Side, 0, 0}},
+                                        {slideio::DataType::DT_Byte}, blobs);
+    const double scale = static_cast<double>(level0Side) / static_cast<double>(level1Side);
+    const std::vector<ObjectRecord> all = unrestrictedObjectsAtLevelOne(scene);
+    const std::vector<ObjectRecord> expected =
+        filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
+
+    // Objects anchored outside the ROI, in a level pixel that holds one of its edge anchors: the
+    // mask sets that pixel, so only the exact test refuses them.
+    const auto levelPixel = [&](int64_t v) { return static_cast<int64_t>(std::floor(static_cast<double>(v) / scale)); };
+    const int64_t px0 = levelPixel(roi.x);
+    const int64_t px1 = levelPixel(roi.x + roi.width - 1);
+    const int64_t py0 = levelPixel(roi.y);
+    const int64_t py1 = levelPixel(roi.y + roi.height - 1);
+    int64_t edgePixelOutside = 0;
+    int64_t crossingSeam = 0;
+    for (const ObjectRecord& r : all) {
+        const Point64 a = r.geometry().anchor();
+        const int64_t lx = levelPixel(a.x);
+        const int64_t ly = levelPixel(a.y);
+        edgePixelOutside += !insideRect(roi, a) && lx >= px0 && lx <= px1 && ly >= py0 && ly <= py1 ? 1 : 0;
+        crossingSeam += insideRect(roi, a) && crossesSeam(r, 64, 0) ? 1 : 0;
+    }
+    ASSERT_GT(edgePixelOutside, 0) << "the fixture should have an object anchored in an edge level pixel, outside the ROI";
+    ASSERT_GT(crossingSeam, 0) << "the fixture should have admitted objects crossing a tile seam";
+    ASSERT_FALSE(expected.empty());
+
+    PipelineSpec spec = components(true);
+    spec.analysisLevel(1).restrictTo(roi);
+    for (const int32_t workers : {1, 4}) {
+        const StoredRun run = runRestrictedBy(scene, spec, workers);
+        EXPECT_EQ(sortedIds(run.records), sortedIds(expected)) << workers << " workers: the same objects are stored";
+        EXPECT_TRUE(sortedKeys(run.records) == sortedKeys(expected)) << workers << " workers: stored whole";
+    }
+}
+
+} // namespace
+
+// Scale 2.4: the ROI's edges lie inside level pixels, so the pixel holding an edge anchor can also
+// hold anchors outside the ROI. The seam-merged store keeps exactly the objects anchored in the ROI.
+TEST(SeamRun, RoiAtLevelOneKeepsExactlyItsAnchors) {
+    expectRoiAtLevelOneKeepsItsAnchors(600, 250, Rect64{253, 188, 150, 190});
+}
+
+// Scale 2: an ROI edge inside a level pixel; anchors one level-0 column or row outside are
+// refused, though they fall in the same level pixel.
+TEST(SeamRun, RoiAtLevelOneOfAnIntegerScaleKeepsExactlyItsAnchors) {
+    expectRoiAtLevelOneKeepsItsAnchors(512, 256, Rect64{211, 157, 200, 160});
 }
 
 // A polygon whose bounding-box edges cut blobs: the objects stored are those of
