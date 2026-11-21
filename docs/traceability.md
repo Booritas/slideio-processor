@@ -443,7 +443,7 @@ IDs are those the tests under `tests/workspace/` declare. The module so far hold
 
 ## reporting
 
-IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7); reporting plan B adds `GeoJsonExporter` (SDS 07 §7.5). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
+IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7); reporting plan B adds `GeoJsonExporter` (SDS 07 §7.5); reporting plan C adds `RasterTiffWriter` (SDS 07 §7.6). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
 
 | Requirement | Test file | Tests |
 |---|---|---|
@@ -465,6 +465,8 @@ IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds
 | UR-RES-18 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.WritesAFeatureCollection, GeoJsonExport.ProducerOnlyLabels, GeoJsonExport.NamesNeedingEscapesRoundTrip, GeoJsonExport.LaterStageMeasurementsAreKeys, GeoJsonExport.InvisibleAssertionHasNoKey |
 | UR-SEG-6 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.DefaultSchemaKeepsEveryMeasurement, GeoJsonExport.SchemaSelectsMeasurementsAndUnits, GeoJsonExport.NonFiniteMeasurementIsOmitted, GeoJsonExport.LaterStageMeasurementsAreKeys, GeoJsonExport.FixedColumnNamedMeasurementIsKept, GeoJsonExport.RowTwinWithoutBaseIsKept |
 | UR-QA-3 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.ExportIsDeterministic |
+| UR-RES-7 | `tests/reporting/test_raster_tiff_writer.cpp` | RasterTiffWriterTest.WritesTheRegionAtTheScale, RasterTiffWriterTest.CompressionsRoundTrip, RasterTiffWriterTest.ResolutionWritesPhysicalSize, RasterTiffWriterTest.CancelledWriteLeavesNoFile, RasterTiffWriterTest.CancelledWriteKeepsAnExistingFile, RasterTiffWriterTest.ReportsProgressPerTile, RasterTiffWriterTest.RefusesBadArguments, RasterTiffWriterTest.RefusesTypesTheOmeLayoutCannotHold, RasterTiffWriterTest.AFailingSourceLeavesNoFile, RasterTiffWriterTest.WriteIsDeterministic |
+| UR-QA-3 | `tests/reporting/test_raster_tiff_writer.cpp` | RasterTiffWriterTest.WriteIsDeterministic |
 
 ## masks
 

@@ -8,6 +8,7 @@ add_library(slideio-processor-reporting OBJECT
     detail/columns.cpp
     detail/csv_format.cpp
     detail/wkt.cpp
+    raster_tiff_writer.cpp
 )
 set_target_properties(slideio-processor-reporting PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(slideio-processor-reporting PRIVATE SLIDEIO_PROCESSOR_DATA_API)

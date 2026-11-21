@@ -5,10 +5,11 @@ add_executable(slideio_processor_reporting_tests
     test_column_schema.cpp
     test_csv_writer.cpp
     test_geojson_exporter.cpp
+    test_raster_tiff_writer.cpp
 )
 # store_fixture.hpp (header-only) comes from tests/storage through ${PROJECT_SOURCE_DIR}/tests.
 # rapidjson (header-only) parses the GeoJSON exports in test_geojson_exporter.cpp.
-target_link_libraries(slideio_processor_reporting_tests PRIVATE slideio-processor-data rapidjson GTest::gtest_main)
+target_link_libraries(slideio_processor_reporting_tests PRIVATE slideio-processor-data rapidjson TIFF::TIFF GTest::gtest_main)
 # test_column_schema.cpp reaches detail::resolveColumns, exported only with test seams on.
 target_include_directories(slideio_processor_reporting_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
