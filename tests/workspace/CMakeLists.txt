@@ -20,7 +20,7 @@ add_executable(slideio_processor_workspace_tests
     test_workspace.cpp
 )
 target_link_libraries(slideio_processor_workspace_tests PRIVATE
-    slideio-processor-engine slideio_processor_pipeline_test_support TIFF::TIFF rapidjson GTest::gtest_main)
+    slideio-processor-engine slideio_processor_pipeline_test_support SQLite::SQLite3 TIFF::TIFF rapidjson GTest::gtest_main)
 target_include_directories(slideio_processor_workspace_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)

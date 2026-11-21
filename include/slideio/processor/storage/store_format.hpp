@@ -28,9 +28,10 @@ namespace slideio::processor {
  * directory), a store written by version 1 that must still open read-only, unchanged, and
  * is the input the migration is tested on. The v1 fixtures are never regenerated: this
  * library no longer writes version 1. The v2 fixtures are written once by their generator
- * and never regenerated either; any schema change, additive ones included, needs version 3
- * and a migration. A SQLite upgrade may change the three rtree shadow-table `sql` lines of
- * the v2 snapshot; regenerate that snapshot then, deliberately, and review the diff.
+ * and never regenerated, except the snapshot's rtree shadow-table lines after a SQLite
+ * upgrade; any schema change, additive ones included, needs version 3 and a migration. A
+ * SQLite upgrade may change the three rtree shadow-table `sql` lines of the v2 snapshot;
+ * regenerate that snapshot then, deliberately, and review the diff.
  * @return The format version, currently 2.
  * @par Thread-safety
  * ThreadSafe.

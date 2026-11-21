@@ -152,16 +152,19 @@ public:
      * edges U to S whose source U changed since S: U is stale; or U is Running; or U is
      * Failed after having completed once (a re-run failed, whenever it happened: the store
      * keeps no time for it); or U is Complete and completed after S did
-     * (StageStateReader::completedAtUnixMs), which needs S to have completed. A Pending
-     * source, or a Failed one that never completed, did not change and is never a cause
-     * by itself. One entry per edge, so a source joined to S by several reasons appears
-     * once per reason, as in the forward answer. When no edge qualifies, the stage is its
-     * own single cause, reported as Reconfigured. For a stage that completed it was
-     * redeclared or marked stale directly. For one that never completed the store cannot
-     * tell that from being marked by a re-run of a source that has since completed (it
-     * keeps no time for a stale flag), so no source is named and the detail says either
-     * may have happened (see causeReasonDetailAt()). The causes come from the stored
-     * flags, status and completion times, so they are the same after a reopen. They are
+     * (StageStateReader::completedAtUnixMs); or, for a stage that never completed, U is
+     * Complete and completed at or after S's stale flag was set
+     * (StageStateReader::staleSinceUnixMs, when it is not 0): a re-run of U marks its
+     * dependents stale and then completes. A Pending source, or a Failed one that never
+     * completed, did not change and is never a cause by itself. One entry per edge, so a
+     * source joined to S by several reasons appears once per reason, as in the forward
+     * answer. When no edge qualifies, the stage is its own single cause, reported as
+     * Reconfigured: it was redeclared or marked stale directly. Only a stage that never
+     * completed and whose flag has no time (set before the store was upgraded to format
+     * version 2) cannot be told that from being marked by a re-run of a source that has
+     * since completed, so no source is named and the detail says either may have happened
+     * (see causeReasonDetailAt()). The causes come from the stored flags, stale-since
+     * time, status and completion times, so they are the same after a reopen. They are
      * ordered by source stage, then reason.
      * @param stage The stage.
      * @return The number of causes; 0 for a stage that is not stale.
@@ -206,8 +209,9 @@ public:
     /**
      * @brief Returns the detail of one cause: the edge's detail (see reasonDetailAt()), or
      * for the stage itself `the stage was redeclared or marked stale directly` when it has
-     * completed, and `the stage has not completed: it was redeclared or marked stale
-     * directly, or a source stage re-ran` when it never has.
+     * completed or its stale flag has a time, and `the stage has not completed: it was
+     * redeclared or marked stale directly, or a source stage re-ran` when it never has and
+     * the flag has none.
      * @param stage The stale stage.
      * @param index Zero-based position, below causeCount().
      * @return A null-terminated UTF-8 string; stays valid as the class describes.

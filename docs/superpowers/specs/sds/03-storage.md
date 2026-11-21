@@ -19,10 +19,10 @@ the third adds rasters (3.8). `Store` declares only the accessors whose classes
 exist, so `edges()` and `annotations()` arrived with the second part and
 `rasters()` with the third.
 
-**The module is complete, and format v1 is frozen.** Each part added its tables
+**The module is complete; format v1 is frozen and migrated, and v2 is current.** Each part added its tables
 to the same creation DDL and `format_version` stayed 1 throughout; the third part
-closed it. Any schema change from here on, additive ones included, needs
-`format_version` 2 and a migration. Two checked-in fixtures under
+closed it. Version 1 has been frozen since; the next schema change after version 2,
+additive ones included, needs `format_version` 3 and a migration. Two checked-in fixtures under
 `tests/storage/data/` hold v1 (ruling S53). `store-v1.schema.sql` is a snapshot of
 every `sqlite_master` row and of the `meta` keys, which the v1 golden store must
 match. `store-v1.golden.store`, with its `store-v1.golden.store-rasters/`
@@ -1775,7 +1775,10 @@ Members taking a stage throw `InvalidArgumentError` for an unknown one.
 **`staleSinceUnixMs` is when the stage's stale flag was last set** (3.10a,
 `setStale`). It is 0 for a stage that is not stale, for a flag set before the
 store was upgraded to version 2, and for every stage of a version 1 store opened
-`ReadOnly`, which has no such column (3.12, "Version 2").
+`ReadOnly`, which has no such column (3.12, "Version 2"). A handle that opened a
+version 1 store `ReadOnly` keeps reporting 0 (and `formatVersion` 1) even after
+another process migrates the file; the stages it sees as stale get the cautious
+cause (04, 4.5, "The reverse answer").
 
 **`configuration` returns a pointer that stays valid while the reader lives**,
 and always holds the value that call read: a later change is seen by a later

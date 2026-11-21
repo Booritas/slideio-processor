@@ -1304,7 +1304,7 @@ refresh; the pool grows only by details not seen before.
 
 **The reverse answer (plan C, decision 3).** `causeCount`, `causeAt`,
 `causeReasonAt` and `causeReasonDetailAt` answer from durable data alone (the
-stored stale flag, status and `completedAtUnixMs`), so they are identical after
+stored stale flag, its `staleSinceUnixMs`, status and `completedAtUnixMs`), so they are identical after
 a reopen. A stage that is not stale has no causes. For a stale stage S the
 causes are its incoming edges U → S where U has changed since S:
 
@@ -1314,8 +1314,13 @@ causes are its incoming edges U → S where U has changed since S:
   re-run of U failed, replacing the output S was built against. The store
   keeps no time for a run that did not complete, so this counts whenever it
   happened; or
-- U is `Complete` and `completedAtUnixMs(U) > completedAtUnixMs(S)`, which
-  needs S to have completed.
+- U is `Complete` and `completedAtUnixMs(U) > completedAtUnixMs(S)`, when S
+  has completed; or
+- U is `Complete`, S never completed, S's stale flag has a time
+  (`staleSinceUnixMs(S) != 0`) and `completedAtUnixMs(U) >= staleSinceUnixMs(S)`:
+  a re-run of U marks its dependents stale and then completes, so a U that
+  completed at or after the flag was set is the likely marker. The comparison is
+  `>=` because both can fall in one millisecond, and naming U then loses nothing.
 
 A `Pending` source never ran, and a `Failed` one that never completed never
 produced output, so neither is a cause by itself; this matters for
@@ -1327,20 +1332,22 @@ ordered by ascending U, then by reason. When no edge qualifies, S is its own
 single cause with reason `Reconfigured`. `None` is never reported. Causes need
 no storage of their own. They take the same errors as the forward answer.
 
-The detail of that self cause depends on whether S ever completed. A stage
-that completed and has no changed source was redeclared or marked stale
-directly: the detail is `the stage was redeclared or marked stale directly`. A
-stage that never completed has no completion time to compare a `Complete`
-source with, and the store keeps no time for when a stale flag was set, so two
-histories look the same from durable data: S redeclared after U completed, and
-S marked by a re-run of U that has since completed. Blaming U would be wrong in
-the first; not blaming it is wrong in the second. The answer names no source,
-and the detail says only what is known: `the stage has not completed: it was
-redeclared or marked stale directly, or a source stage re-ran` (a stage with an
-edge to it, `LayerOrdering` included). While U
-is still `Running`, or stale, it is named. Telling the two apart exactly needs
-a durable record of when, or by what, a stale flag was set, which storage does
-not keep (PR #17 review).
+The detail of that self cause depends on what is known of S. A stage that
+completed, or whose stale flag has a time, and has no changed source was
+redeclared or marked stale directly: the detail is `the stage was redeclared or
+marked stale directly`. Only a stage that never completed and whose flag has no
+time (`staleSinceUnixMs(S) == 0`: a flag set before the store was upgraded to
+format version 2, or one seen through a handle that opened a version 1 store
+`ReadOnly`) has two histories that look the same from durable data: S
+redeclared after U completed, and S marked by a re-run of U that has since
+completed. It names no source, and the detail says only what is known: `the
+stage has not completed: it was redeclared or marked stale directly, or a
+source stage re-ran`. While U is still `Running`, or stale, it is named. The
+store records when a stale flag was set (03, 3.10, 3.10a), so for any flag set
+by version 2 the two histories are told apart exactly: S redeclared after U
+completed is its own cause, and S marked by U's re-run names U. The causes cache
+key is unchanged: `setStale` already advances the store's
+`revision()`.
 
 **Cached answers (PR #17 review).** Iterating an answer by index would otherwise
 recompute it on every call. The forward answer of a stage is computed once per

@@ -1,4 +1,5 @@
 // Requirements: UR-RES-12, UR-BLD-5, UR-OBS-1, UR-RES-11
+#include "common/raw_sqlite.hpp"
 #include "storage/store_fixture.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
@@ -23,20 +24,8 @@ using namespace slideio::processor;
 
 namespace {
 
-// Runs one statement on the file through a raw sqlite3 connection.
-// Rule (helper_process.hpp): this and rawQueryText use the test's own SQLite copy, so call
-// them only while no Store has the file open.
-void rawExec(const std::string& path, const char* sql) {
-    sqlite3* db = nullptr;
-    ASSERT_EQ(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
-    char* error = nullptr;
-    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &error);
-    EXPECT_EQ(rc, SQLITE_OK) << (error != nullptr ? error : "");
-    sqlite3_free(error);
-    sqlite3_close(db);
-}
-
 // Reads the first column of the first row of a query, as text; "" when there is no row.
+// Like rawExec (common/raw_sqlite.hpp), call it only while no Store has the file open.
 std::string rawQueryText(const std::string& path, const char* sql) {
     sqlite3* db = nullptr;
     std::string result;

@@ -268,6 +268,21 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     same message); and a float accumulation (a global-context reduction) folds
     over different tile boundaries, so its result, and any objects thresholded
     by it, can differ in the last bits from earlier runs.
+  - **Resolved (durable stale-flag provenance): a stage that never completed
+    could not be told redeclared from marked by a source's re-run.** The store
+    now records when each stale flag was set (`StageStateReader::staleSinceUnixMs`,
+    [stale-since plan](superpowers/plans/2026-11-21-stale-since.md)), and
+    `StalenessGraph`'s causes name the source of a never-completed stage from it
+    (SDS 04 §4.5, "The reverse answer"). **Effect on stored workspaces
+    (QA/regulatory):** store format version 2. A version 1 store is upgraded in
+    place on its first writable open by this library; older library versions then
+    refuse it, and a read-only open leaves it at version 1. Causes reported for
+    stages that never completed change from the ambiguous detail ("the stage has
+    not completed: it was redeclared or marked stale directly, or a source stage
+    re-ran") to a named source or the plain "redeclared" detail, except for flags
+    set before the upgrade, which keep the ambiguous detail. Archive a copy of a
+    version 1 store before opening it writable if it must stay readable by an
+    older release.
   - **Resolved (ROI restrictions): ROI admission was not exact at levels above
     0.** (The widened ROI mask described below is superseded in part by the
     anchor-level-pixel entry after it: the ROI mask is `mapToLevel(roi)` again.) The ROI's anchor test floored the anchor to a level pixel and read the

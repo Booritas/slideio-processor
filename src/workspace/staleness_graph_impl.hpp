@@ -114,6 +114,7 @@ private:
         Answer result;
         if (!states.isStale(stage)) return result;
         const int64_t completed = states.completedAtUnixMs(stage);
+        const int64_t since = states.staleSinceUnixMs(stage);
         // Each source is read once, though several reasons can join it to the stage.
         bool read = false;
         int32_t lastSource = 0;
@@ -122,38 +123,41 @@ private:
             if (!read || edge->from != lastSource) {
                 read = true;
                 lastSource = edge->from;
-                lastChanged = changedSince(states, StageId(edge->from), completed);
+                lastChanged = changedSince(states, StageId(edge->from), completed, since);
             }
             if (lastChanged) result.push_back(edge);
         }
-        if (result.empty()) result.push_back(&selfCause(completed != 0));
+        if (result.empty()) result.push_back(&selfCause(completed != 0 || since != 0));
         return result;
     }
 
-    // The stage as its own cause. A stage that completed and has no changed source was
-    // redeclared or marked stale directly. One that never completed has no completion to
-    // compare its sources with, and the store keeps no time for when its flag was set, so
-    // it cannot be told whether it was redeclared or marked by a source's re-run that has
-    // since completed: the detail says only what is known.
-    static const detail::StaleEdge& selfCause(bool completed) {
-        static const detail::StaleEdge kCompleted{0, 0, StalenessReason::Reconfigured,
-                                                  "the stage was redeclared or marked stale directly"};
-        static const detail::StaleEdge kNeverCompleted{
+    // The stage as its own cause. With no changed source, a stage that completed, or whose
+    // stale flag has a time, was redeclared or marked stale directly. Only a stage that
+    // never completed and whose flag was set before the store recorded when (since == 0,
+    // a flag from before version 2) cannot be told apart from one marked by a source's
+    // re-run that has since completed: the detail says only what is known.
+    static const detail::StaleEdge& selfCause(bool known) {
+        static const detail::StaleEdge kKnown{0, 0, StalenessReason::Reconfigured,
+                                              "the stage was redeclared or marked stale directly"};
+        static const detail::StaleEdge kUnknown{
             0, 0, StalenessReason::Reconfigured,
             "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
             "re-ran"};
-        return completed ? kCompleted : kNeverCompleted;
+        return known ? kKnown : kUnknown;
     }
 
     // Whether a source changed since the stage last completed (`completed`, 0 when it
-    // never did). A stale source changed: marking it is what reaches the stage. A Running
-    // source is replacing its output now. A Failed one changed only if it had completed
-    // before: a re-run failed, replacing the output the stage was built against (the store
-    // keeps no time for it, so it counts whenever it happened); a first run that failed
-    // never produced output. A Pending source never ran. A Complete source changed when it
-    // completed after the stage did, which needs the stage to have completed: a stage that
-    // never completed has no time to compare with, and is its own cause (selfCause()).
-    static bool changedSince(const StageStateReader& states, StageId source, int64_t completed) {
+    // never did) or, for a stage that never completed, since its stale flag was set
+    // (`since`, 0 when unknown). A stale source changed: marking it is what reaches the
+    // stage. A Running source is replacing its output now. A Failed one changed only if it
+    // had completed before: a re-run failed, replacing the output the stage was built
+    // against (the store keeps no time for it, so it counts whenever it happened); a first
+    // run that failed never produced output. A Pending source never ran. A Complete source
+    // changed when it completed after the stage did. A stage that never completed compares
+    // with its stale-since time instead, with >=: a source's re-run marks its dependents
+    // and then completes, possibly in the same millisecond, and naming the source is the
+    // likelier history. With neither time the stage is its own cause (selfCause()).
+    static bool changedSince(const StageStateReader& states, StageId source, int64_t completed, int64_t since) {
         if (states.isStale(source)) return true;
         switch (states.status(source)) {
         case StageStatus::Running:
@@ -161,7 +165,8 @@ private:
         case StageStatus::Failed:
             return states.completedAtUnixMs(source) != 0;
         case StageStatus::Complete:
-            return completed != 0 && states.completedAtUnixMs(source) > completed;
+            if (completed != 0) return states.completedAtUnixMs(source) > completed;
+            return since != 0 && states.completedAtUnixMs(source) >= since;
         default:
             return false;
         }

@@ -6,6 +6,7 @@
 // writes the v2 fixtures; never run it once they are checked in. Only a SQLite upgrade may
 // change the snapshot, and only its three rtree shadow-table sql lines (object_rtree_node,
 // _parent and _rowid); regenerate the snapshot then, deliberately.
+#include "common/raw_sqlite.hpp"
 #include "storage/store_format_golden.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -33,17 +34,6 @@ constexpr const char* kFrozenMessage =
     "store format v2 is frozen: a schema change needs format_version 3 and a migration (SDS 03 §3.12)";
 constexpr const char* kMigratedMessage =
     "a migrated v1 store differs from a fresh v2 store: the migration and the v2 DDL disagree (SDS 03 §3.12)";
-
-// Runs `sql` on the database at `path` through a connection of its own; fails the test on error.
-void rawExec(const std::filesystem::path& path, const char* sql) {
-    sqlite3* db = nullptr;
-    ASSERT_EQ(sqlite3_open_v2(path.u8string().c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
-    char* error = nullptr;
-    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &error);
-    EXPECT_EQ(rc, SQLITE_OK) << (error != nullptr ? error : "");
-    sqlite3_free(error);
-    sqlite3_close(db);
-}
 
 }  // namespace
 

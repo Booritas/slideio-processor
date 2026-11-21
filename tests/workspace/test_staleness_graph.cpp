@@ -1,4 +1,5 @@
 // Requirements: UR-STG-8, UR-STG-11, UR-STG-12
+#include "common/raw_sqlite.hpp"
 #include "workspace/support/test_slide.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
@@ -472,6 +473,7 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
     const StageId cells = f.stages().declare(c);
     complete(f, background);
     ASSERT_EQ(f.stages().completedAtUnixMs(cells), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
     StageDefinition changed("cells");
     changed.readsLayer(f.tissue).writesLayer(f.cells).writesLayer(f.labels);
@@ -481,9 +483,7 @@ TEST(StalenessGraph, NeverCompletedStageIsReconfiguredNotItsCompleteUpstream) {
     ASSERT_EQ(causes.size(), 1u);
     EXPECT_EQ(causes[0].stage, cells);
     EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
-    EXPECT_EQ(causes[0].detail,
-              "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
-              "re-ran");
+    EXPECT_EQ(causes[0].detail, "the stage was redeclared or marked stale directly");
 
     // A stale source is still a cause of a stage that never completed: marking it stale
     // is what marked the stage.
@@ -524,30 +524,82 @@ TEST(StalenessGraph, SourceThatNeverProducedOutputIsNotACauseUnlessRunning) {
 }
 
 // A stage that never completed, marked stale by a re-run of its source that has since
-// completed, cannot be told from one redeclared after the source completed: the store
-// keeps no time for a stale flag. It names no source, and its detail says either may have
-// happened (PR #17 review, I-1). While the re-run is under way, the source is named.
-TEST(StalenessGraph, NeverCompletedStageMarkedByAReRunSaysSo) {
+// completed, names the source: its stale flag has a time, and the source completed after
+// it (stale-since decision 6). While the re-run is under way, the source is named too.
+TEST(StalenessGraph, NeverCompletedStageMarkedByASourceReRunNamesTheSource) {
     Fixture f;
-    const StageId background = f.stages().declare(writerOf("background", f.tissue));
-    StageDefinition c("cells");
-    c.readsLayer(f.tissue).writesLayer(f.cells);
-    const StageId cells = f.stages().declare(c);
-    complete(f, background);
+    const StageId u = f.stages().declare(writerOf("u", f.tissue));
+    // s writes a layer beside tissue, so u reaches it only by LayerRead.
+    StageDefinition c("s");
+    c.readsLayer(f.tissue).writesLayer(f.labels);
+    const StageId s = f.stages().declare(c);
+    complete(f, u);
 
-    // StageRunner's re-run of background: its dependents go stale, it runs, it completes.
-    f.stages().markAffectedStale(background);
-    f.workspace->store()->stageStateWriter().setStatus(background, StageStatus::Running);
-    ASSERT_TRUE(f.stages().isStale(cells));
-    std::vector<Cause> causes = causesOf(f.stages(), cells);
+    // StageRunner's re-run of u: its dependents go stale, it runs, it completes.
+    f.stages().markAffectedStale(u);
+    f.workspace->store()->stageStateWriter().setStatus(u, StageStatus::Running);
+    ASSERT_TRUE(f.stages().isStale(s));
+    std::vector<Cause> causes = causesOf(f.stages(), s);
     ASSERT_FALSE(causes.empty());
-    EXPECT_EQ(causes[0].stage, background);
+    EXPECT_EQ(causes[0].stage, u);
     EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
 
-    complete(f, background);
-    causes = causesOf(f.stages(), cells);
+    complete(f, u);
+    ASSERT_EQ(f.stages().completedAtUnixMs(s), 0);
+    causes = causesOf(f.stages(), s);
     ASSERT_EQ(causes.size(), 1u);
-    EXPECT_EQ(causes[0].stage, cells);
+    EXPECT_EQ(f.stages().staleness().causeCount(s), 1);
+    EXPECT_EQ(f.stages().staleness().causeAt(s, 0), u);
+    EXPECT_EQ(causes[0].reason, StalenessReason::LayerRead);
+    EXPECT_EQ(causes[0].detail, "reads layer \"tissue\" written by stage \"u\"");
+}
+
+// Redeclared after the source completed, a stage that never completed is its own cause,
+// and its detail is the plain one: its flag has a time, which the source predates.
+TEST(StalenessGraph, NeverCompletedStageRedeclaredAfterTheSourceCompletedIsItsOwnCause) {
+    Fixture f;
+    const StageId u = f.stages().declare(writerOf("u", f.tissue));
+    StageDefinition c("s");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId s = f.stages().declare(c);
+    complete(f, u);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    StageDefinition changed("s");
+    changed.readsLayer(f.tissue).writesLayer(f.cells).writesLayer(f.labels);
+    ASSERT_EQ(f.stages().declare(changed), s);
+    ASSERT_TRUE(f.stages().isStale(s));
+    ASSERT_EQ(f.stages().completedAtUnixMs(s), 0);
+    const std::vector<Cause> causes = causesOf(f.stages(), s);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(f.stages().staleness().causeCount(s), 1);
+    EXPECT_EQ(f.stages().staleness().causeAt(s, 0), s);
+    EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
+    EXPECT_EQ(causes[0].detail, "the stage was redeclared or marked stale directly");
+}
+
+// A flag set before the store was upgraded has no time (stale_since_ms 0): the cautious
+// detail stays, and no source is named.
+TEST(StalenessGraph, StaleSinceUnknownKeepsTheCautiousDetail) {
+    Fixture f;
+    const StageId u = f.stages().declare(writerOf("u", f.tissue));
+    StageDefinition c("s");
+    c.readsLayer(f.tissue).writesLayer(f.cells);
+    const StageId s = f.stages().declare(c);
+    complete(f, u);
+    f.stages().markStale(s);
+    ASSERT_TRUE(f.stages().isStale(s));
+
+    f.workspace->close();
+    rawExec(fs::path(f.path()) / "workspace.store",
+            ("UPDATE stages SET stale_since_ms = 0 WHERE id = " + std::to_string(s.value())).c_str());
+    f.workspace = Workspace::open(f.path().c_str(), Configuration::defaults());
+
+    ASSERT_TRUE(f.stages().isStale(s));
+    ASSERT_EQ(f.stages().completedAtUnixMs(s), 0);
+    const std::vector<Cause> causes = causesOf(f.stages(), s);
+    ASSERT_EQ(causes.size(), 1u);
+    EXPECT_EQ(causes[0].stage, s);
     EXPECT_EQ(causes[0].reason, StalenessReason::Reconfigured);
     EXPECT_EQ(causes[0].detail,
               "the stage has not completed: it was redeclared or marked stale directly, or a source stage "
