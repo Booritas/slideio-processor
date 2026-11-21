@@ -26,11 +26,22 @@ std::string schemaDump(const std::filesystem::path& path);
 // The schema dump of a fresh CreateNew store.
 std::string freshSchemaDump();
 
-// Compares `actual` with the snapshot `snapshotFile` in dataDir(), ignoring carriage returns.
-// On a difference, writes `actual` to `actualFile` in buildDir() and fails with `frozenMessage`
+// Which lines of a schema dump a comparison covers.
+enum class SchemaLines {
+    All,
+    // Every line but the sqlite_master rows of the three rtree shadow tables
+    // (object_rtree_node, _parent and _rowid), whose sql is written by the SQLite that
+    // created the store: a migrated store keeps its creator's, which a later SQLite may
+    // change in a fresh store's snapshot.
+    WithoutRtreeShadowTables
+};
+
+// Compares `actual` with the snapshot `snapshotFile` in dataDir(), ignoring carriage returns
+// and, with SchemaLines::WithoutRtreeShadowTables, the rtree shadow-table rows of both. On a
+// difference, writes `actual` to `actualFile` in buildDir() and fails with `frozenMessage`
 // and both paths.
 void expectSchemaMatchesSnapshot(const std::string& actual, const char* snapshotFile, const char* actualFile,
-                                 const char* frozenMessage);
+                                 const char* frozenMessage, SchemaLines lines = SchemaLines::All);
 
 // Copies a store file and its -rasters directory to `to`.
 void copyStore(const std::filesystem::path& from, const std::filesystem::path& to);

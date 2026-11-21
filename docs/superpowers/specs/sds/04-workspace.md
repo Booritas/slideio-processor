@@ -1343,9 +1343,12 @@ redeclared after U completed, and S marked by a re-run of U that has since
 completed. It names no source, and the detail says only what is known: `the
 stage has not completed: it was redeclared or marked stale directly, or a
 source stage re-ran`. While U is still `Running`, or stale, it is named. The
-store records when a stale flag was set (03, 3.10, 3.10a), so for any flag set
-by version 2 the two histories are told apart exactly: S redeclared after U
-completed is its own cause, and S marked by U's re-run names U. The causes cache
+store records when a stale flag was set (03, 3.10, 3.10a), so for a flag set
+under version 2, S redeclared after U completed (in an earlier millisecond) is
+its own cause, and S marked by a re-run of U that has since completed names U. A
+redeclare in the same millisecond as U's completion reads as U's re-run, and a
+flag already set keeps its first time, so U is named if it completed at or after
+that time. The causes cache
 key is unchanged: `setStale` already advances the store's
 `revision()`.
 

@@ -71,6 +71,25 @@ std::string withoutCarriageReturns(std::string text) {
     return text;
 }
 
+// `dump` without the sqlite_master rows of the three rtree shadow tables. Each is one line:
+// their sql has no line breaks.
+std::string withoutRtreeShadowTables(const std::string& dump) {
+    std::string kept;
+    size_t start = 0;
+    while (start < dump.size()) {
+        size_t end = dump.find('\n', start);
+        end = end == std::string::npos ? dump.size() : end + 1;
+        const std::string line = dump.substr(start, end - start);
+        bool shadow = false;
+        for (const char* table : {"object_rtree_node", "object_rtree_parent", "object_rtree_rowid"}) {
+            shadow = shadow || line.rfind(std::string("table|") + table + "|", 0) == 0;
+        }
+        if (!shadow) kept += line;
+        start = end;
+    }
+    return kept;
+}
+
 // Looks a name up in a registry that answers find(name, out), failing the test when absent.
 template <class Registry, class Id>
 Id mustFind(const Registry& registry, const char* name) {
@@ -130,11 +149,14 @@ std::string freshSchemaDump() {
 }
 
 void expectSchemaMatchesSnapshot(const std::string& actual, const char* snapshotFile, const char* actualFile,
-                                 const char* frozenMessage) {
+                                 const char* frozenMessage, SchemaLines lines) {
     const std::filesystem::path snapshot = dataDir() / snapshotFile;
     const std::string expected = withoutCarriageReturns(readFile(snapshot));
     ASSERT_FALSE(expected.empty()) << "no snapshot at '" << snapshot.u8string() << "'";
-    if (actual != expected) {
+    const auto covered = [lines](const std::string& dump) {
+        return lines == SchemaLines::All ? dump : withoutRtreeShadowTables(dump);
+    };
+    if (covered(actual) != covered(expected)) {
         const std::filesystem::path written = buildDir() / actualFile;
         writeFile(written, actual);
         FAIL() << frozenMessage << "\n  snapshot: " << snapshot.u8string() << "\n  actual:   " << written.u8string();

@@ -40,8 +40,11 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
 
 // Upgrades a version 1 store to version 2: adds stages.stale_since_ms and sets
 // meta.format_version to 2. Runs inside the caller's write transaction on `db`, which
-// must be durable: the caller commits it with synchronous=FULL. Throws IoError.
-void migrateSchemaFromVersion1(sqlite3* db);
+// must be durable: the caller commits it with synchronous=FULL. Reads the version again
+// first, inside the transaction: a store another writer upgraded since the caller read
+// version 1 is left as it is. Returns true when it upgraded, false when the store was
+// already version 2. Throws IoError.
+bool migrateSchemaFromVersion1(sqlite3* db);
 
 // Adds one to meta.layers_revision. Runs inside the caller's write transaction, which
 // has just changed the layers table. Throws IoError.

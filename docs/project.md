@@ -275,8 +275,11 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     `StalenessGraph`'s causes name the source of a never-completed stage from it
     (SDS 04 §4.5, "The reverse answer"). **Effect on stored workspaces
     (QA/regulatory):** store format version 2. A version 1 store is upgraded in
-    place on its first writable open by this library; older library versions then
-    refuse it, and a read-only open leaves it at version 1. Causes reported for
+    place on its first writable open by this library: an ordinary
+    `Workspace::open` (as against `Workspace::openReadOnly`) and `Store::open` in
+    `ReadWrite` mode are writable opens. Older library versions then refuse it,
+    and a read-only open (`Workspace::openReadOnly`, `Store::open` in `ReadOnly`
+    mode) leaves it at version 1. Causes reported for
     stages that never completed change from the ambiguous detail ("the stage has
     not completed: it was redeclared or marked stale directly, or a source stage
     re-ran") to a named source or the plain "redeclared" detail, except for flags

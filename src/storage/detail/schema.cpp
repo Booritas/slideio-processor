@@ -206,9 +206,13 @@ void createSchema(sqlite3* db, const char* provenanceJson, const char* storeUuid
     StoreImpl::setMetaInt64(db, kMetaRastersRevision, 0);
 }
 
-void migrateSchemaFromVersion1(sqlite3* db) {
+bool migrateSchemaFromVersion1(sqlite3* db) {
+    // The caller read version 1 before it held the writer lock; another writer may have
+    // upgraded the store in between.
+    if (StoreImpl::metaInt64(db, kMetaFormatVersion) == std::optional<int64_t>(2)) return false;
     exec(db, kAddStaleSinceColumn);
     StoreImpl::setMetaInt64(db, kMetaFormatVersion, 2);
+    return true;
 }
 
 namespace {

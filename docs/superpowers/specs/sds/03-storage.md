@@ -2071,10 +2071,15 @@ the time is not known (3.10, 3.10a). The creation DDL declares it with exactly t
 text `ALTER TABLE stages ADD COLUMN stale_since_ms INTEGER NOT NULL DEFAULT 0`
 leaves in `sqlite_master`, so a migrated store and a fresh one hold identical
 schema SQL; the `store-v2.schema.sql` snapshot test of a migrated v1 golden store
-proves it. **A writable open of a version 1 store migrates it** after the format
-check and before anything else uses the store: one durable transaction
-(`synchronous=FULL` for its commit) runs that `ALTER TABLE` and sets
-`meta.format_version` to 2, and `formatVersion()` then reports 2. Flags set
+proves it. That test skips the three R\*Tree shadow-table lines, whose `sql` the
+migrated store keeps as the SQLite that created it wrote them, so a snapshot
+regenerated after a SQLite upgrade does not fail it. **A writable open of a
+version 1 store migrates it** after the format check and before anything else
+uses the store: one durable transaction (`synchronous=FULL` for its commit)
+reads `meta.format_version` again, since the open read it before taking the
+writer lock and another writer may have upgraded the store in between, and,
+when it is still 1, runs that `ALTER TABLE` and sets `meta.format_version` to 2;
+`formatVersion()` then reports 2. Flags set
 before the migration read 0. If the transaction fails it rolls back, the store
 stays at version 1, and the open throws `IoError` after releasing its
 connection and the writer lock. **A `ReadOnly` open of a version 1 store changes

@@ -161,7 +161,7 @@ public:
      * answer. When no edge qualifies, the stage is its own single cause, reported as
      * Reconfigured: it was redeclared or marked stale directly. Only a stage that never
      * completed and whose flag has no time (set before the store was upgraded to format
-     * version 2) cannot be told that from being marked by a re-run of a source that has
+     * version 2, or seen through a handle that opened a version 1 store read-only) cannot be told that from being marked by a re-run of a source that has
      * since completed, so no source is named and the detail says either may have happened
      * (see causeReasonDetailAt()). The causes come from the stored flags, stale-since
      * time, status and completion times, so they are the same after a reopen. They are

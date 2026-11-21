@@ -200,6 +200,8 @@ void StoreImpl::migrateFromVersion1() {
         const SynchronousScope synchronous(*this, kOperation, true);
         beginWrite(kOperation);
         try {
+            // Re-reads the version under the lock: a store upgraded since it was read above
+            // is left unchanged, and the empty transaction commits.
             migrateSchemaFromVersion1(writeConnection_.get());
             commitWrite(kOperation);
         } catch (...) {

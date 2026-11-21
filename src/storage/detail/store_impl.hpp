@@ -288,7 +288,9 @@ private:
     // Returns the stored format version, 1 or 2; throws StoreFormatError for any other.
     int32_t readFormatVersion(sqlite3* db) const;
     // Upgrades the version 1 store just opened for writing to version 2, durably, and sets
-    // formatVersion_. Throws IoError, the transaction rolled back, when that fails.
+    // formatVersion_ to 2. The version was read before the writer lock was taken, so it
+    // is read again inside the transaction; a store another writer has upgraded since is
+    // left unchanged. Throws IoError, the transaction rolled back, when that fails.
     void migrateFromVersion1();
     // Raises the write connection to synchronous=FULL for one durable transaction, and
     // restores NORMAL when it ends; does nothing for any other. Caller holds writeMutex_

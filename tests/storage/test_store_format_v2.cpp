@@ -2,11 +2,13 @@
 // Store format v2 (SDS 03 §3.12): v1 plus stages.stale_since_ms. Frozen as v1 is (ruling
 // S53): a fresh store's schema must match the checked-in snapshot, and the checked-in golden
 // store, written by v2, must still open and read back its content. A v1 store opened writable
-// is migrated, and then has exactly the schema of a fresh v2 store. The disabled generator
+// is migrated, and then has the schema of a fresh v2 store, apart from the three rtree
+// shadow-table sql lines (object_rtree_node, _parent and _rowid), which it keeps as the
+// v1 golden store's SQLite wrote them, so that comparison skips them. The disabled generator
 // writes the v2 fixtures; never run it once they are checked in. Only a SQLite upgrade may
-// change the snapshot, and only its three rtree shadow-table sql lines (object_rtree_node,
-// _parent and _rowid); regenerate the snapshot then, deliberately.
+// change the snapshot, and only those three lines; regenerate the snapshot then, deliberately.
 #include "common/raw_sqlite.hpp"
+#include "storage/detail/schema.hpp"
 #include "storage/store_format_golden.hpp"
 #include "storage/store_fixture.hpp"
 
@@ -52,7 +54,8 @@ TEST(StoreFormatV2, MigratedV1SchemaMatchesTheV2Snapshot) {
     store->close();
     store.reset();
 
-    expectSchemaMatchesSnapshot(schemaDump(copy), kSchemaFile, kMigratedActualFile, kMigratedMessage);
+    expectSchemaMatchesSnapshot(schemaDump(copy), kSchemaFile, kMigratedActualFile, kMigratedMessage,
+                                SchemaLines::WithoutRtreeShadowTables);
     StorePtr reader = Store::open(copy.u8string().c_str(), OpenMode::ReadOnly, Configuration());
     EXPECT_EQ(reader->formatVersion(), 2);
     reader->close();
@@ -78,6 +81,56 @@ TEST(StoreFormatV2, FailedMigrationLeavesVersionOne) {
     EXPECT_EQ(store->formatVersion(), 2);
     expectGoldenContent(*store, 2, GoldenContent::V1);
     store->close();
+}
+
+// The migration reads the version again under the writer lock: Store::open reads version 1
+// before it takes the lock, and another process may upgrade the store in between. Driven
+// directly, as the race cannot be timed from a test: on a store already upgraded, a second
+// run changes nothing and does not fail.
+TEST(StoreFormatV2, MigrationOfAnUpgradedStoreChangesNothing) {
+    TempDirGuard dir("golden_v1_twice");
+    const std::filesystem::path copy = dir.path() / kV1GoldenFile;
+    copyStore(dataDir() / kV1GoldenFile, copy);
+
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(copy.u8string().c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    for (const bool expectUpgrade : {true, false}) {
+        SCOPED_TRACE(expectUpgrade ? "first run" : "second run");
+        ASSERT_EQ(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), SQLITE_OK);
+        EXPECT_EQ(detail::migrateSchemaFromVersion1(db), expectUpgrade);
+        ASSERT_EQ(sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK);
+    }
+    sqlite3_close(db);
+
+    expectSchemaMatchesSnapshot(schemaDump(copy), kSchemaFile, kMigratedActualFile, kMigratedMessage,
+                                SchemaLines::WithoutRtreeShadowTables);
+    StorePtr store = Store::open(copy.u8string().c_str(), OpenMode::ReadWrite, Configuration());
+    EXPECT_EQ(store->formatVersion(), 2);
+    expectGoldenContent(*store, 2, GoldenContent::V1);
+    store->close();
+}
+
+// A handle that opened a version 1 store read-only keeps reading it as version 1 while a
+// writable open migrates the store under it: staleSinceUnixMs still answers 0.
+TEST(StoreFormatV2, ReadOnlyV1HandleOutlivesAMigration) {
+    TempDirGuard dir("golden_v1_reader");
+    const std::filesystem::path copy = dir.path() / kV1GoldenFile;
+    copyStore(dataDir() / kV1GoldenFile, copy);
+
+    StorePtr reader = Store::open(copy.u8string().c_str(), OpenMode::ReadOnly, Configuration());
+    StageId seg;
+    ASSERT_TRUE(reader->stageStates().find("seg", seg));
+    EXPECT_EQ(reader->stageStates().staleSinceUnixMs(seg), 0);
+
+    StorePtr writer = Store::open(copy.u8string().c_str(), OpenMode::ReadWrite, Configuration());
+    EXPECT_EQ(writer->formatVersion(), 2);
+    writer->close();
+    writer.reset();
+
+    EXPECT_EQ(reader->formatVersion(), 1);
+    EXPECT_EQ(reader->stageStates().staleSinceUnixMs(seg), 0);
+    EXPECT_EQ(reader->stageStates().status(seg), StageStatus::Complete);
+    reader->close();
 }
 
 TEST(StoreFormatV2, GoldenStoreStillOpens) {
