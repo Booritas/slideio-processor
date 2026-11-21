@@ -397,8 +397,25 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     PHI or personal data under HIPAA and GDPR. Today the only control is
     `provenanceHeader(false)`, which drops all provenance (UR-RES-11). Fix: an
     option to redact the slide identifier, or to write only its basename or a
-    hash, so provenance can travel without the path (SDS 07 §7.3). Belongs with
-    the other pre-release PHI items.
+    hash, so provenance can travel without the path (SDS 07 §7.3). Since
+    reporting plan B the GeoJSON export's `provenance.slideId` carries the same
+    path (SDS 07 §7.5). Belongs with the other pre-release PHI items.
+- [Reporting implementation plan B](superpowers/plans/2026-11-21-reporting-b.md) —
+  plan B for the `reporting` module: `GeoJsonExporter` (SDS 07 §7.5; UR-RES-8,
+  UR-RES-11, UR-RES-15, UR-RES-18, UR-QA-3) streams a query's objects through
+  `core::GeoJsonWriter` as QuPath-shaped features, with provenance, the layer,
+  the effective labels marked standard or local, the measurements a
+  `ColumnSchema` selects (later-stage ones as `<stage>/<name>` keys; non-finite
+  values left out) and, with `includeParent(true)`, `parentId`
+  (`GeoJsonWriter::writeFeature` overload, SDS 01 and SDS 08). `CsvWriter` and
+  the exporter share one export driver (`.partial` file, progress,
+  cancellation, name cache). `coordinatePrecision` and `quPathCompatible` are
+  dropped from the design. **In progress** on `feat/reporting-b`.
+  - **Open (layered GeoJSON import).** A layered GeoJSON import mode in
+    `storage` that maps features to layers by name and restores parent edges
+    from `parentId` (UR-RES-15, user decision 2026-11-21). Today
+    `GeoJsonImporter` puts every feature into one target layer, so the export
+    round trip keeps geometry, classification and measurements only.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

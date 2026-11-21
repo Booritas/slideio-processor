@@ -349,8 +349,6 @@ public:
     ~GeoJsonExporter();
 
     GeoJsonExporter& schema(const ColumnSchema&);
-    GeoJsonExporter& quPathCompatible(bool);         // default true
-    GeoJsonExporter& coordinatePrecision(int32_t);   // decimal places, default 1
 
     ExportResult write(Store&, const ObjectQuery&);
     ExportResult write(Store&, const ObjectQuery&,
@@ -358,7 +356,7 @@ public:
 };
 ```
 
-**Requirements:** UR-RES-8, UR-RES-15, UR-RES-18.
+**Requirements:** UR-RES-8, UR-RES-11, UR-RES-15, UR-RES-18, UR-SEG-6, UR-QA-3.
 
 Writes through `core::GeoJsonWriter`, so there is one GeoJSON emitter in the
 library. The import side lives in `storage` (decision 3); sharing the codec in
@@ -368,10 +366,77 @@ Objects exported here must open in QuPath with geometry and measurements
 intact, and a QuPath-exported annotation file must import and be usable as a
 processing ROI — the round trip is the acceptance criterion (UR-RES-8).
 
-`quPathCompatible(true)` emits the `classification` property shape QuPath
-expects. The layer accompanies each feature so a hierarchy round-trips through
-interchange rather than surviving only inside the store: objects exported and
-re-imported land in the same layers with parent relations intact (UR-RES-15).
+Reporting plan B (decision 3) dropped two setters of the original design:
+
+- `coordinatePrecision` — store coordinates are integers and the writer writes
+  them exactly, so there is nothing to round.
+- `quPathCompatible` — the writer always emits the QuPath shape:
+  `objectType: "detection"` and `classification: {"name": …}`.
+
+The exporter is ThreadConfined and uses pimpl. `<slideio/processor/reporting/reporting.hpp>`
+includes it.
+
+**Document.** `GeoJsonWriter`'s FeatureCollection: a top-level `provenance`
+object (`Store::provenance()`), then one Feature per object, one per line, in
+the cursor's order. Each feature's properties are `objectId`, `parentId` (see
+below), `objectType: "detection"`, `layer` (the layer name), `stageId` (for an
+object with a producing stage), `classification` (the first label written;
+absent without labels), `labels` (an array of `{name, workspaceLocal}`) and
+`measurements`. A polygon with one outer ring is a `Polygon`, holes as further
+rings; several outer rings make a `MultiPolygon`.
+
+**What the schema means for GeoJSON** (plan B decision 4).
+
+- **Default.** With no `schema()` call the schema is
+  `ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns)`, so a
+  default export loses no measurement.
+- **Measurements.** The resolved measurement columns (`detail::resolveColumns`,
+  §7.2) decide which values a feature carries, under their column names:
+  `area`, its calibrated twin `area.um2`, and a later stage's assertion
+  `<stage>/<name>` (§7.2, plan B decision 9). The exporter builds a per-object
+  copy of the record holding only those, in column order, each with its source
+  unit. A value the object lacks, or an assertion that is not visible, is an
+  absent key. Two resolved columns with the same name are an
+  `InvalidArgumentError` at `write`, before the file is created.
+- **Labels.** `LabelPolicy::EffectiveSet` writes the whole effective set
+  (`AnnotationStore` order); `LabelPolicy::ProducerOnly` writes the row label
+  alone, or none. The first label written becomes the `classification`.
+- **Parent.** `includeParent(true)` writes `parentId`, the parent through a
+  visible parent edge (`EdgeStore::parentOf`), right after `objectId`; a root
+  has none.
+- **Ignored.** `idFormat`, `includeLayer`, `includeStage`, `includeLabel(false)`,
+  `includeBoundingBox` and `includeGeometryWkt`. A feature always carries its
+  `objectId`, `layer`, geometry and `labels`.
+
+**Non-finite values** (decision 5). JSON has no NaN or infinity, and the
+writer refuses them. A non-finite value is left out of that feature's
+`measurements`; the rest of the feature is written.
+
+**Bytes and atomicity** (decision 6). The export runs on the driver the CSV
+writer uses (§7.3): the file is written to `<path>.partial` through
+`GeoJsonWriter`, then `end()`. `bytesWritten()` is the partial file's size,
+taken before the rename, so nothing can throw after it; then the file is
+renamed onto `path`. Progress, cancellation and failure behave as in
+`CsvWriter`: a cancelled or failed export removes the partial file and leaves
+any file at `path` untouched. `GeoJsonWriter`'s own `IoError` messages name the
+path; the exporter replaces them with messages that carry no path.
+
+**Provenance and PHI** (decision 7). `provenance.slideId` is the slide path as
+the store holds it. A path may contain identifiers, such as an accession
+number, a medical record number, a patient's name or a user name, that count as
+PHI or personal data under HIPAA and GDPR; consumers who share an export must
+treat it accordingly. Redaction is the open follow-up in `docs/project.md`
+(reporting plan A). Nothing else in the document varies between runs, so two
+exports of an unchanged store with the same query and schema are byte-identical
+(UR-QA-3).
+
+**Layers and parents on re-import.** The layer and parent id accompany each
+feature so a hierarchy can round-trip through interchange rather than survive
+only inside the store (UR-RES-15). Today `storage::GeoJsonImporter` imports
+every feature into one target layer, with geometry, classification and
+measurements; restoring layers by name and parent edges from `parentId` is an
+open follow-up, a layered import mode in `storage` (`docs/project.md`,
+reporting plan B; user decision 2026-11-21).
 
 Export streams. Ten million objects stay within the memory ceiling.
 

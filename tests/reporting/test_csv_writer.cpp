@@ -1,5 +1,5 @@
 // Requirements: UR-RES-9, UR-RES-11, UR-RES-15, UR-RES-18, UR-SEG-6, UR-QA-3
-#include "common/temp_path.hpp"
+#include "reporting/export_fixture.hpp"
 #include "storage/store_fixture.hpp"
 
 #include "reporting/detail/csv_format.hpp"
@@ -35,43 +35,11 @@
 #include <vector>
 
 using namespace slideio::processor;
+using namespace slideio::processor::export_test;
 
 namespace {
 
 using Row = std::vector<std::string>;
-
-// A CSV output path; the file and its ".partial" sibling are removed on destruction.
-class OutputPath {
-public:
-    explicit OutputPath(const char* stem = "export") : path_(uniqueTempPath(stem, ".csv")) {}
-    OutputPath(const OutputPath&) = delete;
-    OutputPath& operator=(const OutputPath&) = delete;
-    ~OutputPath() {
-        std::error_code ec;
-        std::filesystem::remove(path_, ec);
-        std::filesystem::remove(partial(), ec);
-    }
-    const std::filesystem::path& path() const { return path_; }
-    std::filesystem::path partial() const {
-        std::filesystem::path p = path_;
-        p += ".partial";
-        return p;
-    }
-    std::string utf8() const { return path_.u8string(); }
-
-private:
-    std::filesystem::path path_;
-};
-
-std::string readText(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-void writeText(const std::filesystem::path& path, const std::string& text) {
-    std::ofstream out(path, std::ios::binary);
-    out << text;
-}
 
 // A minimal RFC 4180 reader: records end in "\n"; a quoted field may hold the
 // delimiter, "\n" and doubled quotes. As pandas.read_csv(comment='#') does, an
@@ -152,15 +120,6 @@ std::vector<std::string> splitLabels(const std::string& cell) {
     return out;
 }
 
-Polygon square(int64_t x, int64_t y, int64_t side) {
-    const Point64 points[] = {{x, y}, {x + side, y}, {x + side, y + side}, {x, y + side}};
-    Polygon polygon;
-    polygon.addRing(points, 4, false);
-    return polygon;
-}
-
-std::string decimal(int64_t value) { return std::to_string(value); }
-
 // ColumnSchema::toHeaderLine() as a string.
 std::string header(const ColumnSchema& schema) {
     const int32_t n = schema.toHeaderLine(nullptr, 0);
@@ -169,85 +128,9 @@ std::string header(const ColumnSchema& schema) {
     return std::string(buffer.data());
 }
 
-class RecordingObserver : public ProgressObserver {
-public:
-    struct Call {
-        std::string stage;
-        double fraction;
-        int64_t completed;
-        int64_t total;
-    };
-    void onProgress(const char* stageName, double fraction, int64_t completed,
-                    int64_t total) override {
-        calls.push_back({stageName, fraction, completed, total});
-    }
-    std::vector<Call> calls;
-};
-
-// A region (tumour, with a hole, the root) on the pixel layer and two cells above it.
-// Cell 1 has no label and a parent; cell 2 has the row label tumour, an asserted local
-// label myLocal, and a parent. Area has calibrated twins; perimeter does not.
-class CsvExportTest : public StoreFixture {
+// The shared export store (export_fixture.hpp), exported to a CSV file.
+class CsvExportTest : public ExportStoreTest {
 protected:
-    void SetUp() override {
-        StoreFixture::SetUp();
-        Provenance provenance = store().provenance();
-        provenance.setSlideId("slide-7");
-        provenance.setSceneIndex(2);
-        store().setProvenance(provenance);
-
-        LayerRegistry& layers = store().layers();
-        regions = layers.declareSemantic("regions", layers.pixelLayer());
-        cells = layers.declareSemantic("cells", regions);
-        seg = store().stageStateWriter().declare("seg", "{\n\"k\":1\r\n}");
-        classify = store().stageStateWriter().declare("classify", "{}");
-        ASSERT_TRUE(store().vocabulary().find("tumour", tumour));
-        myLocal = store().vocabulary().addLocal("myLocal");
-
-        Polygon withHole = square(0, 0, 100);
-        const Point64 hole[] = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
-        withHole.addRing(hole, 4, true);
-        ObjectRecord region;
-        region.setLayer(regions);
-        region.setGeometry(withHole);
-        region.setLabel(tumour);
-        region.measurements().set("area", 9900.0, MeasurementUnit::SquarePixels);
-        region.measurements().set("area.um2", 2475.0, MeasurementUnit::SquareMicrometres);
-
-        ObjectRecord cell1;
-        cell1.setLayer(cells);
-        cell1.setGeometry(square(30, 30, 10));
-        cell1.measurements().set("area", 100.0, MeasurementUnit::SquarePixels);
-        cell1.measurements().set("area.um2", 25.0, MeasurementUnit::SquareMicrometres);
-        cell1.measurements().set("perimeter", 40.0, MeasurementUnit::Pixels);
-
-        ObjectRecord cell2;
-        cell2.setLayer(cells);
-        cell2.setGeometry(square(50, 50, 10));
-        cell2.setLabel(tumour);
-        cell2.measurements().set("area", 100.0, MeasurementUnit::SquarePixels);
-        cell2.measurements().set("area.um2", 25.0, MeasurementUnit::SquareMicrometres);
-        cell2.measurements().set("perimeter", 0.1, MeasurementUnit::Pixels);
-
-        ObjectWriterPtr writer = store().objects().writerForStage(seg);
-        for (ObjectRecord* r : {&region, &cell1, &cell2}) writer->emit(*r);
-        writer->flush();
-        regionId = region.id();
-        cell1Id = cell1.id();
-        cell2Id = cell2.id();
-
-        EdgeWriterPtr edges = store().edges().writerForStage(seg);
-        edges->assertParent(cell1Id, regionId);
-        edges->assertParent(cell2Id, regionId);
-        edges->flush();
-        store().stageStateWriter().setStatus(seg, StageStatus::Complete);
-
-        AnnotationWriterPtr labels = store().annotations().writerForStage(classify);
-        labels->assertLabel(cell2Id, myLocal);
-        labels->flush();
-        store().stageStateWriter().setStatus(classify, StageStatus::Complete);
-    }
-
     // Exports with `schema` and returns the file's text.
     std::string exportText(const ColumnSchema& schema, char delimiter = ',',
                            bool provenance = true) {
@@ -267,10 +150,6 @@ protected:
     }
 
     OutputPath out;
-    LayerId regions, cells;
-    StageId seg, classify;
-    LabelId tumour, myLocal;
-    ObjectId regionId, cell1Id, cell2Id;
 };
 
 } // namespace
@@ -502,22 +381,6 @@ TEST_F(CsvExportTest, CancelledExportLeavesNoFile) {
     EXPECT_FALSE(std::filesystem::exists(out.partial()));
 }
 
-namespace {
-// Cancels its source once `after` objects have been reported.
-class CancellingObserver : public ProgressObserver {
-public:
-    CancellingObserver(CancellationSource& source, int64_t after)
-        : source_(source), after_(after) {}
-    void onProgress(const char*, double, int64_t completed, int64_t) override {
-        if (completed >= after_) source_.cancel();
-    }
-
-private:
-    CancellationSource& source_;
-    int64_t after_;
-};
-} // namespace
-
 TEST_F(CsvExportTest, CancelledExportKeepsAnExistingFile) {
     writeText(out.path(), "previous export\n");
     CancellationSource source;
@@ -612,15 +475,6 @@ TEST_F(CsvExportTest, CustomDelimiter) {
 }
 
 namespace {
-// Commits one record under a new, completed stage.
-void commitOne(Store& store, const char* stageName, const ObjectRecord& record) {
-    const StageId stage = store.stageStateWriter().declare(stageName, "{}");
-    ObjectWriterPtr writer = store.objects().writerForStage(stage);
-    writer->emit(record);
-    writer->flush();
-    store.stageStateWriter().setStatus(stage, StageStatus::Complete);
-}
-
 // Exports every object with `schema`, without provenance, and returns the text.
 std::string exportAll(Store& store, const OutputPath& out, const ColumnSchema& schema) {
     const ExportResult result =
@@ -730,21 +584,6 @@ TEST_F(CsvExportTest, FixedColumnNamedMeasurementIsSkipped) {
 }
 
 namespace {
-// Declares `stageName`, asserts each (object, value) of "positive_fraction" under it and,
-// when `complete`, completes the stage.
-StageId assertFraction(Store& store, const char* stageName,
-                       std::initializer_list<std::pair<ObjectId, double>> values,
-                       bool complete = true) {
-    const StageId stage = store.stageStateWriter().declare(stageName, "{}");
-    AnnotationWriterPtr writer = store.annotations().writerForStage(stage);
-    for (const auto& [object, value] : values)
-        writer->assertMeasurement(object, "positive_fraction", value,
-                                  MeasurementUnit::Dimensionless);
-    writer->flush();
-    if (complete) store.stageStateWriter().setStatus(stage, StageStatus::Complete);
-    return stage;
-}
-
 // The schema with only the identifier columns.
 ColumnSchema idsOnly() {
     ColumnSchema schema;

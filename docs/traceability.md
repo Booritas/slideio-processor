@@ -442,7 +442,7 @@ IDs are those the tests under `tests/workspace/` declare. The module so far hold
 
 ## reporting
 
-IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
+IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds the module wiring, `ExportResult`, `materialise`, `ColumnSchema` and `CsvWriter` (SDS 07 §7.1–§7.3, §7.7); reporting plan B adds `GeoJsonExporter` (SDS 07 §7.5). UR-RES-10 (Parquet, SDS 07 §7.4) is deferred by user decision 2026-11-21 and has no test.
 
 | Requirement | Test file | Tests |
 |---|---|---|
@@ -458,3 +458,9 @@ IDs are those the tests under `tests/reporting/` declare. Reporting plan A holds
 | UR-RES-18 | `tests/reporting/test_csv_writer.cpp` | CsvExportTest.EffectiveLabelsAndLocalFlags, CsvExportTest.LabelNamesWithDelimitersRoundTrip, CsvExportTest.LaterStageMeasurementsAreExported, CsvExportTest.InvisibleAssertionIsEmpty |
 | UR-SEG-6 | `tests/reporting/test_csv_writer.cpp` | CsvExportTest.WritesHeaderAndRows, CsvExportTest.BothColumnsWritesPixelAndTwin, CsvWriter.UncalibratedStoreKeepsPixelColumns, CsvExportTest.NonFiniteMeasurements, CsvExportTest.FixedColumnNamedMeasurementIsSkipped, CsvFormat.NonFiniteValues, CsvExportTest.LaterStageMeasurementsAreExported, CsvExportTest.AssertedOnlyTwinDoesNotHideRowPixels |
 | UR-QA-3 | `tests/reporting/test_csv_writer.cpp` | CsvExportTest.WritesHeaderAndRows, CsvExportTest.ExportIsDeterministic, CsvExportTest.OutputUnchangedByTheSharedDriver |
+| UR-RES-8 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.WritesAFeatureCollection, GeoJsonExport.DefaultSchemaKeepsEveryMeasurement, GeoJsonExport.SchemaSelectsMeasurementsAndUnits, GeoJsonExport.ProducerOnlyLabels, GeoJsonExport.ParentIdWhenRequested, GeoJsonExport.NonFiniteMeasurementIsOmitted, GeoJsonExport.RoundTripsThroughTheImporter, GeoJsonExport.NamesNeedingEscapesRoundTrip, GeoJsonExport.ExportIsDeterministic, GeoJsonExport.CancelledExportLeavesNoFile, GeoJsonExport.CancelledExportKeepsAnExistingFile, GeoJsonExport.ReportsProgress, GeoJsonExport.BytesWrittenIsTheFileSize, GeoJsonExport.LaterStageMeasurementsAreKeys, GeoJsonExport.RefusesAnEmptyPath, GeoJsonExport.UnwritablePathThrowsAndLeavesNothing |
+| UR-RES-11 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.WritesAFeatureCollection, GeoJsonExport.ExportIsDeterministic |
+| UR-RES-15 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.WritesAFeatureCollection, GeoJsonExport.ProducerOnlyLabels, GeoJsonExport.ParentIdWhenRequested, GeoJsonExport.NamesNeedingEscapesRoundTrip |
+| UR-RES-18 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.WritesAFeatureCollection, GeoJsonExport.ProducerOnlyLabels, GeoJsonExport.NamesNeedingEscapesRoundTrip, GeoJsonExport.LaterStageMeasurementsAreKeys |
+| UR-SEG-6 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.DefaultSchemaKeepsEveryMeasurement, GeoJsonExport.SchemaSelectsMeasurementsAndUnits, GeoJsonExport.NonFiniteMeasurementIsOmitted, GeoJsonExport.LaterStageMeasurementsAreKeys |
+| UR-QA-3 | `tests/reporting/test_geojson_exporter.cpp` | GeoJsonExport.ExportIsDeterministic |
