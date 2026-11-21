@@ -1034,7 +1034,7 @@ private:
     std::vector<Rect64> regions_;
 };
 
-// An ROI in an object run, and a mask source over the whole level: a tile whose owned rect misses
+// An ROI in an object run, and a mask source over the whole level: a tile whose rect misses
 // the ROI builds no mask in a pass, so only a tile evaluated on demand fills a mask outside it.
 void expectOutsideTilesBuildNoMask() {
     auto scene = ts::makeSyntheticScene(source(blobs));
@@ -1068,7 +1068,7 @@ TEST(Restriction, OutsideRegionTilesBuildNoMask) { expectOutsideTilesBuildNoMask
 namespace {
 
 // For every tile of an object run at level 1 (scale 2.4), outsideRegion implies the built mask
-// has no set pixel in the owned rect, so the shortcut never skips a tile the mask would keep.
+// has no set pixel in the tile rect, so the shortcut never skips a tile the mask would keep.
 void expectOutsideRegionAgreesWithTheMask(int32_t halo, int variant) {
     ts::registerTestOperations();
     auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, blobs);
@@ -1347,8 +1347,8 @@ struct LevelOneRun {
 
 } // namespace
 
-// A mask source's level pixel c holds the anchors at level-0 llround(c x 2.4) and not the one
-// before it: the anchor of an object found at pixel c is tested at pixel c.
+// A mask source's level pixel c holds the anchor at level-0 llround(c x 2.4), not the anchor of the level
+// pixel before it (the old floor rule): an object found at pixel c is tested at pixel c.
 TEST(Restriction, MaskSourceTestsTheAnchorsOwnLevelPixel) {
     for (const bool row : {false, true}) {
         for (int64_t c = 120; c <= 135; ++c) {
@@ -1365,7 +1365,7 @@ TEST(Restriction, MaskSourceTestsTheAnchorsOwnLevelPixel) {
 }
 
 // A run restricted by a mask source stores the objects found in its pixels: level column 123
-// starts at level-0 295 (295.2 rounded), where 295 / 2.4 would floor to 122.
+// starts at level-0 295 (295.2 rounded), where the old floor rule, 295 / 2.4, gave 122.
 TEST(Restriction, MaskSourceRunKeepsTheObjectsFoundInItsPixels) {
     ts::registerTestOperations();
     auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, dashes);

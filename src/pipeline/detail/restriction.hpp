@@ -63,7 +63,7 @@ public:
     /// chain's halo); a null mask when the run is unrestricted. Not cached.
     RasterMask buildTileMask(int64_t tileIndex) const;
 
-    /// True when the tile's mask has no set pixel inside the tile's owned rect, so the
+    /// True when the tile's mask has no set pixel inside the tile's rect, so the
     /// tile is skipped. False for a null mask.
     bool skips(const RasterMask& mask, int64_t tileIndex) const;
 
