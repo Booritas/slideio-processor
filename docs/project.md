@@ -481,19 +481,14 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     reduced read whose tiles each cover many objects, pays this for every object
     in every tile it meets. Possible fixes: read the effective first labels for a
     tile's objects in one query, and relabel without copying the geometry.
-  - **Open (fix single-tile level reads in SlideIO's OME-TIFF driver
-    upstream; then drop the striped special case).** SlideIO stretches a level
-    that fits in one tile: `LevelInfo::getTileRect`
-    (`extern/slideio/src/slideio/core/levelinfo.hpp:153`) gives a one-tile
-    level's tile the level's own size, the OME-TIFF driver returns the whole
-    512×512 TIFF tile (`TiffTools::readRegularTile`,
-    `extern/slideio/src/slideio/imagetools/tifftools.cpp:861`), and
-    `TileComposer::composeRect`
-    (`extern/slideio/src/slideio/core/tools/tilecomposer.cpp:55`) resizes the
-    tile onto the level. So the OME layout writes such a page as one strip per
-    plane. Once SlideIO crops instead, the strip case in
-    `src/storage/detail/pyramid_tiff_writer.cpp` can go; the masks tests pin
-    both the base-level and the coarsest-level case.
+  - **Done (single-tile level reads in SlideIO's OME-TIFF driver).** SlideIO
+    stretched a level that fits in one tile: the level's one tile rectangle is
+    the level itself, but the driver read the whole 512×512 TIFF tile and
+    `TileComposer::composeRect` resized it onto the level. `OTScene::readTile`
+    now crops the tile (Booritas/slideio PR #102), the `extern/slideio`
+    pointer includes the fix, and the OME layout no longer writes one-tile
+    pages striped. The masks tests read both the base-level and the
+    coarsest-level case back through SlideIO.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

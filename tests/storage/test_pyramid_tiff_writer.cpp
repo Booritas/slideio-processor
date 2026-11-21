@@ -528,20 +528,8 @@ TEST(StorageRaster, SequentialLayoutUnchanged) {
 
 namespace {
 
-// One plane of the current directory (a page or a SubIFD): plane `plane`'s one strip of a
-// striped directory, read whole.
-template <typename T>
-std::vector<T> readStripPlane(TIFF* tif, uint32_t width, uint32_t height, uint16_t plane) {
-    std::vector<T> result(static_cast<size_t>(width) * height);
-    const tmsize_t bytes = static_cast<tmsize_t>(result.size() * sizeof(T));
-    EXPECT_EQ(TIFFReadEncodedStrip(tif, TIFFComputeStrip(tif, 0, plane), result.data(), bytes), bytes);
-    return result;
-}
-
-// One plane of the current directory (a page or a SubIFD), read tile by tile, or as its one
-// strip when it is striped.
+// One plane of the current directory (a page or a SubIFD), read tile by tile.
 std::vector<int32_t> readCurrentInt32Plane(TIFF* tif, uint32_t width, uint32_t height) {
-    if (TIFFIsTiled(tif) == 0) return readStripPlane<int32_t>(tif, width, height, 0);
     std::vector<int32_t> result(static_cast<size_t>(width) * height);
     std::vector<int32_t> tile(static_cast<size_t>(kTile * kTile));
     const tmsize_t bytes = static_cast<tmsize_t>(tile.size() * sizeof(int32_t));
@@ -556,28 +544,19 @@ std::vector<int32_t> readCurrentInt32Plane(TIFF* tif, uint32_t width, uint32_t h
 }
 
 // The current directory's size, tiling, planes and type. A level that fits in one tile is
-// one strip per plane instead (SDS 03 §3.8: SlideIO's OME-TIFF driver stretches a one-tile
-// level's tile).
+// tiled too: one 512x512 tile per plane.
 void expectOmeLevel(TIFF* tif, uint32_t width, uint32_t height, bool reduced) {
-    uint32_t w = 0, h = 0, tileW = 0, tileH = 0, subfile = 0, rowsPerStrip = 0;
+    uint32_t w = 0, h = 0, tileW = 0, tileH = 0, subfile = 0;
     uint16_t planar = 0, samples = 0, bits = 0, sampleFormat = 0, compression = 0;
     TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
     EXPECT_EQ(w, width);
     EXPECT_EQ(h, height);
-    const bool oneTile = width <= 512 && height <= 512;
-    if (oneTile) {
-        EXPECT_EQ(TIFFIsTiled(tif), 0);
-        TIFFGetField(tif, TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
-        EXPECT_EQ(rowsPerStrip, height);
-        EXPECT_EQ(TIFFNumberOfStrips(tif), 1u);
-    } else {
-        EXPECT_NE(TIFFIsTiled(tif), 0);
-        TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tileW);
-        TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH);
-        EXPECT_EQ(tileW, 512u);
-        EXPECT_EQ(tileH, 512u);
-    }
+    EXPECT_NE(TIFFIsTiled(tif), 0);
+    TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tileW);
+    TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH);
+    EXPECT_EQ(tileW, 512u);
+    EXPECT_EQ(tileH, 512u);
     TIFFGetField(tif, TIFFTAG_SUBFILETYPE, &subfile);
     EXPECT_EQ(subfile, reduced ? static_cast<uint32_t>(FILETYPE_REDUCEDIMAGE) : 0u);
     TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planar);
@@ -590,7 +569,7 @@ void expectOmeLevel(TIFF* tif, uint32_t width, uint32_t height, bool reduced) {
     EXPECT_EQ(sampleFormat, SAMPLEFORMAT_INT);
     TIFFGetField(tif, TIFFTAG_COMPRESSION, &compression);
     EXPECT_EQ(compression, COMPRESSION_ADOBE_DEFLATE);
-    if (!oneTile) expectEveryTilePresent(tif, reduced ? 1 : 0);
+    expectEveryTilePresent(tif, reduced ? 1 : 0);
 }
 
 } // namespace
@@ -684,7 +663,7 @@ TEST(PyramidTiffWriter, OmeLayoutWithoutResolutionIsReproducible) {
     EXPECT_EQ(description.find("PhysicalSize"), std::string::npos) << description;
 }
 
-// A single-tile raster has no reduced level, so no SubIFD tag, and is one strip per plane (an
+// A single-tile raster has no reduced level, so no SubIFD tag, and is one tile per plane (an
 // all-zero plane included); and the types SlideIO cannot read are refused.
 TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndRefusedTypes) {
     {
@@ -710,10 +689,11 @@ TEST(PyramidTiffWriter, OmeLayoutSmallRasterAndRefusedTypes) {
         const std::string description = text;
         EXPECT_NE(description.find("Type=\"float\""), std::string::npos) << description;
         EXPECT_NE(description.find("SizeC=\"2\""), std::string::npos) << description;
-        EXPECT_EQ(TIFFIsTiled(tif), 0);
-        EXPECT_EQ(TIFFNumberOfStrips(tif), 2u);
-        EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 0), (std::vector<float>{1.5f, -2.0f, 3.0f, 4.0f, 5.0f, 6.0f}));
-        EXPECT_EQ(readStripPlane<float>(tif, 3, 2, 1), (std::vector<float>(6, 0.0f)));
+        EXPECT_NE(TIFFIsTiled(tif), 0);
+        EXPECT_EQ(TIFFNumberOfTiles(tif), 2u);
+        expectEveryTilePresent(tif, 0);
+        EXPECT_EQ(readPlane<float>(tif, 0, 0), (std::vector<float>{1.5f, -2.0f, 3.0f, 4.0f, 5.0f, 6.0f}));
+        EXPECT_EQ(readPlane<float>(tif, 0, 1), (std::vector<float>(6, 0.0f)));
     }
     // The types SlideIO's OME-TIFF driver cannot read are refused before the file exists:
     // Float16 has no OME-XML Type, and SlideIO's TIFF scan (retrieveTiffDataType) rejects a

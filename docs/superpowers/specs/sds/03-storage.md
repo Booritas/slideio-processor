@@ -1408,15 +1408,14 @@ sample format and downsampling are those of S41–S43; what differs:
 - Page 0, full resolution, is the only top-level IFD. Pages 1.. are its
   SubIFDs (`TIFFTAG_SUBIFD`, filled by libtiff as each is written), each
   `FILETYPE_REDUCEDIMAGE`.
-- A page that fits in one tile (both sides at most 512, which is only ever the
-  last) is written as one strip per plane, `RowsPerStrip` its height, instead
-  of one 512×512 tile. SlideIO takes a one-tile level's tile rectangle to be
-  the level itself (`LevelInfo::getTileRect`) while its OME-TIFF driver
-  returns the whole 512×512 TIFF tile (`TiffTools::readRegularTile`), and
-  `TileComposer::composeRect` then stretches the tile onto the level; a strip
-  is read at the level's own size (`TiffData::readTileChannels`). With tiles
-  the coarsest level of every pyramid, and the only level of a raster of at
-  most 512×512, would read wrong. Remove the case once SlideIO is fixed.
+- Every page is tiled, including a page that fits in one tile (both sides at
+  most 512, which is only ever the last). This needs a SlideIO whose OME-TIFF
+  driver crops a one-tile level's 512×512 TIFF tile to the level
+  (`OTScene::readTile`, Booritas/slideio PR #102). Older SlideIO stretches that
+  tile onto the level, so the coarsest level of every pyramid, and the only
+  level of a raster of at most 512×512, reads wrong there; the layout used to
+  write such a page striped to avoid it. The masks tests read both cases back
+  through SlideIO.
 - Page 0's `ImageDescription` is minimal OME-XML (schema 2016-06) instead of
   the S41 JSON: one `Image ID="Image:0"` whose `Name` is the caller's name
   (markup escaped, tab, line feed and carriage return as character

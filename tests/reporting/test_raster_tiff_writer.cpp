@@ -61,7 +61,7 @@ struct Page {
     std::vector<int32_t> samples;
 };
 
-// Reads the current directory's plane 0, tiled or striped.
+// Reads the current directory's plane 0; every page is tiled, one-tile pages included.
 Page readPage(TIFF* tif) {
     Page page;
     uint32_t w = 0, h = 0;
@@ -71,22 +71,19 @@ Page readPage(TIFF* tif) {
     page.width = w;
     page.height = h;
     page.samples.assign(static_cast<size_t>(w) * h, 0);
-    if (TIFFIsTiled(tif)) {
-        uint32_t tw = 0, th = 0;
-        TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tw);
-        TIFFGetField(tif, TIFFTAG_TILELENGTH, &th);
-        std::vector<int32_t> tile(static_cast<size_t>(tw) * th);
-        for (uint32_t y = 0; y < h; y += th) {
-            for (uint32_t x = 0; x < w; x += tw) {
-                EXPECT_GE(TIFFReadTile(tif, tile.data(), x, y, 0, 0), 0);
-                for (uint32_t j = 0; j < th && y + j < h; ++j)
-                    for (uint32_t i = 0; i < tw && x + i < w; ++i)
-                        page.samples[static_cast<size_t>(y + j) * w + x + i] = tile[static_cast<size_t>(j) * tw + i];
-            }
+    EXPECT_NE(TIFFIsTiled(tif), 0);
+    uint32_t tw = 0, th = 0;
+    TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tw);
+    TIFFGetField(tif, TIFFTAG_TILELENGTH, &th);
+    if (tw == 0 || th == 0) return page;
+    std::vector<int32_t> tile(static_cast<size_t>(tw) * th);
+    for (uint32_t y = 0; y < h; y += th) {
+        for (uint32_t x = 0; x < w; x += tw) {
+            EXPECT_GE(TIFFReadTile(tif, tile.data(), x, y, 0, 0), 0);
+            for (uint32_t j = 0; j < th && y + j < h; ++j)
+                for (uint32_t i = 0; i < tw && x + i < w; ++i)
+                    page.samples[static_cast<size_t>(y + j) * w + x + i] = tile[static_cast<size_t>(j) * tw + i];
         }
-    } else {
-        for (uint32_t y = 0; y < h; ++y)
-            EXPECT_EQ(TIFFReadScanline(tif, &page.samples[static_cast<size_t>(y) * w], y, 0), 1);
     }
     return page;
 }

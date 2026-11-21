@@ -197,10 +197,9 @@ std::string omeXml(const PyramidMetadata& metadata, const RasterFormat& format, 
 }
 
 // `subIfds` > 0 gives page 0 a SubIFD tag of that many entries, which libtiff fills as
-// the next `subIfds` directories are written. A `striped` page has one strip per plane
-// instead of 512 tiles.
+// the next `subIfds` directories are written.
 void setTags(const TiffHandle& handle, const RasterFormat& format, const PageSize& size, int page,
-             const std::string& description, uint16_t subIfds, bool striped) {
+             const std::string& description, uint16_t subIfds) {
     TIFF* tif = handle.get();
     const auto check = [&handle](int status) {
         if (status != 1) handle.fail("TIFFSetField");
@@ -208,12 +207,8 @@ void setTags(const TiffHandle& handle, const RasterFormat& format, const PageSiz
     if (page > 0) check(TIFFSetField(tif, TIFFTAG_SUBFILETYPE, static_cast<uint32_t>(FILETYPE_REDUCEDIMAGE)));
     check(TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, size.width));
     check(TIFFSetField(tif, TIFFTAG_IMAGELENGTH, size.height));
-    if (striped) {
-        check(TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, size.height));
-    } else {
-        check(TIFFSetField(tif, TIFFTAG_TILEWIDTH, kTile));
-        check(TIFFSetField(tif, TIFFTAG_TILELENGTH, kTile));
-    }
+    check(TIFFSetField(tif, TIFFTAG_TILEWIDTH, kTile));
+    check(TIFFSetField(tif, TIFFTAG_TILELENGTH, kTile));
     check(TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, tiffBitsPerSample(format.type)));
     check(TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, tiffSampleFormat(format.type)));
     check(TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, static_cast<uint16_t>(format.planes)));
@@ -235,24 +230,19 @@ void setTags(const TiffHandle& handle, const RasterFormat& format, const PageSiz
 }
 
 // Writes one page's tiles. An all-zero tile is encoded once, its compressed bytes read
-// back, and every later one written raw from them (ruling S41). On a striped page, which
-// is one tile in size, the tile's top-left page-sized part is written as its plane's strip.
+// back, and every later one written raw from them (ruling S41).
 class PageTileWriter {
 public:
-    PageTileWriter(const TiffHandle& handle, size_t tileBytes, const PageSize& size, bool striped, size_t sampleBytes)
-        : handle_(handle), tileBytes_(tileBytes), size_(size), striped_(striped), sampleBytes_(sampleBytes) {}
+    PageTileWriter(const TiffHandle& handle, size_t tileBytes) : handle_(handle), tileBytes_(tileBytes) {}
 
-    // The index of grid tile (gx, gy) of plane `plane`: its tile, or on a striped page
-    // (only grid tile 0, 0) its strip.
+    // The index of grid tile (gx, gy) of plane `plane`.
     uint32_t index(uint32_t gx, uint32_t gy, int32_t plane) const {
-        const auto p = static_cast<uint16_t>(plane);
-        return striped_ ? TIFFComputeStrip(handle_.get(), 0, p) : TIFFComputeTile(handle_.get(), gx * kTile, gy * kTile, 0, p);
+        return TIFFComputeTile(handle_.get(), gx * kTile, gy * kTile, 0, static_cast<uint16_t>(plane));
     }
 
     // Writes `data` (one tile of one plane, tileBytes) as tile `index`. libtiff may
     // rewrite `data` in place.
     void write(uint32_t index, std::vector<uint8_t>& data) {
-        if (striped_) return writeStrip(index, data);
         const auto bytes = static_cast<tmsize_t>(tileBytes_);
         if (TIFFWriteEncodedTile(handle_.get(), index, data.data(), bytes) != bytes)
             handle_.fail("TIFFWriteEncodedTile");
@@ -260,10 +250,6 @@ public:
 
     void writeZero(uint32_t index) {
         TIFF* tif = handle_.get();
-        if (striped_) {
-            std::vector<uint8_t> zeros(tileBytes_, 0);
-            return writeStrip(index, zeros);
-        }
         if (zero_.empty()) {
             std::vector<uint8_t> zeros(tileBytes_, 0);
             write(index, zeros);
@@ -283,22 +269,8 @@ public:
     }
 
 private:
-    // The rows of `tile` the page holds, packed to the page's width, as strip `index`.
-    void writeStrip(uint32_t index, const std::vector<uint8_t>& tile) {
-        const size_t rowBytes = size_.width * sampleBytes_;
-        std::vector<uint8_t> strip(rowBytes * size_.height);
-        for (uint32_t y = 0; y < size_.height; ++y)
-            std::memcpy(strip.data() + y * rowBytes, tile.data() + y * kTile * sampleBytes_, rowBytes);
-        const auto bytes = static_cast<tmsize_t>(strip.size());
-        if (TIFFWriteEncodedStrip(handle_.get(), index, strip.data(), bytes) != bytes)
-            handle_.fail("TIFFWriteEncodedStrip");
-    }
-
     const TiffHandle& handle_;
     size_t tileBytes_;
-    PageSize size_;
-    bool striped_;
-    size_t sampleBytes_;
     std::vector<uint8_t> zero_; // the compressed zero tile, once encoded
 };
 
@@ -308,11 +280,11 @@ bool allZero(const std::vector<uint8_t>& data) {
 
 // Page 0: every grid tile with fragments from the spool, then zeros for the rest.
 void writeBasePage(const TiffHandle& handle, const TileSpool& spool, const RasterFormat& format,
-                   const PageSize& size, size_t tileBytes, bool striped) {
+                   const PageSize& size, size_t tileBytes) {
     const uint32_t across = (size.width + kTile - 1) / kTile;
     const uint32_t down = (size.height + kTile - 1) / kTile;
     std::vector<bool> written(static_cast<size_t>(across) * down, false);
-    PageTileWriter writer(handle, tileBytes, size, striped, static_cast<size_t>(dataTypeSizeBytes(format.type)));
+    PageTileWriter writer(handle, tileBytes);
     std::vector<uint8_t> scratch(tileBytes);
     spool.forEachGridTile([&](int32_t gridX, int32_t gridY, const std::vector<std::vector<uint8_t>>& planes) {
         written[static_cast<size_t>(gridY) * across + gridX] = true;
@@ -427,14 +399,14 @@ void reduceTile(DataType type, const SourceTiles& src, uint8_t* out, uint32_t gx
 
 // Page k > 0, built from page k - 1 read back through `reader`.
 void writeReducedPage(const TiffHandle& handle, const TiffHandle& reader, const RasterFormat& format,
-                      const PageSize& size, const PageSize& above, size_t tileBytes, bool striped) {
+                      const PageSize& size, const PageSize& above, size_t tileBytes) {
     TIFF* source = reader.get();
     const size_t sampleBytes = static_cast<size_t>(dataTypeSizeBytes(format.type));
     const uint32_t across = (size.width + kTile - 1) / kTile;
     const uint32_t down = (size.height + kTile - 1) / kTile;
     const uint32_t aboveAcross = (above.width + kTile - 1) / kTile;
     const uint32_t aboveDown = (above.height + kTile - 1) / kTile;
-    PageTileWriter writer(handle, tileBytes, size, striped, sampleBytes);
+    PageTileWriter writer(handle, tileBytes);
     std::array<std::vector<uint8_t>, 4> buffers;
     std::vector<uint8_t> out(tileBytes);
     for (uint32_t gy = 0; gy < down; ++gy) {
@@ -490,13 +462,9 @@ PyramidInfo writePyramidTiff(const std::filesystem::path& tif, const TileSpool& 
 
     TiffHandle handle = TiffHandle::openWrite(path);
     for (size_t page = 0; page < pages.size(); ++page) {
-        // In the OME layout a page that fits in one tile, which is only ever the last, is
-        // striped: SlideIO's OME-TIFF driver takes a one-tile level's tile to be the level's
-        // own size and would stretch a 512 x 512 tile onto it (SDS 03 §3.8).
-        const bool striped = ome && pages[page].width <= kTile && pages[page].height <= kTile;
-        setTags(handle, format, pages[page], static_cast<int>(page), description, subIfds, striped);
+        setTags(handle, format, pages[page], static_cast<int>(page), description, subIfds);
         if (page == 0) {
-            writeBasePage(handle, spool, format, pages[0], tileBytes, striped);
+            writeBasePage(handle, spool, format, pages[0], tileBytes);
         } else {
             // The page above is complete on disk: read it back through a second handle.
             TiffHandle reader = TiffHandle::openRead(path);
@@ -513,7 +481,7 @@ PyramidInfo writePyramidTiff(const std::filesystem::path& tif, const TileSpool& 
                     reader.fail("TIFFGetField");
                 if (TIFFSetSubDirectory(reader.get(), offsets[page - 2]) != 1) reader.fail("TIFFSetSubDirectory");
             }
-            writeReducedPage(handle, reader, format, pages[page], pages[page - 1], tileBytes, striped);
+            writeReducedPage(handle, reader, format, pages[page], pages[page - 1], tileBytes);
             reader.close();
         }
         if (TIFFWriteDirectory(handle.get()) != 1) handle.fail("TIFFWriteDirectory");

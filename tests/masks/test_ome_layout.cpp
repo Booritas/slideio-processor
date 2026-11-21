@@ -118,7 +118,7 @@ namespace {
 // A sample constant over each 2x2 block, so the top-left rule and the mean agree on level 1.
 int blockSample(int x, int y) { return ((x / 2) * 3 + (y / 2) * 5) % 100; }
 
-// Writes a 600x400 one-plane raster of `type` (two levels: 600x400 tiled, 300x200 striped)
+// Writes a 600x400 one-plane raster of `type` (two levels, 600x400 and 300x200, both tiled)
 // with the OME layout, opens it through SlideIO and checks its type and both levels' pixels.
 template <typename T>
 void expectTypeRoundTrips(DataType type, slideio::DataType slideioType) {
