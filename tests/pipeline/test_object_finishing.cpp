@@ -186,7 +186,7 @@ TEST(ObjectFinishing, TileFilterCountsOnlyWhatFinishingKeeps) {
     ts::CollectingObjectSink target;
     detail::FinishingSink finishing(target, {{kLayer, producer.get()}}, 0.0, 0);
     detail::RunCounters counters;
-    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
+    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, nullptr, counters);
 
     // A record of `area` whose ring starts at its anchor (normalised) or not.
     const auto record = [](double area, bool normalised) {
@@ -254,7 +254,7 @@ TEST(ObjectFinishing, OwnedRecordsAreNotCopied) {
     OwnershipSink target;
     detail::FinishingSink finishing(target, {{kLayer, producer.get()}}, 0.0, 0);
     detail::RunCounters counters;
-    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, counters);
+    detail::TileObjectFilter filter(&finishing, Rect64{0, 0, 100, 100}, nullptr, nullptr, counters);
 
     for (const bool normalised : {false, true}) {
         filter.emit(squareRecord(normalised));

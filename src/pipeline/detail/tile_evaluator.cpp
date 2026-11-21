@@ -32,8 +32,8 @@ bool holds(const Rect64& r, Point64 p) {
 } // namespace
 
 TileObjectFilter::TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask,
-                                   RunCounters& counters)
-    : target_(target), tileRect_(tileRect), mask_(mask), counters_(counters) {}
+                                   const RestrictionFilter* restriction, RunCounters& counters)
+    : target_(target), tileRect_(tileRect), mask_(mask), restriction_(restriction), counters_(counters) {}
 
 void TileObjectFilter::emit(const ObjectRecord& record) { emitKept(record); }
 
@@ -65,7 +65,9 @@ bool TileObjectFilter::admits(const ObjectRecord& record) {
         ++counters_.droppedOutsideTile;
         return false;
     }
-    if (mask_ != nullptr && !mask_->testLevel0(anchor)) {
+    // The ROI exactly in level 0, then the mask, which also sets the pixels straddling the ROI's edge.
+    if ((restriction_ != nullptr && !restriction_->inRoi(anchor)) ||
+        (mask_ != nullptr && !mask_->testLevel0(anchor))) {
         ++counters_.droppedByRestriction;
         return false;
     }
@@ -265,7 +267,8 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         auxiliary.second->fillTile(whole);
     }
 
-    TileObjectFilter objects(bindings_.objectSink, grid.tileRect(tileIndex), tileMask, *bindings_.counters);
+    TileObjectFilter objects(bindings_.objectSink, grid.tileRect(tileIndex), tileMask,
+                             restriction_.restricted() ? &restriction_ : nullptr, *bindings_.counters);
     // An accumulation pass writes no sink: what the operations before the
     // accumulating one emit is dropped, seam fragments included.
     const SeamFragmentCallback dropFragment = [](const Polygon&, LayerId, const IntensityPartial*, int32_t,

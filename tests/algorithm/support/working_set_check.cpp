@@ -120,7 +120,7 @@ int64_t measureWorkingSetPeakOn(Operation& op, const std::vector<DataType>& type
     DiscardSink store;
     detail::RunCounters counters;
     detail::FinishingSink finishing(store, {{LayerId(1), &op}}, 0.5, 0, &counters.droppedByFilter);
-    detail::TileObjectFilter objects(&finishing, Rect64{0, 0, width, height}, nullptr, counters);
+    detail::TileObjectFilter objects(&finishing, Rect64{0, 0, width, height}, nullptr, nullptr, counters);
     detail::SeamFragmentCallback fragments = [](const Polygon&, LayerId, const IntensityPartial*, int32_t, int64_t,
                                                 int64_t) {};
     int64_t peak = 0;

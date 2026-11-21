@@ -25,7 +25,7 @@ namespace slideio::processor::detail {
 /// the run, hence atomic; reset at the start of each run.
 struct RunCounters {
     std::atomic<int64_t> droppedOutsideTile{0};     ///< Objects whose anchor left the emitting tile.
-    std::atomic<int64_t> droppedByRestriction{0};   ///< Objects whose anchor the tile's mask excludes.
+    std::atomic<int64_t> droppedByRestriction{0};   ///< Objects whose anchor the ROI or the tile's mask excludes.
     std::atomic<int64_t> droppedByFilter{0};        ///< Objects their producer's finishObject() discards.
     std::atomic<int64_t> tilesSkipped{0};           ///< Tiles whose mask is empty inside the tile.
     std::atomic<int64_t> tilesEvaluatedOnDemand{0}; ///< Skipped tiles evaluated for an object reaching into them.
@@ -40,8 +40,9 @@ struct RunCounters {
 };
 
 /// The object sink an operation sees on one tile: an object is kept only when
-/// its anchor lies in the tile's level-0 rect, then only when the tile's mask
-/// is set there; a kept object's rings are normalised, the form a merged object
+/// its anchor lies in the tile's level-0 rect, then only when it lies in the
+/// run's ROI (RestrictionFilter::inRoi), then only when the tile's mask is set
+/// there; a kept object's rings are normalised, the form a merged object
 /// has, before it goes on to the target, which finishes it. The anchor is the
 /// same before and after. An object emitted already normalised goes on as it
 /// is; one that is not is normalised in place when handed over with
@@ -52,8 +53,10 @@ struct RunCounters {
 /// operation may emit from threads of its own, so the count is atomic.
 class TileObjectFilter : public ObjectSink {
 public:
-    /// `target`, `mask` and `counters` are borrowed; `mask` may be null.
-    TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask, RunCounters& counters);
+    /// `target`, `mask`, `restriction` and `counters` are borrowed; `mask` and
+    /// `restriction` may be null (an unrestricted run).
+    TileObjectFilter(ObjectSink* target, const Rect64& tileRect, const RasterMask* mask,
+                     const RestrictionFilter* restriction, RunCounters& counters);
 
     /// As emitKept().
     void emit(const ObjectRecord& record) override;
@@ -66,8 +69,8 @@ public:
     int64_t emittedCount() const override { return emitted_.load(); }
 
 private:
-    // Whether @p record's anchor lies in the tile and the mask; counts it as
-    // dropped when not.
+    // Whether @p record's anchor lies in the tile, the ROI and the mask; counts
+    // it as dropped when not.
     bool admits(const ObjectRecord& record);
     // Normalises the rings of @p record.
     static void normalise(ObjectRecord& record);
@@ -77,6 +80,7 @@ private:
     ObjectSink* target_;
     Rect64 tileRect_;
     const RasterMask* mask_;
+    const RestrictionFilter* restriction_;
     RunCounters& counters_;
     std::atomic<int64_t> emitted_{0};
 };

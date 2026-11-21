@@ -14,12 +14,26 @@ RestrictionFilter::RestrictionFilter(const RunPlan& plan, const PipelineSpec& sp
     : plan_(plan),
       restricted_(plan.restricted),
       hasRoi_(spec.hasRoi()),
+      roi_(hasRoi_ ? spec.roi() : Rect64{0, 0, 0, 0}),
       roiAtLevel_{0, 0, 0, 0},
       polygon_(spec.hasPolygon() ? &spec.polygon() : nullptr),
       maskSource_(maskSource),
       budget_(budget) {
     if (hasRoi_) {
-        roiAtLevel_ = selector.mapToLevel(spec.roi(), plan.level);
+        // The outward mapping, which gives the run's region, grown to the level pixels holding an
+        // ROI anchor, where admits() tests it: at a non-integer scale the ROI's first level-0 column
+        // or row can floor to the pixel before the mapping. Both are contiguous and they overlap,
+        // so their bounding union is exactly the two.
+        roiAtLevel_ = selector.mapToLevel(roi_, plan.level);
+        if (!roi_.isEmpty()) {
+            const Point64 first = levelPixelOf(Point64{roi_.x, roi_.y});
+            const Point64 last = levelPixelOf(Point64{roi_.x + roi_.width - 1, roi_.y + roi_.height - 1});
+            const int64_t x0 = std::min(roiAtLevel_.x, first.x);
+            const int64_t y0 = std::min(roiAtLevel_.y, first.y);
+            const int64_t x1 = std::max(roiAtLevel_.x + roiAtLevel_.width, last.x + 1);
+            const int64_t y1 = std::max(roiAtLevel_.y + roiAtLevel_.height, last.y + 1);
+            roiAtLevel_ = Rect64{x0, y0, x1 - x0, y1 - y0};
+        }
     }
 }
 
@@ -159,9 +173,19 @@ Point64 RestrictionFilter::levelPixelOf(Point64 anchorLevel0) const {
 
 int64_t RestrictionFilter::tileOf(Point64 anchorLevel0) const { return tileHolding(levelPixelOf(anchorLevel0)); }
 
+bool RestrictionFilter::inRoi(Point64 anchorLevel0) const noexcept {
+    return !hasRoi_ || (anchorLevel0.x >= roi_.x && anchorLevel0.y >= roi_.y && anchorLevel0.x - roi_.x < roi_.width &&
+                        anchorLevel0.y - roi_.y < roi_.height);
+}
+
 bool RestrictionFilter::admits(Point64 anchorLevel0) const {
     if (!restricted_) {
         return true;
+    }
+    // The ROI is tested exactly in level 0, before any mask: the mask's ROI part also sets the
+    // pixels straddling the ROI's edge.
+    if (!inRoi(anchorLevel0)) {
+        return false;
     }
     const Point64 pixel = levelPixelOf(anchorLevel0);
     const int64_t tile = tileHolding(pixel);

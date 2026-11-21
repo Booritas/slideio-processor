@@ -25,8 +25,12 @@ namespace slideio::processor::detail {
 /// several threads at once. Every pointer and reference is borrowed and must
 /// outlive the filter.
 ///
-/// The ROI is rasterised by its edges: a level pixel is set when it lies inside
-/// LevelSelector::mapToLevel(roi), the outward mapping that also gives the run's region.
+/// The ROI is rasterised over two pixel sets: a level pixel is set when it lies inside
+/// LevelSelector::mapToLevel(roi), the outward mapping that also gives the run's region, or
+/// when it holds an ROI anchor (the level pixel of a level-0 point inside the ROI, as
+/// RasterMask::testLevel0 finds it). The mask is what skipping and operations see; admission
+/// tests the ROI exactly in level 0 (inRoi()), so an anchor whose pixel is set but which lies
+/// outside the ROI is refused.
 /// The polygon is rasterised with rasteriseInto (conservative even-odd) and the
 /// TileMaskSource fills a second mask over the same region; both are intersected
 /// with the tile mask. The mask source may be called from several workers at
@@ -76,8 +80,12 @@ public:
     /// conservative raster can set it. False for an unrestricted run.
     bool outsideRegion(int64_t tileIndex) const;
 
-    /// Whether an object anchored at a level-0 point passes the restriction: the
-    /// pixel of the anchor's level pixel in the cached mask of the tile holding it.
+    /// True when the run has no ROI, or when the level-0 point lies inside the ROI
+    /// (half-open: from roi.x up to, not including, roi.x + roi.width; y alike).
+    bool inRoi(Point64 anchorLevel0) const noexcept;
+
+    /// Whether an object anchored at a level-0 point passes the restriction: inRoi(),
+    /// then the pixel of the anchor's level pixel in the cached mask of the tile holding it.
     /// An anchor in no tile of the grid is tested on a one-pixel mask built
     /// through the same sources, uncached. True when the run is unrestricted.
     bool admits(Point64 anchorLevel0) const;
@@ -128,7 +136,8 @@ private:
     const RunPlan& plan_;
     bool restricted_;
     bool hasRoi_;
-    Rect64 roiAtLevel_;
+    Rect64 roi_;                    // The ROI in level 0, copied from the spec; empty without one.
+    Rect64 roiAtLevel_;             // The level pixels the mask's ROI part sets.
     const Polygon* polygon_;        // Null without a polygon restriction; borrowed from the spec.
     TileMaskSource* maskSource_;    // Null without a bound source; borrowed.
     MemoryBudget* budget_;          // Charged for the cached masks; null: not charged. Borrowed.

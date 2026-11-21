@@ -527,7 +527,8 @@ TEST(Restriction, ContextMaskIsAdvisory) {
 
 namespace {
 
-// admits(anchor) against the answer of the tile mask of the tile holding the anchor.
+// admits(anchor) against the answer of the tile mask of the tile holding the anchor, and inRoi():
+// the ROI is tested exactly in level 0, while the mask also sets the pixels straddling its edge.
 void checkAdmits(int32_t level, const PipelineSpec& baseSpec, ts::DiscMaskSource* disc, bool expectRefusals = true) {
     ts::registerTestOperations();
     auto scene = ts::makeSyntheticScene({{kSide, kSide, 0, 0}, {kSide / 2, kSide / 2, 0, 0}},
@@ -562,7 +563,7 @@ void checkAdmits(int32_t level, const PipelineSpec& baseSpec, ts::DiscMaskSource
             continue;  // outside the grid region: no tile holds it
         }
         const RasterMask mask = filter.buildTileMask(tile);
-        const bool expected = mask.testLevel0(anchor);
+        const bool expected = mask.testLevel0(anchor) && filter.inRoi(anchor);
         EXPECT_EQ(filter.admits(anchor), expected);
         (expected ? admitted : refused)++;
         ++checked;
@@ -1109,4 +1110,194 @@ TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForAPolygonEndingInsideTheL
 
 TEST(Restriction, OutsideRegionAgreesWithTheBuiltMaskForARoiPastThePolygonBox) {
     expectOutsideRegionAgreesWithTheMask(0, 3);
+}
+
+namespace {
+
+// A "test.components" run (whose grid spans the level) at level 1 of a `side0` -> `side1`
+// pyramid, restricted to `roi` and to `source` when not null, and its restriction filter.
+struct RoiRun {
+    RoiRun(int64_t side0, int64_t side1, const Rect64& roi, TileMaskSource* source = nullptr)
+        : pipeline(ts::makeSyntheticScene({{side0, side0, 0, 0}, {side1, side1, 0, 0}}, {slideio::DataType::DT_Byte},
+                                          blobs),
+                   config(), [&] {
+                       ts::registerTestOperations();
+                       PipelineSpec spec = spec1("test.components");
+                       spec.analysisLevel(1);
+                       spec.restrictTo(roi);
+                       return spec;
+                   }()) {
+        pipeline.bindLayer("objects", LayerId(3)).maskSource(source);
+        pipeline.validate();
+        auto& impl = detail::PipelineAccess::impl(pipeline);
+        filter = std::make_unique<detail::RestrictionFilter>(detail::PipelineAccess::plan(pipeline), impl.spec,
+                                                             *impl.selector, impl.maskSource);
+    }
+    const detail::RunPlan& plan() const { return detail::PipelineAccess::plan(pipeline); }
+
+    Pipeline pipeline;
+    std::unique_ptr<detail::RestrictionFilter> filter;
+};
+
+// admits() and inRoi() both give `expected` for `anchor`.
+void expectAdmits(const detail::RestrictionFilter& filter, Point64 anchor, bool expected) {
+    EXPECT_EQ(filter.admits(anchor), expected) << "admits, anchor " << anchor.x << ", " << anchor.y;
+    EXPECT_EQ(filter.inRoi(anchor), expected) << "inRoi, anchor " << anchor.x << ", " << anchor.y;
+}
+
+} // namespace
+
+// An ROI admits exactly the anchors inside it in level 0, though at level 1 its edges straddle
+// level pixels: at scale 2.4, level-0 307 is the corner of level pixel 128 but floors to 127, and
+// 407, past the ROI, floors to 169, inside the outward mapping. At scale 2, 306 shares level
+// pixel 153 with the ROI's first column 307.
+TEST(Restriction, RoiAdmitsExactlyItsLevel0Anchors) {
+    {
+        const RoiRun run(600, 250, Rect64{307, 307, 100, 100});
+        ASSERT_DOUBLE_EQ(run.plan().levelScale, 2.4);
+        expectAdmits(*run.filter, Point64{307, 307}, true);
+        expectAdmits(*run.filter, Point64{406, 406}, true);
+        expectAdmits(*run.filter, Point64{306, 307}, false);
+        expectAdmits(*run.filter, Point64{307, 306}, false);
+        expectAdmits(*run.filter, Point64{407, 406}, false);
+        expectAdmits(*run.filter, Point64{406, 407}, false);
+    }
+    {
+        // The ROI starts inside level pixel 128, which holds level-0 308 and 309 (307 floors to 127).
+        const RoiRun run(600, 250, Rect64{308, 308, 99, 99});
+        expectAdmits(*run.filter, Point64{307, 308}, false);
+        expectAdmits(*run.filter, Point64{308, 308}, true);
+    }
+    {
+        // As above, with the anchor before the ROI in the ROI's first level pixel: 308 and 309 both
+        // floor to 128, so only the level-0 test refuses 308.
+        const RoiRun run(600, 250, Rect64{309, 309, 98, 98});
+        expectAdmits(*run.filter, Point64{308, 309}, false);
+        expectAdmits(*run.filter, Point64{309, 308}, false);
+        expectAdmits(*run.filter, Point64{309, 309}, true);
+    }
+    {
+        const RoiRun run(512, 256, Rect64{307, 307, 100, 100});
+        ASSERT_DOUBLE_EQ(run.plan().levelScale, 2.0);
+        expectAdmits(*run.filter, Point64{306, 307}, false);
+        expectAdmits(*run.filter, Point64{307, 307}, true);
+    }
+}
+
+// The tile masks, which skipping and operations see, set the level pixel of every anchor on an
+// ROI's first and last columns and rows, in the tile owning that anchor, so no such tile is skipped.
+TEST(Restriction, RoiMaskSetsEveryPixelHoldingAnRoiAnchor) {
+    for (const Rect64& roi : {Rect64{307, 307, 100, 100}, Rect64{308, 308, 99, 99}}) {
+        const RoiRun run(600, 250, roi);
+        std::vector<Point64> edge;
+        for (int64_t i = 0; i < roi.width; ++i) {
+            edge.push_back(Point64{roi.x + i, roi.y});
+            edge.push_back(Point64{roi.x + i, roi.y + roi.height - 1});
+        }
+        for (int64_t i = 0; i < roi.height; ++i) {
+            edge.push_back(Point64{roi.x, roi.y + i});
+            edge.push_back(Point64{roi.x + roi.width - 1, roi.y + i});
+        }
+        size_t owned = 0;
+        const TileGrid& grid = run.plan().grid;
+        for (int64_t t = 0; t < grid.tileCount(); ++t) {
+            const Rect64 tile = grid.tileRect(t);
+            const RasterMask mask = run.filter->buildTileMask(t);
+            bool holdsAny = false;
+            for (const Point64& a : edge) {
+                if (a.x >= tile.x && a.y >= tile.y && a.x < tile.x + tile.width && a.y < tile.y + tile.height) {
+                    EXPECT_TRUE(mask.testLevel0(a)) << "tile " << t << ", anchor " << a.x << ", " << a.y;
+                    holdsAny = true;
+                    ++owned;
+                }
+            }
+            if (holdsAny) {
+                EXPECT_FALSE(run.filter->skips(mask, t)) << "tile " << t;
+            }
+        }
+        EXPECT_EQ(owned, edge.size()) << "every edge anchor is owned by one tile";
+    }
+}
+
+// With an ROI and a mask source, both decide: the mask's ROI part sets level pixel 127 (level-0
+// 306 floors there, as the ROI's first column 307 does), but 306 lies outside the ROI.
+TEST(Restriction, RoiAndMaskSourceBothDecide) {
+    ts::DiscMaskSource disc(300.0, 356.0, 40.0);
+    const RoiRun run(600, 250, Rect64{307, 307, 100, 100}, &disc);
+    const double scale = run.plan().levelScale;
+    const auto discHolds = [&](Point64 a) {
+        // The disc tests the level-0 centre of the anchor's level pixel.
+        return disc.contains((std::floor(static_cast<double>(a.x) / scale) + 0.5) * scale,
+                             (std::floor(static_cast<double>(a.y) / scale) + 0.5) * scale);
+    };
+    const Point64 outsideDisc{400, 356};
+    const Point64 leftOfRoi{306, 356};
+    const Point64 inBoth{310, 356};
+    ASSERT_FALSE(discHolds(outsideDisc));
+    ASSERT_TRUE(discHolds(leftOfRoi));
+    ASSERT_TRUE(discHolds(inBoth));
+    // The tile mask is set at 306: only the level-0 ROI test refuses it.
+    EXPECT_TRUE(run.filter->buildTileMask(run.filter->tileOf(leftOfRoi)).testLevel0(leftOfRoi));
+
+    EXPECT_FALSE(run.filter->admits(outsideDisc));
+    EXPECT_TRUE(run.filter->inRoi(outsideDisc));
+    EXPECT_FALSE(run.filter->admits(leftOfRoi));
+    EXPECT_TRUE(run.filter->admits(inBoth));
+}
+
+namespace {
+
+// Short vertical dashes one level column wide, on every fourth column from column 3: column 127
+// is anchored at level-0 305, which floors to the level pixel holding the ROI's first column 307.
+double dashes(int, int64_t x, int64_t y) { return x % 4 == 3 && y % 3 < 2 ? 255.0 : 0.0; }
+
+// A "test.components" run at level 1 of a 600 -> 250 pyramid (scale 2.4) restricted to an ROI
+// stores exactly the unrestricted run's objects anchored inside the ROI in level 0.
+void expectRoiRunStoresExactlyItsAnchors(const ts::PixelFunction& pixels) {
+    ts::registerTestOperations();
+    auto scene = ts::makeSyntheticScene({{600, 600, 0, 0}, {250, 250, 0, 0}}, {slideio::DataType::DT_Byte}, pixels);
+    const Rect64 roi{307, 307, 100, 100};
+    const auto run = [&](bool restricted) {
+        PipelineSpec spec = spec1("test.components");
+        spec.analysisLevel(1);
+        if (restricted) {
+            spec.restrictTo(roi);
+        }
+        ts::CollectingObjectSink sink;
+        Pipeline p(scene, config(), spec);
+        p.bindLayer("objects", LayerId(3));
+        p.runInto(sink, nullptr, CancellationToken());
+        return sink.records();
+    };
+    std::vector<ObjectId> expected;
+    int64_t straddling = 0;
+    for (const ObjectRecord& r : run(false)) {
+        const Point64 a = r.geometry().anchor();
+        const bool rowsInRoi = a.y >= roi.y && a.y < roi.y + roi.height;
+        if (rowsInRoi && a.x >= roi.x && a.x < roi.x + roi.width) {
+            expected.push_back(r.id());
+        }
+        // Anchored in level column 127, the pixel straddling the ROI's first column.
+        straddling += rowsInRoi && static_cast<int64_t>(std::floor(static_cast<double>(a.x) / 2.4)) == 127 ? 1 : 0;
+    }
+    std::sort(expected.begin(), expected.end());
+    ASSERT_GT(straddling, 0);
+    std::vector<ObjectId> got;
+    for (const ObjectRecord& r : run(true)) {
+        got.push_back(r.id());
+    }
+    std::sort(got.begin(), got.end());
+    EXPECT_EQ(got, expected);
+}
+
+} // namespace
+
+// An ROI run at level 1 stores exactly its level-0 anchors, through the tile filter. The bars are
+// anchored on each tile's first level-0 column, and tile 2's is 307, the ROI's first column,
+// which floors to the level pixel before it: they are kept. The dashes on level column 127 are
+// anchored at 305, outside the ROI, in that pixel, which the mask sets: they are refused.
+TEST(Restriction, RoiRunStoresExactlyItsLevel0Anchors) {
+    for (const ts::PixelFunction& pixels : {ts::PixelFunction(bars), ts::PixelFunction(dashes)}) {
+        expectRoiRunStoresExactlyItsAnchors(pixels);
+    }
 }
