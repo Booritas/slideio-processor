@@ -36,7 +36,9 @@ namespace slideio::processor {
  *
  * The output size is ceil(region size / scale). The source is asked for each 512 x 512
  * output tile (edge tiles are clipped to the output) through a BlockView whose slideRect
- * is the tile's level-0 extent. The file goes to "<path>.partial", renamed onto path,
+ * is the tile's level-0 extent, which starts at region.x + round(offset * scale) and may run up to
+ * `scale` level-0 pixels past the region's far edge: a source must zero or clip pixels outside
+ * its own extent, as storage's sources do. The file goes to "<path>.partial", renamed onto path,
  * replacing any file there, only when it completes; a spool file "<path>.partial.spool"
  * exists meanwhile. A cancelled or failed write removes both and leaves any file already
  * at path untouched. Two writes of the same source with the same settings give

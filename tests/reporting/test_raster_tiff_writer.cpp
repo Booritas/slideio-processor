@@ -9,11 +9,13 @@
 #include <gtest/gtest.h>
 #include <tiffio.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace slideio::processor {
@@ -158,6 +160,68 @@ TEST_F(RasterTiffWriterTest, WritesTheRegionAtTheScale) {
                 ASSERT_EQ(pages[1].samples[static_cast<size_t>(y * pages[1].width + x)],
                           pages[0].samples[static_cast<size_t>(2 * y * w + 2 * x)]);
     }
+}
+
+// Records every tile's slideRect, in call order.
+class SpySource : public CoordinateSource {
+public:
+    void fillTile(BlockView& view) override {
+        rects.push_back(view.slideRect());
+        sizes.push_back({view.width(), view.height()});
+        CoordinateSource::fillTile(view);
+    }
+    std::vector<Rect64> rects;
+    std::vector<std::pair<int64_t, int64_t>> sizes;
+};
+
+TEST_F(RasterTiffWriterTest, NonIntegerScaleTilesTheRegionContiguously) {
+    const Rect64 odd{7, 13, 1301, 777};
+    for (const double scale : {1.5, 2.5}) {
+        SpySource spy;
+        RasterTiffWriter writer(out.utf8().c_str());
+        writer.write(spy, odd, scale, nullptr, never);
+        const int64_t w = static_cast<int64_t>(std::ceil(odd.width / scale));
+        const int64_t h = static_cast<int64_t>(std::ceil(odd.height / scale));
+        const std::vector<Page> pages = readPages(out.path());
+        ASSERT_FALSE(pages.empty());
+        EXPECT_EQ(pages[0].width, w);
+        EXPECT_EQ(pages[0].height, h);
+        const int64_t tilesX = (w + 511) / 512;
+        const int64_t tilesY = (h + 511) / 512;
+        ASSERT_EQ(static_cast<int64_t>(spy.rects.size()), tilesX * tilesY);
+        for (int64_t ty = 0; ty < tilesY; ++ty)
+            for (int64_t tx = 0; tx < tilesX; ++tx) {
+                const size_t k = static_cast<size_t>(ty * tilesX + tx);
+                const Rect64& r = spy.rects[k];
+                if (tx == 0) EXPECT_EQ(r.x, odd.x); else EXPECT_EQ(r.x, spy.rects[k - 1].right());
+                if (ty == 0) EXPECT_EQ(r.y, odd.y); else EXPECT_EQ(r.y, spy.rects[k - static_cast<size_t>(tilesX)].bottom());
+                EXPECT_EQ(spy.sizes[k].first, std::min<int64_t>(512, w - tx * 512));
+                EXPECT_EQ(spy.sizes[k].second, std::min<int64_t>(512, h - ty * 512));
+            }
+        // The tiles cover the region, and overshoot it by less than a scale and a pixel.
+        const Rect64& last = spy.rects.back();
+        EXPECT_GE(last.right(), odd.right());
+        EXPECT_LT(last.right(), odd.right() + static_cast<int64_t>(scale) + 2);
+        EXPECT_GE(last.bottom(), odd.bottom());
+        EXPECT_LT(last.bottom(), odd.bottom() + static_cast<int64_t>(scale) + 2);
+        // Samples follow the level-0 coordinate of each output pixel.
+        for (int64_t y = 0; y < h; y += 37)
+            for (int64_t x = 0; x < w; x += 41) {
+                const int32_t expected = sampleAt(odd.x + std::llround(static_cast<double>(x) * scale),
+                                                  odd.y + std::llround(static_cast<double>(y) * scale));
+                ASSERT_EQ(pages[0].samples[static_cast<size_t>(y * w + x)], expected) << x << "," << y;
+            }
+    }
+}
+
+TEST_F(RasterTiffWriterTest, ExactQuotientDoesNotOvershootAPixel) {
+    // 1100 / 1.1 is 1000 exactly, but the double quotient can round above it.
+    RasterTiffWriter writer(out.utf8().c_str());
+    writer.write(source, Rect64{0, 0, 1100, 600}, 1.1, nullptr, never);
+    const std::vector<Page> pages = readPages(out.path());
+    ASSERT_FALSE(pages.empty());
+    EXPECT_EQ(pages[0].width, 1000);
+    EXPECT_EQ(pages[0].height, 546);
 }
 
 TEST_F(RasterTiffWriterTest, CompressionsRoundTrip) {

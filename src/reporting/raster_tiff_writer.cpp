@@ -65,8 +65,12 @@ DataTypeSet omeTypes() {
     return types;
 }
 
+// ceil(size / scale), exact: the quotient in doubles can land a hair above an exact integer
+// (1100 / 1.1), so a result whose predecessor already covers the size is stepped down.
 int64_t ceilDiv(int64_t size, double scale) {
-    return static_cast<int64_t>(std::ceil(static_cast<double>(size) / scale));
+    int64_t q = static_cast<int64_t>(std::ceil(static_cast<double>(size) / scale));
+    while (q > 1 && static_cast<double>(q - 1) * scale >= static_cast<double>(size)) --q;
+    return q;
 }
 
 } // namespace
