@@ -257,7 +257,7 @@ Header include order, formatting, the clang-format configuration, and internal
 
 CI builds every job with `./build.sh --warnings-as-errors` (CMake option
 `SLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS`, default OFF), so a compiler warning in this
-project's sources fails the build on all four compilers (MSVC, GCC, Clang, Apple Clang).
+project's sources fails the build on all four compilers (MSVC, GCC 11, GCC 14, Apple Clang).
 No warning is silenced with a pragma or a `-Wno-` flag.
 
 ## C-15. Test seams and release builds

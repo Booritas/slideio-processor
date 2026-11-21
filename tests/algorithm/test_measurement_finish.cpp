@@ -189,8 +189,8 @@ TEST(MeasurementFinish, UnselectedNamesAreRemoved) {
     EXPECT_TRUE(has(record, "intensity.3.mean"));
     EXPECT_EQ(value(record, "intensity.3.mean"), 5.0);
     for (const char* name : {"perimeter", "perimeter.um", "centroid.x", "centroid.y.um", "boundingBox.x",
-                                    "boundingBox.height.um", "intensity.3.stddev", "intensity.3.min",
-                                    "intensity.3.max"}) {
+                             "boundingBox.height.um", "intensity.3.stddev", "intensity.3.min",
+                             "intensity.3.max"}) {
         EXPECT_FALSE(has(record, name)) << name;
     }
     EXPECT_EQ(record.measurements().count(), 3);

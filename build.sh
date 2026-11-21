@@ -184,7 +184,8 @@ cmake -S . -B "$build_dir" \
       -DCMAKE_TOOLCHAIN_FILE="$(native "$root/$build_dir/conan/conan_toolchain.cmake")" \
       -DCMAKE_PREFIX_PATH="$(native "$slideio_prefix/release")" \
       -DCMAKE_BUILD_TYPE="$build_type" \
-      -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams"       -DSLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS="$warnings_as_errors"
+      -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams" \
+      -DSLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS="$warnings_as_errors"
 
 step "Building ($build_type)"
 cmake --build "$build_dir" --config "$build_type" --parallel
