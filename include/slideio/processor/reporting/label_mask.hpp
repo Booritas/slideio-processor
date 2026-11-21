@@ -28,8 +28,12 @@ namespace slideio::processor {
  * sources) the pixel's value is the query's label() filter's LabelId when it has one;
  * otherwise the first member of the object's effective label set (see
  * AnnotationStore::labelCount()), or 0 when the set is empty. Where objects overlap the
- * smallest ObjectId wins. Every other pixel, including any outside the query's own box,
- * is 0.
+ * smallest ObjectId wins. Every other pixel is 0.
+ *
+ * A query selects objects; it does not clip them. An object the intersecting() box
+ * admits is drawn whole, also where it runs past the box edge. To clip, choose the
+ * region that is rasterised: rasteriseLabels() clips its scene to its region, and a
+ * caller of fillTile() asks only for the tiles it wants.
  *
  * Effective labels are read through AnnotationStore with storage's own visibility, not
  * the query's. An object the query admits only because its visibility() is wider than

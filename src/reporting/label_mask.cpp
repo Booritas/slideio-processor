@@ -79,6 +79,8 @@ private:
 
     // Builds the caller's query with the tile's box intersected in. False when the two
     // boxes do not overlap, so no object can satisfy both.
+    // Every filter is copied by name, so a filter added to ObjectQuery must be added here
+    // too (object_query.hpp says so at its setters); limit() alone is left out on purpose.
     bool merge(const ObjectQuery& tile, ObjectQuery& out) const {
         out.layer(query_.layerValue());
         if (query_.hasStage()) out.stage(query_.stageValue());

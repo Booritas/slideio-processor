@@ -130,7 +130,8 @@ TEST_F(LabelMaskTest, QueryFiltersApply) {
     EXPECT_EQ(at(pixels, 25, 25), 0);
     EXPECT_EQ(at(pixels, 45, 45), kKi67);
 
-    // The query's own box is intersected with the tile's: nothing outside it is drawn.
+    // The query's own box is intersected with the tile's: objects that do not meet it are not
+    // drawn. The box selects objects and does not clip them; these lie inside it.
     ObjectQuery boxed;
     boxed.layer(nuclei).intersecting(Rect64{0, 0, 30, 30});
     TileRasterSourcePtr inBox = makeLabelMaskSource(store(), boxed);

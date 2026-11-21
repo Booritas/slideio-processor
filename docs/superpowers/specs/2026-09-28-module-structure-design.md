@@ -122,7 +122,8 @@ therefore spatial scan order, which an observing viewer gets for free.
 | `masks` | core, config, storage, reporting | **SlideIO**'s library: `slideio::makeScene` and scene reads |
 
 `masks` was added by reporting plan C (decision 4). It turns label masks into
-SlideIO scenes and writes any SlideIO scene as an OME-TIFF, so it links SlideIO's
+SlideIO scenes and writes label masks and processing maps, given as SlideIO scenes, as
+lossless OME-TIFF, so it links SlideIO's
 library, not only its headers. SlideIO's DLLs carry OpenCV statically, so `masks`
 belongs to the engine library (section 5.1), not to `reporting`. It never depends on
 `pipeline`, `algorithm` or `workspace`: a pipeline's output reaches it as a
@@ -505,7 +506,7 @@ SlideIO — never on `pipeline`, `algorithm` or `workspace`.
 | Component | Responsibility | Requirements |
 |---|---|---|
 | `rasteriseLabels` | A lazy label-mask scene over a region, readable at any resolution. | UR-RES-7 |
-| `MaskWriter` | Any SlideIO scene — a label mask, a lazy pipeline scene, a file — to a lossless OME-TIFF, through `RasterTiffWriter`. | UR-RES-7 |
+| `MaskWriter` | A label mask or processing map, as a SlideIO scene (`rasteriseLabels`' or a lazy pipeline scene), to a lossless OME-TIFF, through `RasterTiffWriter`. Whole-slide image conversion stays with slideio-converter. | UR-RES-7 |
 
 ## 7. Cross-cutting concerns
 

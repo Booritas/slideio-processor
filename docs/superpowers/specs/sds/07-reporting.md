@@ -502,11 +502,15 @@ public:
 **Requirements:** UR-RES-7, UR-QA-3.
 
 UR-RES-7 offers two forms and both are provided: `rasteriseLabels` returns a
-scene readable at any resolution, and `MaskWriter` persists any scene —
-including a lazy `pipeline` scene from `Pipeline::asScene()` — as a pyramidal
-OME-TIFF. The acceptance criterion is that a written mask reopens in SlideIO
+scene readable at any resolution, and `MaskWriter` persists a label mask or a
+processing map — `rasteriseLabels`' scene, or a lazy `pipeline` scene from
+`Pipeline::asScene()` — as a lossless pyramidal OME-TIFF. Converting
+whole-slide image files is not its purpose; that stays with slideio-converter
+(7.8). The acceptance criterion is that a written mask reopens in SlideIO
 with the expected levels and dimensions; the `masks` tests open every file they
-write through SlideIO's `OMETIFF` driver.
+write through SlideIO's `OMETIFF` driver. Name the file `*.ome.tif`: Bio-Formats
+and QuPath read the OME-XML, and with it the levels and the pixel size, only for
+that extension.
 
 **`RasterTiffWriter`** rasterises `regionLevel0` at `scale` (level-0 pixels per
 output pixel, at least 1) by asking the source for each 512×512 output tile, and
@@ -514,7 +518,10 @@ writes the result with `storage`'s writer in its opt-in OME-TIFF layout
 (`03-storage.md` 3.8): page 0 is full resolution, the reduced levels — each half
 the one before, until both sides are at most 512 — are its SubIFDs, and page 0's
 ImageDescription is minimal OME-XML with the caller's `name()` and, when set,
-the pixel size in µm. No path or other identifier is written. Compression is
+the pixel size in µm; a `name()` that is not well-formed UTF-8 is refused
+(`InvalidArgumentError`) when it is set, so no file can carry it. With more
+than one plane a `Channel` element gives their `SamplesPerPixel`, as
+Bio-Formats expects. No path or other identifier is written. Compression is
 None, LZW or Deflate: lossless only. Reduced levels follow storage's rules —
 integer types take the top-left sample of each 2×2 block, floating types the
 mean — so a label value is never blended. The OME layout holds Byte, Int8,
@@ -535,8 +542,11 @@ resolution is 0 (unknown). It is lazy: creating it reads nothing, and every
 block read queries the store as it is then. It has a single zoom level, because
 a resampled read reaches the source with its block size and is rasterised at
 that size directly — so every zoom is exact, none is resampled from a finer
-raster, and no label value is blended. Pixels outside the region read 0. Reads
-may overlap: each builds a label source of its own over the ThreadSafe store.
+raster, and no label value is blended. An output pixel whose centre lies
+outside the region reads 0. One whose centre lies inside is rasterised over its
+whole footprint, so on a reduced read an edge pixel whose footprint crosses the
+region edge can carry the label of an object lying only outside the region; at
+full resolution the clip is exact. Reads may overlap: each builds a label source of its own over the ThreadSafe store.
 
 **`MaskWriter`** adapts the scene to a `TileRasterSource` that reads each tile
 with `Scene::readResampledBlock` (pixels outside the scene are zero) and writes
@@ -635,6 +645,6 @@ internal code path can reach for it by accident.
 |---|---|---|
 | GeoJSON import | `storage::GeoJsonImporter` | An input, not a report; needs the vocabulary registry for UR-RES-19's policy (decision 3) |
 | ROI import | `storage::importRoiPolygon` | Feeds processing, not reporting (UR-IMG-5) |
-| Writing WSI formats | `slideio-converter` | Explicit non-goal in §15 |
+| Writing WSI formats: general or lossy conversion of whole-slide images | `slideio-converter` | Explicit non-goal in §15. Lossless label masks and processing maps are written here, by `RasterTiffWriter` and `MaskWriter` (7.6) |
 | Annotation editing | — | Explicit non-goal in §15; the library imports and exports, it does not edit |
 | Report templates, PDF, HTML | — | Not a requirement. UR-RES-9 and UR-RES-10 ask for tables a consumer analyses, not formatted documents |

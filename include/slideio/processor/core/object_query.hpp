@@ -122,6 +122,11 @@ public:
     /** @brief Destroys the query. */
     ~ObjectQuery();
 
+    // The filter setters, layer() to visibility(). A new filter added here must also be
+    // copied in reporting's label mask, QueryObjects::merge() in
+    // src/reporting/label_mask.cpp, which rebuilds the caller's query filter by filter;
+    // a filter it omits is silently dropped from every label mask.
+
     /**
      * @brief Restricts to one layer. A repeated call keeps the last value.
      * @param layer The layer.

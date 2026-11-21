@@ -452,7 +452,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   pyramidal OME-TIFF; Task 3 `makeLabelMaskSource`, a label-mask tile source
   driven by an object query; both are in the data library. Task 4 adds the
   `masks` engine module: `rasteriseLabels`, a lazy label-mask scene, and
-  `MaskWriter`, which writes any SlideIO scene through `RasterTiffWriter`.
+  `MaskWriter`, which writes a label mask or processing map, given as a SlideIO scene, through `RasterTiffWriter`.
   **In progress** on `feat/reporting-c`.
   - **User decisions (2026-11-21).**
     1. Masks live in the engine library, as the `masks` module, not in
@@ -473,6 +473,14 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     masks tests read every written file back through SlideIO's `OMETIFF`
     driver; rerun them, and recheck the OME-XML attributes the layout relies
     on (SDS 03 §3.8), whenever the SlideIO submodule moves.
+  - **Open (label-mask performance).** `makeLabelMaskSource` costs two SQLite
+    reads per admitted object per tile when the query has no `label()` filter
+    (`AnnotationStore::labelCount` and
+    `labelAt`, through the store's connection pool) and a copy of its geometry
+    (`ValueCursor` copies each `ObjectRecord` to relabel it). A dense mask, or a
+    reduced read whose tiles each cover many objects, pays this for every object
+    in every tile it meets. Possible fixes: read the effective first labels for a
+    tile's objects in one query, and relabel without copying the geometry.
   - **Open (fix single-tile level reads in SlideIO's OME-TIFF driver
     upstream; then drop the striped special case).** SlideIO stretches a level
     that fits in one tile: `LevelInfo::getTileRect`

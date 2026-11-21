@@ -35,7 +35,13 @@ namespace slideio::processor {
  * resolution and magnification are 0 (unknown); its name is empty. It has a single zoom
  * level: a block read at any output size (Scene::readResampledBlock) goes to the source
  * with that size and is rasterised at it directly, never resampled from a finer raster,
- * so every zoom is exact and no label value is blended. Pixels outside the region read 0.
+ * so every zoom is exact and no label value is blended.
+ *
+ * An output pixel whose centre lies outside the region reads 0. One whose centre lies
+ * inside is rasterised over its whole footprint, so on a reduced read (each output pixel
+ * covering several level-0 pixels) an edge pixel whose footprint crosses the region edge
+ * can carry the label of an object lying only outside the region. At full resolution
+ * every pixel is a single level-0 pixel and the clip is exact.
  *
  * Nothing is computed when the scene is created: the store is first queried when a block
  * is read, so a read sees the store as it is then. Each read queries only the objects that
