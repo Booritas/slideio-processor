@@ -193,6 +193,12 @@ void GeoJsonWriter::begin(const Provenance& provenance) {
 void GeoJsonWriter::writeFeature(const ObjectRecord& record, const char* layerName,
                                  const char* const* labelNames, const bool* labelIsWorkspaceLocal,
                                  int32_t labelCount) {
+    writeFeature(record, layerName, labelNames, labelIsWorkspaceLocal, labelCount, nullptr);
+}
+
+void GeoJsonWriter::writeFeature(const ObjectRecord& record, const char* layerName,
+                                 const char* const* labelNames, const bool* labelIsWorkspaceLocal,
+                                 int32_t labelCount, const ObjectId* parent) {
     if (!impl_ || impl_->state != Impl::State::Begun) {
         throw InvalidArgumentError("GeoJsonWriter::writeFeature: not begun, already ended, or moved from");
     }
@@ -238,6 +244,12 @@ void GeoJsonWriter::writeFeature(const ObjectRecord& record, const char* layerNa
     std::vector<char> id(static_cast<size_t>(oid.toString(nullptr, 0)) + 1);
     oid.toString(id.data(), static_cast<int32_t>(id.size()));
     w.String(id.data());
+    if (parent != nullptr) {
+        std::vector<char> pid(static_cast<size_t>(parent->toString(nullptr, 0)) + 1);
+        parent->toString(pid.data(), static_cast<int32_t>(pid.size()));
+        w.Key("parentId");
+        w.String(pid.data());
+    }
     w.Key("objectType");
     w.String("detection");
     w.Key("layer");

@@ -319,6 +319,38 @@ public:
                       const bool* labelIsWorkspaceLocal,
                       int32_t labelCount);
     /**
+     * @brief Writes one object as a Feature, with an optional parent id.
+     *
+     * Identical to the overload without `parent`, except that a non-null
+     * `parent` adds a "parentId" property, the parent's ObjectId::toString()
+     * text, immediately after "objectId". With a null `parent` the output is
+     * byte for byte the other overload's.
+     * @param record The object; its geometry must not be empty and every
+     * measurement value must be finite.
+     * @param layerName UTF-8 layer name; not null.
+     * @param labelNames The object's effective label names, in the set's fixed
+     * order; `labelCount` entries, none null. May be null when labelCount is 0.
+     * @param labelIsWorkspaceLocal Parallel flags, `labelCount` entries. May be
+     * null when labelCount is 0.
+     * @param labelCount Number of labels, at least 0. The first label, when
+     * there is one, is also written as the "classification".
+     * @param parent The object's parent, or null for none; written as "parentId".
+     * An invalid id is written as the text "invalid", because
+     * ObjectId::toString() never fails.
+     * @throws InvalidArgumentError Before begin(), after end(), when layerName
+     * is null, when labelCount is negative, when labelCount > 0 and an array or
+     * a name is null, when the geometry is empty, or when a measurement is not
+     * finite. Nothing is written in these cases.
+     * @throws IoError When writing fails.
+     * @throws std::bad_alloc When memory is exhausted.
+     */
+    void writeFeature(const ObjectRecord& record,
+                      const char* layerName,
+                      const char* const* labelNames,
+                      const bool* labelIsWorkspaceLocal,
+                      int32_t labelCount,
+                      const ObjectId* parent);
+    /**
      * @brief Closes the collection, flushes and checks the stream.
      * @throws InvalidArgumentError Before begin() or when already ended.
      * @throws IoError When the stream failed at any point since opening.

@@ -330,3 +330,48 @@ TEST(GeoJsonWriter, SameInputAndProvenanceGiveByteIdenticalFiles) {
     ASSERT_FALSE(a.empty());
     EXPECT_EQ(a, b);
 }
+
+TEST(GeoJsonWriter, ParentIdFollowsObjectId) {
+    ObjectRecord r = triangle(3); // anchor (0,0): id "3:0:0"
+    const ObjectId parent = ObjectId::fromAnchor(LayerId(2), Point64{7, 9});
+    auto path = uniqueTempPath("parent", ".geojson");
+    TempFileGuard guard(path);
+    {
+        GeoJsonWriter w(path.u8string().c_str());
+        w.begin(Provenance());
+        w.writeFeature(r, "layer", nullptr, nullptr, 0, &parent);
+        w.end();
+    }
+    const std::string doc = readFile(path);
+    EXPECT_NE(doc.find("\"objectId\":\"3:0:0\",\"parentId\":\"2:7:9\",\"objectType\":\"detection\""),
+              std::string::npos)
+        << doc;
+}
+
+TEST(GeoJsonWriter, NullParentMatchesTheOldOverload) {
+    const Provenance prov; // one instance: a default one records its construction time
+    ObjectRecord r = triangle(3);
+    r.measurements().set("area", 8, MeasurementUnit::SquarePixels);
+    const char* names[] = {"tumour"};
+    const bool local[] = {false};
+    auto oldPath = uniqueTempPath("oldov", ".geojson");
+    auto newPath = uniqueTempPath("newov", ".geojson");
+    TempFileGuard g1(oldPath);
+    TempFileGuard g2(newPath);
+    {
+        GeoJsonWriter w(oldPath.u8string().c_str());
+        w.begin(prov);
+        w.writeFeature(r, "nuclei", names, local, 1);
+        w.end();
+    }
+    {
+        GeoJsonWriter w(newPath.u8string().c_str());
+        w.begin(prov);
+        w.writeFeature(r, "nuclei", names, local, 1, nullptr);
+        w.end();
+    }
+    const std::string a = readFile(oldPath);
+    ASSERT_FALSE(a.empty());
+    EXPECT_EQ(a, readFile(newPath));
+    EXPECT_EQ(a.find("parentId"), std::string::npos);
+}

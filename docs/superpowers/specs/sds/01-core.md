@@ -1304,6 +1304,15 @@ public:
                       const char* const* labelNames,
                       const bool* labelIsWorkspaceLocal,
                       int32_t labelCount);
+    /// As above; a non-null `parent` adds `"parentId"` (its `toString()` text)
+    /// right after `"objectId"`. A null `parent` gives the output of the
+    /// overload above, byte for byte.
+    void writeFeature(const ObjectRecord& record,
+                      const char* layerName,
+                      const char* const* labelNames,
+                      const bool* labelIsWorkspaceLocal,
+                      int32_t labelCount,
+                      const ObjectId* parent);
     void end();
     int64_t featuresWritten() const noexcept;
 };
