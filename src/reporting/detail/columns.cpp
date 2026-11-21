@@ -102,20 +102,8 @@ ResolvedColumns resolveColumns(const ColumnSchema& schema, Store& store) {
         assertedHeld[stage.value()].insert(name);
     }
 
-    // The name list is shared with assertions. A name only ever asserted has its
-    // stage-qualified columns and is neither a row column nor a row twin, so it leaves
-    // `held`. Only asserted names are checked, and only when row columns are resolved,
-    // since each check may scan every row measurement.
-    const bool rowColumns =
-        s.allMeasurements || std::any_of(s.measurements.begin(), s.measurements.end(),
-                                         [](const ColumnSchema::Impl::Explicit& m) { return m.stage.empty(); });
-    if (rowColumns) {
-        std::set<std::string> assertedNames;
-        for (const auto& pair : assertedPairs) assertedNames.insert(pair.second);
-        for (const std::string& name : assertedNames) {
-            if (held.count(name) > 0 && !objects.hasRowMeasurementName(name.c_str())) held.erase(name);
-        }
-    }
+    // `held` is the store's whole name list, shared with assertions (ruling C): a name
+    // only later stages assert is also a row name, and its row column is empty.
 
     // One measurement to resolve: a row base name (stageName empty) or a stage's.
     struct Wanted {

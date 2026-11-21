@@ -220,9 +220,10 @@ public:
      * Store names ending in ".um" or ".um2" are skipped: they are calibrated twins, and
      * units() decides whether a twin column is written beside its base name. Row names
      * equal to a fixed column name (see measurement()) are skipped too. An asserted pair
-     * gives the column "<stage name>/<name>", as assertedMeasurement() does. A row
-     * column comes from the names the row measurements hold; a name only ever asserted
-     * gives no row column. Calling it twice is the same as once.
+     * gives the column "<stage name>/<name>", as assertedMeasurement() does. The row names
+     * are the store's whole name list, which assertions share: a name that only later
+     * stages assert also appears as a row column, empty in every row; its values are in
+     * the stage-qualified columns. Calling it twice is the same as once.
      * @return This schema.
      * @throws std::bad_alloc When memory is exhausted.
      */

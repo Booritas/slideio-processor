@@ -536,9 +536,6 @@ public:
     /// (SQLite BINARY collation). Pointers live as long as the store.
     int32_t     measurementNameCount() const;
     const char* measurementNameAt(int32_t index) const;
-    /// True when some object row holds a measurement of this name (the name
-    /// list above also holds names only ever asserted, 3.7).
-    bool        hasRowMeasurementName(const char* name) const;
 };
 ```
 
@@ -696,12 +693,7 @@ memcmp of the UTF-8 bytes. Each call reads a snapshot, so a write between two
 calls can shift indices. Returned pointers are interned in a set under a mutex,
 as `StageStateReader`'s are, and stay valid for the store's life. `IoError` on a
 closed store, `InvalidArgumentError` for an index out of range. `reporting` uses
-them to expand `allMeasurements()`. `hasRowMeasurementName` (reporting plan B)
-tells a name some object row holds from one only ever asserted (3.7): `SELECT 1
-FROM measurements WHERE name_id = … LIMIT 1`. `measurements` has no index on
-`name_id`, so a name no row holds costs a scan of every row measurement;
-`reporting` calls it only for asserted names. A null name is never held;
-`IoError` on a closed store.
+them to expand `allMeasurements()`.
 
 `totalObjectCount` and `objectCountInLayer` count every stored row, whatever
 its stage's status; the latter is 0 for an unknown layer. `discardStage`

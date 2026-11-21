@@ -859,7 +859,6 @@ classDiagram
         +objectCountInLayer(LayerId) int64_t
         +measurementNameCount() int32_t
         +measurementNameAt(int32_t) const char*
-        +hasRowMeasurementName(cstr) bool
     }
 
     class ObjectWriter {

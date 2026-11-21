@@ -433,27 +433,6 @@ TEST_F(AnnotationStoreTest, AssertedMeasurementColumnsAreListed) {
     EXPECT_THROW(annotations().assertedMeasurementColumnAt(0, stage, name), IoError);
 }
 
-TEST_F(AnnotationStoreTest, AssertedOnlyNamesAreNotRowMeasurementNames) {
-    ObjectRecord record = rec(cells, 0, 0, 4);
-    record.measurements().set("area", 16.0, MeasurementUnit::SquarePixels);
-    const ObjectId o = commit(a, {record})[0];
-    complete(a);
-    AnnotationWriterPtr w = annotations().writerForStage(c);
-    w->assertMeasurement(o, "positive_fraction", 0.5, MeasurementUnit::Dimensionless);
-    w->assertMeasurement(o, "area", 15.0, MeasurementUnit::SquarePixels);
-    w->flush();
-
-    // Both names are interned, but only "area" is on an object row.
-    ASSERT_EQ(store().objects().measurementNameCount(), 2);
-    EXPECT_TRUE(store().objects().hasRowMeasurementName("area"));
-    EXPECT_FALSE(store().objects().hasRowMeasurementName("positive_fraction"));
-    EXPECT_FALSE(store().objects().hasRowMeasurementName("never_written"));
-    EXPECT_FALSE(store().objects().hasRowMeasurementName(nullptr));
-
-    store().close();
-    EXPECT_THROW(store().objects().hasRowMeasurementName("area"), IoError);
-}
-
 TEST_F(AnnotationStoreTest, WriterBatchingAndLifecycle) {
     const std::vector<ObjectId> ids = commit(a, {rec(cells, 0, 0, 4), rec(cells, 10, 0, 4)});
     EXPECT_THROW(annotations().writerForStage(StageId(99)), InvalidArgumentError);

@@ -143,12 +143,13 @@ twin under the base name followed by `.um` or `.um2`.
   that does not end in `.um` or `.um2` and is not a fixed column name, in
   ascending byte order, after the explicit names and without duplicates. Storage
   lists the names with `ObjectStore::measurementNameCount/At` (SDS 03). That
-  list is shared with assertions, so a name some stage asserted is kept as a row
-  name (a row column, or a row twin) only when
-  `ObjectStore::hasRowMeasurementName` finds it on an object row; a name only
-  ever asserted gets its stage-qualified columns alone (below). Only asserted
-  names are checked, because the store has no index by name and the check of a
-  name no row holds scans every row measurement, once per such name per export.
+  list is shared with assertions (reporting plan B, ruling C): a name that only
+  later stages assert also appears as a row column, empty in every row; its
+  values are in the stage-qualified columns (below). Telling the two apart
+  would need a scan of every row measurement per name, since `measurements` has
+  no index by name. The same sharing lets a twin name only a stage asserted
+  (`n.um`) stand as the row twin of a row name `n` under `Calibrated`, whose row
+  column is then empty (open follow-up in `docs/project.md`).
 - Per base name `n`: `PixelsOnly` writes column `n`. `Calibrated` writes one
   column, named after the twin when the store holds that twin name (so the
   header says which unit it holds) and `n` with the pixel value otherwise.

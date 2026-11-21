@@ -785,21 +785,24 @@ TEST_F(CsvExportTest, LaterStageMeasurementsAreExported) {
     ASSERT_EQ(cell2.size(), 6u);
     EXPECT_EQ(Row(cell2.begin() + 2, cell2.end()), (Row{"100", "", "", ""}));
 
-    // allMeasurements: stage-qualified columns follow the row columns, by stage id.
+    // allMeasurements: stage-qualified columns follow the row columns, by stage id. The
+    // name only later stages assert is also a row column, empty in every row (ruling C).
     ColumnSchema all = idsOnly();
     all.units(UnitPolicy::PixelsOnly).allMeasurements();
     rows = parseCsv(exportAll(store(), out, all));
     ASSERT_EQ(rows.size(), 4u);
-    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area", "perimeter",
+    EXPECT_EQ(rows[0], (Row{"layer_id", "anchor_id", "area", "perimeter", "positive_fraction",
                             "ki67/positive_fraction", "er/positive_fraction"}));
     const Row allCell1 = rowOf(rows, cell1Id);
-    ASSERT_EQ(allCell1.size(), 6u);
-    EXPECT_EQ(allCell1[4], "0.25");
-    EXPECT_EQ(allCell1[5], "0.75");
+    ASSERT_EQ(allCell1.size(), 7u);
+    EXPECT_EQ(allCell1[4], "");
+    EXPECT_EQ(allCell1[5], "0.25");
+    EXPECT_EQ(allCell1[6], "0.75");
     const Row region = rowOf(rows, regionId);
-    ASSERT_EQ(region.size(), 6u);
+    ASSERT_EQ(region.size(), 7u);
     EXPECT_EQ(region[4], "");
     EXPECT_EQ(region[5], "");
+    EXPECT_EQ(region[6], "");
 }
 
 TEST_F(CsvExportTest, InvisibleAssertionIsEmpty) {

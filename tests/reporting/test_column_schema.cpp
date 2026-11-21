@@ -263,8 +263,10 @@ TEST_F(ColumnResolutionTest, AllMeasurementsAddsStageQualifiedColumns) {
     ColumnSchema calibrated;
     calibrated.allMeasurements();
     const detail::ResolvedColumns resolved = detail::resolveColumns(calibrated, store());
-    // A name only ever asserted gives no row column; a row name asserted too keeps its own.
-    EXPECT_EQ(names(resolved), withFixed({"area.um2", "perimeter", "ki67/perimeter", "ki67/positive_fraction"}));
+    // Ruling C: a name only later stages assert is also a row column, empty in every row;
+    // a row name asserted too keeps its row column beside the stage-qualified one.
+    EXPECT_EQ(names(resolved), withFixed({"area.um2", "perimeter", "positive_fraction", "ki67/perimeter",
+                                          "ki67/positive_fraction"}));
     const detail::ResolvedColumn& asserted = resolved.columns.back();
     EXPECT_EQ(asserted.kind, detail::ColumnKind::AssertedMeasurement);
     EXPECT_EQ(asserted.measurement, "positive_fraction");
@@ -276,7 +278,8 @@ TEST_F(ColumnResolutionTest, AllMeasurementsAddsStageQualifiedColumns) {
     ColumnSchema both;
     both.units(UnitPolicy::BothColumns).allMeasurements();
     EXPECT_EQ(names(detail::resolveColumns(both, store())),
-              withFixed({"area", "area.um2", "perimeter", "ki67/perimeter", "ki67/positive_fraction"}));
+              withFixed({"area", "area.um2", "perimeter", "positive_fraction", "ki67/perimeter",
+                         "ki67/positive_fraction"}));
 }
 
 TEST_F(ColumnResolutionTest, AllMeasurementsOrdersStagesByIdAndKeepsExplicitOnesFirst) {
@@ -287,14 +290,12 @@ TEST_F(ColumnResolutionTest, AllMeasurementsOrdersStagesByIdAndKeepsExplicitOnes
     ColumnSchema schema;
     schema.units(UnitPolicy::PixelsOnly).assertedMeasurement("alpha", "a").allMeasurements();
     EXPECT_EQ(names(detail::resolveColumns(schema, store())),
-              withFixed({"alpha/a", "area", "perimeter", "zeta/a", "zeta/b"}));
+              withFixed({"alpha/a", "a", "area", "b", "perimeter", "zeta/a", "zeta/b"}));
 }
 
 TEST_F(ColumnResolutionTest, AssertedTwinsFollowTheUnitPolicyPerStage) {
     assertUnder("ki67", {{"size", 4.0}, {"size.um2", 1.0}});
-    // No size twin from er; its "perimeter.um" twins no row value, so the row keeps
-    // "perimeter" under Calibrated.
-    assertUnder("er", {{"size", 5.0}, {"perimeter.um", 5.0}});
+    assertUnder("er", {{"size", 5.0}});  // no twin from this stage
 
     auto tail = [&](UnitPolicy policy) {
         ColumnSchema schema;
@@ -310,7 +311,7 @@ TEST_F(ColumnResolutionTest, AssertedTwinsFollowTheUnitPolicyPerStage) {
     ColumnSchema all;
     all.allMeasurements();
     EXPECT_EQ(names(detail::resolveColumns(all, store())),
-              withFixed({"area.um2", "perimeter", "ki67/size.um2", "er/size"}));
+              withFixed({"area.um2", "perimeter", "size.um2", "ki67/size.um2", "er/size"}));
 }
 
 TEST_F(ColumnResolutionTest, AssertedMeasurementSelectsOneStage) {
