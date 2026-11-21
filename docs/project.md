@@ -444,6 +444,24 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
        example `layer.um2` alone).
     Possible fix: let a base keep both twins, and write a baseless twin's own column
     under every policy.
+- [Reporting implementation plan C](superpowers/plans/2026-11-21-reporting-c.md) —
+  plan C for raster export and label masks. Task 1 adds storage's opt-in
+  OME-TIFF pyramid layout (`PyramidLayout::OmeSubIfds`, SDS 03 §3.8), which
+  SlideIO's `OMETIFF` driver opens with every level. **In progress** on
+  `feat/reporting-c`.
+  - **Open (fix single-tile level reads in SlideIO's OME-TIFF driver
+    upstream; then drop the striped special case).** SlideIO stretches a level
+    that fits in one tile: `LevelInfo::getTileRect`
+    (`extern/slideio/src/slideio/core/levelinfo.hpp:153`) gives a one-tile
+    level's tile the level's own size, the OME-TIFF driver returns the whole
+    512×512 TIFF tile (`TiffTools::readRegularTile`,
+    `extern/slideio/src/slideio/imagetools/tifftools.cpp:861`), and
+    `TileComposer::composeRect`
+    (`extern/slideio/src/slideio/core/tools/tilecomposer.cpp:55`) resizes the
+    tile onto the level. So the OME layout writes such a page as one strip per
+    plane. Once SlideIO crops instead, the strip case in
+    `src/storage/detail/pyramid_tiff_writer.cpp` can go; the masks tests pin
+    both the base-level and the coarsest-level case.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on
