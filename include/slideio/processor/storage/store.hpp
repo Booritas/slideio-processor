@@ -66,8 +66,11 @@ public:
     /**
      * @brief Opens or creates a store.
      *
-     * The store's format version is read before anything else, and a store of
-     * another version is refused rather than misread.
+     * The store's format version is read before anything else. Versions 1 and 2
+     * (storeFormatVersion()) are accepted, and a store of any other version is refused
+     * rather than misread. A ReadWrite open of a version 1 store migrates it to version 2
+     * in place, in one durable transaction, before the store is returned; a ReadOnly open
+     * leaves it at version 1.
      * @param path UTF-8 path of the store file.
      * @param mode CreateNew creates the file, which must not exist. ReadWrite and
      * ReadOnly open an existing file; ReadWrite takes the exclusive writer lock,
@@ -79,10 +82,11 @@ public:
      * @throws IoError When CreateNew finds the path existing; when ReadWrite or
      * ReadOnly finds it missing (the message names the path); when another handle,
      * in this process or another, holds the writer lock (the message names the path
-     * and, where it is known, "process <pid>"); or when SQLite fails (the cause is
-     * SQLite's message).
+     * and, where it is known, "process <pid>"); when the migration of a version 1
+     * store fails, which leaves the file at version 1; or when SQLite fails (the cause
+     * is SQLite's message).
      * @throws StoreFormatError When the file is not a store (storeVersion() 0) or has
-     * a format version other than storeFormatVersion(); the message names both
+     * a format version other than 1 or storeFormatVersion(); the message names both
      * versions.
      * @throws std::bad_alloc When memory is exhausted.
      */
@@ -101,8 +105,9 @@ public:
     const char* path() const noexcept;
     /**
      * @brief Returns the store's format version.
-     * @return The version read from the file, equal to storeFormatVersion(). Answers
-     * after close().
+     * @return The version of the file as opened: storeFormatVersion() (2), including
+     * for a version 1 store a writable open has migrated; 1 for a version 1 store opened
+     * ReadOnly. Answers after close().
      * @throws Nothing.
      */
     int32_t formatVersion() const noexcept;
