@@ -1,7 +1,7 @@
 // Requirements: UR-IMG-9, UR-IMG-4
 #include <pipeline/detail/plane_buffers.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 
 #include <slideio/processor/core/error.hpp>
 

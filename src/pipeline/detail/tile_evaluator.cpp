@@ -2,7 +2,7 @@
 #include <pipeline/detail/tile_evaluator.hpp>
 
 #include <pipeline/detail/fragment_merge.hpp>
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
 

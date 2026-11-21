@@ -5,7 +5,7 @@
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 #include <pipeline/test_support/test_operations.hpp>

@@ -64,7 +64,6 @@ add_executable(slideio_processor_pipeline_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/combine_partials.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/finishing_sink.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/half.cpp
-    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_mapping.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/level_table.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/pixel_size.cpp

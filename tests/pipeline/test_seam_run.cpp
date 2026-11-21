@@ -8,6 +8,7 @@
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
+#include <slideio/processor/pipeline/tile_grid.hpp>
 
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/restriction.hpp>
@@ -395,24 +396,28 @@ void expectRoiAtLevelOneKeepsItsAnchors(int64_t level0Side, int64_t level1Side, 
     ts::registerTestOperations();
     auto scene = ts::makeSyntheticScene({{level0Side, level0Side, 0, 0}, {level1Side, level1Side, 0, 0}},
                                         {slideio::DataType::DT_Byte}, blobs);
-    const double scale = static_cast<double>(level0Side) / static_cast<double>(level1Side);
     const std::vector<ObjectRecord> all = unrestrictedObjectsAtLevelOne(scene);
     const std::vector<ObjectRecord> expected =
         filtered(all, [&](const ObjectRecord& r) { return insideRect(roi, r.geometry().anchor()); });
 
     // Objects anchored outside the ROI, in a level pixel that holds one of its edge anchors: the
     // mask sets that pixel, so only the exact test refuses them.
-    const auto levelPixel = [&](int64_t v) { return static_cast<int64_t>(std::floor(static_cast<double>(v) / scale)); };
-    const int64_t px0 = levelPixel(roi.x);
-    const int64_t px1 = levelPixel(roi.x + roi.width - 1);
-    const int64_t py0 = levelPixel(roi.y);
-    const int64_t py1 = levelPixel(roi.y + roi.height - 1);
+    const LevelSelector selector(scene);
+    // The level pixel holding a level-0 point, as the restriction tests it.
+    const auto levelPixel = [&](Point64 p) {
+        const Rect64 pixel = selector.mapToLevel(Rect64{p.x, p.y, 1, 1}, 1);
+        return Point64{pixel.x, pixel.y};
+    };
+    const int64_t px0 = levelPixel(Point64{roi.x, roi.y}).x;
+    const int64_t px1 = levelPixel(Point64{roi.x + roi.width - 1, roi.y}).x;
+    const int64_t py0 = levelPixel(Point64{roi.x, roi.y}).y;
+    const int64_t py1 = levelPixel(Point64{roi.x, roi.y + roi.height - 1}).y;
     int64_t edgePixelOutside = 0;
     int64_t crossingSeam = 0;
     for (const ObjectRecord& r : all) {
         const Point64 a = r.geometry().anchor();
-        const int64_t lx = levelPixel(a.x);
-        const int64_t ly = levelPixel(a.y);
+        const int64_t lx = levelPixel(a).x;
+        const int64_t ly = levelPixel(a).y;
         edgePixelOutside += !insideRect(roi, a) && lx >= px0 && lx <= px1 && ly >= py0 && ly <= py1 ? 1 : 0;
         crossingSeam += insideRect(roi, a) && crossesSeam(r, 64, 0) ? 1 : 0;
     }

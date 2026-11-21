@@ -1,7 +1,7 @@
 // Requirements: UR-IMG-9, UR-IMG-4, UR-EXT-3
 #include <slideio/processor/core/error.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
 #include <pipeline/detail/scene_reader.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>

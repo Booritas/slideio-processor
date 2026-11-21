@@ -1523,9 +1523,13 @@ public:
     /// The same question asked in level-0 slide coordinates, which is the
     /// space every emitted polygon and every anchor lives in (1.3).
     /// `slidePoint` is a corner-lattice POINT, not a pixel index: it answers
-    /// "is the level pixel CONTAINING this slide point set", by
-    /// `floor(v / levelScale)` per ordinate. Contrast `Polygon::contains`,
-    /// which takes a PIXEL INDEX tested at its centre.
+    /// "is the level pixel whose mapped corners hold this slide point set":
+    /// per ordinate, the largest `L` with `llround(L * levelScale) <= v`, the
+    /// exact inverse of the library's level-to-level-0 mapping (an object
+    /// found at level pixel `P` has its anchor at `llround(P * levelScale)`,
+    /// so it is tested at `P`). False when that pixel does not fit int64.
+    /// Contrast `Polygon::contains`, which takes a PIXEL INDEX tested at its
+    /// centre.
     bool testLevel0(Point64 slidePoint) const noexcept;
 
     void clear() noexcept;

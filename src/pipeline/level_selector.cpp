@@ -3,7 +3,7 @@
 
 #include <slideio/processor/core/error.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/level_table.hpp>
 
 #include <algorithm>
@@ -60,16 +60,11 @@ int64_t seed(double estimate) {
     return static_cast<int64_t>(estimate);
 }
 
-// The largest level ordinate whose level-0 image is at most v. Only the seed comes
-// from a division; the forward mapping alone decides the answer, in integers, so it
-// is the same on every platform.
+// The largest level ordinate whose level-0 image is at most v; throws where it does not fit.
 int64_t lastAtOrBelow(int64_t v, double scale) {
-    int64_t level = seed(std::floor(static_cast<double>(v) / scale));
-    while (forward(level, scale) > v) {
-        --level;
-    }
-    while (forward(level + 1, scale) <= v) {
-        ++level;
+    int64_t level = 0;
+    if (!detail::levelOrdinateAtOrBelow(v, scale, level)) {
+        mappedRectDoesNotFit();
     }
     return level;
 }

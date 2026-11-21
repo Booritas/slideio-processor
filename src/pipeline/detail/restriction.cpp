@@ -3,6 +3,8 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <core/detail/level_mapping.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -99,8 +101,8 @@ RasterMask RestrictionFilter::buildMask(const Rect64& regionAtLevel) const {
 
 Rect64 RestrictionFilter::ownedRectAtLevel(int64_t tileIndex) const {
     // A tile owns the objects anchored in its level-0 rect, llround(level rect x scale), and
-    // tests each at the level pixel floor(anchor / scale). At a non-integer scale the first
-    // level-0 column or row of a tile can floor to the level pixel before it, whatever the halo.
+    // tests each at the level pixel levelPixelOf finds. At a non-integer scale the first
+    // level-0 column or row of a tile can map to the level pixel before it, whatever the halo.
     Rect64 owned = plan_.grid.tileRectAtLevel(tileIndex);
     if (plan_.levelScale != std::floor(plan_.levelScale)) {
         --owned.x;
@@ -164,11 +166,14 @@ bool RestrictionFilter::outsideRegion(int64_t tileIndex) const {
 }
 
 Point64 RestrictionFilter::levelPixelOf(Point64 anchorLevel0) const {
-    // The level pixel whose square holds the point, computed as RasterMask::testLevel0
-    // computes it (double division, then floor).
-    const double scale = plan_.levelScale;
-    return Point64{static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.x) / scale)),
-                   static_cast<int64_t>(std::floor(static_cast<double>(anchorLevel0.y) / scale))};
+    // The level pixel whose mapped corners hold the point, found as RasterMask::testLevel0
+    // finds it.
+    Point64 pixel{0, 0};
+    if (!levelOrdinateAtOrBelow(anchorLevel0.x, plan_.levelScale, pixel.x) ||
+        !levelOrdinateAtOrBelow(anchorLevel0.y, plan_.levelScale, pixel.y)) {
+        throw InvalidArgumentError("RestrictionFilter: an anchor lies outside the level's coordinate range");
+    }
+    return pixel;
 }
 
 int64_t RestrictionFilter::tileOf(Point64 anchorLevel0) const { return tileHolding(levelPixelOf(anchorLevel0)); }

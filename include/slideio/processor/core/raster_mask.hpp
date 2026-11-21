@@ -138,16 +138,16 @@ public:
      * @brief Tests the level pixel containing a level-0 slide point.
      *
      * `slidePoint` is a corner-lattice POINT (SDS 01 1.17), not a pixel index:
-     * it maps to level pixel (floor(x / levelScale), floor(y / levelScale)),
-     * the pixel whose square contains the point (a point on a pixel's left or
-     * top edge belongs to that pixel). Contrast Polygon::contains(), which
-     * takes a pixel index tested at its centre. Testing an object's anchor()
-     * with testLevel0() is the intended restriction test: the anchor pixel's
-     * square starts at the anchor point, so the anchor maps to the level pixel
-     * that holds the object's anchor pixel.
+     * it is tested at the level pixel whose mapped corners hold the point: the
+     * largest level pixel L with llround(L * levelScale) <= x, likewise y, the
+     * exact inverse of the library's level-to-level-0 mapping. Contrast
+     * Polygon::contains(), which takes a pixel index tested at its centre.
+     * Testing an object's anchor() with testLevel0() is the intended
+     * restriction test: an object found at level pixel P has its anchor at
+     * llround(P * levelScale), so it is tested at P.
      * @param slidePoint The point, in level-0 coordinates.
-     * @return test({floor(x / levelScale), floor(y / levelScale)}); false for
-     * a null mask.
+     * @return test() of that level pixel; false for a null mask, or when the
+     * level pixel does not fit int64.
      * @throws Nothing.
      */
     bool testLevel0(Point64 slidePoint) const noexcept;

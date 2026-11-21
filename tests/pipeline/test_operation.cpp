@@ -15,7 +15,7 @@
 #include <slideio/processor/pipeline/standard_measurements.hpp>
 
 #include <pipeline/detail/combine_partials.hpp>
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/tile_evaluator.hpp>

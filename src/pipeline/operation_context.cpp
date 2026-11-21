@@ -3,7 +3,7 @@
 
 #include <slideio/processor/core/error.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 
 #include <cstring>

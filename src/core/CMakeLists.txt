@@ -18,6 +18,7 @@ add_library(slideio-processor-core OBJECT
     provenance.cpp
     raster_mask.cpp
     detail/coverage.cpp
+    detail/level_mapping.cpp
     version.cpp
 )
 set_target_properties(slideio-processor-core PROPERTIES POSITION_INDEPENDENT_CODE ON)

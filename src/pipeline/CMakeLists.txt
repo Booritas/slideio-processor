@@ -17,7 +17,6 @@ add_library(slideio-processor-pipeline OBJECT
     detail/fragment_merge.cpp
     detail/fragment_spill.cpp
     detail/half.cpp
-    detail/level_mapping.cpp
     detail/level_table.cpp
     detail/operation_context_state.cpp
     detail/parameters_json.cpp

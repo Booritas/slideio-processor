@@ -109,7 +109,7 @@ TEST(RasterMask, AccessorsNullCopyMove) {
     EXPECT_EQ(m.level(), 2); EXPECT_EQ(m.levelScale(), 4.0);
     m.row(0)[0] = 255; EXPECT_TRUE(m.test({-3, 5}));
     EXPECT_TRUE(m.testLevel0({-12, 20})); EXPECT_TRUE(m.testLevel0({-9, 23}));
-    EXPECT_FALSE(m.testLevel0({-13, 20}));                            // floor(-13/4) = -4, outside
+    EXPECT_FALSE(m.testLevel0({-13, 20}));                            // pixel -4 maps to -16..-12, outside
     const RasterMask& cm = m; EXPECT_EQ(cm.row(0)[0], 255);
     RasterMask c(m); c.row(1)[1] = 255; EXPECT_EQ(m.setPixelCount(), 1); EXPECT_EQ(c.setPixelCount(), 2);
     RasterMask a; a = c; EXPECT_EQ(a.setPixelCount(), 2); a = n; EXPECT_TRUE(a.isNull());
@@ -587,4 +587,46 @@ TEST(RasterMask, SeamAgreementFarFromTheOrigin) {
         EXPECT_EQ(setInParts, whole.setPixelCount());
         EXPECT_GT(whole.setPixelCount(), 100);                          // the ring is ~2900 px^2
     }
+}
+
+// testLevel0 tests the level pixel whose mapped corners hold the point: the exact inverse of
+// llround(L * scale), which at a non-integer scale is not floor(x / scale).
+TEST(RasterMask, TestLevel0FindsThePixelWhoseMappedCornersHoldThePoint) {
+    // Pixel 126 spans level-0 [llround(302.4), llround(304.8)) = [302, 305).
+    RasterMask a(Rect64{120, 0, 10, 1}, 1, 2.4);
+    a.row(0)[126 - 120] = 255;
+    EXPECT_FALSE(a.testLevel0({301, 0}));
+    EXPECT_TRUE(a.testLevel0({302, 0}));
+    EXPECT_TRUE(a.testLevel0({303, 0}));
+    EXPECT_TRUE(a.testLevel0({304, 0}));
+    EXPECT_FALSE(a.testLevel0({305, 0}));
+
+    // llround(-2.5) = -3: pixel -1 starts at level-0 -3, and pixel -2 ends there.
+    RasterMask b(Rect64{-3, 0, 3, 1}, 1, 2.5);
+    b.row(0)[-1 - (-3)] = 255;
+    EXPECT_TRUE(b.testLevel0({-3, 0}));
+    EXPECT_FALSE(b.testLevel0({-4, 0}));
+}
+
+TEST(RasterMask, TestLevel0InvertsTheLevelMapping) {
+    for (const double scale : {1.0, 1.5, 2.0, 2.4, 2.5, 3.7, 4.0}) {
+        for (int64_t p = -300; p <= 300; ++p) {
+            const int64_t at = std::llround(static_cast<double>(p) * scale);
+            RasterMask row(Rect64{-301, 0, 603, 1}, 1, scale);
+            row.row(0)[p + 301] = 255;
+            ASSERT_TRUE(row.testLevel0({at, 0})) << "scale " << scale << ", pixel " << p;
+            ASSERT_FALSE(row.testLevel0({at - 1, 0})) << "scale " << scale << ", pixel " << p;
+            RasterMask column(Rect64{0, -301, 1, 603}, 1, scale);
+            column.row(p + 301)[0] = 255;
+            ASSERT_TRUE(column.testLevel0({0, at})) << "scale " << scale << ", pixel " << p;
+            ASSERT_FALSE(column.testLevel0({0, at - 1})) << "scale " << scale << ", pixel " << p;
+        }
+    }
+}
+
+TEST(RasterMask, TestLevel0OutOfRangeIsFalse) {
+    RasterMask m(Rect64{0, 0, 1, 1}, 1, 1e-6);
+    m.row(0)[0] = 255;
+    EXPECT_FALSE(m.testLevel0({std::numeric_limits<int64_t>::max(), 0}));
+    EXPECT_FALSE(m.testLevel0({std::numeric_limits<int64_t>::min(), 0}));
 }

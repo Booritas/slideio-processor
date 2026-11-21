@@ -3,6 +3,7 @@
 #include <slideio/processor/core/error.hpp>
 
 #include "core/detail/coverage.hpp"
+#include "core/detail/level_mapping.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,24 +23,6 @@ public:
     double scale = 0.0;
     std::vector<uint8_t> pixels;
 };
-
-namespace {
-
-// floor(v / scale) as int64, or false when it does not fit.
-bool floorDiv(int64_t v, double scale, int64_t& out) noexcept {
-    const double q = std::floor(static_cast<double>(v) / scale);
-    // 2^63 is exactly representable; anything at or beyond it cannot be a valid index.
-    constexpr double kLimit = 9223372036854775808.0;
-    if (!(q >= -kLimit && q < kLimit)) {
-        return false;
-    }
-    out = static_cast<int64_t>(q);
-    return true;
-}
-
-// Smallest accepted scale: keeps x / scale finite for every int64 x.
-
-} // namespace
 
 RasterMask::RasterMask() noexcept = default;
 
@@ -129,7 +112,8 @@ bool RasterMask::testLevel0(Point64 slidePoint) const noexcept {
         return false;
     }
     Point64 p{0, 0};
-    if (!floorDiv(slidePoint.x, impl_->scale, p.x) || !floorDiv(slidePoint.y, impl_->scale, p.y)) {
+    if (!detail::levelOrdinateAtOrBelow(slidePoint.x, impl_->scale, p.x) ||
+        !detail::levelOrdinateAtOrBelow(slidePoint.y, impl_->scale, p.y)) {
         return false;
     }
     return test(p);

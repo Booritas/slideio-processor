@@ -3,7 +3,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/tile_grid.hpp>
 
-#include <pipeline/detail/level_mapping.hpp>
+#include <core/detail/level_mapping.hpp>
 #include <pipeline/detail/level_table.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 
