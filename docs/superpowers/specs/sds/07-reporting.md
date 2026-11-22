@@ -244,6 +244,7 @@ public:
     CsvWriter& schema(const ColumnSchema&);
     CsvWriter& delimiter(char);                      // default ','
     CsvWriter& provenanceHeader(bool);               // default true, '#' lines
+    CsvWriter& slideId(const char* id);              // default null: the store's slide id
 
     ExportResult write(Store&, const ObjectQuery&);
     ExportResult write(Store&, const ObjectQuery&,
@@ -286,13 +287,15 @@ the two characters `\r` and `\n`, so each stays on one line. Nothing else is
 written — no export time, random value or address — so two exports of an
 unchanged store with the same query and schema are byte-identical (UR-QA-3).
 
-`slide_id` is the slide path as the store holds it (the workspace records the
-path it opened). A path may contain identifiers, such as an accession number, a
-medical record number, a patient's name or a user name, that count as PHI or
-personal data under HIPAA and GDPR; consumers who share an export must treat it
-accordingly. `provenanceHeader(false)` drops every provenance line, and with it
-the provenance UR-RES-11 asks for. Redaction is an open follow-up
-(`docs/project.md`, reporting plan A).
+`slide_id` is the id set with `slideId()`; without one (or after `slideId(nullptr)`)
+it is the store's slide identifier, which for a workspace is the slide path it
+opened. A path may contain identifiers, such as an accession number, a medical
+record number, a patient's name or a user name, that count as PHI or personal
+data under HIPAA and GDPR. `slideId("study-17")` writes an identifier of the
+caller's choosing instead, and `slideId("")` an empty one; the rest of the
+provenance travels unchanged (UR-RES-11). `SlideRun` always sets it (SDS 09
+§9.3), so no `SlideRun` export carries the path. `provenanceHeader(false)` drops
+every provenance line, and with it the provenance UR-RES-11 asks for.
 
 **Writing, progress, cancellation** (decision 8).
 
@@ -360,6 +363,7 @@ public:
     ~GeoJsonExporter();
 
     GeoJsonExporter& schema(const ColumnSchema&);
+    GeoJsonExporter& slideId(const char* id);        // default null: the store's slide id
 
     ExportResult write(Store&, const ObjectQuery&);
     ExportResult write(Store&, const ObjectQuery&,
@@ -437,12 +441,12 @@ renamed onto `path`. Progress, cancellation and failure behave as in
 any file at `path` untouched. `GeoJsonWriter`'s own `IoError` messages name the
 path; the exporter replaces them with messages that carry no path.
 
-**Provenance and PHI** (decision 7). `provenance.slideId` is the slide path as
-the store holds it. A path may contain identifiers, such as an accession
-number, a medical record number, a patient's name or a user name, that count as
-PHI or personal data under HIPAA and GDPR; consumers who share an export must
-treat it accordingly. Redaction is the open follow-up in `docs/project.md`
-(reporting plan A). Nothing else in the document varies between runs, so two
+**Provenance and PHI** (decision 7). `provenance.slideId` is the id set with
+`slideId()`, as for `CsvWriter` (§7.3); without one it is the store's slide
+identifier, which for a workspace is the slide path. A path may contain
+identifiers, such as an accession number, a medical record number, a patient's
+name or a user name, that count as PHI or personal data under HIPAA and GDPR;
+`SlideRun` sets the id, so its exports carry no path (SDS 09 §9.3). Nothing else in the document varies between runs, so two
 exports of an unchanged store with the same query and schema are byte-identical
 (UR-QA-3).
 

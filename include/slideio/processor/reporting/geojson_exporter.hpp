@@ -62,11 +62,12 @@ class Store;
  * Nothing else is written, in particular no export time, so two exports of an unchanged
  * store with the same query and schema are byte-identical (UR-QA-3).
  *
- * The provenance's slideId is the slide path as the store holds it. A path may contain
- * identifiers, such as an accession number, a medical record number, a patient's name
- * or a user name, that count as PHI or personal data under HIPAA and GDPR; consumers
- * who share an export must treat it accordingly. Redacting it is an open follow-up
- * (docs/project.md, reporting plan A).
+ * The provenance's slideId is the slide id set with slideId(); without one it is the
+ * store's slide identifier, which for a workspace store is the slide path. A path may
+ * contain identifiers, such as an accession number, a medical record number, a patient's
+ * name or a user name, that count as PHI or personal data under HIPAA and GDPR: set
+ * slideId() to an identifier of the caller's choosing (SlideRun does, empty by default)
+ * to keep the path out of the export.
  *
  * The export goes to "<path>.partial", renamed onto path, replacing any file there,
  * only when it completes. A cancelled or failed export removes the partial file and
@@ -103,6 +104,15 @@ public:
      * @throws std::bad_alloc When memory is exhausted; the exporter is unchanged.
      */
     GeoJsonExporter& schema(const ColumnSchema& schema);
+    /**
+     * @brief Sets the slide id the provenance's "slideId" carries in place of the store's
+     * slide identifier (default: the store's, which for a workspace is the slide path).
+     * @param id UTF-8 identifier, copied; empty writes an empty id; null restores the
+     * store's identifier.
+     * @return This exporter.
+     * @throws std::bad_alloc When memory is exhausted; the exporter is unchanged.
+     */
+    GeoJsonExporter& slideId(const char* id);
 
     /**
      * @brief Exports the objects the query selects, with no observer and no cancellation.

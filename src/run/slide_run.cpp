@@ -1,4 +1,4 @@
-// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9
+// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
 #include <slideio/processor/run/slide_run.hpp>
 
 #include <pipeline/detail/level_table.hpp>
@@ -158,6 +158,7 @@ public:
     Configuration configuration;
     ProgressObserver* observer = nullptr;
     CancellationToken token;
+    std::string slideId; // written in place of the slide path in CSV and GeoJSON
 
     WorkspacePtr openOrCreate() const;
     void declare(Workspace& workspace, std::vector<StageId>& stages) const;
@@ -294,11 +295,12 @@ ExportResult SlideRun::Impl::writeExport(Workspace& workspace, const ExportSpec&
                 for (int32_t m = 0; m < spec.measurementCount(); ++m) schema.measurement(spec.measurementAt(m));
             }
             CsvWriter writer(path.c_str());
-            writer.schema(schema);
+            writer.schema(schema).slideId(slideId.c_str());
             return writer.write(store, ObjectQuery().layer(layerOf(workspace, spec)), observer, token);
         }
         case ExportKind::GeoJson: {
             GeoJsonExporter writer(path.c_str());
+            writer.slideId(slideId.c_str());
             return writer.write(store, ObjectQuery().layer(layerOf(workspace, spec)), observer, token);
         }
         case ExportKind::LabelMask: {
@@ -389,6 +391,11 @@ SlideRun::~SlideRun() = default;
 
 SlideRun& SlideRun::progress(ProgressObserver* observer) noexcept {
     impl_->observer = observer;
+    return *this;
+}
+
+SlideRun& SlideRun::slideId(const char* id) {
+    impl_->slideId = id != nullptr ? id : "";
     return *this;
 }
 

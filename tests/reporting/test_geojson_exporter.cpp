@@ -8,6 +8,7 @@
 #include <slideio/processor/core/geojson.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/reporting/reporting.hpp>
 #include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/geojson_import.hpp>
@@ -586,4 +587,45 @@ TEST_F(GeoJsonExport, ObserverThrowingAtTheEndLeavesAnExistingFile) {
                  std::runtime_error);
     EXPECT_EQ(readText(out.path()), "previous export\n");
     EXPECT_FALSE(std::filesystem::exists(out.partial()));
+}
+
+// slideId() replaces the store's slide identifier in the provenance's "slideId"; null keeps it.
+TEST(GeoJsonExporter, SlideIdOverridesProvenance) {
+    StoreFilesGuard files;
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    Provenance provenance = store->provenance();
+    provenance.setSlideId("C:/scans/patient-123.svs");
+    store->setProvenance(provenance);
+    const LayerId layer = store->layers().declareSemantic("cells", store->layers().pixelLayer());
+    const StageId stage = store->stageStateWriter().declare("seg", "{}");
+    ObjectRecord record;
+    record.setLayer(layer);
+    record.setGeometry(square(0, 0, 4));
+    ObjectWriterPtr writer = store->objects().writerForStage(stage);
+    writer->emit(record);
+    writer->flush();
+    store->stageStateWriter().setStatus(stage, StageStatus::Complete);
+
+    auto slideIdOf = [](const std::string& text) {
+        rapidjson::Document doc;
+        doc.Parse(text.c_str());
+        EXPECT_FALSE(doc.HasParseError());
+        return std::string(doc["provenance"]["slideId"].GetString());
+    };
+
+    OutputPath kept;
+    GeoJsonExporter(kept.utf8().c_str()).write(*store, ObjectQuery());
+    EXPECT_EQ(slideIdOf(readText(kept.path())), "C:/scans/patient-123.svs");
+
+    OutputPath nulled;
+    GeoJsonExporter(nulled.utf8().c_str()).slideId(nullptr).write(*store, ObjectQuery());
+    EXPECT_EQ(readText(nulled.path()), readText(kept.path()));
+
+    OutputPath replaced;
+    GeoJsonExporter(replaced.utf8().c_str()).slideId("study-17").write(*store, ObjectQuery());
+    const std::string text = readText(replaced.path());
+    EXPECT_EQ(slideIdOf(text), "study-17");
+    EXPECT_EQ(text.find("patient-123"), std::string::npos) << text;
+    store->close();
 }

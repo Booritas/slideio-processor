@@ -1,4 +1,4 @@
-// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9
+// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
 #include "algorithm/support/disks_operation.hpp"
 #include "workspace/support/test_slide.hpp"
 
@@ -410,4 +410,36 @@ TEST(SlideRun, ExportsAreDeterministic) {
         ASSERT_FALSE(first.empty()) << file;
         EXPECT_EQ(withoutCreationTime(readFile(fs::u8path(otherOut) / file)), first) << file;
     }
+}
+
+// No export carries the slide's path, absolute or as given, or its file name: CSV and
+// GeoJSON write the run's slide id (empty by default) in place of the store's, and the
+// TIFF exports carry no identifier at all.
+TEST(SlideRun, ExportsCarryNoSlidePath) {
+    Fixture f;
+    const fs::path slide = fs::u8path(f.slide);
+    const std::vector<std::string> forbidden = {f.slide, fs::absolute(slide).u8string(),
+                                                fs::absolute(slide).generic_u8string(),
+                                                slide.filename().u8string()};
+    const std::string namedOut = (f.dir.path() / "named-out").u8string();
+    f.run(threeStageFile());
+    SlideRun(threeStageFile(), f.slide.c_str(), 0, f.workspace.c_str(), namedOut.c_str(), Configuration::defaults())
+        .slideId("study-17")
+        .run();
+
+    for (const std::string& directory : {f.out, namedOut}) {
+        int32_t files = 0;
+        for (const auto& entry : fs::directory_iterator(fs::u8path(directory))) {
+            ++files;
+            const std::string bytes = readFile(entry.path());
+            for (const std::string& text : forbidden) {
+                EXPECT_EQ(bytes.find(text), std::string::npos) << entry.path().filename().u8string();
+            }
+        }
+        EXPECT_EQ(files, 4);
+    }
+    EXPECT_NE(readFile(fs::u8path(f.out) / kCsv).find("# slide_id: \n"), std::string::npos);
+    EXPECT_NE(readFile(fs::u8path(f.out) / kGeoJson).find("\"slideId\":\"\""), std::string::npos);
+    EXPECT_NE(readFile(fs::u8path(namedOut) / kCsv).find("# slide_id: study-17\n"), std::string::npos);
+    EXPECT_NE(readFile(fs::u8path(namedOut) / kGeoJson).find("\"slideId\":\"study-17\""), std::string::npos);
 }

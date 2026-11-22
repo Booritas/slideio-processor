@@ -2149,6 +2149,7 @@ classDiagram
         +schema(ColumnSchema) CsvWriter
         +delimiter(char) CsvWriter
         +provenanceHeader(bool) CsvWriter
+        +slideId(cstr) CsvWriter
         +write(Store, ObjectQuery) ExportResult
         +write(Store, ObjectQuery, ProgressObserver*, CancellationToken) ExportResult
     }
@@ -2166,6 +2167,7 @@ classDiagram
         <<ThreadConfined>>
         +GeoJsonExporter(cstr path)
         +schema(ColumnSchema) GeoJsonExporter
+        +slideId(cstr) GeoJsonExporter
         +quPathCompatible(bool) GeoJsonExporter
         +coordinatePrecision(int32_t) GeoJsonExporter
         +write(Store, ObjectQuery) ExportResult
@@ -2466,6 +2468,7 @@ classDiagram
         +SlideRun(PipelineFile, cstr slidePath, int32_t sceneIndex, cstr workspacePath, cstr exportDirectory, Configuration)
         +progress(ProgressObserver*) SlideRun
         +cancellation(CancellationToken) SlideRun
+        +slideId(cstr) SlideRun
         +run() SlideRunResult
     }
 

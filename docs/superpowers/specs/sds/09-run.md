@@ -96,6 +96,7 @@ public:
              const Configuration& configuration);
     SlideRun& progress(ProgressObserver* observer) noexcept;
     SlideRun& cancellation(const CancellationToken& token) noexcept;
+    SlideRun& slideId(const char* id);                 // default ""
     SlideRunResult run();
 };
 ```
@@ -151,7 +152,18 @@ and refuses only null or empty paths and a negative scene index.
    | `rasterTiff` | `RasterTiffWriter`, named after the raster | `RasterRegistry::sourceFor(raster)` over the whole scene, at the scale of `writtenAtLevel` in the scene's level table |
 
    The label mask and the raster carry the slide's x pixel size, scaled to the
-   output, when the slide reports one. An export naming a layer or raster the
+   output, when the slide reports one.
+
+   **No slide path in any export.** The workspace records the slide path, and a
+   slide file name can carry patient identifiers (PHI under HIPAA, personal data
+   under GDPR; the design's anti-goals forbid slide paths in exports). Every CSV
+   and GeoJSON export is written with `slideId(id)` set to the run's
+   `slideId()`, empty by default, so its provenance carries that id in place of
+   the path (SDS 07 §7.3, §7.5); the rest of the provenance is unchanged. The
+   label-mask and raster TIFF exports carry no identifier at all: their OME-XML
+   holds only the image name (the raster's name, or empty for a mask) and the
+   pixel size. `SlideRun.ExportsCarryNoSlidePath` checks every export file's
+   bytes for the path as given, its absolute form and its file name. An export naming a layer or raster the
    workspace lacks, or a raster no stage has written, is an
    `InvalidArgumentError` naming it.
 
@@ -210,6 +222,5 @@ file (design §8):
 - **`run_batch(pipeline, slides, parallel=N)`** on a workstation, and a
   `status` command reading the status files on a cluster.
 - **Slide identifiers:** exports and the manifest name slides by an ID the
-  researcher supplies, never by file name. Today the CSV and GeoJSON exports
-  carry the store's provenance, whose slide identifier is the slide path
-  (SDS 07 §7.3); a batch run needs a way to replace it.
+  researcher supplies, never by file name. Each slide's id reaches its exports
+  through `SlideRun::slideId()` (§9.3).

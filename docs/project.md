@@ -408,7 +408,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     not exported (plan A behaviour, SDS 07 §7.2). `BothColumns` keeps both.
     Fix, if wanted: fall back to the pixel value in a separate column, or
     document `BothColumns` for mixed-calibration stores.
-  - **Open (PHI/PII: slide identifier in export provenance).** The CSV
+  - **Resolved for `SlideRun` exports (PHI/PII: slide identifier in export provenance).** The CSV
     provenance line `slide_id` is the slide path as the store holds it (the
     workspace stores the path it opened), and a path may carry identifiers
     (accession number, medical record number, patient name, user name) that are
@@ -418,6 +418,12 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     hash, so provenance can travel without the path (SDS 07 §7.3). Since
     reporting plan B the GeoJSON export's `provenance.slideId` carries the same
     path (SDS 07 §7.5). Belongs with the other pre-release PHI items.
+    `CsvWriter::slideId()` and `GeoJsonExporter::slideId()` now replace the
+    store's identifier with one the caller chooses (null keeps the store's, so
+    existing callers are unchanged), and `SlideRun` sets it to its own
+    `slideId()`, empty by default, so no `SlideRun` export carries the slide
+    path (Python bindings project 1, task 5). A direct caller of the writers
+    must still set it.
 - [Reporting implementation plan B](superpowers/plans/2026-11-21-reporting-b.md) —
   plan B for the `reporting` module: `GeoJsonExporter` (SDS 07 §7.5; UR-RES-8,
   UR-RES-11, UR-RES-15, UR-RES-18, UR-QA-3) streams a query's objects through
@@ -507,18 +513,20 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     file per slide replaced atomically, a batch manifest of files and outcomes,
     `run_batch(pipeline, slides, parallel=N)` and a `status` command, and slide
     identifiers the researcher supplies in place of file names.
-  - **Open (slide paths in exports).** The CSV and GeoJSON exports carry the
-    store's provenance, whose slide identifier is the slide path (SDS 07 §7.3).
-    A slide file name can carry patient identifiers (PHI under HIPAA, personal
-    data under GDPR), so a `SlideRun` export inherits that risk. Batch's slide
-    identifiers need a way to replace it; until then, treat the exports as
-    possibly identifying.
-  - **Open (store creation time in exports).** The same provenance carries the
+  - **Resolved for `SlideRun` exports (slide paths in exports).** The CSV and
+    GeoJSON writers took the slide identifier from the store's provenance, the
+    slide path, and a slide file name can carry patient identifiers (PHI under
+    HIPAA, personal data under GDPR; the design's anti-goals forbid slide paths
+    in exports). `SlideRun::slideId()`, empty by default, is now written in its
+    place (`CsvWriter::slideId()`, `GeoJsonExporter::slideId()`); the label-mask
+    and raster TIFF exports carry no identifier. Batch's researcher-supplied
+    slide identifiers pass through `SlideRun::slideId()`.
+  - **Accepted (store creation time in exports).** The provenance carries the
     store's creation time, so two `SlideRun`s of one file over one slide into
     two fresh workspaces give CSV and GeoJSON that differ in that one value;
     `SlideRun.ExportsAreDeterministic` blanks it before comparing. A second run
-    over the same workspace is byte-identical. If UR-QA-3 must hold across
-    workspaces byte for byte, the writers need an option to leave it out.
+    over the same workspace is byte-identical. Ruled acceptable (2026-11-22):
+    comparing two fresh workspaces may ignore only that value.
   - **Open (no multi-scene test slide).** `SlideRun.RefusesAWorkspaceOfAnotherSlide`
     checks the scene-index refusal with a scene index the single-scene test
     slide lacks; a test slide with two scenes would test it against a real

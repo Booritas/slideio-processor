@@ -1,4 +1,4 @@
-// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9
+// Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
 #pragma once
 
 /**
@@ -49,7 +49,8 @@ namespace slideio::processor {
  *    over the scene's whole level-0 rect and MaskWriter, and a raster with
  *    RasterTiffWriter over RasterRegistry::sourceFor(), for the whole scene, at the
  *    scale of the level it was written at. The mask and raster carry the slide's pixel
- *    size when it has one.
+ *    size when it has one. The CSV and GeoJSON provenance carries slideId(), empty by
+ *    default, in place of the slide path; the mask and raster carry no identifier.
  *
  * The progress observer and cancellation token are forwarded to every StageRunner and
  * export writer, and the token is also checked before each export. A cancelled run throws
@@ -114,6 +115,21 @@ public:
      * UR-EXE-4
      */
     SlideRun& cancellation(const CancellationToken& token) noexcept;
+    /**
+     * @brief Sets the slide id the CSV and GeoJSON exports carry in their provenance, in
+     * place of the slide path the workspace records (CsvWriter::slideId(),
+     * GeoJsonExporter::slideId()). Default "" (empty): no export carries the slide's path
+     * or name, which can hold patient identifiers. The label-mask and raster TIFF exports
+     * carry no identifier at all.
+     * @param id UTF-8 identifier of the caller's choosing, copied; null reads as "".
+     * @return This run, for chaining.
+     * @throws std::bad_alloc When allocation fails; the run is unchanged.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-RES-11
+     */
+    SlideRun& slideId(const char* id);
 
     /**
      * @brief Runs the file against the slide: validates, opens or creates the workspace,

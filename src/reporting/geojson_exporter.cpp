@@ -9,6 +9,7 @@
 #include <slideio/processor/core/ids.hpp>
 #include <slideio/processor/core/measurement.hpp>
 #include <slideio/processor/core/object_record.hpp>
+#include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/storage/annotation_store.hpp>
 #include <slideio/processor/storage/edge_store.hpp>
 #include <slideio/processor/storage/store.hpp>
@@ -36,8 +37,8 @@ constexpr const char* kWho = "GeoJsonExporter::write";
 class GeoJsonSink : public detail::ExportSink {
 public:
     GeoJsonSink(Store& store, const detail::ResolvedColumns& resolved, LabelPolicy labelPolicy,
-                bool parent)
-        : store_(store), labelPolicy_(labelPolicy), parent_(parent) {
+                bool parent, const std::string* slideId)
+        : store_(store), labelPolicy_(labelPolicy), parent_(parent), slideId_(slideId) {
         for (const detail::ResolvedColumn& column : resolved.columns) {
             if (column.kind == detail::ColumnKind::Measurement) {
                 measurements_.push_back(&column);
@@ -57,7 +58,9 @@ public:
             throw IoError((std::string(kWho) + ": cannot create the output file").c_str());
         }
         try {
-            writer_->begin(store_.provenance());
+            Provenance provenance = store_.provenance();
+            if (slideId_ != nullptr) provenance.setSlideId(slideId_->c_str());
+            writer_->begin(provenance);
         } catch (const IoError&) {
             throwWriteFailed();
         }
@@ -145,6 +148,7 @@ private:
     Store& store_;
     LabelPolicy labelPolicy_;
     bool parent_;
+    const std::string* slideId_; // null: the store's slide identifier
     std::vector<const detail::ResolvedColumn*> measurements_;
     bool readAsserted_ = false;
     std::filesystem::path partial_;
@@ -163,6 +167,7 @@ class GeoJsonExporter::Impl {
 public:
     std::string path;
     ColumnSchema schema = ColumnSchema().allMeasurements().units(UnitPolicy::BothColumns);
+    std::optional<std::string> slideId; // empty: the store's slide identifier
 };
 
 GeoJsonExporter::GeoJsonExporter(const char* path) {
@@ -174,6 +179,15 @@ GeoJsonExporter::GeoJsonExporter(const char* path) {
 }
 
 GeoJsonExporter::~GeoJsonExporter() = default;
+
+GeoJsonExporter& GeoJsonExporter::slideId(const char* id) {
+    if (id == nullptr) {
+        impl_->slideId.reset();
+    } else {
+        impl_->slideId = std::string(id);
+    }
+    return *this;
+}
 
 GeoJsonExporter& GeoJsonExporter::schema(const ColumnSchema& schema) {
     impl_->schema = schema;
@@ -190,7 +204,8 @@ ExportResult GeoJsonExporter::write(Store& store, const ObjectQuery& query,
         detail::resolveColumns(impl_->schema, store, detail::ColumnLayout::MeasurementsOnly);
     detail::requireDistinctNames(resolved, kWho);
     const ColumnSchema::Impl& settings = detail::ColumnSchemaAccess::impl(impl_->schema);
-    GeoJsonSink sink(store, resolved, settings.labelPolicy, settings.parent);
+    GeoJsonSink sink(store, resolved, settings.labelPolicy, settings.parent,
+                     impl_->slideId ? &*impl_->slideId : nullptr);
     return detail::runExport(store, query, std::filesystem::u8path(impl_->path), kWho, sink,
                              observer, token);
 }
