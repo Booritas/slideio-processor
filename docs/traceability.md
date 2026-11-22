@@ -486,3 +486,13 @@ IDs are those the tests under `tests/masks/` declare. Reporting plan C adds the 
 | UR-RES-7 | `tests/masks/test_label_scene.cpp` | Masks.LabelSceneIsLazyAndExact, Masks.LabelSceneClipsToItsRegion, Masks.LabelSceneRefusesBadArguments |
 | UR-RES-7 | `tests/masks/test_mask_writer.cpp` | Masks.WrittenLabelMaskReopensInSlideIO, Masks.ReducedLevelsKeepLabelValues, Masks.WritesAPipelineScene, Masks.RefusesMixedChannelTypes, Masks.ResolutionDefaultsToTheScenes, Masks.WriteIsDeterministic, Masks.WritesAMultiChannelScene |
 | UR-QA-3 | `tests/masks/test_mask_writer.cpp` | Masks.WriteIsDeterministic |
+
+## run
+
+IDs are those the tests under `tests/run/` declare. Slide run, Python bindings project 1, task 4 adds the `run` engine module with the pipeline file.
+
+| Requirement | Test file | Tests |
+|---|---|---|
+| UR-API-2 | `tests/run/test_pipeline_file.cpp` | PipelineFile.RoundTrips, PipelineFile.KeepsUnknownStageRecordKeys, PipelineFile.DefaultsApply, PipelineFile.RefusesUnsafeExportNames, PipelineFile.RefusesDuplicates, PipelineFile.RefusesUnknownReferences, PipelineFile.FromWorkspace |
+| UR-STG-4 | `tests/run/test_pipeline_file.cpp` | PipelineFile.RoundTrips, PipelineFile.KeepsUnknownStageRecordKeys, PipelineFile.DefaultsApply, PipelineFile.RefusesUnsafeExportNames, PipelineFile.RefusesDuplicates, PipelineFile.RefusesUnknownReferences, PipelineFile.FromWorkspace |
+| UR-RES-11 | `tests/run/test_pipeline_file.cpp` | PipelineFile.RoundTrips, PipelineFile.KeepsUnknownStageRecordKeys, PipelineFile.DefaultsApply, PipelineFile.RefusesUnsafeExportNames, PipelineFile.RefusesDuplicates, PipelineFile.RefusesUnknownReferences, PipelineFile.FromWorkspace |
