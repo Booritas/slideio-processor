@@ -110,7 +110,8 @@ public:
      * @return The file.
      * @throws InvalidArgumentError When the text is null or does not parse (the message
      * carries the offset); when formatVersion is not 1; when a member is missing or of
-     * the wrong type; when an export kind is unknown or an export file name is unsafe;
+     * the wrong type, or a string holding a NUL (`\u0000`); when an export kind is unknown
+     * or an export file name is unsafe (ExportSpec);
      * when layer, raster, stage or export-file names repeat (export files compared
      * case-insensitively); when a layer's parent is not an earlier layer; when a stage's
      * pipeline does not parse; when a stage's record names, in readsLayers, writesLayers,

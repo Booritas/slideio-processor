@@ -135,18 +135,59 @@ TEST(PipelineFile, DefaultsApply) {
     EXPECT_EQ(primitive.rasterAt(0).compressionValue(), RasterCompression::Lzw);
 }
 
-TEST(PipelineFile, RefusesUnsafeExportNames) {
-    for (const char* name : {"", ".", "..", "../x.csv", "C:x.csv", "a/b.csv", "a\\b.csv"}) {
-        PipelineFile f;
-        EXPECT_THROW(ExportSpec::csv(name, "tissue"), InvalidArgumentError) << name;
-        std::string escaped;
-        for (const char c : std::string(name)) {
-            if (c == '\\') escaped += '\\';
+// The JSON body of a file with one csv export of layer "tissue" to `name`, escaped for JSON.
+static std::string csvExportFile(const std::string& name) {
+    static const char* const hex = "0123456789abcdef";
+    std::string escaped;
+    for (const char c : name) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (c == '\\' || c == '"') {
+            escaped += '\\';
+            escaped += c;
+        } else if (byte < 0x20) {
+            escaped += "\\u00";
+            escaped += hex[byte >> 4];
+            escaped += hex[byte & 0xF];
+        } else {
             escaped += c;
         }
-        const std::string body = file("{\"name\":\"tissue\"}", "", "",
-                                      "{\"kind\":\"csv\",\"file\":\"" + escaped + "\",\"layer\":\"tissue\"}");
-        EXPECT_THROW(PipelineFile::fromJson(body.c_str()), InvalidArgumentError) << name;
+    }
+    return file("{\"name\":\"tissue\"}", "", "", "{\"kind\":\"csv\",\"file\":\"" + escaped + "\",\"layer\":\"tissue\"}");
+}
+
+TEST(PipelineFile, RefusesUnsafeExportNames) {
+    const std::vector<std::string> unsafe = {
+        "", ".", "..", "../x.csv", "C:x.csv", "a/b.csv", "a\\b.csv",
+        // The writers' own temporary suffix, and names Windows silently alters.
+        "x.partial", "x.PARTIAL", "x.csv.Partial", "x.csv.", "x.csv ", "x.",
+        // Control characters.
+        "a\tb.csv", "a\nb.csv", "a\x01" "b.csv", "a\x1f" "b.csv", "a\x7f" "b.csv",
+        // Windows device names, with or without an extension, in any case.
+        "CON", "con", "Prn.csv", "AUX.txt", "nul", "NUL.tar.gz", "COM1", "com9.csv", "LPT1", "lpt9.geojson",
+        "CON .csv"};
+    for (const std::string& name : unsafe) {
+        EXPECT_THROW(ExportSpec::csv(name.c_str(), "tissue"), InvalidArgumentError) << name;
+        EXPECT_THROW(PipelineFile::fromJson(csvExportFile(name).c_str()), InvalidArgumentError) << name;
+    }
+    // An embedded NUL cannot reach ExportSpec through a C string, but can through JSON;
+    // read as a C string, "a\u0000/b.csv" would end before its separator.
+    EXPECT_THROW(PipelineFile::fromJson(csvExportFile(std::string("a\0/b.csv", 8)).c_str()), InvalidArgumentError);
+    EXPECT_THROW(PipelineFile::fromJson(file("{\"name\":\"tis\\u0000sue\"}", "", "", "").c_str()),
+                 InvalidArgumentError);
+    std::string nulRequire = file("", "", "", "");
+    nulRequire.replace(nulRequire.find("mylab.models"), 12, "mylab\\u0000x");
+    EXPECT_THROW(PipelineFile::fromJson(nulRequire.c_str()), InvalidArgumentError);
+    EXPECT_THROW(PipelineFile::fromJson(
+                     file("{\"name\":\"tissue\"}", "", "",
+                          "{\"kind\":\"csv\",\"file\":\"t.csv\",\"layer\":\"tissue\",\"measurements\":[\"a\\u0000b\"]}")
+                         .c_str()),
+                 InvalidArgumentError);
+
+    // Names that merely resemble the refused ones stay valid.
+    for (const char* name : {"console.csv", "com10.csv", "com0.csv", "lpt.csv", "nuls.csv", "x.partial.csv",
+                             "partial", ".hidden.csv", "a b.csv", "CONTENT"}) {
+        EXPECT_NO_THROW(ExportSpec::csv(name, "tissue")) << name;
+        EXPECT_NO_THROW(PipelineFile::fromJson(csvExportFile(name).c_str())) << name;
     }
     EXPECT_THROW(ExportSpec::geoJson(nullptr, "tissue"), InvalidArgumentError);
     EXPECT_THROW(ExportSpec::rasterTiff("a:b", "prob"), InvalidArgumentError);

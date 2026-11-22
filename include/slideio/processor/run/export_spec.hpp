@@ -26,8 +26,12 @@ enum class ExportKind : int32_t {
  * or raster it reads.
  *
  * Built through a named constructor per kind. The file name is a plain name inside the
- * export directory the run is given: it is refused when empty, `.` or `..`, or when it
- * contains `/`, `\` or `:`. A CSV export may list measurement names; none means all of them.
+ * export directory the run is given: it is refused when empty, `.` or `..`; when it
+ * contains `/`, `\`, `:` or a control character; when it ends in `.` or a space (Windows
+ * would drop them) or in `.partial` in any case (the writers' temporary name); and when it
+ * is a Windows device name (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, in any case,
+ * with or without an extension). A CSV export may list measurement names; none means all
+ * of them.
  * Messages name the export kind and the member, never the value.
  * @par Thread-safety
  * ThreadConfined to build; const members are safe to call concurrently.

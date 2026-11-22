@@ -132,10 +132,19 @@ const rapidjson::Value* optionalMember(const rapidjson::Value& object, const cha
     return it == object.MemberEnd() ? nullptr : &it->value;
 }
 
+// True when a JSON string holds a NUL ("\u0000"): read as a C string it would end early, so
+// "a\u0000/b.csv" would pass for "a".
+bool hasEmbeddedNul(const rapidjson::Value& s) {
+    return std::strlen(s.GetString()) != static_cast<size_t>(s.GetStringLength());
+}
+
 std::string stringMember(const rapidjson::Value& object, const char* key, const std::string& context) {
     const rapidjson::Value& v = member(object, key, context);
     if (!v.IsString()) {
         fail(context + " has a '" + key + "' that is not a string");
+    }
+    if (hasEmbeddedNul(v)) {
+        fail(context + " has a '" + key + "' that holds a NUL character");
     }
     return std::string(v.GetString(), v.GetStringLength());
 }
@@ -411,8 +420,8 @@ PipelineFile PipelineFile::fromJson(const char* json) {
         Impl& impl = *file.impl_;
 
         for (const rapidjson::Value& v : arrayMember(doc, "requires", top).GetArray()) {
-            if (!v.IsString() || v.GetStringLength() == 0) {
-                fail("a 'requires' entry is not a non-empty string");
+            if (!v.IsString() || v.GetStringLength() == 0 || hasEmbeddedNul(v)) {
+                fail("a 'requires' entry is not a non-empty string without a NUL");
             }
             file.require(v.GetString());
         }
@@ -512,8 +521,8 @@ PipelineFile PipelineFile::fromJson(const char* json) {
                     fail(context + " has a 'measurements' that is not an array");
                 }
                 for (const rapidjson::Value& m : measurements->GetArray()) {
-                    if (!m.IsString() || m.GetStringLength() == 0) {
-                        fail(context + " has a measurement that is not a non-empty string");
+                    if (!m.IsString() || m.GetStringLength() == 0 || hasEmbeddedNul(m)) {
+                        fail(context + " has a measurement that is not a non-empty string without a NUL");
                     }
                     spec.measurement(m.GetString());
                 }

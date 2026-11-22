@@ -84,8 +84,12 @@ measurements by count and index; built through a named constructor per kind
 a missing, mistyped or unknown member; an unknown export kind; duplicate layer,
 raster, stage or export-file names (export files compared case-insensitively);
 a layer parent that is not an earlier layer; a stage whose `pipeline` does not
-parse with `PipelineSpec::fromJson`; an export `file` that is empty, `.`, `..`,
-or contains `/`, `\` or `:`; a stage record naming a layer or raster the file
+parse with `PipelineSpec::fromJson`; an export `file` that is empty, `.` or
+`..`, contains `/`, `\`, `:` or a control character, ends in `.`, a space or
+`.partial` (any case: the writers' temporary name), or is a Windows device name
+(CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, any case, with or without an
+extension); any string holding a NUL (`\u0000`), which read as a C string would
+end early; a stage record naming a layer or raster the file
 does not declare (the message names the stage and the member); and an export
 naming a layer or raster the file does not declare. Messages name stages,
 layers, rasters, export kinds and members, never values or paths.

@@ -4,7 +4,6 @@
 #include <slideio/processor/core/error.hpp>
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -49,10 +48,41 @@ void requireName(ExportKind kind, const char* value, const char* member) {
     }
 }
 
-// A plain file name: not empty, not "." or "..", and without a path separator or a drive colon.
+std::string foldCase(const std::string& text) {
+    std::string out = text;
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+// True for a name Windows reserves for a device: CON, PRN, AUX, NUL, COM1-9 or LPT1-9, in
+// any case, alone or before an extension ("nul.tar.gz"), trailing spaces ignored ("CON .csv").
+bool isDeviceName(const std::string& file) {
+    std::string stem = foldCase(file.substr(0, file.find('.')));
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul") return true;
+    return stem.size() == 4 && (stem.compare(0, 3, "com") == 0 || stem.compare(0, 3, "lpt") == 0) &&
+           stem[3] >= '1' && stem[3] <= '9';
+}
+
+// A plain file name, safe on every platform: not empty, not "." or ".."; without a path
+// separator, a drive colon or a control character; not ending in '.' or ' ' (Windows drops
+// them, so the file would land under another name); not ending in ".partial" in any case (the
+// writers' temporary name, SDS 07 §7.3); and not a Windows device name.
 void requirePlainFileName(ExportKind kind, const char* file) {
     requireName(kind, file, "file");
-    if (std::strcmp(file, ".") == 0 || std::strcmp(file, "..") == 0 || std::strpbrk(file, "/\\:") != nullptr) {
+    const std::string name = file;
+    bool control = false;
+    for (const char c : name) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (byte < 0x20 || byte == 0x7f) control = true;
+    }
+    const std::string suffix = ".partial";
+    const bool partial =
+        name.size() >= suffix.size() && foldCase(name.substr(name.size() - suffix.size())) == suffix;
+    if (name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos || control ||
+        name.back() == '.' || name.back() == ' ' || partial || isDeviceName(name)) {
         fail(kind, "has a 'file' that is not a plain file name");
     }
 }
