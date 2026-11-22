@@ -165,13 +165,31 @@ std::string withoutCreationTime(const std::string& text) {
     return std::regex_replace(csv, std::regex("\"createdAtUnixMs\": ?[0-9]+"), "\"createdAtUnixMs\":0");
 }
 
-// Every regular file under a directory, by relative path, with its size.
-std::map<std::string, uintmax_t> filesUnder(const fs::path& root) {
-    std::map<std::string, uintmax_t> files;
+// True for SQLite's WAL-mode sidecars of a store, which any open of it, a read-only one
+// included, may create: housekeeping, not data.
+bool isSqliteSidecar(const std::string& name) {
+    const auto endsWith = [&name](const std::string& suffix) {
+        return name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    return endsWith("-wal") || endsWith("-shm");
+}
+
+// Everything under a directory, by relative path: a file's whole contents, or "<dir>" for
+// a directory. SQLite's -wal and -shm sidecars are left out when `withSidecars` is false.
+std::map<std::string, std::string> contentsUnder(const fs::path& root, bool withSidecars) {
+    std::map<std::string, std::string> contents;
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
-        if (entry.is_regular_file()) files[fs::relative(entry.path(), root).u8string()] = entry.file_size();
+        const std::string name = fs::relative(entry.path(), root).u8string();
+        if (!withSidecars && isSqliteSidecar(name)) continue;
+        contents[name] = entry.is_directory() ? std::string("<dir>") : readFile(entry.path());
     }
-    return files;
+    return contents;
+}
+
+// Opens a workspace for writing and closes it: the last writer's close checkpoints and
+// removes SQLite's sidecars, so the store is left cleanly closed.
+void closeCleanly(const std::string& workspace) {
+    Workspace::open(workspace.c_str(), Configuration::defaults())->close();
 }
 
 // Every stage's stored record, by name.
@@ -300,10 +318,18 @@ TEST(SlideRun, RefusesAWorkspaceOfAnotherSlide) {
     Fixture f;
     f.run(threeStageFile());
     const std::string other = ts::writeTestSlide(f.dir.path() / "other.tif", 300, 300).u8string();
-    // The records first: a read-only open leaves SQLite's -wal and -shm sidecars behind.
-    const std::map<std::string, std::string> records = stageRecords(f.workspace);
-    const std::map<std::string, uintmax_t> files = filesUnder(fs::u8path(f.workspace));
     const std::string otherOut = (f.dir.path() / "other-out").u8string();
+    const fs::path root = fs::u8path(f.workspace);
+
+    // The records are read first (a read-only open may leave SQLite's sidecars), then the
+    // store is closed cleanly and every file and directory snapshotted, sidecars included:
+    // the refusal starts from a workspace with no sidecars, so any file it creates other
+    // than them shows.
+    const std::map<std::string, std::string> records = stageRecords(f.workspace);
+    closeCleanly(f.workspace);
+    std::map<std::string, std::string> before = contentsUnder(root, true);
+    for (const auto& entry : before) EXPECT_FALSE(isSqliteSidecar(entry.first)) << entry.first;
+    ASSERT_EQ(before.count("workspace.store"), 1u);
 
     // Another slide.
     try {
@@ -317,17 +343,21 @@ TEST(SlideRun, RefusesAWorkspaceOfAnotherSlide) {
             EXPECT_EQ(message.find(path), std::string::npos) << message;
         }
     }
-    EXPECT_EQ(filesUnder(fs::u8path(f.workspace)), files);
+    // Every file but the sidecars, and every directory, is as it was, with the same bytes.
+    EXPECT_EQ(contentsUnder(root, false), before);
     EXPECT_EQ(stageRecords(f.workspace), records);
     EXPECT_FALSE(fs::exists(fs::u8path(otherOut)));
 
     // The same slide, another scene. No test slide has two scenes, so the scene asked for
     // is one this slide lacks; the workspace's recorded scene index differs all the same.
+    closeCleanly(f.workspace);
+    before = contentsUnder(root, true);
+    for (const auto& entry : before) EXPECT_FALSE(isSqliteSidecar(entry.first)) << entry.first;
     EXPECT_THROW(SlideRun(threeStageFile(), f.slide.c_str(), 1, f.workspace.c_str(), otherOut.c_str(),
                           Configuration::defaults())
                      .run(),
                  InvalidArgumentError);
-    EXPECT_EQ(filesUnder(fs::u8path(f.workspace)), files);
+    EXPECT_EQ(contentsUnder(root, false), before);
     EXPECT_EQ(stageRecords(f.workspace), records);
     EXPECT_FALSE(fs::exists(fs::u8path(otherOut)));
 }

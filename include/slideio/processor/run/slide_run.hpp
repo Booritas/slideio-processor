@@ -31,9 +31,13 @@ namespace slideio::processor {
  * 2. **Open or create the workspace.** A workspace directory holding a store
  *    ("<workspace>/workspace.store", Workspace's layout) is first opened read-only to
  *    read its binding: when its slide is not the same file as the slide given
- *    (std::filesystem::equivalent) or its scene index differs, the run is refused and
- *    nothing is written. Otherwise it is opened for writing (Workspace::open). Any other
- *    path is created (Workspace::create).
+ *    (std::filesystem::equivalent) or its scene index differs, the run is refused. A
+ *    refused run leaves the store's contents, its stage records and every file other
+ *    than SQLite's "-wal" and "-shm" sidecars unchanged, and creates no other file or
+ *    directory: the read-only open may create or touch those sidecars, as any reader's
+ *    open does, but takes no writer lock, clears no scratch and migrates nothing.
+ *    Otherwise it is opened for writing (Workspace::open). Any other path is created
+ *    (Workspace::create).
  * 3. **Declare.** Each layer of the file is declared unless the workspace has one of
  *    that name, which is reused when it has the same kind and parent and refused
  *    otherwise; each raster likewise, compared by plane type and plane count. Then every
@@ -138,7 +142,8 @@ public:
      * @throws InvalidArgumentError When an operation is not registered (the message names
      * it and its stage) or its factory refuses its parameters, before anything is created;
      * when the workspace belongs to another slide or scene ("the workspace belongs to
-     * another slide or scene"), before anything is written; when a layer or raster of the
+     * another slide or scene"), leaving the workspace as the class describes (only SQLite's
+     * sidecars may change); when a layer or raster of the
      * workspace differs from the file's (the message names it); when a stage record does
      * not declare (as StageRegistry::declare()); or when an export names a layer or raster
      * the workspace does not hold, or a raster no stage has written.

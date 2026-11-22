@@ -120,10 +120,17 @@ and refuses only null or empty paths and a negative scene index.
    `Workspace::open` requires (Workspace's fixed layout, SDS 04 §4.1). An
    existing workspace is first opened with `Workspace::openReadOnly` to read its
    binding. When its slide is not `std::filesystem::equivalent` to `slidePath`,
-   or its scene index differs, the run is refused with
-   `InvalidArgumentError("SlideRun: the workspace belongs to another slide or scene")`
-   and nothing is written: no writer lock, no scratch clean-up, no store
-   migration. The message names neither path. Otherwise the workspace is opened
+   or its scene index differs, the run is refused with an `InvalidArgumentError`
+   whose message, "SlideRun: the workspace belongs to another slide or scene",
+   names neither path. A refused run leaves the store's contents,
+   its stage records and every file other than SQLite's `-wal` and `-shm`
+   sidecars unchanged, and creates no other file or directory. The sidecars are
+   SQLite's housekeeping, not data: the read-only open may create or touch them,
+   as any viewer's open does, but it takes no writer lock, clears no scratch
+   and migrates no store. `SlideRun.RefusesAWorkspaceOfAnotherSlide` snapshots
+   every file and directory of a cleanly closed workspace (no sidecars) and
+   compares their bytes after each refusal, sidecars excepted, with the stage
+   records. Otherwise the workspace is opened
    with `Workspace::open`. Any other path is made with `Workspace::create`.
 3. **Declare.** Each layer of the file is declared through `LayerLifecycle`,
    unless the workspace has a layer of that name: it is reused when it has the
