@@ -133,8 +133,8 @@ public:
     /// would otherwise do and discard.
     const RasterMask* mask() const noexcept;
 
-    /// Adds to the run's total of objects this call dropped as truncated; a
-    /// negative count throws InvalidArgumentError. ThreadSafe.
+    /// Adds to the run's total the objects this call dropped as truncated in its
+    /// view of the tile; a negative count throws InvalidArgumentError. ThreadSafe.
     void countTruncatedObjects(int64_t count);
 
     /// Records a fragment touching a tile seam, for cross-tile merging.
@@ -861,8 +861,8 @@ public:
     /// Eager: streams the whole slide or ROI.
     void runInto(ObjectSink&, ProgressObserver*, const CancellationToken&);
     void run(ProgressObserver*, const CancellationToken&);
-    /// What the last run's operations reported through countTruncatedObjects();
-    /// 0 before the first run.
+    /// What the last run's operations reported through countTruncatedObjects():
+    /// one per dropped tile view, not per distinct object; 0 before the first run.
     int64_t truncatedObjectCount() const noexcept;
 
     int32_t levelCount() const;
@@ -1472,8 +1472,16 @@ directory.
 reports it with `OperationContext::countTruncatedObjects(count)`. The count
 adds to an atomic member of the run's counters, which every worker of the run
 shares and the start of each run resets, so the total is the sum over all tiles
-and workers. Only the final pass counts: in a global-context accumulation pass
-and in a lazy read the call validates its argument and drops it. A negative
+and workers. Only the final pass counts, tiles a restricted run evaluates on
+demand included (they belong to the final pass). In a global-context
+accumulation pass the context has no counter, so the call validates its
+argument and drops it; a lazy read (a block of `Pipeline::asScene()`) counts
+into run counters of its own, which it discards. The total counts dropped tile
+views, not distinct objects: an operation reports what it dropped in one
+tile's view, so each truncated object counts at least once, one dropped in
+several tiles' views (`LabelImageOperation`: a part of it whose own anchor
+another tile owns) counts once per view, and the figure depends on the tile
+size; 0 means nothing was dropped. A negative
 count throws `InvalidArgumentError`, which fails the run as any operation error
 does (a `TileError` naming the operation). `Pipeline::truncatedObjectCount()`
 reads the total after `runInto` or `run` and is 0 before the first run; it
@@ -1504,7 +1512,8 @@ other tile seeing the region ignores it, so it is emitted once, whole, through
 `objectSink()`. The tile filter's own anchor test then admits it as it does every
 single-tile object. A region reaching a side of the halo rect that lies strictly
 inside the level may continue beyond what the tile saw: it is dropped and
-counted with `countTruncatedObjects`. A side on or beyond the level's edge never
+counted with `countTruncatedObjects`, once per tile view that drops a part of
+it (see **Truncated objects** above). A side on or beyond the level's edge never
 truncates, and labels predicted beyond the level are cleared first, so an object
 at the level's edge is stored cut at the edge and is complete. The halo is thus
 the largest object extent, below and beside its anchor, the operation delivers;

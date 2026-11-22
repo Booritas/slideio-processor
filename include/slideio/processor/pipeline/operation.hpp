@@ -437,10 +437,20 @@ public:
      *
      * An operation that drops an object it cannot deliver whole, because the
      * object touches a side of its halo rect that lies inside the level, adds
-     * the number of such objects here. The run sums the counts over every tile
-     * and worker and reports the total as Pipeline::truncatedObjectCount().
-     * Only the final pass counts: in a global-context accumulation pass and in
-     * a lazy read the count is validated and dropped.
+     * the number it dropped in this call's view of the tile. The run sums the
+     * counts over every tile and worker and reports the total as
+     * Pipeline::truncatedObjectCount(). The total is therefore a count of
+     * dropped tile views, not of distinct objects: each truncated object counts
+     * at least once, but an object several tiles see in part may count once per
+     * tile that drops it, so the figure depends on the tile size. 0 means
+     * nothing was dropped.
+     *
+     * Only the final pass counts, including a tile a restricted run evaluates
+     * on demand (one it skipped, read again to complete an object), which
+     * belongs to that pass. A global-context accumulation pass keeps no count:
+     * the call is validated and dropped. A lazy read (a block read from
+     * Pipeline::asScene()) counts into a total of its own that is discarded,
+     * so it never reaches Pipeline::truncatedObjectCount().
      * @param count Objects dropped; not negative. Zero is allowed.
      * @throws InvalidArgumentError When @p count is negative; the run then
      * fails as any operation error does.

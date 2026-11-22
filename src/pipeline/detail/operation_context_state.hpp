@@ -50,8 +50,9 @@ struct OperationContextState {
     int64_t tileIndex = -1;
     /// The seam merger's entry point; empty when the run has none.
     SeamFragmentCallback seamFragment;
-    /// The run's total of objects operations dropped as truncated; null in a pass or
-    /// a lazy read that keeps no count, where countTruncatedObjects() validates and drops.
+    /// The run's total of objects operations dropped as truncated, one per dropped tile
+    /// view; null in an accumulation pass, where countTruncatedObjects() validates and
+    /// drops. A lazy read points it at a total of its own, which it discards.
     std::atomic<int64_t>* truncatedCounter = nullptr;
 };
 

@@ -129,6 +129,10 @@ public:
     /**
      * @brief Returns the objects a stage's operations dropped as truncated
      * (StageRunner::truncatedObjects()).
+     *
+     * One per dropped tile view, not per distinct object: each truncated object
+     * counts at least once, one dropped in several tiles' views counts once per
+     * view, and the figure depends on the tile size. 0 means nothing was dropped.
      * @param index Position in file order, from 0 to stageCount() - 1.
      * @return The count; 0 for a stage that did not run.
      * @throws InvalidArgumentError When index is out of range.

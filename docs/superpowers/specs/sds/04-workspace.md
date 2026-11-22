@@ -952,7 +952,10 @@ dangerous one.
 are 0 before `run()` and after a failed run. `truncatedObjects()` is the
 pipeline's `truncatedObjectCount()` (SDS 05, 5.5), the objects operations dropped
 as truncated, read after the run; it is 0 before `run()` and after a failed run,
-and each run reports its own count.
+and each run reports its own count. It counts dropped tile views, not distinct
+objects: each truncated object counts at least once, one dropped in several
+tiles' views counts once per view, and the figure depends on the tile size; 0
+means nothing was dropped.
 
 **The restriction is resolved per tile, never whole.** `makeLayerMaskSource`
 (`01-core.md` 1.9) hands the pipeline an object that answers one tile at a

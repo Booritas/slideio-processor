@@ -222,7 +222,9 @@ Copyable, pimpl, count-and-index accessors:
 - per stage, in file order: `stageName`, `stageRan` (false when it was
   `Complete` and current), `stageObjectsWritten` and `stageTruncatedObjects`
   (`StageRunner::objectsWritten()` and `truncatedObjects()` of its run; 0 when
-  it did not run);
+  it did not run). The truncated count is one per dropped tile view, not per
+  distinct object (SDS 05, 5.5): at least one per truncated object, possibly
+  more, depending on the tile size; 0 means nothing was dropped;
 - per export, in file order: `exportFile` (the plain name of the file) and
   `exportBytes` (`ExportResult::bytesWritten()`, the file's size).
 

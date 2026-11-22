@@ -42,7 +42,12 @@ namespace slideio::processor {
  *    the analysis level may continue beyond what the tile saw. It is dropped
  *    and reported through OperationContext::countTruncatedObjects(), which the
  *    run sums as Pipeline::truncatedObjectCount(). A side on or beyond the
- *    level's edge never truncates.
+ *    level's edge never truncates. The count is one per region dropped in one
+ *    tile's view, not per object: an object larger than the halo allows may
+ *    show, in another tile's view, a part whose own anchor that tile owns, and
+ *    that part is dropped and counted too. So each truncated object counts at
+ *    least once, possibly more, and the figure depends on the tile size; 0
+ *    means nothing was dropped.
  * 6. Every other owned region is emitted whole through the context's object
  *    sink on the target layer, with `area` and `perimeter` in square level-0
  *    pixels and level-0 pixels, and `area.um2` and `perimeter.um` when the
@@ -204,7 +209,7 @@ public:
      * as the class describes.
      * @param context The tile's context.
      * @throws InternalError When the output is not one `Int32` plane over the
-     * tile rect.
+     * tile rect, or when the halo rect does not contain the tile rect.
      * @throws InvalidArgumentError When the halo rect has too many pixels to
      * label (2^31 or more).
      * @throws Whatever predictLabels() throws.

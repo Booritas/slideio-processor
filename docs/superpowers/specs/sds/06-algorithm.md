@@ -1079,7 +1079,10 @@ Its `apply()`:
 5. keeps the region only when the anchor lies in the half-open tile rect;
 6. drops a kept region that touches a side of the halo rect lying strictly
    inside the level, counting it with `countTruncatedObjects()`; a side on the
-   level's edge does not count;
+   level's edge does not count. The count is per region dropped in this tile's
+   view: another tile may see a part of the same object whose own anchor it
+   owns and drop and count that too, so a truncated object counts at least
+   once and the total depends on the tile size (SDS 05, 5.5);
 7. emits every other kept region whole through the object sink
    (`detail::emitWholeRegions`, which shares `emitRegions`' body), never as a
    seam fragment, with `area` and `perimeter` and, on a calibrated scene,
