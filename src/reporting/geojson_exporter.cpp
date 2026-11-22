@@ -33,7 +33,7 @@ constexpr const char* kWho = "GeoJsonExporter::write";
 }
 
 // Streams features through GeoJsonWriter into the partial file the driver names. The
-// writer's own IoError messages name the path, so they are replaced by path-free ones.
+// writer's own IoError messages are replaced by ones that name the output file by its role.
 class GeoJsonSink : public detail::ExportSink {
 public:
     GeoJsonSink(Store& store, const detail::ResolvedColumns& resolved, LabelPolicy labelPolicy,

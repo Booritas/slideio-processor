@@ -227,10 +227,10 @@ lock.
   POSIX delete semantics a removed lock file stays delete-pending; reopening it
   fails and `open` throws, which fails safe and never yields two writers.
 
-**Error messages name the store path**, as C-6 requires, and paths therefore
-appear in exceptions and logs. Callers should not put patient identifiers in
-store paths or file names, since anything there reaches error reports and log
-files (HIPAA, GDPR).
+**Error messages name the store by its role**, never its path, as C-6 requires,
+so paths appear in neither exceptions nor logs. The path accessors still return
+paths, so callers should still keep patient identifiers out of store paths and
+file names (HIPAA, GDPR).
 
 ## 3.3 Layer registry — `storage/layer_registry.hpp`
 
@@ -2133,7 +2133,7 @@ above, saturated at the `int32_t` maximum), `policyApplied`
 **first feature with supported geometry**. A geometry error on that feature
 propagates as `InvalidArgumentError`; it does not fall through to a later
 feature. It throws `InvalidArgumentError` for a null path and for a file with no
-such feature (`importRoiPolygon: '<path>' holds no polygon`), and `IoError` when
+such feature (`importRoiPolygon: the file holds no polygon`), and `IoError` when
 the file cannot be opened.
 
 **What import does not do.** It places every feature in one target layer and

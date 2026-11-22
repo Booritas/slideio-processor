@@ -104,8 +104,8 @@ public:
 // The route by which a handle that may outlive its Store (an ObjectWriterPtr) reaches
 // the StoreImpl. Shared (shared_ptr) between the store and such handles. close() first
 // flushes the live clients, then detaches the gate, waiting for calls already inside
-// with() to return; from then on with() throws IoError "<operation>: store is closed
-// ('<path>')" and never touches the StoreImpl again.
+// with() to return; from then on with() throws IoError "<operation>: store is closed"
+// and never touches the StoreImpl again.
 class StoreGate {
 public:
     StoreGate(StoreImpl* store, std::string path) : store_(store), path_(std::move(path)) {}
