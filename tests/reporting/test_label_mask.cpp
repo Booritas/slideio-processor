@@ -173,7 +173,9 @@ TEST_F(LabelMaskTest, ScaledTilesMatchTheirLevel) {
             const int32_t value = at(coarse, i, j, kSide / 2);
             const bool oddObject = 2 * i >= 2 && 2 * i < 12 && 2 * j >= 44 && 2 * j < 54;
             if (oddObject) {
-                if (sample != 0) EXPECT_EQ(value, sample) << i << "," << j;
+                if (sample != 0) {
+                    EXPECT_EQ(value, sample) << i << "," << j;
+                }
                 ++odd;
             } else {
                 EXPECT_EQ(value, sample) << i << "," << j;

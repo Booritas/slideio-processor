@@ -190,8 +190,16 @@ TEST_F(RasterTiffWriterTest, NonIntegerScaleTilesTheRegionContiguously) {
             for (int64_t tx = 0; tx < tilesX; ++tx) {
                 const size_t k = static_cast<size_t>(ty * tilesX + tx);
                 const Rect64& r = spy.rects[k];
-                if (tx == 0) EXPECT_EQ(r.x, odd.x); else EXPECT_EQ(r.x, spy.rects[k - 1].right());
-                if (ty == 0) EXPECT_EQ(r.y, odd.y); else EXPECT_EQ(r.y, spy.rects[k - static_cast<size_t>(tilesX)].bottom());
+                if (tx == 0) {
+                    EXPECT_EQ(r.x, odd.x);
+                } else {
+                    EXPECT_EQ(r.x, spy.rects[k - 1].right());
+                }
+                if (ty == 0) {
+                    EXPECT_EQ(r.y, odd.y);
+                } else {
+                    EXPECT_EQ(r.y, spy.rects[k - static_cast<size_t>(tilesX)].bottom());
+                }
                 EXPECT_EQ(spy.sizes[k].first, std::min<int64_t>(512, w - tx * 512));
                 EXPECT_EQ(spy.sizes[k].second, std::min<int64_t>(512, h - ty * 512));
             }
