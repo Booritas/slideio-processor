@@ -68,8 +68,10 @@ Image applyDirectRaw(Operation& op, const std::vector<DataType>& inputTypes,
 
 /// Runs Pipeline::run over @p scene with tile size tileSize x tileSize and
 /// @p workers workers, and assembles the analysis level from the raster tiles.
+/// With @p bindObjects, objectsLayer() is bound as "objects", so a chain ending
+/// in an operation producing objects runs; its objects are discarded.
 Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
-               int32_t workers);
+               int32_t workers, bool bindObjects = false);
 
 /// The layer applyDirectObjects() emits into and runEagerObjects() binds as
 /// "objects".

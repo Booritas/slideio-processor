@@ -318,6 +318,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.level = plan_.level;
         state.tileRectAtLevel = outputRect;
         state.haloRectAtLevel = currentRect;
+        state.levelRectAtLevel = plan_.levelRect;
         state.tileRect = rectToLevel0(outputRect, plan_.levelScale);
         state.haloRect = rectToLevel0(currentRect, plan_.levelScale);
         state.levelScale = plan_.levelScale;

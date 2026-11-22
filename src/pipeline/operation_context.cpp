@@ -90,6 +90,10 @@ Rect64 OperationContext::haloRectAtLevel() const noexcept {
     return impl_->state.haloRectAtLevel;
 }
 
+Rect64 OperationContext::levelRectAtLevel() const noexcept {
+    return impl_->state.levelRectAtLevel;
+}
+
 Rect64 OperationContext::tileRect() const noexcept {
     return impl_->state.tileRect;
 }

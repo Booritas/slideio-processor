@@ -65,16 +65,22 @@ BlockView measuredPlanes(const OperationContext& context, int32_t first, const c
                      static_cast<int32_t>(planes.size()));
 }
 
-void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
-                 const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys) {
+namespace {
+
+// The body of emitRegions() and emitWholeRegions(): @p labels covers @p area at
+// the level; only regions r with chosen[r] set are measured and emitted (every
+// region when @p chosen is null); with @p whole, none goes to the seam merger.
+void emitFrom(OperationContext& context, const int32_t* labels, int64_t stride, const Rect64& area,
+              const TracedRegions& traced, const uint8_t* chosen, bool whole, const BlockView& input,
+              int32_t firstIntensityPlane, const int64_t* joinKeys) {
     const std::vector<TracedRegion>& regions = traced.regions;
     if (regions.empty()) {
         return;
     }
-    const Rect64 tile = context.tileRectAtLevel();
     const Rect64 halo = context.haloRectAtLevel();
-    const int64_t offsetX = tile.x - halo.x;
-    const int64_t offsetY = tile.y - halo.y;
+    const int64_t offsetX = area.x - halo.x;
+    const int64_t offsetY = area.y - halo.y;
+    const auto isChosen = [chosen](size_t region) { return chosen == nullptr || chosen[region] != 0; };
     const int32_t first = std::max<int32_t>(firstIntensityPlane, 0);
     const int32_t planes = std::max<int32_t>(input.planeCount() - first, 0);
 
@@ -88,15 +94,15 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
     }
     if (planes > 0) {
         const std::vector<int32_t>& regionOfLabel = traced.regionOfLabel;
-        for (int64_t y = 0; y < tile.height; ++y) {
+        for (int64_t y = 0; y < area.height; ++y) {
             const int32_t* row = labels + y * stride;
-            for (int64_t x = 0; x < tile.width; ++x) {
+            for (int64_t x = 0; x < area.width; ++x) {
                 const int32_t label = row[x];
                 if (label <= 0 || static_cast<size_t>(label) >= regionOfLabel.size()) {
                     continue;
                 }
                 const int32_t region = regionOfLabel[static_cast<size_t>(label)];
-                if (region < 0) {
+                if (region < 0 || !isChosen(static_cast<size_t>(region))) {
                     continue;
                 }
                 IntensityPartial* own = &partials[static_cast<size_t>(region) * static_cast<size_t>(planes)];
@@ -110,17 +116,20 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
         }
     }
 
-    // One buffer, as long as the longest ring, maps every ring in turn.
+    // One buffer, as long as the longest ring emitted, maps every ring in turn.
     int32_t longest = 0;
     for (const TracedRing& ring : traced.rings) {
-        longest = std::max(longest, ring.count);
+        if (isChosen(static_cast<size_t>(ring.region))) {
+            longest = std::max(longest, ring.count);
+        }
     }
     std::vector<Point64> mapped(static_cast<size_t>(longest));
     ObjectSink* sink = context.objectSink();
     for (size_t r = 0; r < regions.size(); ++r) {
         const TracedRegion& region = regions[r];
         const IntensityPartial* own = planes > 0 ? &partials[r * static_cast<size_t>(planes)] : nullptr;
-        if (!region.touchesEdge && sink == nullptr) {
+        const bool fragment = !whole && region.touchesEdge;
+        if (!isChosen(r) || (!fragment && sink == nullptr)) {
             continue;
         }
         ObjectRecord record;
@@ -131,11 +140,11 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
                 const Point64* points = traced.ringPoints(ring);
                 for (int32_t i = 0; i < ring.count; ++i) {
                     mapped[static_cast<size_t>(i)] =
-                        context.toLevel0(Point64{points[i].x + tile.x, points[i].y + tile.y});
+                        context.toLevel0(Point64{points[i].x + area.x, points[i].y + area.y});
                 }
                 polygon.addRing(mapped.data(), ring.count, ring.isHole);
             }
-            if (region.touchesEdge) {
+            if (fragment) {
                 context.emitSeamFragment(polygon, context.targetLayer(), own, planes,
                                          joinKeys != nullptr ? joinKeys[r] : 0);
                 continue;
@@ -146,6 +155,20 @@ void emitRegions(OperationContext& context, const int32_t* labels, int64_t strid
         applyStandardMeasurements(record.geometry(), own, planes, record.measurements());
         sink->emitOwned(std::move(record));
     }
+}
+
+} // namespace
+
+void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
+                 const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys) {
+    emitFrom(context, labels, stride, context.tileRectAtLevel(), traced, nullptr, false, input, firstIntensityPlane,
+             joinKeys);
+}
+
+void emitWholeRegions(OperationContext& context, const int32_t* labels, int64_t stride, const Rect64& area,
+                      const TracedRegions& traced, const uint8_t* chosen, const BlockView& input,
+                      int32_t firstIntensityPlane) {
+    emitFrom(context, labels, stride, area, traced, chosen, true, input, firstIntensityPlane, nullptr);
 }
 
 } // namespace slideio::processor::detail

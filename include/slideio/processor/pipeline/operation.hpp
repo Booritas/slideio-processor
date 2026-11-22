@@ -311,6 +311,19 @@ public:
     /// @par Requirements
     /// UR-EXT-3
     Rect64 haloRectAtLevel() const noexcept;
+    /// The whole analysis level, {0, 0, width, height} in level pixels: where
+    /// the slide's pixels end, which haloRectAtLevel() can reach beyond. An
+    /// operation that must tell a side of its halo rect inside the level from
+    /// one beyond it (an object touching the former may be cut off) compares
+    /// against it. Empty when the context was built without a run, so the
+    /// level is unknown.
+    /// @return The level rect at the analysis level, or an empty rect.
+    /// @throws Nothing.
+    /// @par Thread-safety
+    /// ThreadConfined.
+    /// @par Requirements
+    /// UR-EXT-3
+    Rect64 levelRectAtLevel() const noexcept;
 
     /// The same tile in level-0 coordinates, for an operation that needs to
     /// relate itself to slide position.

@@ -38,6 +38,8 @@ struct OperationContextState {
     int32_t level = 0;
     Rect64 tileRectAtLevel{0, 0, 0, 0}, haloRectAtLevel{0, 0, 0, 0}, tileRect{0, 0, 0, 0},
         haloRect{0, 0, 0, 0};
+    /// The whole analysis level; empty when unknown (a context built outside a run).
+    Rect64 levelRectAtLevel{0, 0, 0, 0};
     double levelScale = 1.0;
     /// The scene's level-0 pixel size in micrometres; 0 when unknown.
     double pixelSizeMicrons = 0.0;

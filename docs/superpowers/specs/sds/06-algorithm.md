@@ -1043,6 +1043,58 @@ were removed, so a bound means the same at every analysis level.
 Contours are polygon rings in level-0 slide coordinates, with holes as separate
 rings (UR-SEG-4).
 
+### Model label images — `algorithm/segment/label_image.hpp`
+
+```cpp
+/// Abstract; no catalog name of its own. A subclass (a segmentation model,
+/// in C++ or, later, Python) declares name(), halo() and parameters() and:
+class LabelImageOperation : public Operation {
+public:
+    /// One Int32 plane over the halo rect, zero-filled, owned by the base;
+    /// 0 is background, other values need be distinct only within the call.
+    virtual void predictLabels(const OperationContext& context, BlockView& labels) = 0;
+    // Defaults: Joint, every type, not uniform, one Int32 output plane,
+    // producesObjects() true, area and perimeter (calibrated forms too).
+    void apply(OperationContext& context) final;
+};
+```
+
+A network such as Cellpose or StarDist predicts, per tile, a label image whose
+values mean something only inside that tile. `segment.contours` cannot take it:
+it joins seam fragments by value, and here one nucleus has value 7 on one side of
+a seam and 12 on the other, while 7 names another nucleus elsewhere in the same
+tile. `LabelImageOperation` delivers each object whole from the one tile that
+owns its anchor, over a halo the subclass declares at least as large as its
+largest object (`05-pipeline.md`, "Anchor ownership instead of seam joining").
+Its `apply()`:
+
+1. calls `predictLabels()` over the halo rect, then clears the labels beyond the
+   analysis level (`OperationContext::levelRectAtLevel()`);
+2. labels each maximal 4-connected set of one non-zero value as one region
+   (`detail::labelRegions`), so two disjoint regions of one value are two
+   objects and touching regions of different values share an edge;
+3. traces the regions, holes included (`detail::traceRegions`), from the halo
+   rect's origin;
+4. takes each region's anchor, the first vertex of its first outer ring;
+5. keeps the region only when the anchor lies in the half-open tile rect;
+6. drops a kept region that touches a side of the halo rect lying strictly
+   inside the level, counting it with `countTruncatedObjects()`; a side on the
+   level's edge does not count;
+7. emits every other kept region whole through the object sink
+   (`detail::emitWholeRegions`, which shares `emitRegions`' body), never as a
+   seam fragment, with `area` and `perimeter` and, on a calibrated scene,
+   `area.um2` and `perimeter.um`;
+8. writes the labels over the tile rect into its output plane.
+
+Its working set is 272 bytes per pixel of the halo rect: the predicted and
+region label planes, the union-find parents, and the tracing and emission
+figures `segment.contours` declares; plus 4096 bytes and the allocator's
+overhead on 16 buffers per call. A halo too large for the memory ceiling is
+refused by validation before any tile runs. With a halo covering its objects,
+its objects are the same for every tile size and worker count (UR-QA-3);
+`test.disks`, the test subclass, checks that at tile sizes 512 and 1024 with 1
+and 4 workers.
+
 ### Watershed, and why it is tileable after all
 
 `segment.watershed` is **marker-controlled**, and that is the whole of the

@@ -296,12 +296,15 @@ private:
 } // namespace
 
 Image runEager(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
-               int32_t workers) {
+               int32_t workers, bool bindObjects) {
     const Configuration config =
         ConfigurationBuilder().tileSize(tileSize, tileSize).tileSizeFromSlide(false).workerCount(workers).build();
     const int sceneWidth = std::get<2>(scene->getRect());
     const int sceneHeight = std::get<3>(scene->getRect());
     Pipeline pipeline(scene, config, spec);
+    if (bindObjects) {
+        pipeline.bindLayer("objects", objectsLayer());
+    }
     pipeline.validate();
     // At analysis level 0 the output is the scene's size. Pipeline::rect() goes
     // through the lazy read path, which refuses a global-context operation, so it

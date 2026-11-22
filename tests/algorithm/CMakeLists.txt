@@ -1,5 +1,14 @@
 include(GoogleTest)
 
+# "test.disks", a LabelImageOperation over fixed disks with tile-dependent labels,
+# in a library of its own so that later test targets (tests/run) can run it too.
+add_library(slideio_processor_algorithm_test_support STATIC
+    support/disks_operation.cpp
+)
+target_link_libraries(slideio_processor_algorithm_test_support PUBLIC
+    slideio-processor-engine slideio_processor_pipeline_test_support)
+target_include_directories(slideio_processor_algorithm_test_support PUBLIC ${PROJECT_SOURCE_DIR}/tests)
+
 # The algorithm tests reach the pipeline's detail headers (the operation context,
 # parameter comparison) and the algorithm's own sample codec, colour maths and
 # OpenCV plane helpers, so src/ and tests/ are on their include path; the
@@ -26,7 +35,11 @@ add_executable(slideio_processor_algorithm_tests
     test_contours.cpp
     test_watershed.cpp
     test_tissue_detect.cpp
+    test_label_image.cpp
     support/harness.cpp
+    # The label-image tests run a stage in a workspace over a slide file written
+    # with libtiff, as the workspace tests do.
+    ${PROJECT_SOURCE_DIR}/tests/workspace/support/test_slide.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/colour_math.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
     ${PROJECT_SOURCE_DIR}/src/algorithm/detail/cv_plane.cpp
@@ -36,7 +49,8 @@ add_executable(slideio_processor_algorithm_tests
     ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
 )
 target_link_libraries(slideio_processor_algorithm_tests PRIVATE
-    slideio-processor-engine slideio_processor_pipeline_test_support rapidjson GTest::gtest_main)
+    slideio-processor-engine slideio_processor_pipeline_test_support slideio_processor_algorithm_test_support
+    TIFF::TIFF rapidjson GTest::gtest_main)
 # The derivative tests compare their coefficients with OpenCV's own kernels and
 # filters, so OpenCV's image processing is linked here, for the tests only.
 target_link_libraries(slideio_processor_algorithm_tests PRIVATE opencv_core opencv_imgproc)

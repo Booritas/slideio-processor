@@ -100,6 +100,9 @@ public:
     /// and the space the declared halo is measured in.
     Rect64 tileRectAtLevel() const noexcept;
     Rect64 haloRectAtLevel() const noexcept;
+    /// The whole analysis level, {0, 0, width, height}; the halo rect is not
+    /// clipped to it. Empty for a context built outside a run.
+    Rect64 levelRectAtLevel() const noexcept;
 
     /// The same tile in level-0 coordinates, for an operation that needs to
     /// relate itself to slide position.
@@ -1477,6 +1480,39 @@ reads the total after `runInto` or `run` and is 0 before the first run; it
 keeps what a failed run had counted. `StageRunner::truncatedObjects()` (SDS 04)
 copies it after a successful run and is 0 before, and after a failed run; a
 second `run()` reports its own count, not a sum.
+
+**The level rect.** `OperationContext::levelRectAtLevel()` is the whole analysis
+level, `{0, 0, width, height}` in level pixels, which the tile evaluator copies
+from the run plan into every context it builds; a context built outside a run
+(a test's direct application) reports an empty rect, read as "level unknown".
+The halo rect is not clipped to the level, so an operation that must tell a side
+of its halo rect lying inside the level (beyond which the slide goes on) from one
+on or beyond the level's edge (beyond which nothing is) compares the two.
+
+**Anchor ownership instead of seam joining (`LabelImageOperation`).** The seam
+merger joins fragments of one region across tiles by layer and join key. That
+works when a region's identity is the same in every tile: a foreground pixel
+(`segment.connected_components`), a sample value (`segment.contours`). A model's
+label image (SDS 06, 6.7) numbers its objects tile by tile, so one object can
+carry different values on either side of a seam and one value can name two
+objects; no join key names it the same way in both tiles. `LabelImageOperation`
+therefore never emits a seam fragment. Over the halo rect it labels each maximal
+4-connected set of one non-zero value as one region, traces it, and keeps it only
+in the tile whose half-open tile rect holds its anchor, the topmost-then-leftmost
+vertex of its first outer ring, the point `ObjectId::fromAnchor` uses; every
+other tile seeing the region ignores it, so it is emitted once, whole, through
+`objectSink()`. The tile filter's own anchor test then admits it as it does every
+single-tile object. A region reaching a side of the halo rect that lies strictly
+inside the level may continue beyond what the tile saw: it is dropped and
+counted with `countTruncatedObjects`. A side on or beyond the level's edge never
+truncates, and labels predicted beyond the level are cleared first, so an object
+at the level's edge is stored cut at the edge and is complete. The halo is thus
+the largest object extent, below and beside its anchor, the operation delivers;
+the working set grows with it and validation refuses one beyond the memory
+ceiling before any tile runs. The objects are those a single tile covering the
+level gives, whatever the tile size and worker count, as long as the model's
+regions are (UR-QA-3); seam joining keeps its place for operations whose
+regions have a tile-independent identity.
 
 `runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
 tile (`hasTile()` true), or for a failure creating or finalising a
