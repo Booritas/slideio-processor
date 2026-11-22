@@ -4,8 +4,9 @@
 **Date:** 2026-10-08
 **Parent:** [SDS README](README.md)
 
-The classes of all eight modules, drawn. Nothing here is new: every class,
-member and relationship comes from [01](01-core.md)–[07](07-reporting.md), and
+The classes of all nine modules, drawn. Nothing here is new: every class,
+member and relationship comes from [01](01-core.md)–[07](07-reporting.md) and
+[09](09-run.md), and
 where a drawing and a module document disagree, **the module document is
 correct**. This exists to make the shape visible before the detail — which
 classes there are, which own which, and which of them cross a module boundary.
@@ -35,7 +36,7 @@ convention rather than anything structural, and every `Ptr` alias (`StorePtr`,
 
 ---
 
-## D.1 The eight modules
+## D.1 The nine modules
 
 ```mermaid
 flowchart TB
@@ -44,6 +45,7 @@ flowchart TB
         algorithm["algorithm<br/>the catalog — a leaf"]
         pipeline["pipeline<br/>tiling, halo, budget, threads"]
         masks["masks<br/>label-mask scenes, MaskWriter"]
+        run["run<br/>pipeline file, SlideRun"]
     end
     subgraph data["slideio-processor-data — links no OpenCV"]
         reporting["reporting<br/>CSV, Parquet, GeoJSON, raster TIFF"]
@@ -71,7 +73,18 @@ flowchart TB
     masks --> config
     masks --> storage
     masks --> reporting
+    run --> core
+    run --> config
+    run --> pipeline
+    run --> storage
+    run --> reporting
+    run --> workspace
+    run --> masks
 ```
+
+`run` (D.10, SDS 09) sits on top: it drives `workspace`, `masks` and
+`reporting` for a whole slide and, like `workspace`, reaches `algorithm` only by
+name through the catalog.
 
 `storage` reads and writes rasters with **libtiff**, linked privately into the data
 library and never SlideIO or OpenCV: a persisted raster is a pyramidal TIFF beside
@@ -2402,3 +2415,106 @@ dependency it does not have and would put a restriction out of reach of any
 caller holding an `ObjectSource` that is not a store. It is the same argument
 that keeps `ObjectQuery` in `core`, applied one level up: the thing that
 *consumes* the abstractions can live beside them when it needs nothing else.
+
+---
+
+## D.10 `run`
+
+Engine module (SDS 09); depends on `core`, `config`, `pipeline`, `storage`,
+`reporting`, `workspace` and `masks`, never on `algorithm`.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class PipelineFile {
+        <<ThreadConfined>>
+        +fromJson(cstr)$ PipelineFile
+        +load(cstr path)$ PipelineFile
+        +fromWorkspace(Workspace)$ PipelineFile
+        +toJson(cstr buffer, int32_t) int32_t
+        +require(cstr module) PipelineFile
+        +addExport(ExportSpec) PipelineFile
+        +layerName(int32_t) cstr
+        +rasterAt(int32_t) RasterDeclaration
+        +stageRecord(int32_t) cstr
+        +exportAt(int32_t) ExportSpec
+        +equals(PipelineFile) bool
+    }
+
+    class ExportSpec {
+        <<ThreadConfined>>
+        +csv(cstr file, cstr layer)$ ExportSpec
+        +geoJson(cstr file, cstr layer)$ ExportSpec
+        +labelMask(cstr file, cstr layer)$ ExportSpec
+        +rasterTiff(cstr file, cstr raster)$ ExportSpec
+        +measurement(cstr) ExportSpec
+        +kind() ExportKind
+        +file() cstr
+    }
+
+    class ExportKind {
+        <<enumeration>>
+        Csv
+        GeoJson
+        LabelMask
+        RasterTiff
+    }
+
+    class SlideRun {
+        <<ThreadConfined>>
+        +SlideRun(PipelineFile, cstr slidePath, int32_t sceneIndex, cstr workspacePath, cstr exportDirectory, Configuration)
+        +progress(ProgressObserver*) SlideRun
+        +cancellation(CancellationToken) SlideRun
+        +run() SlideRunResult
+    }
+
+    class SlideRunResult {
+        <<ThreadCompatible>>
+        +stageName(int32_t) cstr
+        +stageRan(int32_t) bool
+        +stageObjectsWritten(int32_t) int64_t
+        +stageTruncatedObjects(int32_t) int64_t
+        +exportFile(int32_t) cstr
+        +exportBytes(int32_t) int64_t
+    }
+
+    class Workspace {
+        <<workspace module>>
+    }
+    class StageRunner {
+        <<workspace module>>
+    }
+    class OperationCatalog {
+        <<pipeline module>>
+    }
+    class CsvWriter {
+        <<reporting module>>
+    }
+    class GeoJsonExporter {
+        <<reporting module>>
+    }
+    class RasterTiffWriter {
+        <<reporting module>>
+    }
+    class MaskWriter {
+        <<masks module>>
+    }
+
+    PipelineFile "1" *-- "*" ExportSpec
+    ExportSpec --> ExportKind
+    SlideRun *-- PipelineFile : a copy
+    SlideRun ..> SlideRunResult : returns
+    SlideRun ..> OperationCatalog : validates every operation first
+    SlideRun ..> Workspace : openReadOnly to check the binding, then open or create
+    SlideRun ..> StageRunner : one per stage that is not current
+    SlideRun ..> CsvWriter : csv
+    SlideRun ..> GeoJsonExporter : geojson
+    SlideRun ..> MaskWriter : labelMask, over rasteriseLabels
+    SlideRun ..> RasterTiffWriter : rasterTiff, over sourceFor
+```
+
+The file is a value: it names no slide, so one file runs unchanged over many
+slides. `SlideRun` holds the slide, scene, workspace and export directory, and
+is the only class here that touches a store. Every writer it calls owns the
+`<file>.partial` and rename protocol, which is what makes an export atomic.

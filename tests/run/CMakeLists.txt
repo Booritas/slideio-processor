@@ -1,13 +1,16 @@
 include(GoogleTest)
 
-# The pipeline-file tests build a development workspace over a libtiff-written slide
-# (tests/workspace/support), so SlideIO opens a real file.
+# The pipeline-file and slide-run tests build workspaces over libtiff-written slides
+# (tests/workspace/support), so SlideIO opens a real file. The slide-run tests also run
+# "test.disks", the LabelImageOperation of tests/algorithm/support: the test target, never
+# the run library, links the algorithm test support (built-ins register when the engine loads).
 add_executable(slideio_processor_run_tests
     ${PROJECT_SOURCE_DIR}/tests/workspace/support/test_slide.cpp
     test_pipeline_file.cpp
+    test_slide_run.cpp
 )
 target_link_libraries(slideio_processor_run_tests PRIVATE
-    slideio-processor-engine TIFF::TIFF GTest::gtest_main)
+    slideio-processor-engine slideio_processor_algorithm_test_support TIFF::TIFF GTest::gtest_main)
 target_include_directories(slideio_processor_run_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)
@@ -48,6 +51,8 @@ add_library(run_headers_are_opencv_free OBJECT
     header_check/check_export_spec.cpp
     header_check/check_pipeline_file.cpp
     header_check/check_run.cpp
+    header_check/check_slide_run.cpp
+    header_check/check_slide_run_result.cpp
 )
 file(GLOB RUN_PUBLIC_HEADERS RELATIVE "${PROJECT_SOURCE_DIR}/include/slideio/processor/run"
     CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/slideio/processor/run/*.hpp")

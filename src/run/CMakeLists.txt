@@ -1,6 +1,8 @@
 add_library(slideio-processor-run OBJECT
     export_spec.cpp
     pipeline_file.cpp
+    slide_run.cpp
+    slide_run_result.cpp
 )
 set_target_properties(slideio-processor-run PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # The sources are compiled here, so the export switch is defined here.

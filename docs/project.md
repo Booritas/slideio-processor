@@ -489,6 +489,40 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
     pointer includes the fix, and the OME layout no longer writes one-tile
     pages striped. The masks tests read both the base-level and the
     coarsest-level case back through SlideIO.
+- **Python bindings project 1** —
+  [design](superpowers/specs/2026-11-22-python-bindings-design.md),
+  [plan](superpowers/plans/2026-11-22-slide-run.md). The C++ half of the Python
+  bindings: the operation nondeterminism flag, the truncated-object count,
+  `LabelImageOperation`, the pipeline file (`PipelineFile`, `ExportSpec`) and
+  `SlideRun`, which runs a pipeline file against one slide scene and writes its
+  exports atomically ([SDS 09](superpowers/specs/sds/09-run.md)), in a new
+  engine module `run` that never links `algorithm`.
+  **In progress** on `feat/slide-run`.
+  - **Follow-up: the `slideio-process` CLI** (module design §5.3) over
+    `SlideRun`: pipeline file, slide, scene, workspace and export directory as
+    arguments; progress to the terminal; a clear exit code.
+  - **Follow-up: batch processing** (design §8), each an addition around
+    `SlideRun` that leaves the pipeline file unchanged: a batch store mode
+    (rollback journal and an exclusive lock for cluster file systems), a status
+    file per slide replaced atomically, a batch manifest of files and outcomes,
+    `run_batch(pipeline, slides, parallel=N)` and a `status` command, and slide
+    identifiers the researcher supplies in place of file names.
+  - **Open (slide paths in exports).** The CSV and GeoJSON exports carry the
+    store's provenance, whose slide identifier is the slide path (SDS 07 §7.3).
+    A slide file name can carry patient identifiers (PHI under HIPAA, personal
+    data under GDPR), so a `SlideRun` export inherits that risk. Batch's slide
+    identifiers need a way to replace it; until then, treat the exports as
+    possibly identifying.
+  - **Open (store creation time in exports).** The same provenance carries the
+    store's creation time, so two `SlideRun`s of one file over one slide into
+    two fresh workspaces give CSV and GeoJSON that differ in that one value;
+    `SlideRun.ExportsAreDeterministic` blanks it before comparing. A second run
+    over the same workspace is byte-identical. If UR-QA-3 must hold across
+    workspaces byte for byte, the writers need an option to leave it out.
+  - **Open (no multi-scene test slide).** `SlideRun.RefusesAWorkspaceOfAnotherSlide`
+    checks the scene-index refusal with a scene index the single-scene test
+    slide lacks; a test slide with two scenes would test it against a real
+    second scene.
 - [Multiresolution segmentation](superpowers/specs/2026-10-11-multiresolution-segmentation.md)
   — whether Baatz & Schäpe region merging fits this design. It does, seeded
   from a partition rather than from pixels: the fusion factor depends only on

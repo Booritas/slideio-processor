@@ -20,6 +20,7 @@ The public API of all eight modules. The module structure document decides
 | 06 | [algorithm](06-algorithm.md) | `algorithm` | engine |
 | 07 | [reporting](07-reporting.md) | `reporting`; `masks` (§7.6) | data; engine |
 | 08 | [Class diagrams](08-class-diagrams.md) | all | — |
+| 09 | [run](09-run.md) | `run` | engine |
 
 **Read 00 first.** It fixes the ABI rules, string and collection conventions,
 error handling, ownership and thread-safety annotations that every signature in
