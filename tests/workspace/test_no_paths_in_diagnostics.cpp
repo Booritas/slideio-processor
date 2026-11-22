@@ -5,6 +5,7 @@
 // marker; every failure the library can be made to report is collected with its cause (what()
 // carries the cause), and so is every log line at Debug level. None may contain the marker.
 #include "common/temp_path.hpp"
+#include "pipeline/test_support/synthetic_scene.hpp"
 #include "storage/raster_test_util.hpp"
 #include "workspace/support/test_slide.hpp"
 
@@ -13,6 +14,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/log.hpp>
+#include <slideio/processor/masks/mask_writer.hpp>
 #include <slideio/processor/core/object_query.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/reporting/csv_writer.hpp>
@@ -25,11 +27,18 @@
 #include <slideio/processor/storage/store.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
+#include <slideio/slideio/scene.hpp>
+#include <slideio/slideio/slide.hpp>
+#include <slideio/slideio/slideio.hpp>
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -98,6 +107,46 @@ struct Collected {
 };
 
 bool leaks(const std::string& text) { return text.find(kMarker) != std::string::npos; }
+
+// The little-endian unsigned integer of `size` bytes at `at`.
+uint32_t readLe(const std::string& bytes, size_t at, size_t size) {
+    uint32_t value = 0;
+    for (size_t i = 0; i < size; ++i) {
+        value |= static_cast<uint32_t>(static_cast<uint8_t>(bytes[at + i])) << (8 * i);
+    }
+    return value;
+}
+
+// Points every tile offset of the first page of a little-endian classic TIFF (as
+// writeTestSlide writes it) past the end of the file: the slide still opens, and reading
+// any tile fails. Done before the slide is opened, as an open file may be mapped.
+void pointTileOffsetsPastTheEnd(const fs::path& file) {
+    std::string bytes;
+    {
+        std::ifstream in(file, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    ASSERT_GE(bytes.size(), 8u);
+    ASSERT_EQ(bytes.substr(0, 4), std::string("II*\0", 4));
+    const size_t ifd = readLe(bytes, 4, 4);
+    const size_t entries = readLe(bytes, ifd, 2);
+    bool found = false;
+    for (size_t e = 0; e < entries; ++e) {
+        const size_t entry = ifd + 2 + 12 * e;
+        const uint32_t tag = readLe(bytes, entry, 2);
+        if (tag != 324) continue;  // TileOffsets
+        const uint32_t type = readLe(bytes, entry + 2, 2);
+        ASSERT_EQ(type, 4u) << "TileOffsets are not LONG";
+        const size_t count = readLe(bytes, entry + 4, 4);
+        const size_t values = count == 1 ? entry + 8 : readLe(bytes, entry + 8, 4);
+        for (size_t i = 0; i < count; ++i) {
+            for (size_t b = 0; b < 4; ++b) bytes[values + 4 * i + b] = static_cast<char>(b == 3 ? 0x70 : 0x00);
+        }
+        found = true;
+    }
+    ASSERT_TRUE(found) << "no TileOffsets tag";
+    writeFile(file, bytes);
+}
 
 }  // namespace
 
@@ -294,6 +343,34 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         std::error_code ec;
         fs::remove_all(dir / "ws-doomed2", ec);
         ws.reset();  // the destructor logs a failed close, if there is one
+    }
+
+    // MaskWriter over a file-backed scene of a corrupt slide (its tiles lie past the end of
+    // the file, so it opens but no tile reads): SlideIO's read error may word itself with the
+    // slide path.
+    {
+        const fs::path corrupt = writeTestSlide(dir / "corrupt-PATIENT-MARKER-42.tif", 300, 200);
+        pointTileOffsetsPastTheEnd(corrupt);
+        std::shared_ptr<slideio::Slide> opened = slideio::openSlide(u8(corrupt), "");
+        std::shared_ptr<slideio::Scene> scene = opened->getScene(0);
+        const std::string maskOut = u8(dir / "mask-out.ome.tif");
+        seen.failure("MaskWriter over a corrupt slide",
+                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
+    }
+    // The same through a scene that reports a slide file and whose reads fail with the path
+    // in the text, as some SlideIO drivers word their read errors.
+    {
+        const std::string reported = u8(dir / "reported-PATIENT-MARKER-42.svs");
+        auto source = std::make_shared<testing_support::SyntheticSource>(
+            std::vector<testing_support::SyntheticLevel>{{128, 96, 64, 64}},
+            std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, [](int, int64_t, int64_t) { return 1.0; });
+        slideio::SceneMetadata metadata = source->metadata();
+        metadata.reportedFilePath = reported;
+        std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
+        source->failReadsWith("cannot read a tile of the file " + reported);
+        const std::string maskOut = u8(dir / "mask-out-2.ome.tif");
+        seen.failure("MaskWriter over a scene whose reads name its file",
+                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
     }
 
     EXPECT_GE(seen.expectedFailures, 25);
