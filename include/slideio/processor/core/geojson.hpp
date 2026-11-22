@@ -79,7 +79,8 @@ public:
      * @brief Opens the file. Nothing is parsed until next().
      * @param path UTF-8 file path, opened through std::filesystem::u8path.
      * @throws InvalidArgumentError When path is null.
-     * @throws IoError When the file cannot be opened; the message names the file by its role, never its path.
+     * @throws IoError When the file cannot be opened; the message names the file by its
+     * role, never its path.
      * @throws std::bad_alloc When memory is exhausted.
      */
     explicit GeoJsonReader(const char* path);
@@ -114,8 +115,8 @@ public:
      * Invalidates every pointer and reference returned by the accessors.
      * @return True when a feature was read; false at the end of the document.
      * @throws InvalidArgumentError When the JSON is malformed or the top-level
-     * value is not an object or an array (the message names the file by its role, never its path, with the byte
-     * offset and the parser's error text); when a ring has fewer than 3
+     * value is not an object or an array (the message names the file by its role,
+     * never its path, with the byte offset and the parser's error text); when a ring has fewer than 3
      * distinct points or all its points lie on one line, the polygon's extent
      * does not fit int64_t (Polygon::addRing), a coordinate is not finite or
      * does not fit int64_t, or the coordinates are malformed (the message names the feature's index);
@@ -256,7 +257,8 @@ public:
      * @brief Creates or truncates the file.
      * @param path UTF-8 file path, opened through std::filesystem::u8path.
      * @throws InvalidArgumentError When path is null.
-     * @throws IoError When the file cannot be opened; the message names the file by its role, never its path.
+     * @throws IoError When the file cannot be opened; the message names the file by its
+     * role, never its path.
      * @throws std::bad_alloc When memory is exhausted.
      */
     explicit GeoJsonWriter(const char* path);

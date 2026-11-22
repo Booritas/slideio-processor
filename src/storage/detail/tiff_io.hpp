@@ -34,8 +34,8 @@ public:
     ~TiffHandle();
 
     // Creates or truncates the file at `utf8Path` as a BigTIFF (mode "w8"). Throws IoError
-    // when the file cannot be opened or libtiff refuses it (the message names the raster file, never its path), with the
-    // underlying text as the cause.
+    // when the file cannot be opened or libtiff refuses it (the message names the
+    // raster file, never its path), with the underlying text as the cause.
     static TiffHandle openWrite(const std::string& utf8Path);
     // Opens the TIFF at `utf8Path` for reading. Throws IoError when the
     // file cannot be opened or libtiff cannot read it, with the underlying text as the cause.

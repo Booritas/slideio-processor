@@ -438,8 +438,10 @@ writer uses (§7.3): the file is written to `<path>.partial` through
 taken before the rename, so nothing can throw after it; then the file is
 renamed onto `path`. Progress, cancellation and failure behave as in
 `CsvWriter`: a cancelled or failed export removes the partial file and leaves
-any file at `path` untouched. `GeoJsonWriter`'s own `IoError` messages name the output file by its role;
-the exporter still replaces them with its own, which name no path.
+any file at `path` untouched. `GeoJsonWriter`'s own `IoError` messages already name the output file by its
+role (`GeoJsonWriter: <step> failed for the output file`); the exporter still
+replaces them with its own (`cannot create the output file`, `writing the output
+file failed`), which name no path.
 
 **Provenance and PHI** (decision 7). `provenance.slideId` is the id set with
 `slideId()`, as for `CsvWriter` (§7.3); without one it is the store's slide

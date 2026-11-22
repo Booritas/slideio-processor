@@ -87,9 +87,10 @@ public:
      * range for the slide.
      * @throws IoError When workspacePath exists and is not an empty directory, or is
      * made by someone else while this call runs; when the slide does not open (the
-     * message names the slide by its role, never its path); when the parent directory is missing or the directory,
-     * the store or the scratch directory cannot be made (the message names
-     * workspacePath); or when the store already exists because a racing create made it.
+     * message names the slide by its role, never its path); when the parent directory
+     * is missing or the directory, the store or the scratch directory cannot be made
+     * (the message names the workspace directory by its role, never its path); or
+     * when the store already exists because a racing create made it.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.
@@ -149,7 +150,8 @@ public:
      * @throws InvalidArgumentError When workspacePath is null or empty.
      * @throws IoError When the path holds no workspace store, when another handle holds
      * the writer lock, when the slide no longer opens or no longer has the scene (the
-     * message names the slide by its role, never its path), or when the scratch directory cannot be cleared.
+     * message names the slide by its role, never its path), or when the scratch
+     * directory cannot be cleared.
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
@@ -206,7 +208,8 @@ public:
      * @return The open, read-only workspace.
      * @throws InvalidArgumentError When workspacePath is null or empty.
      * @throws IoError When the path holds no workspace store, or when the slide no
-     * longer opens or no longer has the scene (the message names the slide by its role, never its path).
+     * longer opens or no longer has the scene (the message names the slide by its
+     * role, never its path).
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
