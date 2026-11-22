@@ -47,8 +47,6 @@ struct LayerEntry {
 struct StageEntry {
     std::string name;
     std::string record;
-    std::vector<std::string> writesLayers;
-    std::string writesRaster;  // empty: none
 };
 
 [[noreturn]] void fail(const std::string& what) {
@@ -203,20 +201,6 @@ public:
         return false;
     }
 
-    bool stageWritesLayer(const std::string& name) const {
-        for (const StageEntry& s : stages) {
-            if (std::find(s.writesLayers.begin(), s.writesLayers.end(), name) != s.writesLayers.end()) return true;
-        }
-        return false;
-    }
-
-    bool stageWritesRaster(const std::string& name) const {
-        for (const StageEntry& s : stages) {
-            if (!s.writesRaster.empty() && s.writesRaster == name) return true;
-        }
-        return false;
-    }
-
     void addLayer(LayerEntry entry) {
         if (entry.name.empty()) {
             fail("a layer has an empty name");
@@ -279,22 +263,66 @@ public:
             context.stageName = stage.name.c_str();
             throw InvalidArgumentError(("PipelineFile: the pipeline of " + named + " does not parse").c_str(), context);
         }
-        if (const rapidjson::Value* writes = optionalMember(object, "writesLayers")) {
-            if (!writes->IsArray()) {
-                fail(named + " has a 'writesLayers' that is not an array");
+        // Every layer and raster the record names must be declared by the file (the pixel layer
+        // is implicit): a run declares the file's layers and rasters only, so an undeclared one
+        // would fail only after the workspace was created. The message names the stage and the
+        // member, never the undeclared name.
+        const auto requireLayer = [&](const rapidjson::Value& v, const char* key) {
+            if (!v.IsString()) {
+                fail(named + " has a '" + key + "' entry that is not a string");
             }
+            const std::string name(v.GetString(), v.GetStringLength());
+            if (name != kPixelLayer && findLayer(name) == nullptr) {
+                fail(named + " names in '" + key + "' a layer the file does not declare");
+            }
+        };
+        const auto requireRaster = [&](const rapidjson::Value& v, const char* key) {
+            if (!v.IsString()) {
+                fail(named + " has a '" + key + "' entry that is not a string");
+            }
+            const std::string name(v.GetString(), v.GetStringLength());
+            if (!hasRaster(name)) {
+                fail(named + " names in '" + key + "' a raster the file does not declare");
+            }
+        };
+        const auto arrayOf = [&](const char* key) -> const rapidjson::Value* {
+            const rapidjson::Value* v = optionalMember(object, key);
+            if (v != nullptr && !v->IsArray()) {
+                fail(named + " has a '" + key + "' that is not an array");
+            }
+            return v;
+        };
+        const auto entryMember = [&](const rapidjson::Value& v, const char* key,
+                                     const char* name) -> const rapidjson::Value& {
+            if (!v.IsObject()) {
+                fail(named + " has a '" + key + "' entry that is not an object");
+            }
+            return member(v, name, named + "'s '" + key + "' entry");
+        };
+        for (const char* key : {"readsLayers", "annotatesLayers"}) {
+            if (const rapidjson::Value* list = arrayOf(key)) {
+                for (const rapidjson::Value& v : list->GetArray()) requireLayer(v, key);
+            }
+        }
+        if (const rapidjson::Value* writes = arrayOf("writesLayers")) {
             for (const rapidjson::Value& v : writes->GetArray()) {
-                if (!v.IsString()) {
-                    fail(named + " has a 'writesLayers' entry that is not a string");
-                }
-                stage.writesLayers.emplace_back(v.GetString(), v.GetStringLength());
+                requireLayer(v, "writesLayers");
+            }
+        }
+        if (const rapidjson::Value* restriction = optionalMember(object, "restrictToLayer")) {
+            if (!restriction->IsNull()) requireLayer(*restriction, "restrictToLayer");
+        }
+        if (const rapidjson::Value* list = arrayOf("readsLayersAsRaster")) {
+            for (const rapidjson::Value& v : list->GetArray()) {
+                requireLayer(entryMember(v, "readsLayersAsRaster", "layer"), "readsLayersAsRaster");
             }
         }
         if (const rapidjson::Value* raster = optionalMember(object, "writesRaster")) {
-            if (raster->IsString()) {
-                stage.writesRaster.assign(raster->GetString(), raster->GetStringLength());
-            } else if (!raster->IsNull()) {
-                fail(named + " has a 'writesRaster' that is neither null nor a string");
+            if (!raster->IsNull()) requireRaster(*raster, "writesRaster");
+        }
+        if (const rapidjson::Value* list = arrayOf("readsRasters")) {
+            for (const rapidjson::Value& v : list->GetArray()) {
+                requireRaster(entryMember(v, "readsRasters", "raster"), "readsRasters");
             }
         }
         stage.record = compact(object);
@@ -311,16 +339,16 @@ public:
         }
         if (spec.layer() != nullptr) {
             const std::string layer = spec.layer();
-            if (findLayer(layer) == nullptr && !stageWritesLayer(layer)) {
+            if (findLayer(layer) == nullptr) {
                 fail(std::string("an export of kind ") + exportKindText(spec.kind()) +
-                     " names a layer the file neither declares nor a stage writes");
+                     " names a layer the file does not declare");
             }
         }
         if (spec.raster() != nullptr) {
             const std::string raster = spec.raster();
-            if (!hasRaster(raster) && !stageWritesRaster(raster)) {
+            if (!hasRaster(raster)) {
                 fail(std::string("an export of kind ") + exportKindText(spec.kind()) +
-                     " names a raster the file neither declares nor a stage writes");
+                     " names a raster the file does not declare");
             }
         }
     }

@@ -188,9 +188,11 @@ TEST(PipelineFile, RefusesUnknownReferences) {
     EXPECT_NE(message.find("raster"), std::string::npos);
     EXPECT_EQ(message.find("ghostraster"), std::string::npos);
 
-    // A stage that writes the layer or raster makes the export acceptable.
+    // A stage writes only declared layers and rasters (RefusesUndeclaredStageReferences), so
+    // an export of what a stage writes names a declared one and is accepted.
     EXPECT_NO_THROW(PipelineFile::fromJson(
-        file("", "", record("seg", "", "\"made\"", "\"mapr\""),
+        file("{\"name\":\"made\"}", "{\"name\":\"mapr\",\"type\":\"Byte\",\"planes\":1}",
+             record("seg", "", "\"made\"", "\"mapr\""),
              "{\"kind\":\"csv\",\"file\":\"x.csv\",\"layer\":\"made\"},"
              "{\"kind\":\"rasterTiff\",\"file\":\"x.tif\",\"raster\":\"mapr\"}")
             .c_str()));
@@ -246,6 +248,14 @@ TEST(PipelineFile, FromWorkspace) {
     StageDefinition second("nuclei");
     second.readsLayer(tissue).writesLayer(nuclei).writesRaster(prob);
     ws->stages().declare(second);
+    // A stage naming layers and rasters in every other reference member: fromWorkspace
+    // declares them all, so the file accepts its record.
+    StageDefinition third("refine");
+    third.restrictToLayer(tissue)
+        .annotatesLayer(nuclei)
+        .readsLayerAsRaster("m", nuclei, LayerRasterContent::Membership)
+        .readsRaster("p", prob);
+    ws->stages().declare(third);
 
     PipelineFile f = PipelineFile::fromWorkspace(*ws);
     ASSERT_EQ(f.layerCount(), 2);
@@ -258,9 +268,11 @@ TEST(PipelineFile, FromWorkspace) {
     EXPECT_STREQ(f.rasterAt(0).name(), "prob");
     EXPECT_EQ(f.rasterAt(0).planeType(), DataType::Float32);
     EXPECT_EQ(f.rasterAt(0).planeCount(), 1);
-    ASSERT_EQ(f.stageCount(), 2);
+    ASSERT_EQ(f.stageCount(), 3);
     EXPECT_STREQ(f.stageName(0), "tissue");
     EXPECT_STREQ(f.stageName(1), "nuclei");
+    EXPECT_STREQ(f.stageName(2), "refine");
+    EXPECT_STREQ(f.stageRecord(2), ws->stages().configuration(ws->stages().at(2)));
     EXPECT_STREQ(f.stageRecord(0), ws->stages().configuration(ws->stages().at(0)));
     EXPECT_STREQ(f.stageRecord(1), ws->stages().configuration(ws->stages().at(1)));
     EXPECT_EQ(f.requireCount(), 0);
@@ -300,4 +312,44 @@ TEST(PipelineFile, CopiesAMovedFromFile) {
     assigned.require("mylab.models");
     EXPECT_EQ(assigned.requireCount(), 1);
     EXPECT_EQ(source.stageCount(), 0) << "the moved-from file still reads as empty";
+}
+
+TEST(PipelineFile, RefusesUndeclaredStageReferences) {
+    // A record with every reference member: `layer` is named in the member under test, the
+    // others name the declared "tissue" and "prob".
+    const auto stageNaming = [](const std::string& member, const std::string& name) {
+        const auto pick = [&](const char* key, const std::string& declared) {
+            return member == key ? name : declared;
+        };
+        return "{\"stageRecordVersion\":1,\"stage\":\"refstage\",\"readsLayers\":[\"" + pick("readsLayers", "tissue") +
+               "\"],\"writesLayers\":[\"" + pick("writesLayers", "tissue") + "\"],\"annotatesLayers\":[\"" +
+               pick("annotatesLayers", "tissue") + "\"],\"restrictToLayer\":\"" + pick("restrictToLayer", "tissue") +
+               "\",\"readsLayersAsRaster\":[{\"binding\":\"m\",\"layer\":\"" + pick("readsLayersAsRaster", "tissue") +
+               "\",\"content\":\"Membership\"}],\"writesRaster\":\"" + pick("writesRaster", "prob") +
+               "\",\"readsRasters\":[{\"binding\":\"p\",\"raster\":\"" + pick("readsRasters", "prob") +
+               "\"}],\"dependsOn\":[],"
+               "\"pipeline\":{\"specVersion\":1,\"channels\":\"all\",\"analysisLevel\":-1,\"operations\":[]}}";
+    };
+    const std::string tissue = "{\"name\":\"tissue\"}";
+    const std::string prob = "{\"name\":\"prob\",\"type\":\"Float32\",\"planes\":1}";
+
+    // Everything declared: accepted, and the pixel layer needs no declaration.
+    EXPECT_NO_THROW(PipelineFile::fromJson(file(tissue, prob, stageNaming("", ""), "").c_str()));
+    EXPECT_NO_THROW(PipelineFile::fromJson(file(tissue, prob, stageNaming("readsLayers", "pixel"), "").c_str()));
+
+    for (const char* member : {"readsLayers", "writesLayers", "annotatesLayers", "restrictToLayer",
+                               "readsLayersAsRaster", "writesRaster", "readsRasters"}) {
+        const std::string message = refusal([&] {
+            PipelineFile::fromJson(file(tissue, prob, stageNaming(member, "ghostname"), "").c_str());
+        });
+        EXPECT_NE(message.find("refstage"), std::string::npos) << member << ": " << message;
+        EXPECT_NE(message.find(member), std::string::npos) << member << ": " << message;
+        EXPECT_EQ(message.find("ghostname"), std::string::npos) << member << ": " << message;
+    }
+
+    // A layer name in a raster member, or a raster name in a layer member, is undeclared too.
+    EXPECT_THROW(PipelineFile::fromJson(file(tissue, prob, stageNaming("writesRaster", "tissue"), "").c_str()),
+                 InvalidArgumentError);
+    EXPECT_THROW(PipelineFile::fromJson(file(tissue, prob, stageNaming("writesLayers", "prob"), "").c_str()),
+                 InvalidArgumentError);
 }

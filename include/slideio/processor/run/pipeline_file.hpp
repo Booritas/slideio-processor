@@ -113,8 +113,10 @@ public:
      * the wrong type; when an export kind is unknown or an export file name is unsafe;
      * when layer, raster, stage or export-file names repeat (export files compared
      * case-insensitively); when a layer's parent is not an earlier layer; when a stage's
-     * pipeline does not parse; or when an export names a layer or raster that the file
-     * neither declares nor a stage writes.
+     * pipeline does not parse; when a stage's record names, in readsLayers, writesLayers,
+     * annotatesLayers, restrictToLayer, readsLayersAsRaster, writesRaster or readsRasters,
+     * a layer or raster the file does not declare (the pixel layer needs no declaration);
+     * or when an export names a layer or raster the file does not declare.
      * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * Safe to call concurrently.
@@ -185,8 +187,8 @@ public:
      * @param exportSpec The export.
      * @return This file, for chaining.
      * @throws InvalidArgumentError When its file name repeats an earlier export's
-     * (case-insensitively), or it names a layer or raster the file neither declares nor
-     * a stage writes. The file is then unchanged.
+     * (case-insensitively), or it names a layer or raster the file does not declare. The
+     * file is then unchanged.
      * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety
      * ThreadConfined.

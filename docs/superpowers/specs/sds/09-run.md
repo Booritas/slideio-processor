@@ -57,8 +57,13 @@ A versioned JSON document describing one slide run completely, naming no slide.
   `compression` to `RasterDeclaration`'s default, Deflate; a CSV export without
   `measurements` exports every measurement (`ColumnSchema::standard().allMeasurements()`).
 - **Stages** are kept as the records they are, unknown keys included (the
-  optional `nondeterministicOperations` of SDS 04 among them). Their layer and
-  raster names are resolved when the file is run, not when it is read.
+  optional `nondeterministicOperations` of SDS 04 among them). Every layer and
+  raster a record names (in `readsLayers`, `writesLayers`, `annotatesLayers`,
+  `restrictToLayer`, `readsLayersAsRaster`, `writesRaster` and `readsRasters`)
+  must be one the file declares, the pixel layer excepted: a run declares only
+  the file's layers and rasters (9.3 step 3), so an undeclared name would
+  otherwise fail after the workspace was created. The names are resolved to ids
+  when the file is run.
 
 `class PipelineFile` (copyable, pimpl): `fromJson(const char*)`,
 `load(const char* path)`, `toJson(char*, int32_t)` sized as
@@ -80,9 +85,10 @@ a missing, mistyped or unknown member; an unknown export kind; duplicate layer,
 raster, stage or export-file names (export files compared case-insensitively);
 a layer parent that is not an earlier layer; a stage whose `pipeline` does not
 parse with `PipelineSpec::fromJson`; an export `file` that is empty, `.`, `..`,
-or contains `/`, `\` or `:`; and an export naming a layer or raster the file
-neither declares nor has a stage write. Messages name stages, layers, rasters,
-export kinds and members, never values or paths.
+or contains `/`, `\` or `:`; a stage record naming a layer or raster the file
+does not declare (the message names the stage and the member); and an export
+naming a layer or raster the file does not declare. Messages name stages,
+layers, rasters, export kinds and members, never values or paths.
 
 ---
 
