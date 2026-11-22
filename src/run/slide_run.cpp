@@ -7,6 +7,7 @@
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/object_query.hpp>
+#include <slideio/processor/core/provenance.hpp>
 #include <slideio/processor/masks/label_scene.hpp>
 #include <slideio/processor/masks/mask_writer.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
@@ -116,6 +117,7 @@ void validateOperations(const PipelineFile& file) {
     }
 }
 
+// True when both paths name one existing file; a missing file matches nothing.
 bool sameFile(const char* a, const char* b) {
     std::error_code error;
     const bool same = fs::equivalent(fs::u8path(a), fs::u8path(b), error);
@@ -167,14 +169,23 @@ public:
     ExportResult writeExport(Workspace& workspace, const ExportSpec& spec, const std::string& path) const;
 };
 
-// Step 2: an existing workspace is checked read-only before it is opened for writing.
+// Step 2: an existing workspace's binding is read from its store, opened read-only, before
+// the workspace is opened for writing. The probe opens no slide: the slide is opened once,
+// by Workspace::open. A missing slide named for the run is reported as such; a recorded
+// slide that is missing (moved or deleted) is not the run's slide.
 WorkspacePtr SlideRun::Impl::openOrCreate() const {
     std::error_code error;
-    if (fs::is_regular_file(fs::u8path(workspacePath) / kStoreName, error)) {
-        WorkspacePtr probe = Workspace::openReadOnly(workspacePath.c_str(), configuration);
-        const bool same = sameFile(probe->slidePath(), slidePath.c_str()) && probe->sceneIndex() == sceneIndex;
+    const fs::path storePath = fs::u8path(workspacePath) / kStoreName;
+    if (fs::is_regular_file(storePath, error)) {
+        if (!fs::exists(fs::u8path(slidePath), error)) {
+            throw IoError("SlideRun: the slide cannot be found");
+        }
+        StorePtr probe = Store::open(storePath.u8string().c_str(), OpenMode::ReadOnly, configuration);
+        const Provenance provenance = probe->provenance();
         probe->close();
-        if (!same) {
+        const char* recorded = provenance.slideId();
+        if (recorded == nullptr || !sameFile(recorded, slidePath.c_str()) ||
+            provenance.sceneIndex() != sceneIndex) {
             refuse("the workspace belongs to another slide or scene");
         }
         return Workspace::open(workspacePath.c_str(), configuration);

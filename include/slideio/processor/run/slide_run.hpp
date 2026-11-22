@@ -29,9 +29,12 @@ namespace slideio::processor {
  *    errors propagate. Nothing has been created or written yet. Validation precedes
  *    declaration so that a stage's record lists its nondeterministic operations.
  * 2. **Open or create the workspace.** A workspace directory holding a store
- *    ("<workspace>/workspace.store", Workspace's layout) is first opened read-only to
- *    read its binding: when its slide is not the same file as the slide given
- *    (std::filesystem::equivalent) or its scene index differs, the run is refused. A
+ *    ("<workspace>/workspace.store", Workspace's layout) is first checked: when the slide
+ *    given does not exist, the run fails with IoError ("the slide cannot be found").
+ *    Then the store alone is opened read-only to read its binding, opening no slide:
+ *    when its recorded slide is not the same existing file as the slide given
+ *    (std::filesystem::equivalent; a recorded slide that has moved or been deleted
+ *    matches nothing) or its scene index differs, the run is refused. A
  *    refused run leaves the store's contents, its stage records and every file other
  *    than SQLite's "-wal" and "-shm" sidecars unchanged, and creates no other file or
  *    directory: the read-only open may create or touch those sidecars, as any reader's
@@ -150,8 +153,9 @@ public:
      * @throws StageError When stages still need to run but none can (the message names
      * the first and why), or as StageRunner::run().
      * @throws CancelledError When the token is cancelled; no partial file is left.
-     * @throws IoError As Workspace::create() and Workspace::open(), when the export
-     * directory cannot be made, or as the export writers.
+     * @throws IoError When the workspace exists and the slide given does not ("the slide
+     * cannot be found", naming no path); as Workspace::create() and Workspace::open(); when
+     * the export directory cannot be made; or as the export writers.
      * @throws StoreFormatError When the workspace's store has another format version.
      * @throws ProcessorError Any other error of a writer, propagated.
      * @throws std::bad_alloc When allocation fails.

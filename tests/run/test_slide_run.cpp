@@ -477,18 +477,22 @@ TEST(SlideRun, ExportsCarryNoSlidePath) {
 
 // A slide that has moved or been deleted since the workspace was made: the run's error names
 // the slide by its role, and neither it nor its cause holds a path or the file name (the file
-// name can carry a patient identifier).
+// name can carry a patient identifier). The workspace's binding is read from its store alone,
+// so a run naming the old path is told the slide cannot be found (IoError), and a run naming
+// the new path is refused as another slide (the recorded one no longer exists to compare).
 TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
     Fixture f;
     f.run(threeStageFile());
     const fs::path slide = fs::u8path(f.slide);
+    const fs::path moved = slide.parent_path() / "moved-slide.tif";
     const std::vector<std::string> forbidden = {f.slide, fs::absolute(slide).u8string(),
                                                 fs::absolute(slide).generic_u8string(),
-                                                slide.filename().u8string(), f.workspace, f.dir.utf8()};
+                                                slide.filename().u8string(), moved.u8string(),
+                                                moved.filename().u8string(), f.workspace, f.dir.utf8()};
     closeCleanly(f.workspace);
-    ASSERT_TRUE(fs::remove(slide));
+    fs::rename(slide, moved);
 
-    const auto expectNoPath = [&](const std::function<void()>& action, const char* label) {
+    const auto expectNoPath = [&](const std::function<void()>& action, const char* label) -> std::string {
         try {
             action();
             ADD_FAILURE() << label << " did not throw";
@@ -496,10 +500,23 @@ TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
             const std::string message = e.what();
             EXPECT_NE(message.find("slide"), std::string::npos) << label << ": " << message;
             for (const std::string& text : forbidden) EXPECT_EQ(message.find(text), std::string::npos) << label << ": " << message;
+            return (dynamic_cast<const IoError*>(&e) != nullptr ? "IoError: " : "") + message;
         }
+        return std::string();
     };
-    // The workspace is there and its recorded slide is not.
-    expectNoPath([&] { f.run(threeStageFile()); }, "an existing workspace whose slide moved");
+    // The workspace is there and the run names the recorded slide, which is gone.
+    EXPECT_EQ(expectNoPath([&] { f.run(threeStageFile()); }, "an existing workspace whose slide moved"),
+              "IoError: SlideRun: the slide cannot be found");
+    // The run names the slide where it now is: the recorded slide is missing, so it is not this one.
+    const std::string movedText = moved.u8string();
+    const std::string message = expectNoPath(
+        [&] {
+            SlideRun(threeStageFile(), movedText.c_str(), 0, f.workspace.c_str(), f.out.c_str(),
+                     Configuration::defaults())
+                .run();
+        },
+        "an existing workspace run on the moved slide");
+    EXPECT_NE(message.find("the workspace belongs to another slide or scene"), std::string::npos) << message;
     // No workspace yet, and the slide named for the run is missing.
     const std::string fresh = (f.dir.path() / "fresh-ws").u8string();
     expectNoPath([&] { f.run(threeStageFile(), fresh, f.out); }, "a missing slide");
