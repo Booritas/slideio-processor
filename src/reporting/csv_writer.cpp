@@ -76,10 +76,11 @@ void appendCommentLine(std::string& out, const char* key, const char* value) {
     out += '\n';
 }
 
-std::string provenanceLines(Store& store) {
+// The provenance lines; `slideId`, when not null, replaces the store's slide identifier.
+std::string provenanceLines(Store& store, const std::string* slideId) {
     const Provenance provenance = store.provenance();
     std::string out = "# slideio-processor export\n";
-    appendCommentLine(out, "slide_id", provenance.slideId());
+    appendCommentLine(out, "slide_id", slideId != nullptr ? slideId->c_str() : provenance.slideId());
     appendCommentLine(out, "scene_index", std::to_string(provenance.sceneIndex()).c_str());
     appendCommentLine(out, "library_version", provenance.libraryVersion());
     appendCommentLine(out, "created_at_unix_ms",
@@ -219,15 +220,16 @@ void appendRow(std::string& line, const ObjectRecord& record,
 class CsvSink : public detail::ExportSink {
 public:
     CsvSink(Store& store, const detail::ResolvedColumns& resolved, char delimiter,
-            bool provenance)
-        : store_(store), resolved_(resolved), delimiter_(delimiter), provenance_(provenance) {}
+            bool provenance, const std::string* slideId)
+        : store_(store), resolved_(resolved), delimiter_(delimiter), provenance_(provenance),
+          slideId_(slideId) {}
 
     void begin(const std::filesystem::path& partialPath) override {
         out_.open(partialPath, std::ios::binary | std::ios::trunc);
         if (!out_.is_open()) throw IoError("CsvWriter::write: cannot create the output file");
 
         std::string line;
-        if (provenance_) line = provenanceLines(store_);
+        if (provenance_) line = provenanceLines(store_, slideId_);
         for (size_t c = 0; c < resolved_.columns.size(); ++c) {
             if (c > 0) line += delimiter_;
             detail::appendField(line, resolved_.columns[c].name, delimiter_);
@@ -262,6 +264,7 @@ private:
     const detail::ResolvedColumns& resolved_;
     char delimiter_;
     bool provenance_;
+    const std::string* slideId_;
     std::ofstream out_;
     std::string line_;
     int64_t bytes_ = 0;
@@ -276,6 +279,7 @@ public:
     ColumnSchema schema;
     char delimiter = ',';
     bool provenance = true;
+    std::optional<std::string> slideId; // empty: the store's slide identifier
 };
 
 CsvWriter::CsvWriter(const char* path) {
@@ -305,6 +309,15 @@ CsvWriter& CsvWriter::provenanceHeader(bool include) {
     return *this;
 }
 
+CsvWriter& CsvWriter::slideId(const char* id) {
+    if (id == nullptr) {
+        impl_->slideId.reset();
+    } else {
+        impl_->slideId = std::string(id);
+    }
+    return *this;
+}
+
 ExportResult CsvWriter::write(Store& store, const ObjectQuery& query) {
     return write(store, query, nullptr, CancellationToken());
 }
@@ -313,7 +326,8 @@ ExportResult CsvWriter::write(Store& store, const ObjectQuery& query, ProgressOb
                               const CancellationToken& token) {
     const detail::ResolvedColumns resolved = detail::resolveColumns(impl_->schema, store);
     detail::requireDistinctNames(resolved, "CsvWriter::write");
-    CsvSink sink(store, resolved, impl_->delimiter, impl_->provenance);
+    CsvSink sink(store, resolved, impl_->delimiter, impl_->provenance,
+                 impl_->slideId ? &*impl_->slideId : nullptr);
     return detail::runExport(store, query, std::filesystem::u8path(impl_->path),
                              "CsvWriter::write", sink, observer, token);
 }

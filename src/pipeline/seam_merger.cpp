@@ -5,6 +5,7 @@
 #include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/seam_merger_access.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/standard_measurements.hpp>
@@ -556,14 +557,13 @@ SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char*
     } catch (const std::bad_alloc&) {
         throw;
     } catch (const std::exception& e) {
-        cause = e.what();
+        cause = detail::diagnosticText(e);
     }
     if (!isDirectory) {
         ErrorContext context;
         context.cause = cause.c_str();
         throw InvalidArgumentError(
-            (std::string("SeamMerger: the scratch directory '") + scratchDirectory + "' is not a directory").c_str(),
-            context);
+            "SeamMerger: the scratch directory is not a directory", context);
     }
     impl_ = std::make_unique<Impl>(grid, std::move(budget), std::string(scratchDirectory));
 }

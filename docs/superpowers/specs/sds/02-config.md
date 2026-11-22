@@ -403,8 +403,8 @@ bytes, so a line ends in a bare newline on every platform and two runs that
 share a log file do not overwrite each other. Flushing every line costs a
 little throughput and keeps the last lines before a crash. The sink is built
 before anything is changed: when the file cannot be opened the call throws
-`IoError` naming the path, and the sink and level already installed stay as
-they were. A sink whose stream fails clears the failed state, so logging
+`IoError` naming the log file by its role (never its path), and the sink and level
+already installed stay as they were. A sink whose stream fails clears the failed state, so logging
 resumes once the stream can be written again.
 
 **`LogSinkPtr` is a `shared_ptr`, so the library shares ownership.** The

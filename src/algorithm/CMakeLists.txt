@@ -27,6 +27,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/threshold_otsu.cpp
     segment/connected_components.cpp
     segment/contours.cpp
+    segment/label_image.cpp
     segment/watershed.cpp
     segment/tissue_detect.cpp
 )

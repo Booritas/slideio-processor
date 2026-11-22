@@ -271,6 +271,22 @@ public:
      */
     const char* configuration(StageId stage) const;
     /**
+     * @brief Tells whether every operation of a stage gives the same result on every run.
+     *
+     * False when the stage's record lists nondeterministic operations (the record key
+     * "nondeterministicOperations", written when the stage was declared). The key is not part of
+     * the stage's declaration, so it never makes the stage stale.
+     * @param stage The stage.
+     * @return False when the stored record has that key.
+     * @throws InvalidArgumentError When the stage is unknown.
+     * @throws IoError When the store is closed.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-4
+     */
+    bool isDeterministic(StageId stage) const;
+    /**
      * @brief Returns when a stage last entered Complete.
      * @param stage The stage.
      * @return Milliseconds since the Unix epoch; 0 if it never completed.

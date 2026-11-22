@@ -108,18 +108,19 @@ TEST(GeoJsonReader, SingleFeatureStringClassificationAndErrors) {
     EXPECT_THROW(GeoJsonReader(uniqueTempPath("missing", ".geojson").u8string().c_str()), IoError);
 }
 
-TEST(GeoJsonReader, MissingFileMessageNamesPathAndNullPathRejected) {
+TEST(GeoJsonReader, MissingFileMessageNamesTheFileNotItsPathAndNullPathRejected) {
     const std::string missing = uniqueTempPath("missing", ".geojson").u8string();
     try {
         GeoJsonReader r(missing.c_str());
         FAIL() << "expected IoError";
     } catch (const IoError& e) {
-        EXPECT_NE(messageOf(e).find(missing), std::string::npos) << e.what();
+        EXPECT_NE(messageOf(e).find("cannot open the file"), std::string::npos) << e.what();
+        EXPECT_EQ(messageOf(e).find(missing), std::string::npos) << e.what();
     }
     EXPECT_THROW(GeoJsonReader(nullptr), InvalidArgumentError);
 }
 
-TEST(GeoJsonReader, ParseErrorNamesPathOffsetAndTextAndIsFinal) {
+TEST(GeoJsonReader, ParseErrorNamesOffsetAndTextNotThePathAndIsFinal) {
     auto path = uniqueTempPath("parse", ".geojson");
     TempFileGuard guard(path);
     writeFile(path, R"({"type":"FeatureCollection","features":[ x ]})");
@@ -129,7 +130,8 @@ TEST(GeoJsonReader, ParseErrorNamesPathOffsetAndTextAndIsFinal) {
         FAIL() << "expected InvalidArgumentError";
     } catch (const InvalidArgumentError& e) {
         const std::string m = e.what();
-        EXPECT_NE(m.find(path.u8string()), std::string::npos) << m;
+        EXPECT_EQ(m.find(path.u8string()), std::string::npos) << m;
+        EXPECT_NE(m.find("parse error in the file"), std::string::npos) << m;
         EXPECT_NE(m.find("offset 41"), std::string::npos) << m;
         EXPECT_NE(m.find("Invalid value."), std::string::npos) << m;
     }

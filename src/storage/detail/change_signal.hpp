@@ -39,11 +39,11 @@ public:
     static bool isSupported() noexcept;
 
     // Opens the signal for the store whose meta.store_uuid is `storeUuid`. Never throws:
-    // on failure it logs a Warning naming `storePath` and the cause, and the signal stays
+    // on failure it logs a Warning naming the cause (never a path), and the signal stays
     // closed, so wait() just sleeps. A Linux reader that finds no name stays closed
     // silently and tries again in wait(). Where !isSupported() it stays closed and logs
     // nothing.
-    ChangeSignal(const std::string& storeUuid, const std::string& storePath, Role role) noexcept;
+    ChangeSignal(const std::string& storeUuid, Role role) noexcept;
     ChangeSignal(const ChangeSignal&) = delete;
     ChangeSignal& operator=(const ChangeSignal&) = delete;
     ~ChangeSignal();
@@ -70,7 +70,6 @@ public:
 private:
 #if defined(_WIN32)
     std::string name_;
-    std::string storePath_;
     void* handle_ = nullptr;
 #elif !defined(__APPLE__)
     // A semaphore this handle has open, and how many wait() calls are on it now.
@@ -88,7 +87,6 @@ private:
     void warnOnce(const char* step, int error) noexcept;
 
     std::string name_;
-    std::string storePath_;
     Role role_ = Role::Reader;
     mutable std::mutex mutex_;   // guards current_, replaced_ and warned_
     Held current_{nullptr, 0};   // the semaphore to wait on and post

@@ -1,4 +1,5 @@
 #include <slideio/processor/core/memory_budget.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 
@@ -18,7 +19,8 @@ namespace {
 [[noreturn]] void synchronisationFailed(const char* operation, const std::system_error& e) {
     ErrorContext ctx;
     ctx.operationName = operation;
-    ctx.cause = e.what();
+    const std::string causeText = detail::diagnosticText(e);
+    ctx.cause = causeText.c_str();
     throw InternalError("MemoryBudget: synchronisation failed", ctx);
 }
 

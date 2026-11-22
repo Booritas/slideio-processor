@@ -727,3 +727,43 @@ TEST_F(CsvExportTest, RowTwinWithoutBaseIsKept) {
     EXPECT_EQ(bothRows[0], (Row{"layer_id", "anchor_id", "area", "area.um2", "len", "len.um",
                                 "perimeter"}));
 }
+
+// slideId() replaces the store's slide identifier in the "# slide_id:" line; null keeps it.
+TEST(CsvWriter, SlideIdOverridesProvenance) {
+    StoreFilesGuard files;
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    Provenance provenance = store->provenance();
+    provenance.setSlideId("C:/scans/patient-123.svs");
+    store->setProvenance(provenance);
+    const LayerId layer = store->layers().declareSemantic("cells", store->layers().pixelLayer());
+    const StageId stage = store->stageStateWriter().declare("seg", "{}");
+    ObjectRecord record;
+    record.setLayer(layer);
+    record.setGeometry(square(0, 0, 4));
+    ObjectWriterPtr writer = store->objects().writerForStage(stage);
+    writer->emit(record);
+    writer->flush();
+    store->stageStateWriter().setStatus(stage, StageStatus::Complete);
+
+    OutputPath kept;
+    CsvWriter(kept.utf8().c_str()).write(*store, ObjectQuery());
+    EXPECT_NE(readText(kept.path()).find("# slide_id: C:/scans/patient-123.svs\n"), std::string::npos);
+
+    OutputPath nulled;
+    CsvWriter(nulled.utf8().c_str()).slideId(nullptr).write(*store, ObjectQuery());
+    EXPECT_EQ(readText(nulled.path()), readText(kept.path()));
+
+    OutputPath replaced;
+    CsvWriter(replaced.utf8().c_str()).slideId("study-17").write(*store, ObjectQuery());
+    const std::string text = readText(replaced.path());
+    EXPECT_NE(text.find("# slide_id: study-17\n"), std::string::npos) << text;
+    EXPECT_EQ(text.find("patient-123"), std::string::npos) << text;
+
+    OutputPath empty;
+    CsvWriter(empty.utf8().c_str()).slideId("").write(*store, ObjectQuery());
+    const std::string emptyText = readText(empty.path());
+    EXPECT_NE(emptyText.find("# slide_id: \n"), std::string::npos) << emptyText;
+    EXPECT_EQ(emptyText.find("patient-123"), std::string::npos) << emptyText;
+    store->close();
+}

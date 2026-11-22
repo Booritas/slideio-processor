@@ -1,5 +1,6 @@
 #include "storage/detail/store_impl.hpp"
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/schema.hpp"
 
 #include <slideio/processor/core/log.hpp>
@@ -24,7 +25,7 @@ public:
     Connection acquire(const char* operation) {
         {
             std::lock_guard<std::mutex> guard(mutex_);
-            if (closed_) throwClosed(operation, path_);
+            if (closed_) throwClosed(operation);
             if (!idle_.empty()) {
                 Connection c = std::move(idle_.back());
                 idle_.pop_back();
@@ -66,8 +67,8 @@ public:
         idle.swap(idle_);
     }
 
-    [[noreturn]] static void throwClosed(const char* operation, const std::string& path) {
-        const std::string message = std::string(operation) + ": store is closed ('" + path + "')";
+    [[noreturn]] static void throwClosed(const char* operation) {
+        const std::string message = std::string(operation) + ": store is closed";
         throw IoError(message.c_str());
     }
 
@@ -85,8 +86,8 @@ ReadLease::~ReadLease() {
     if (pool_ && connection_) pool_->release(std::move(connection_));
 }
 
-void ReadLease::checkStoreOpen(const char* operation, const std::string& path) const {
-    if (pool_->isClosed()) ConnectionPool::throwClosed(operation, path);
+void ReadLease::checkStoreOpen(const char* operation) const {
+    if (pool_->isClosed()) ConnectionPool::throwClosed(operation);
 }
 
 namespace {
@@ -136,7 +137,7 @@ StoreImpl::StoreImpl(const char* path, OpenMode mode, const Configuration& confi
     path_ = path;
     if (mode != OpenMode::ReadOnly && mode != OpenMode::ReadWrite && mode != OpenMode::CreateNew) {
         const std::string message = "Store::open: unknown open mode " +
-                                    std::to_string(static_cast<int32_t>(mode)) + " for '" + path_ + "'";
+                                    std::to_string(static_cast<int32_t>(mode));
         throw InvalidArgumentError(message.c_str());
     }
     pool_ = std::make_shared<ConnectionPool>(path_);
@@ -144,12 +145,12 @@ StoreImpl::StoreImpl(const char* path, OpenMode mode, const Configuration& confi
 
     std::error_code ec;
     const bool exists = std::filesystem::exists(std::filesystem::u8path(path_), ec);
-    if (ec) throwIo("Store::open: cannot inspect '" + path_ + "'", ec.message().c_str());
+    if (ec) throwIo("Store::open: cannot inspect the store file", ec.message().c_str());
     if (mode == OpenMode::CreateNew) {
-        if (exists) throwIo("Store::open: '" + path_ + "' already exists; CreateNew needs a new path");
+        if (exists) throwIo("Store::open: the store already exists; CreateNew needs a new path");
         createNew();
     } else {
-        if (!exists) throwIo("Store::open: no store at '" + path_ + "'");
+        if (!exists) throwIo("Store::open: there is no store at the given path");
         openExisting();
     }
     openChangeSignal();
@@ -172,7 +173,7 @@ void StoreImpl::configureWriteConnection() {
     sqlite3* db = writeConnection_.get();
     Statement journal(db, "PRAGMA journal_mode=WAL");
     if (!journal.step() || journal.columnText(0) != "wal") {
-        throwIo("Store::open: cannot switch '" + path_ + "' to WAL mode", sqlite3_errmsg(db));
+        throwIo("Store::open: cannot switch the store to WAL mode", sqlite3_errmsg(db));
     }
     exec(db, "PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");
 }
@@ -213,16 +214,16 @@ void StoreImpl::migrateFromVersion1() {
     } catch (const std::exception& e) {
         // The transaction rolled back: the file is still version 1. The connection and the
         // writer lock are released as the constructor unwinds.
-        throwIo("Store::open: cannot upgrade '" + path_ + "' from store format version 1 to " +
+        throwIo("Store::open: cannot upgrade the store from store format version 1 to " +
                     std::to_string(storeFormatVersion()),
-                e.what());
+                detail::diagnosticText(e).c_str());
     }
     formatVersion_ = storeFormatVersion();
 }
 
 WriterLock lockForCreateNew(const std::string& path) {
-    const auto throwExists = [&path] {
-        throwIo("Store::open: '" + path + "' already exists; CreateNew needs a new path");
+    const auto throwExists = [] {
+        throwIo("Store::open: the store already exists; CreateNew needs a new path");
     };
     WriterLock lock;
     try {
@@ -240,7 +241,7 @@ WriterLock lockForCreateNew(const std::string& path) {
         // Unknown whether another creator's store is there: creating, or cleaning up after
         // a failed create, could destroy it.
         lock.release();
-        throwIo("Store::open: cannot inspect '" + path + "'", ec.message().c_str());
+        throwIo("Store::open: cannot inspect the store file", ec.message().c_str());
     }
     if (exists) {
         // A creator that won the race has made the store and released the lock. The lock
@@ -287,21 +288,20 @@ int32_t StoreImpl::readFormatVersion(sqlite3* db) const {
     sqlite3_finalize(raw);
     if (rc == SQLITE_NOTADB || rc == SQLITE_ERROR) {
         // Not a SQLite database, or one without a meta table.
-        const std::string message = "Store::open: '" + path_ +
-                                    "' is not a slideio-processor store (store format version 0; this library "
+        const std::string message = "Store::open: the file is not a slideio-processor store (store format version 0; this library "
                                     "reads version " + std::to_string(library) + " and upgrades version 1)";
         ErrorContext context;
         context.cause = sqlite3_errmsg(db);
         throw StoreFormatError(message.c_str(), 0, library, context);
     }
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, "Store::open", path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, "Store::open");
 
     const std::optional<int64_t> stored = metaInt64(db, kMetaFormatVersion);
     const int32_t version =
         stored && *stored > 0 && *stored <= INT32_MAX ? static_cast<int32_t>(*stored) : 0;
     // Version 1 is read as it is, and upgraded by a writable open (migrateFromVersion1).
     if (version != library && version != 1) {
-        const std::string message = "Store::open: '" + path_ + "' has store format version " +
+        const std::string message = "Store::open: the file has store format version " +
                                     std::to_string(version) + "; this library reads version " +
                                     std::to_string(library) + " and upgrades version 1";
         throw StoreFormatError(message.c_str(), version, library);
@@ -310,17 +310,17 @@ int32_t StoreImpl::readFormatVersion(sqlite3* db) const {
 }
 
 void StoreImpl::checkOpen(const char* operation) const {
-    if (!isOpen()) ConnectionPool::throwClosed(operation, path_);
+    if (!isOpen()) ConnectionPool::throwClosed(operation);
 }
 
 void StoreImpl::checkWritable(const char* operation) const {
     checkOpen(operation);
-    if (isReadOnly()) throwIo(std::string(operation) + ": the store '" + path_ + "' is read-only");
+    if (isReadOnly()) throwIo(std::string(operation) + ": the store is read-only");
 }
 
 void StoreImpl::checkAcceptingObjects(const char* operation) const {
     checkWritable(operation);
-    if (closing_.load(std::memory_order_acquire)) ConnectionPool::throwClosed(operation, path_);
+    if (closing_.load(std::memory_order_acquire)) ConnectionPool::throwClosed(operation);
 }
 
 ReadLease StoreImpl::acquireRead(const char* operation) const {
@@ -333,7 +333,7 @@ StoreImpl::SynchronousScope::SynchronousScope(StoreImpl& store, const char* oper
     if (!durable_) return;
     sqlite3* db = store_.writeConnection_.get();
     const int rc = sqlite3_exec(db, "PRAGMA synchronous=FULL", nullptr, nullptr, nullptr);
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, store_.path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation);
 }
 
 StoreImpl::SynchronousScope::~SynchronousScope() {
@@ -342,7 +342,7 @@ StoreImpl::SynchronousScope::~SynchronousScope() {
     // caller believe otherwise. The connection then stays at FULL, which is safe.
     sqlite3* db = store_.writeConnection_.get();
     if (sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        logMessage(LogLevel::Warning, "Store: cannot restore synchronous=NORMAL on '%s': %s", store_.path_.c_str(),
+        logMessage(LogLevel::Warning, "Store: cannot restore synchronous=NORMAL: %s",
                    sqlite3_errmsg(db));
     }
 }
@@ -350,13 +350,13 @@ StoreImpl::SynchronousScope::~SynchronousScope() {
 void StoreImpl::beginWrite(const char* operation) {
     sqlite3* db = writeConnection_.get();
     const int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr);
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation);
 }
 
 void StoreImpl::commitWrite(const char* operation) {
     sqlite3* db = writeConnection_.get();
     const int rc = sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation);
 }
 
 void StoreImpl::rollbackWrite() noexcept {
@@ -375,13 +375,13 @@ void StoreImpl::beginJoin(const char* operation) {
     // RELEASE would commit it, so later writes of the batch would be stored alone.
     if (sqlite3_get_autocommit(db) != 0) throwIo(std::string(operation) + ": the batch's transaction was rolled back");
     const int rc = sqlite3_exec(db, "SAVEPOINT slideio_join", nullptr, nullptr, nullptr);
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation);
 }
 
 void StoreImpl::releaseJoin(const char* operation) {
     sqlite3* db = writeConnection_.get();
     const int rc = sqlite3_exec(db, "RELEASE slideio_join", nullptr, nullptr, nullptr);
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation, path_.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, operation);
 }
 
 void StoreImpl::rollbackJoin() noexcept {
@@ -438,9 +438,10 @@ void StoreImpl::throwInvalidArgument(const char* operation, const char* what) {
 }
 
 void StoreImpl::throwTranslated(const char* operation, const std::exception& e) const {
-    const std::string message = std::string(operation) + ": unexpected failure on '" + path_ + "'";
+    const std::string message = std::string(operation) + ": unexpected failure";
     ErrorContext context;
-    context.cause = e.what();
+    const std::string cause = detail::diagnosticText(e);
+    context.cause = cause.c_str();
     throw InternalError(message.c_str(), context);
 }
 
@@ -491,13 +492,13 @@ void CommitWaiter::unlinkSignal() noexcept {
 void StoreImpl::openChangeSignal() noexcept {
     if (!configuration_.eventSignalEnabled() || !ChangeSignal::isSupported()) return;
     if (storeUuid_.empty()) {
-        logMessage(LogLevel::Warning, "Store::open: '%s' has no store_uuid; event cursors poll", path_.c_str());
+        logMessage(LogLevel::Warning, "Store::open: the store has no store_uuid; event cursors poll");
         return;
     }
     try {
         // Kept even when not open yet: a Linux reader opens the name once a writer makes it.
         const ChangeSignal::Role role = isReadOnly() ? ChangeSignal::Role::Reader : ChangeSignal::Role::Writer;
-        waiter_ = std::make_shared<CommitWaiter>(std::make_unique<ChangeSignal>(storeUuid_, path_, role));
+        waiter_ = std::make_shared<CommitWaiter>(std::make_unique<ChangeSignal>(storeUuid_, role));
     } catch (const std::bad_alloc&) {
         // No signal: cursors poll, which is always correct (UR-OBS-6).
     }
@@ -533,7 +534,7 @@ void StoreImpl::close() {
     if (flushError) std::rethrow_exception(flushError);
 }
 
-Provenance parseProvenanceJson(const std::string& json, const std::string& storePath) {
+Provenance parseProvenanceJson(const std::string& json) {
     rapidjson::Document doc;
     doc.Parse(json.c_str(), json.size());
     const auto member = [&doc](const char* name) -> const rapidjson::Value* {
@@ -559,8 +560,8 @@ Provenance parseProvenanceJson(const std::string& json, const std::string& store
                             ? "JSON parse error at offset " + std::to_string(doc.GetErrorOffset())
                             : std::string("missing or mistyped field");
     cause += " in a record of " + std::to_string(json.size()) + " bytes";
-    const std::string message = "Store::provenance: meta.provenance of '" + storePath +
-                                "' is not a provenance record (" + cause + ")";
+    const std::string message = std::string("Store::provenance: meta.provenance of the store") +
+                                " is not a provenance record (" + cause + ")";
     throw InternalError(message.c_str());
 }
 

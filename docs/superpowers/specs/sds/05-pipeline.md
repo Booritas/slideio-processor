@@ -100,6 +100,9 @@ public:
     /// and the space the declared halo is measured in.
     Rect64 tileRectAtLevel() const noexcept;
     Rect64 haloRectAtLevel() const noexcept;
+    /// The whole analysis level, {0, 0, width, height}; the halo rect is not
+    /// clipped to it. Empty for a context built outside a run.
+    Rect64 levelRectAtLevel() const noexcept;
 
     /// The same tile in level-0 coordinates, for an operation that needs to
     /// relate itself to slide position.
@@ -129,6 +132,10 @@ public:
     /// correct and merely wasteful; an operation that reads it skips work it
     /// would otherwise do and discard.
     const RasterMask* mask() const noexcept;
+
+    /// Adds to the run's total the objects this call dropped as truncated in its
+    /// view of the tile; a negative count throws InvalidArgumentError. ThreadSafe.
+    void countTruncatedObjects(int64_t count);
 
     /// Records a fragment touching a tile seam, for cross-tile merging.
     /// Level-0 coordinates, like every emitted polygon.
@@ -175,6 +182,7 @@ public:
     virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
+    virtual bool isDeterministic() const;                             // true
     virtual int64_t workingSetBytesPerTile() const;                   // 0
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
     virtual bool objectsAreEightConnected() const;                    // false
@@ -567,6 +575,7 @@ public:
     TileRequirement tileRequirement(const char* name) const;
     int64_t workingSetBytesPerLevelPixel(const char* name) const;
     bool producesObjects(const char* name) const;
+    bool isDeterministic(const char* name) const;
     int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
     int64_t workingSetBytesPerTile(const char* name) const;
     int64_t accumulatedStateBytes(const char* name, int32_t planeCount) const;
@@ -603,6 +612,12 @@ process. Names are kept in ascending bytewise order, so `nameAt(i)` does not
 depend on registration order, though positions shift when a smaller name is
 registered later. Every by-name query and `create` throws `InvalidArgumentError`
 naming a null or unknown name.
+
+**Determinism.** `OperationFactory::isDeterministic()` is `true` by default; an
+operation whose results may vary between runs (a GPU model) overrides it to
+return `false`. `OperationCatalog::isDeterministic(name)` answers for a
+registered name and throws `InvalidArgumentError` for a null or unknown one. The
+stage record lists such operations (SDS 04, 4.2).
 
 **What `create` checks, and which declarations the factory only predicts.**
 `create` throws `InternalError` when the factory returns null, and also when the
@@ -846,6 +861,9 @@ public:
     /// Eager: streams the whole slide or ROI.
     void runInto(ObjectSink&, ProgressObserver*, const CancellationToken&);
     void run(ProgressObserver*, const CancellationToken&);
+    /// What the last run's operations reported through countTruncatedObjects():
+    /// one per dropped tile view, not per distinct object; 0 before the first run.
+    int64_t truncatedObjectCount() const noexcept;
 
     int32_t levelCount() const;
     Rect64  rect(int32_t level) const;
@@ -1449,6 +1467,61 @@ on every way out of the run, failure and cancellation included. That is what a
 `Pipeline` used directly does; `StageRunner` is to pass a subdirectory of the
 workspace instead (5.7). A chain producing no objects gets neither merger nor
 directory.
+
+**Truncated objects.** An operation that drops an object it cannot deliver whole
+reports it with `OperationContext::countTruncatedObjects(count)`. The count
+adds to an atomic member of the run's counters, which every worker of the run
+shares and the start of each run resets, so the total is the sum over all tiles
+and workers. Only the final pass counts, tiles a restricted run evaluates on
+demand included (they belong to the final pass). In a global-context
+accumulation pass the context has no counter, so the call validates its
+argument and drops it; a lazy read (a block of `Pipeline::asScene()`) counts
+into run counters of its own, which it discards. The total counts dropped tile
+views, not distinct objects: an operation reports what it dropped in one
+tile's view, so each truncated object counts at least once, one dropped in
+several tiles' views (`LabelImageOperation`: a part of it whose own anchor
+another tile owns) counts once per view, and the figure depends on the tile
+size; 0 means nothing was dropped. A negative
+count throws `InvalidArgumentError`, which fails the run as any operation error
+does (a `TileError` naming the operation). `Pipeline::truncatedObjectCount()`
+reads the total after `runInto` or `run` and is 0 before the first run; it
+keeps what a failed run had counted. `StageRunner::truncatedObjects()` (SDS 04)
+copies it after a successful run and is 0 before, and after a failed run; a
+second `run()` reports its own count, not a sum.
+
+**The level rect.** `OperationContext::levelRectAtLevel()` is the whole analysis
+level, `{0, 0, width, height}` in level pixels, which the tile evaluator copies
+from the run plan into every context it builds; a context built outside a run
+(a test's direct application) reports an empty rect, read as "level unknown".
+The halo rect is not clipped to the level, so an operation that must tell a side
+of its halo rect lying inside the level (beyond which the slide goes on) from one
+on or beyond the level's edge (beyond which nothing is) compares the two.
+
+**Anchor ownership instead of seam joining (`LabelImageOperation`).** The seam
+merger joins fragments of one region across tiles by layer and join key. That
+works when a region's identity is the same in every tile: a foreground pixel
+(`segment.connected_components`), a sample value (`segment.contours`). A model's
+label image (SDS 06, 6.7) numbers its objects tile by tile, so one object can
+carry different values on either side of a seam and one value can name two
+objects; no join key names it the same way in both tiles. `LabelImageOperation`
+therefore never emits a seam fragment. Over the halo rect it labels each maximal
+4-connected set of one non-zero value as one region, traces it, and keeps it only
+in the tile whose half-open tile rect holds its anchor, the topmost-then-leftmost
+vertex of its first outer ring, the point `ObjectId::fromAnchor` uses; every
+other tile seeing the region ignores it, so it is emitted once, whole, through
+`objectSink()`. The tile filter's own anchor test then admits it as it does every
+single-tile object. A region reaching a side of the halo rect that lies strictly
+inside the level may continue beyond what the tile saw: it is dropped and
+counted with `countTruncatedObjects`, once per tile view that drops a part of
+it (see **Truncated objects** above). A side on or beyond the level's edge never
+truncates, and labels predicted beyond the level are cleared first, so an object
+at the level's edge is stored cut at the edge and is complete. The halo is thus
+the largest object extent, below and beside its anchor, the operation delivers;
+the working set grows with it and validation refuses one beyond the memory
+ceiling before any tile runs. The objects are those a single tile covering the
+level gives, whatever the tile size and worker count, as long as the model's
+regions are (UR-QA-3); seam joining keeps its place for operations whose
+regions have a tile-independent identity.
 
 `runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
 tile (`hasTile()` true), or for a failure creating or finalising a

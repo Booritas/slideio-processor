@@ -27,7 +27,9 @@ namespace slideio::processor::testing_support {
 ///   cancellation");
 /// - "sleepMs" (default 0): how long each apply sleeps, so concurrent applies overlap;
 /// - "copy" (default 0): 1 writes the input tile as Float32 instead of zeros, so a
-///   probe can sit in a chain without changing what follows.
+///   probe can sit in a chain without changing what follows;
+/// - "truncated" (default 0): when not 0, every apply calls context.countTruncatedObjects(truncated),
+///   a negative value included.
 /// Every apply is counted, and the number running at once is tracked. The counters
 /// and the arming switch are process-wide: tests that use them run one at a time.
 class ProbeOperation : public Operation {
@@ -58,6 +60,7 @@ private:
     int64_t failKind_ = 0;
     int64_t sleepMs_ = 0;
     int64_t copy_ = 0;
+    int64_t truncated_ = 0;
     bool fails_ = false;  ///< Both failX and failY given.
 };
 

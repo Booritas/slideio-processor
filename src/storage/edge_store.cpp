@@ -46,7 +46,7 @@ public:
 
     CursorPtr open(const char* operation, detail::BuiltQuery&& built) const {
         detail::ReadLease lease = store.acquireRead(operation);
-        return detail::openObjectCursor(store.path(), std::move(lease), std::move(built));
+        return detail::openObjectCursor(std::move(lease), std::move(built));
     }
 
     int64_t count(const char* operation, const char* sql) const {

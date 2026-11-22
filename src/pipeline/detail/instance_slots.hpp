@@ -1,6 +1,7 @@
 // Requirements: UR-EXE-2
 #pragma once
 
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
 
@@ -54,7 +55,8 @@ public:
             }
         } catch (const std::system_error& e) {
             ErrorContext context;
-            context.cause = e.what();
+            const std::string causeText = detail::diagnosticText(e);
+            context.cause = causeText.c_str();
             throw InternalError("InstanceSlots: a synchronisation primitive failed", context);
         }
     }

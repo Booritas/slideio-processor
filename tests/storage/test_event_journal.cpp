@@ -215,7 +215,8 @@ TEST_F(EventJournalTest, PositionBeyondTheNewestEventIsRefused) {
     } catch (const InvalidArgumentError& e) {
         const std::string message = e.what();
         EXPECT_NE(message.find("position 1 is beyond the newest event 0"), std::string::npos) << message;
-        EXPECT_NE(message.find(pathUtf8()), std::string::npos) << message;
+        EXPECT_NE(message.find("of the store"), std::string::npos) << message;
+        EXPECT_EQ(message.find(pathUtf8()), std::string::npos) << message;
     }
     EXPECT_NO_THROW(j.subscribe(0));
 

@@ -407,8 +407,9 @@ TEST(SeamSpill, UnwritableScratchIsIoError) {
         FAIL() << "expected IoError";
     } catch (const IoError& e) {
         const std::string message = e.what();
-        EXPECT_NE(message.find(where.u8string()), std::string::npos) << message;
-        EXPECT_NE(message.find("seam-"), std::string::npos) << message;
+        EXPECT_EQ(message.find(where.u8string()), std::string::npos) << message;
+        EXPECT_NE(message.find("cannot create the scratch file"), std::string::npos) << message;
+        EXPECT_EQ(message.find("seam-"), std::string::npos) << message;
     }
     EXPECT_EQ(merger.spilledFragmentCount(), 0);
 }

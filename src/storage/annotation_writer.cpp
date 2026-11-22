@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/annotation_store.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
 #include "storage/detail/measurement_names.hpp"
@@ -254,11 +255,10 @@ AnnotationWriter::~AnnotationWriter() {
     try {
         flush();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "AnnotationWriter: flushing stage %d to '%s' failed: %s",
-                   impl_->core->stage.value(), impl_->core->gate->path().c_str(), e.what());
+        logMessage(LogLevel::Error, "AnnotationWriter: flushing stage %d failed: %s",
+                   impl_->core->stage.value(), detail::diagnosticText(e).c_str());
     } catch (...) {
-        logMessage(LogLevel::Error, "AnnotationWriter: flushing stage %d to '%s' failed", impl_->core->stage.value(),
-                   impl_->core->gate->path().c_str());
+        logMessage(LogLevel::Error, "AnnotationWriter: flushing stage %d failed", impl_->core->stage.value());
     }
 }
 

@@ -1,6 +1,8 @@
 // Requirements: UR-IMG-4, UR-SEG-3
 #include <pipeline/detail/level_table.hpp>
 
+#include "core/detail/diagnostics.hpp"
+#include <pipeline/detail/slide_cause.hpp>
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 
@@ -52,7 +54,8 @@ std::vector<LevelDims> levelTable(const slideio::Scene& scene) {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::slideCauseText(e, scene);
+        context.cause = causeText.c_str();
         throw InternalError("LevelSelector: SlideIO failed to report the scene's levels", context);
     }
 }

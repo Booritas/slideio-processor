@@ -3,6 +3,7 @@
 
 #include <slideio/processor/pipeline/operation.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +38,8 @@ struct OperationContextState {
     int32_t level = 0;
     Rect64 tileRectAtLevel{0, 0, 0, 0}, haloRectAtLevel{0, 0, 0, 0}, tileRect{0, 0, 0, 0},
         haloRect{0, 0, 0, 0};
+    /// The whole analysis level; empty when unknown (a context built outside a run).
+    Rect64 levelRectAtLevel{0, 0, 0, 0};
     double levelScale = 1.0;
     /// The scene's level-0 pixel size in micrometres; 0 when unknown.
     double pixelSizeMicrons = 0.0;
@@ -47,6 +50,10 @@ struct OperationContextState {
     int64_t tileIndex = -1;
     /// The seam merger's entry point; empty when the run has none.
     SeamFragmentCallback seamFragment;
+    /// The run's total of objects operations dropped as truncated, one per dropped tile
+    /// view; null in an accumulation pass, where countTruncatedObjects() validates and
+    /// drops. A lazy read points it at a total of its own, which it discards.
+    std::atomic<int64_t>* truncatedCounter = nullptr;
 };
 
 /// Builds the context the framework hands to Operation::apply().

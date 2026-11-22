@@ -87,9 +87,10 @@ public:
      * range for the slide.
      * @throws IoError When workspacePath exists and is not an empty directory, or is
      * made by someone else while this call runs; when the slide does not open (the
-     * message names its path); when the parent directory is missing or the directory,
-     * the store or the scratch directory cannot be made (the message names
-     * workspacePath); or when the store already exists because a racing create made it.
+     * message names the slide by its role, never its path); when the parent directory
+     * is missing or the directory, the store or the scratch directory cannot be made
+     * (the message names the workspace directory by its role, never its path); or
+     * when the store already exists because a racing create made it.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.
@@ -98,6 +99,43 @@ public:
      */
     static WorkspacePtr create(const char* workspacePath, const char* slidePath, int32_t sceneIndex,
                                const Configuration& configuration);
+
+    /**
+     * @brief Creates a workspace over a scene the caller has already opened.
+     *
+     * Binds the given scene instead of opening the slide file again, so a caller that
+     * holds the slide open (the Python bindings) shares it. Everything else is that of
+     * the path overload: the same layout, provenance (the absolute, normalised
+     * slidePath and sceneIndex), undo of a failed create and ownership rules, so the
+     * workspace reopens with either open(). scene() returns the given object.
+     *
+     * Checked before anything is made: the scene is not null, sceneIndex is not
+     * negative, and the scene's file path is the same file as slidePath
+     * (std::filesystem::equivalent). The messages carry no path.
+     *
+     * @par What is trusted
+     * sceneIndex: a slideio::Scene cannot say which scene of its slide it is, so the
+     * caller's index is recorded as given and not confirmed, nor checked against the
+     * slide's scene count.
+     * @param workspacePath UTF-8 path of the workspace directory; as for the path overload.
+     * @param scene The open scene; shared, never reset by the workspace. close() releases
+     * only the workspace's reference: the slide stays open as long as the caller keeps it.
+     * @param slidePath UTF-8 path of the slide the scene was opened from.
+     * @param sceneIndex The scene's index in its slide, from 0.
+     * @param configuration The settings; copied.
+     * @return The open, writable workspace.
+     * @throws InvalidArgumentError When a path is null or empty, the scene is null,
+     * sceneIndex is negative, or the scene is not of the file at slidePath (also when
+     * that file is missing).
+     * @throws IoError As for the path overload, except that the slide is not opened.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-1, UR-STG-9
+     */
+    static WorkspacePtr create(const char* workspacePath, std::shared_ptr<slideio::Scene> scene,
+                               const char* slidePath, int32_t sceneIndex, const Configuration& configuration);
 
     /**
      * @brief Opens an existing workspace for writing, in this or any later process.
@@ -112,7 +150,8 @@ public:
      * @throws InvalidArgumentError When workspacePath is null or empty.
      * @throws IoError When the path holds no workspace store, when another handle holds
      * the writer lock, when the slide no longer opens or no longer has the scene (the
-     * message names the slide path), or when the scratch directory cannot be cleared.
+     * message names the slide by its role, never its path), or when the scratch
+     * directory cannot be cleared.
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
@@ -121,6 +160,42 @@ public:
      * UR-STG-1, UR-STG-9
      */
     static WorkspacePtr open(const char* workspacePath, const Configuration& configuration);
+
+    /**
+     * @brief Opens an existing workspace for writing over a scene the caller has
+     * already opened.
+     *
+     * As the path overload, including the scratch clear and the raster-file sweep, but
+     * the slide file is not opened: the given scene is bound. The scene's file path must
+     * be the same file (std::filesystem::equivalent) as the slide path the workspace
+     * recorded, and sceneIndex must equal the recorded scene index. The check is made through
+     * a read-only open of the store before any writable one, so a refusal changes nothing:
+     * no store byte (a version 1 store is not
+     * migrated), no lock file, no scratch or raster file. The one exception is SQLite's
+     * -wal and -shm sidecars, which a read-only open may create. The messages carry no path.
+     *
+     * @par What is trusted
+     * Only the sceneIndex match is checked, never that the scene truly is that scene of
+     * its slide, which a slideio::Scene cannot confirm.
+     * @param workspacePath UTF-8 path of the workspace directory; copied.
+     * @param scene The open scene; shared. close() releases only the workspace's reference.
+     * @param sceneIndex The scene's index in its slide; must be the recorded one.
+     * @param configuration The settings; copied.
+     * @return The open, writable workspace.
+     * @throws InvalidArgumentError When workspacePath is null or empty, the scene is null,
+     * sceneIndex is negative, the scene is not of the recorded slide, or sceneIndex
+     * differs from the recorded one.
+     * @throws IoError When the path holds no workspace store, when another handle holds
+     * the writer lock, or when the scratch directory cannot be cleared.
+     * @throws StoreFormatError When the store has another format version.
+     * @throws std::bad_alloc When memory is exhausted.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-STG-1, UR-STG-9
+     */
+    static WorkspacePtr open(const char* workspacePath, std::shared_ptr<slideio::Scene> scene, int32_t sceneIndex,
+                             const Configuration& configuration);
 
     /**
      * @brief Opens an existing workspace without a writer lock.
@@ -133,7 +208,8 @@ public:
      * @return The open, read-only workspace.
      * @throws InvalidArgumentError When workspacePath is null or empty.
      * @throws IoError When the path holds no workspace store, or when the slide no
-     * longer opens or no longer has the scene (the message names the slide path).
+     * longer opens or no longer has the scene (the message names the slide by its
+     * role, never its path).
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety

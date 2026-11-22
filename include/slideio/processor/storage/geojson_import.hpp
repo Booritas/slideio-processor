@@ -229,7 +229,7 @@ private:
  * @param path UTF-8 path of the GeoJSON file.
  * @return The polygon.
  * @throws InvalidArgumentError When path is null; when the file holds no feature with
- * supported geometry (the message is "importRoiPolygon: '<path>' holds no polygon"); when
+ * supported geometry (the message is "importRoiPolygon: the file holds no polygon"); when
  * that feature's geometry is invalid (the error is not passed over to a later feature);
  * or when the file is not GeoJSON.
  * @throws IoError When the file cannot be opened or read.

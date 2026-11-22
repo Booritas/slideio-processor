@@ -1,5 +1,6 @@
 // Requirements: UR-RES-7, UR-QA-3
 #include <slideio/processor/masks/mask_writer.hpp>
+#include "pipeline/detail/slide_cause.hpp"
 
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -30,9 +31,10 @@ namespace {
 
 // Runs a SlideIO call, translating what it throws: ProcessorError and std::bad_alloc pass
 // through (a scene's own source may throw them), anything else becomes IoError with the
-// SlideIO text as its cause.
+// SlideIO text as its cause, the path of the scene's file replaced by "<slide>"
+// (pipeline/detail/slide_cause.hpp: some drivers word their errors with the path).
 template <typename Call>
-auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
+auto fromSlideio(const char* message, const slideio::Scene& scene, Call&& call) -> decltype(call()) {
     try {
         return call();
     } catch (const ProcessorError&) {
@@ -41,7 +43,8 @@ auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::slideCauseText(e, scene);
+        context.cause = causeText.c_str();
         throw IoError(message, context);
     }
 }
@@ -92,7 +95,7 @@ public:
         const std::tuple<int, int, int, int> rect(static_cast<int>(sx0), static_cast<int>(sy0),
                                                   static_cast<int>(sx1 - sx0), static_cast<int>(sy1 - sy0));
         const std::tuple<int, int> size(static_cast<int>(w), static_cast<int>(h));
-        fromSlideio("MaskWriter: SlideIO failed to read the scene", [&] {
+        fromSlideio("MaskWriter: SlideIO failed to read the scene", *scene_, [&] {
             scene_->readResampledBlock(rect, size, block.data(), block.size());
         });
 
@@ -180,18 +183,18 @@ ExportResult MaskWriter::write(std::shared_ptr<slideio::Scene> scene, ProgressOb
     if (!scene) throw InvalidArgumentError("MaskWriter::write: the scene is null");
 
     constexpr const char* describe = "MaskWriter::write: SlideIO failed to describe the scene";
-    const int channels = fromSlideio(describe, [&] { return scene->getNumChannels(); });
+    const int channels = fromSlideio(describe, *scene, [&] { return scene->getNumChannels(); });
     if (channels < 1) throw InvalidArgumentError("MaskWriter::write: the scene has no channel");
-    const slideio::DataType first = fromSlideio(describe, [&] { return scene->getChannelDataType(0); });
+    const slideio::DataType first = fromSlideio(describe, *scene, [&] { return scene->getChannelDataType(0); });
     for (int c = 1; c < channels; ++c) {
-        if (fromSlideio(describe, [&] { return scene->getChannelDataType(c); }) != first) {
+        if (fromSlideio(describe, *scene, [&] { return scene->getChannelDataType(c); }) != first) {
             throw InvalidArgumentError("MaskWriter::write: the scene's channels differ in type");
         }
     }
     // A type DataType cannot hold maps to Unknown, which RasterTiffWriter refuses as
     // UnsupportedDataTypeError, as it refuses every type outside the OME-TIFF layout.
     const DataType type = dataTypeFromSlideio(static_cast<int32_t>(first));
-    const std::tuple<int, int, int, int> rect = fromSlideio(describe, [&] { return scene->getRect(); });
+    const std::tuple<int, int, int, int> rect = fromSlideio(describe, *scene, [&] { return scene->getRect(); });
     const int64_t width = std::get<2>(rect);
     const int64_t height = std::get<3>(rect);
     if (width <= 0 || height <= 0) throw InvalidArgumentError("MaskWriter::write: the scene is empty");
@@ -200,7 +203,8 @@ ExportResult MaskWriter::write(std::shared_ptr<slideio::Scene> scene, ProgressOb
     if (impl_->micronsPerPixel) {
         micronsPerPixel = *impl_->micronsPerPixel;
     } else {
-        const std::tuple<double, double> metres = fromSlideio(describe, [&] { return scene->getResolution(); });
+        const std::tuple<double, double> metres =
+            fromSlideio(describe, *scene, [&] { return scene->getResolution(); });
         const double own = std::get<0>(metres) * 1e6;
         if (std::isfinite(own) && own > 0.0) micronsPerPixel = own;
     }

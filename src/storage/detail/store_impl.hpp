@@ -56,9 +56,9 @@ public:
 
     sqlite3* get() const noexcept { return connection_.get(); }
 
-    // Throws IoError "<operation>: store is closed ('<path>')" once the store that issued
+    // Throws IoError "<operation>: store is closed" once the store that issued
     // this lease has closed or been destroyed. Reads only state the lease itself shares.
-    void checkStoreOpen(const char* operation, const std::string& path) const;
+    void checkStoreOpen(const char* operation) const;
 
 private:
     std::shared_ptr<ConnectionPool> pool_;
@@ -104,8 +104,8 @@ public:
 // The route by which a handle that may outlive its Store (an ObjectWriterPtr) reaches
 // the StoreImpl. Shared (shared_ptr) between the store and such handles. close() first
 // flushes the live clients, then detaches the gate, waiting for calls already inside
-// with() to return; from then on with() throws IoError "<operation>: store is closed
-// ('<path>')" and never touches the StoreImpl again.
+// with() to return; from then on with() throws IoError "<operation>: store is closed"
+// and never touches the StoreImpl again.
 class StoreGate {
 public:
     StoreGate(StoreImpl* store, std::string path) : store_(store), path_(std::move(path)) {}
@@ -188,12 +188,12 @@ public:
     const Configuration& configuration() const noexcept { return configuration_; }
     bool isOpen() const noexcept { return open_.load(std::memory_order_acquire); }
 
-    // Throws IoError "<operation>: store is closed ('<path>')" after close().
+    // Throws IoError "<operation>: store is closed" after close().
     void checkOpen(const char* operation) const;
-    // checkOpen, then throws IoError "<operation>: the store '<path>' is read-only" on a
+    // checkOpen, then throws IoError "<operation>: the store is read-only" on a
     // ReadOnly store.
     void checkWritable(const char* operation) const;
-    // checkWritable, then throws IoError "<operation>: store is closed ('<path>')" once
+    // checkWritable, then throws IoError "<operation>: store is closed" once
     // close() has begun: a new object accepted then might be queued after its writer's
     // flush and lost. For calls that start new work: ObjectWriter::emit and the like, and
     // RasterWriter::writeTile and RasterWriter::flush, so closing never starts a pyramid.
@@ -346,7 +346,7 @@ template <class Fn>
 auto StoreGate::with(const char* operation, Fn&& fn) -> decltype(fn(std::declval<StoreImpl&>())) {
     std::shared_lock<std::shared_mutex> guard(mutex_);
     if (store_ == nullptr) {
-        const std::string message = std::string(operation) + ": store is closed ('" + path_ + "')";
+        const std::string message = std::string(operation) + ": store is closed";
         throw IoError(message.c_str());
     }
     return fn(*store_);
@@ -360,10 +360,10 @@ SLIDEIO_PROCESSOR_DATA_EXPORTS void trackForCloseTesting(Store& store, const std
 #endif
 
 // Takes the writer lock for creating a store at `path` (UTF-8), which the caller found
-// free; another creator may have taken it since. Throws IoError "Store::open: '<path>'
+// free; another creator may have taken it since. Throws IoError "Store::open: the store
 // already exists; CreateNew needs a new path" when the store exists by then, whether
 // its creator still holds the lock or not, and leaves that store and its lock file
-// untouched; IoError "Store::open: cannot inspect '<path>'" when, with the lock taken,
+// untouched; IoError "Store::open: cannot inspect the store file" when, with the lock taken,
 // the path cannot be inspected; otherwise throws as WriterLock::acquire.
 WriterLock lockForCreateNew(const std::string& path);
 
@@ -372,9 +372,9 @@ WriterLock lockForCreateNew(const std::string& path);
 std::string provenanceToJson(const Provenance& provenance);
 
 // Parses meta.provenance (Provenance::toJson) and restores the stored record. Throws
-// InternalError naming the store path, the parse-error offset and the record size, but
+// InternalError naming the store (never its path), the parse-error offset and the record size, but
 // never the record's text, when it is not a provenance record.
-Provenance parseProvenanceJson(const std::string& json, const std::string& storePath);
+Provenance parseProvenanceJson(const std::string& json);
 
 template <class Fn>
 auto StoreImpl::withWriteTransaction(const char* operation, Fn&& fn) -> decltype(fn(std::declval<sqlite3*>())) {

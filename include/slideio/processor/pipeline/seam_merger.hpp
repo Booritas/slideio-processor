@@ -146,7 +146,7 @@ public:
     /// negative, or @p partials is null while @p partialCount is positive;
     /// nothing is recorded.
     /// @throws IoError When the scratch file cannot be created or written,
-    /// naming the file; the fragment is recorded but its memory is not
+    /// naming the scratch file; the fragment is recorded but its memory is not
     /// reserved, and the run cannot continue.
     /// @throws InternalError When the memory budget's lock fails.
     /// @throws std::bad_alloc When memory is exhausted.
@@ -175,7 +175,7 @@ public:
     /// into one polygon; the message names the layer and the fragment and
     /// ring counts, never coordinates.
     /// @throws IoError When a closed object's fragments cannot be read back
-    /// from the scratch file, naming the file.
+    /// from the scratch file, naming it by its role (never its path).
     /// @throws ProcessorError Whatever @p sink throws.
     /// @throws std::bad_alloc When memory is exhausted.
     /// @par Thread-safety
@@ -196,7 +196,7 @@ public:
     /// completed, naming its layer, or when a remaining object's fragments do
     /// not merge (as notifyTileComplete()).
     /// @throws IoError When a remaining object's fragments cannot be read back
-    /// from the scratch file, naming the file.
+    /// from the scratch file, naming it by its role (never its path).
     /// @throws CancelledError When the token is cancelled.
     /// @throws ProcessorError Whatever the sink throws.
     /// @throws std::bad_alloc When memory is exhausted.

@@ -78,7 +78,8 @@ TEST(Store, CreateReopenAndModes) {
         Store::open(missing.c_str(), OpenMode::ReadWrite, cfg);
         FAIL() << "opened a missing store";
     } catch (const IoError& e) {
-        EXPECT_TRUE(contains(e.what(), missing.c_str())) << e.what();
+        EXPECT_TRUE(contains(e.what(), "no store at the given path")) << e.what();
+        EXPECT_FALSE(contains(e.what(), missing.c_str())) << e.what();
     }
     EXPECT_THROW(Store::open(missing.c_str(), OpenMode::ReadOnly, cfg), IoError);
     EXPECT_FALSE(std::filesystem::exists(missingFiles.path()));
@@ -177,7 +178,9 @@ TEST(Store, SecondWriterIsRefusedReaderIsNot) {
         FAIL() << "a second writer was admitted";
     } catch (const IoError& e) {
         EXPECT_TRUE(contains(e.what(), "process")) << e.what();
-        EXPECT_TRUE(contains(e.what(), path.c_str())) << e.what();
+        // The store is named by its role; its path never appears.
+        EXPECT_TRUE(contains(e.what(), "the store")) << e.what();
+        EXPECT_FALSE(contains(e.what(), path.c_str())) << e.what();
     }
     EXPECT_NO_THROW(Store::open(path.c_str(), OpenMode::ReadOnly, cfg));
     w->close();
@@ -228,7 +231,8 @@ TEST(Store, ClosedAndReadOnlyRefuseWork) {
         FAIL() << "a read-only store accepted a write";
     } catch (const IoError& e) {
         EXPECT_TRUE(contains(e.what(), "read-only")) << e.what();
-        EXPECT_TRUE(contains(e.what(), path.c_str())) << e.what();
+        EXPECT_TRUE(contains(e.what(), "the store")) << e.what();
+        EXPECT_FALSE(contains(e.what(), path.c_str())) << e.what();
     }
     EXPECT_NO_THROW(r->provenance());
 }

@@ -120,6 +120,7 @@ therefore spatial scan order, which an observing viewer gets for free.
 | `workspace` | core, config, pipeline, storage | — |
 | `reporting` | core, config, storage | Parquet writer (deferred). Rasters go through `storage`'s lossless TIFF writer |
 | `masks` | core, config, storage, reporting | **SlideIO**'s library: `slideio::makeScene` and scene reads |
+| `run` | core, config, pipeline, storage, reporting, workspace, masks | — (the pipeline file and, with SlideRun, the whole-slide run; never `algorithm`) |
 
 `masks` was added by reporting plan C (decision 4). It turns label masks into
 SlideIO scenes and writes label masks and processing maps, given as SlideIO scenes, as
@@ -186,7 +187,7 @@ libslideio-processor-data      core  config  storage  reporting
   deps: slideio (headers only), SQLite (R*Tree), libtiff, parquet (deferred)
   no OpenCV
 
-libslideio-processor-engine    pipeline  algorithm  workspace  masks
+libslideio-processor-engine    pipeline  algorithm  workspace  masks  run
   deps: libslideio-processor-data, SlideIO, OpenCV
 ```
 
@@ -508,6 +509,23 @@ SlideIO — never on `pipeline`, `algorithm` or `workspace`.
 | `rasteriseLabels` | A lazy label-mask scene over a region, readable at any resolution. | UR-RES-7 |
 | `MaskWriter` | A label mask or processing map, as a SlideIO scene (`rasteriseLabels`' or a lazy pipeline scene), to a lossless OME-TIFF, through `RasterTiffWriter`. Whole-slide image conversion stays with slideio-converter. | UR-RES-7 |
 
+### 6.9 `run`
+
+Engine module (5.1), added by the slide-run work (Python bindings project 1). Depends on
+`core`, `config`, `pipeline`, `storage`, `reporting`, `workspace` and `masks` (and so
+SlideIO) — never on `algorithm`: operations reach a run by name through
+`OperationCatalog`, and `src/CMakeLists.txt` fails the configure if `run` links the
+algorithm module.
+
+| Component | Responsibility | Requirements |
+|---|---|---|
+| `PipelineFile` | The JSON file describing a whole slide run: required Python modules, layers, rasters, stages (stage records) and exports. Parsed, validated and serialised without a slide; taken from a development workspace with `fromWorkspace`. | UR-API-2, UR-STG-4, UR-RES-11 |
+| `ExportSpec` | One export of the file: CSV, GeoJSON, label mask or raster TIFF, with a plain output file name. | UR-API-2 |
+| `SlideRun` | Runs a `PipelineFile` against one slide scene: validates its operations, opens or creates the workspace (refusing one bound to another slide or scene), declares its layers, rasters and stages, runs what is not current in file order, and writes its exports atomically. The single-slide entry point the CLI, the bindings and batch processing wrap. | UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9 |
+| `SlideRunResult` | What a run did: per stage, whether it ran, the objects written and the truncated objects; per export, the file and its size. | UR-API-2, UR-RES-9 |
+
+SDS 09 specifies the module.
+
 ## 7. Cross-cutting concerns
 
 ### 7.1 Three independent version lines
@@ -534,6 +552,7 @@ unopenable; a schema change must not force a major API version.
 | `workspace` | Single-writer, matching Assumption 6 |
 | `reporting` | Thread-compatible; one writer per export |
 | `masks` | `MaskWriter` thread-confined; a label-mask scene may be read from several threads at once |
+| `run` | `PipelineFile` and `ExportSpec` thread-confined to build, const members safe to share; `SlideRun` thread-confined, one run per workspace (the writer lock) |
 
 ### 7.3 Determinism
 
@@ -576,6 +595,7 @@ transport can be omitted entirely on any platform.
 | `workspace` | UR-STG-1 to UR-STG-12, UR-EXE-4 |
 | `reporting` | UR-RES-7 to UR-RES-10, UR-RES-15 |
 | `masks` | UR-RES-7 |
+| `run` | UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7 to UR-RES-9, UR-RES-11 |
 
 ## 9. Consequences for `requirements.md`
 

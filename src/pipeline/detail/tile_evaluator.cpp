@@ -306,6 +306,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
             state.edgeSink = bindings_.edgeSink;
             state.annotationSink = bindings_.annotationSink;
             state.seamFragment = bindings_.seamFragment;
+            state.truncatedCounter = &bindings_.counters->truncatedObjects;
         } else {
             state.seamFragment = dropFragment;
         }
@@ -317,6 +318,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
         state.level = plan_.level;
         state.tileRectAtLevel = outputRect;
         state.haloRectAtLevel = currentRect;
+        state.levelRectAtLevel = plan_.levelRect;
         state.tileRect = rectToLevel0(outputRect, plan_.levelScale);
         state.haloRect = rectToLevel0(currentRect, plan_.levelScale);
         state.levelScale = plan_.levelScale;

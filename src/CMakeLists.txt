@@ -6,6 +6,7 @@ add_subdirectory(pipeline)
 add_subdirectory(algorithm)
 add_subdirectory(workspace)
 add_subdirectory(masks)
+add_subdirectory(run)
 
 # Linking the object library (rather than $<TARGET_OBJECTS:...>) puts its
 # objects into the DLL and lets its usage requirements propagate.
@@ -58,7 +59,20 @@ foreach(libs ${masks_link_libs} ${masks_interface_link_libs})
     endif()
 endforeach()
 
-# The engine library (design 5.1): pipeline, algorithm, workspace and masks. Its
+# The run module depends on workspace, masks, pipeline and the data library (design 5.1): it
+# resolves operations by name through OperationCatalog and never links algorithm. Fail the
+# configure if algorithm reaches its link line.
+get_target_property(run_link_libs slideio-processor-run LINK_LIBRARIES)
+get_target_property(run_interface_link_libs slideio-processor-run INTERFACE_LINK_LIBRARIES)
+foreach(libs ${run_link_libs} ${run_interface_link_libs})
+    if(libs MATCHES "slideio-processor-algorithm")
+        message(FATAL_ERROR
+            "slideio-processor-run must not link slideio-processor-algorithm (found '${libs}'): "
+            "operations are resolved by name through OperationCatalog.")
+    endif()
+endforeach()
+
+# The engine library (design 5.1): pipeline, algorithm, workspace, masks and run. Its
 # public headers name slideio::Scene and the data library's types,
 # so both are PUBLIC; OpenCV is static and PRIVATE. SlideIO's DLLs carry
 # their own static OpenCV, and the two copies never meet: SlideIO's API is
@@ -67,7 +81,7 @@ add_library(slideio-processor-engine SHARED)
 target_link_libraries(slideio-processor-engine
     PUBLIC slideio-processor-data slideio::slideio
     PRIVATE slideio-processor-pipeline slideio-processor-algorithm slideio-processor-workspace slideio-processor-masks
-            opencv_core opencv_imgproc)
+            slideio-processor-run opencv_core opencv_imgproc)
 target_include_directories(slideio-processor-engine PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_compile_definitions(slideio-processor-engine PRIVATE SLIDEIO_PROCESSOR_ENGINE_API)

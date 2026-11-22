@@ -311,6 +311,19 @@ public:
     /// @par Requirements
     /// UR-EXT-3
     Rect64 haloRectAtLevel() const noexcept;
+    /// The whole analysis level, {0, 0, width, height} in level pixels: where
+    /// the slide's pixels end, which haloRectAtLevel() can reach beyond. An
+    /// operation that must tell a side of its halo rect inside the level from
+    /// one beyond it (an object touching the former may be cut off) compares
+    /// against it. Empty when the context was built without a run, so the
+    /// level is unknown.
+    /// @return The level rect at the analysis level, or an empty rect.
+    /// @throws Nothing.
+    /// @par Thread-safety
+    /// ThreadConfined.
+    /// @par Requirements
+    /// UR-EXT-3
+    Rect64 levelRectAtLevel() const noexcept;
 
     /// The same tile in level-0 coordinates, for an operation that needs to
     /// relate itself to slide position.
@@ -418,6 +431,36 @@ public:
     /// @par Requirements
     /// UR-EXT-4
     const RasterMask* mask() const noexcept;
+
+    /**
+     * @brief Reports objects this call dropped because they were truncated.
+     *
+     * An operation that drops an object it cannot deliver whole, because the
+     * object touches a side of its halo rect that lies inside the level, adds
+     * the number it dropped in this call's view of the tile. The run sums the
+     * counts over every tile and worker and reports the total as
+     * Pipeline::truncatedObjectCount(). The total is therefore a count of
+     * dropped tile views, not of distinct objects: each truncated object counts
+     * at least once, but an object several tiles see in part may count once per
+     * tile that drops it, so the figure depends on the tile size. 0 means
+     * nothing was dropped.
+     *
+     * Only the final pass counts, including a tile a restricted run evaluates
+     * on demand (one it skipped, read again to complete an object), which
+     * belongs to that pass. A global-context accumulation pass keeps no count:
+     * the call is validated and dropped. A lazy read (a block read from
+     * Pipeline::asScene()) counts into a total of its own that is discarded,
+     * so it never reaches Pipeline::truncatedObjectCount().
+     * @param count Objects dropped; not negative. Zero is allowed.
+     * @throws InvalidArgumentError When @p count is negative; the run then
+     * fails as any operation error does.
+     * @par Thread-safety
+     * ThreadSafe: the total is atomic, so an operation may call it from
+     * threads of its own.
+     * @par Requirements
+     * UR-EXT-4
+     */
+    void countTruncatedObjects(int64_t count);
 
     /// Records a fragment touching a tile seam, for cross-tile merging.
     /// Level-0 coordinates, like every emitted polygon.

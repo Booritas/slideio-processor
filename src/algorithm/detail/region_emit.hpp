@@ -39,6 +39,23 @@ namespace slideio::processor::detail {
 void emitRegions(OperationContext& context, const int32_t* labels, int64_t stride, const TracedRegions& traced,
                  const BlockView& input, int32_t firstIntensityPlane, const int64_t* joinKeys = nullptr);
 
+/// Emits the regions r of @p traced with chosen[r] non-zero, each whole: a
+/// finished object, never a seam fragment, whether or not it touches the
+/// buffer's edge. @p labels is the buffer @p traced was traced from, covering
+/// @p area at the analysis level (row y at labels + y * stride), so each ring
+/// is moved to @p area's origin before context.toLevel0() maps it. @p chosen
+/// holds one flag per region of @p traced. Otherwise as emitRegions(): the
+/// regions are measured over @p input from @p firstIntensityPlane on, which
+/// covers context.haloRectAtLevel() and so must contain @p area; objects go to
+/// context.objectSink() on context.targetLayer(), and nowhere when the run
+/// supplied no sink. Throws what OperationContext::toLevel0() throws.
+///
+/// Memory: as emitRegions(), counting only the chosen regions' rings for the
+/// mapping buffer.
+void emitWholeRegions(OperationContext& context, const int32_t* labels, int64_t stride, const Rect64& area,
+                      const TracedRegions& traced, const uint8_t* chosen, const BlockView& input,
+                      int32_t firstIntensityPlane);
+
 /// The scene's samples a segmenter measures for planes @p first onward of
 /// context.input(): for each, the first plane of context.sourceInput() with
 /// the same source channel, each channel once, so `intensity.<c>.*` measures

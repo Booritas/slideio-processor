@@ -42,11 +42,13 @@ class Store;
  * written, in particular no export time, so two exports of an unchanged store with the
  * same query and schema are byte-identical (UR-QA-3).
  *
- * slide_id is the slide path as the store holds it. A path may contain identifiers,
- * such as an accession number, a medical record number, a patient's name or a user
- * name, that count as PHI or personal data under HIPAA and GDPR; consumers who share
- * an export must treat it accordingly. provenanceHeader(false) drops every provenance
- * line (and with it the provenance UR-RES-11 asks for).
+ * slide_id is the slide id set with slideId(); without one it is the store's slide
+ * identifier, which for a workspace store is the slide path. A path may contain
+ * identifiers, such as an accession number, a medical record number, a patient's name or
+ * a user name, that count as PHI or personal data under HIPAA and GDPR: set slideId() to
+ * an identifier of the caller's choosing (SlideRun does, empty by default) to keep the
+ * path out of the export. provenanceHeader(false) drops every provenance line (and with
+ * it the provenance UR-RES-11 asks for).
  *
  * The header line follows, then the rows. Cell contents, per ColumnSchema column:
  * - layer_id, anchor_id: the decimal LayerId value and the decimal packed anchor
@@ -113,6 +115,15 @@ public:
      * @throws Nothing in practice.
      */
     CsvWriter& provenanceHeader(bool include);
+    /**
+     * @brief Sets the slide id the "# slide_id:" line carries in place of the store's
+     * slide identifier (default: the store's, which for a workspace is the slide path).
+     * @param id UTF-8 identifier, copied; empty writes an empty id; null restores the
+     * store's identifier.
+     * @return This writer.
+     * @throws std::bad_alloc When memory is exhausted; the writer is unchanged.
+     */
+    CsvWriter& slideId(const char* id);
 
     /**
      * @brief Exports the objects the query selects, with no observer and no cancellation.

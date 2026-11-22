@@ -168,6 +168,21 @@ public:
      * UR-STG-3
      */
     int64_t edgesAsserted() const noexcept;
+    /**
+     * @brief The objects the operations of the last run dropped as truncated
+     * (Pipeline::truncatedObjectCount()); 0 before run() and after a failed run.
+     *
+     * One per dropped tile view, not per distinct object: each truncated object
+     * counts at least once, one dropped in several tiles' views counts once per
+     * view, and the figure depends on the tile size. 0 means nothing was dropped.
+     * @return The count; each run reports its own, not a sum.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-STG-3
+     */
+    int64_t truncatedObjects() const noexcept;
 
 private:
     class Impl;

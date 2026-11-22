@@ -59,13 +59,13 @@ std::vector<Run> runsOf(const std::vector<int64_t>& pixels, int64_t tileSize) {
     return runs;
 }
 
-// Reads a TIFF field of type T, or throws IoError naming the file and the field.
+// Reads a TIFF field of type T, or throws IoError naming the file by its role, never its path, and the field.
 template <class T>
-T field(const TiffHandle& handle, uint32_t tag, const char* name, const std::string& path, bool defaulted = false) {
+T field(const TiffHandle& handle, uint32_t tag, const char* name, bool defaulted = false) {
     T value{};
     const int found = defaulted ? TIFFGetFieldDefaulted(handle.get(), tag, &value)
                                 : TIFFGetField(handle.get(), tag, &value);
-    if (found != 1) throwIo("TIFFGetField: '" + path + "' has no " + name, std::string());
+    if (found != 1) throwIo(std::string("TIFFGetField: the raster file has no ") + name, std::string());
     return value;
 }
 
@@ -77,7 +77,7 @@ TiffRasterReader::TiffRasterReader(std::filesystem::path path, RasterFormat form
     std::unique_ptr<Handle> first = open();
     TIFF* tif = first->tiff.get();
     const auto mismatch = [&](const std::string& what) {
-        throwIo("TiffRasterReader: '" + pathUtf8_ + "' is not the raster its row describes", what);
+        throwIo("TiffRasterReader: the raster file is not the raster its row describes", what);
     };
     const tdir_t count = TIFFNumberOfDirectories(tif);
     if (count < 1) mismatch("it has no page");
@@ -87,20 +87,20 @@ TiffRasterReader::TiffRasterReader(std::filesystem::path path, RasterFormat form
         if (TIFFSetDirectory(tif, k) != 1) first->tiff.fail("TIFFSetDirectory");
         const std::string page = "page " + std::to_string(k);
         RasterFilePage info;
-        info.width = field<uint32_t>(first->tiff, TIFFTAG_IMAGEWIDTH, "ImageWidth", pathUtf8_);
-        info.height = field<uint32_t>(first->tiff, TIFFTAG_IMAGELENGTH, "ImageLength", pathUtf8_);
+        info.width = field<uint32_t>(first->tiff, TIFFTAG_IMAGEWIDTH, "ImageWidth");
+        info.height = field<uint32_t>(first->tiff, TIFFTAG_IMAGELENGTH, "ImageLength");
         if (TIFFIsTiled(tif) == 0) mismatch(page + " is not tiled");
-        info.tileWidth = field<uint32_t>(first->tiff, TIFFTAG_TILEWIDTH, "TileWidth", pathUtf8_);
-        info.tileHeight = field<uint32_t>(first->tiff, TIFFTAG_TILELENGTH, "TileLength", pathUtf8_);
+        info.tileWidth = field<uint32_t>(first->tiff, TIFFTAG_TILEWIDTH, "TileWidth");
+        info.tileHeight = field<uint32_t>(first->tiff, TIFFTAG_TILELENGTH, "TileLength");
         if (info.width != expectedWidth || info.height != expectedHeight) {
             mismatch(page + " is " + std::to_string(info.width) + " x " + std::to_string(info.height) + ", not " +
                      std::to_string(expectedWidth) + " x " + std::to_string(expectedHeight));
         }
         if (info.tileWidth < 1 || info.tileHeight < 1) mismatch(page + " has an empty tile size");
-        const auto bits = field<uint16_t>(first->tiff, TIFFTAG_BITSPERSAMPLE, "BitsPerSample", pathUtf8_, true);
-        const auto sampleFormat = field<uint16_t>(first->tiff, TIFFTAG_SAMPLEFORMAT, "SampleFormat", pathUtf8_, true);
-        const auto samples = field<uint16_t>(first->tiff, TIFFTAG_SAMPLESPERPIXEL, "SamplesPerPixel", pathUtf8_, true);
-        const auto planar = field<uint16_t>(first->tiff, TIFFTAG_PLANARCONFIG, "PlanarConfiguration", pathUtf8_, true);
+        const auto bits = field<uint16_t>(first->tiff, TIFFTAG_BITSPERSAMPLE, "BitsPerSample", true);
+        const auto sampleFormat = field<uint16_t>(first->tiff, TIFFTAG_SAMPLEFORMAT, "SampleFormat", true);
+        const auto samples = field<uint16_t>(first->tiff, TIFFTAG_SAMPLESPERPIXEL, "SamplesPerPixel", true);
+        const auto planar = field<uint16_t>(first->tiff, TIFFTAG_PLANARCONFIG, "PlanarConfiguration", true);
         if (bits != tiffBitsPerSample(format_.type) || sampleFormat != tiffSampleFormat(format_.type)) {
             mismatch(page + "'s samples are not " + std::string(dataTypeName(format_.type)));
         }

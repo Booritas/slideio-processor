@@ -66,7 +66,7 @@ struct SpoolEntry {
 // thread at once. place, forEachGridTile and remove must not run beside any other call.
 class TileSpool {
 public:
-    // Creates or truncates the spool file at `spoolFile`. Throws IoError naming the file
+    // Creates or truncates the spool file at `spoolFile`. Throws IoError naming the file by its role, never its path,
     // when it cannot be created, and InternalError when `format` has no sample size or
     // a plane count below 1.
     TileSpool(std::filesystem::path spoolFile, RasterFormat format);
@@ -78,7 +78,7 @@ public:
     // Spools one call: `width` x `height` level pixels covering `slideRect` at level 0.
     // Plane p's top-left sample is at planeData[p], and its rows are rowStrides[p] bytes
     // apart; both arrays have format.planes entries. An empty call is a no-op. Throws
-    // InternalError for a negative size, and IoError naming the file when the append
+    // InternalError for a negative size, and IoError naming the file by its role, never its path, when the append
     // fails.
     void append(const Rect64& slideRect, int64_t width, int64_t height, const void* const* planeData,
                 const int64_t* rowStrides);
@@ -106,13 +106,13 @@ public:
     // plane of 512 x 512 samples, row-major: zero where no call reached, otherwise the
     // calls applied in append order. The vectors are reused between calls. Throws
     // InternalError before place() or when a piece does not decode to its size, IoError
-    // naming the file when it cannot be read back, and whatever fn throws.
+    // naming the file by its role (never its path) when it cannot be read back, and whatever fn throws.
     void forEachGridTile(
         const std::function<void(int32_t gridX, int32_t gridY, const std::vector<std::vector<uint8_t>>& planes)>&
             fn) const;
 
     // Closes the file and deletes it. A file already gone is not an error. Throws IoError
-    // naming the file when it cannot be deleted. Further appends are an InternalError.
+    // naming the file by its role (never its path) when it cannot be deleted. Further appends are an InternalError.
     void remove();
 
     // Test seams. piecesStored: the pieces spooled so far, over every plane of every call.

@@ -1,7 +1,9 @@
 // Requirements: UR-STG-4, UR-RES-11
 #include <workspace/detail/stage_record.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/pipeline/operation_catalog.hpp>
 
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
@@ -228,6 +230,22 @@ std::string stageRecordJson(const StageDefinition& definition, const LayerRegist
     w.EndArray();
     w.Key("pipeline");
     w.RawValue(pipelineJson.data(), pipelineJson.size(), rapidjson::kObjectType);
+    // Operations that may vary between runs, in pipeline order; an unregistered one counts as
+    // deterministic. Written only when there are some, so other records stay byte-identical.
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    std::vector<const char*> nondeterministic;
+    for (int32_t i = 0; i < d.pipeline().operationCount(); ++i) {
+        const char* operation = d.pipeline().operationName(i);
+        if (catalog.isRegistered(operation) && !catalog.isDeterministic(operation)) {
+            nondeterministic.push_back(operation);
+        }
+    }
+    if (!nondeterministic.empty()) {
+        w.Key("nondeterministicOperations");
+        w.StartArray();
+        for (const char* operation : nondeterministic) w.String(operation);
+        w.EndArray();
+    }
     w.EndObject();
     return std::string(sb.GetString(), sb.GetSize());
 }
@@ -308,7 +326,8 @@ StageDefinition stageFromRecord(const char* json, const LayerRegistry& layers, c
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("stage record: reading failed", context);
     }
 }

@@ -1,4 +1,5 @@
 // Requirements: UR-STG-1, UR-STG-9, UR-EXE-2
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <workspace/detail/create_fault.hpp>
@@ -34,22 +35,28 @@ void requirePath(const char* path, const char* operation, const char* what) {
     }
 }
 
+// SlideIO's text for use as a cause, with the slide path replaced by "<slide>".
+std::string slideCause(const std::exception& e, const std::string& slidePath) {
+    return detail::redactSlidePath(detail::diagnosticText(e), slidePath);
+}
+
 [[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
     const std::string text = cause.empty() ? message : message + ": " + cause;
     throw IoError(text.c_str());
 }
 
-// Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming
-// the slide path, so the caller learns which file to restore or rebind.
+// Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming the slide
+// by its role, never its path (a file name can carry a patient identifier); SlideIO's own text
+// is the cause, with the slide path replaced by "<slide>".
 std::shared_ptr<slideio::Slide> openSlide(const std::string& slidePath, const char* operation) {
     std::shared_ptr<slideio::Slide> slide;
     try {
         slide = slideio::openSlide(slidePath, "");
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot open the slide", slideCause(e, slidePath));
     }
     if (!slide) {
-        throwIo(std::string(operation) + ": cannot open the slide '" + slidePath + "'", "");
+        throwIo(std::string(operation) + ": cannot open the slide", "");
     }
     return slide;
 }
@@ -58,7 +65,7 @@ int32_t sceneCount(const slideio::Slide& slide, const std::string& slidePath, co
     try {
         return slide.getNumScenes();
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot read the scenes of the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot read the scenes of the slide", slideCause(e, slidePath));
     }
 }
 
@@ -68,10 +75,10 @@ std::shared_ptr<slideio::Scene> sceneOf(const slideio::Slide& slide, int32_t ind
     try {
         scene = slide.getScene(index);
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open a scene of the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot open a scene of the slide", slideCause(e, slidePath));
     }
     if (!scene) {
-        throwIo(std::string(operation) + ": cannot open a scene of the slide '" + slidePath + "'", "");
+        throwIo(std::string(operation) + ": cannot open a scene of the slide", "");
     }
     return scene;
 }
@@ -81,12 +88,12 @@ void resetScratch(const fs::path& scratch, const char* operation) {
     std::error_code error;
     fs::remove_all(scratch, error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot clear the scratch directory '" + scratch.u8string() + "'",
+        throwIo(std::string(operation) + ": cannot clear the scratch directory",
                 error.message());
     }
     fs::create_directories(scratch, error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot create the scratch directory '" + scratch.u8string() + "'",
+        throwIo(std::string(operation) + ": cannot create the scratch directory",
                 error.message());
     }
 }
@@ -97,10 +104,54 @@ std::string absoluteSlidePath(const char* slidePath, const char* operation) {
     std::error_code error;
     const fs::path absolute = fs::absolute(fs::u8path(slidePath), error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot make the slide path '" + slidePath + "' absolute",
+        throwIo(std::string(operation) + ": cannot make the slide path absolute",
                 error.message());
     }
     return absolute.lexically_normal().u8string();
+}
+
+// Tells whether `scene` belongs to the file `path`. A scene that cannot name its file, or a
+// file that is missing, is a mismatch: this never throws.
+bool sceneIsOfFile(const slideio::Scene& scene, const std::string& path) noexcept {
+    try {
+        const std::string sceneFile = scene.getFilePath();
+        if (sceneFile.empty()) return false;
+        std::error_code error;
+        const bool same = fs::equivalent(fs::u8path(sceneFile), fs::u8path(path), error);
+        return !error && same;
+    } catch (...) {
+        return false;
+    }
+}
+
+// The checks the scene overloads make first. Their messages name no path: a slide's file
+// name can carry a patient identifier.
+void requireScene(const std::shared_ptr<slideio::Scene>& scene, int32_t sceneIndex, const char* operation) {
+    if (!scene) {
+        throw InvalidArgumentError((std::string(operation) + ": the scene is null").c_str());
+    }
+    if (sceneIndex < 0) {
+        throw InvalidArgumentError((std::string(operation) + ": the scene index is negative").c_str());
+    }
+}
+
+// Refuses an occupied workspace path before anything else, so a mistyped path never touches
+// another directory's files. Returns whether the path exists, as an empty directory.
+bool requireFreePath(const fs::path& directory, const char* operation) {
+    std::error_code error;
+    const fs::file_status status = fs::status(directory, error);
+    if (error && status.type() != fs::file_type::not_found) {
+        throwIo(std::string(operation) + ": cannot inspect the workspace directory", error.message());
+    }
+    const bool existed = fs::exists(status);
+    if (existed) {
+        const bool emptyDirectory = fs::is_directory(status) && fs::is_empty(directory, error) && !error;
+        if (!emptyDirectory) {
+            throwIo(std::string(operation) + ": the workspace directory exists and is not empty",
+                    "");
+        }
+    }
+    return existed;
 }
 
 // Undoes a create that failed, removing only what that call made: with `madeStore`
@@ -137,11 +188,12 @@ void undoCreate(const fs::path& directory, bool madeDirectory, bool madeStore, c
             record(e);
         }
         if (error) {
-            logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left in '%s': %s", operation,
-                       directory.u8string().c_str(), error.message().c_str());
+            logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation,
+                       error.message().c_str());
         }
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation, e.what());
+        logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation,
+                   detail::diagnosticText(e).c_str());
     }
 }
 
@@ -221,44 +273,16 @@ public:
 
 Workspace::Workspace(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 
-WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath, int32_t sceneIndex,
-                               const Configuration& configuration) {
-    constexpr const char* kOperation = "Workspace::create";
-    requirePath(workspacePath, kOperation, "workspace");
-    requirePath(slidePath, kOperation, "slide");
-    const fs::path directory = fs::u8path(workspacePath);
-    const std::string slideText = absoluteSlidePath(slidePath, kOperation);
+namespace {
 
-    // Refuse an occupied path before anything else, so a mistyped path never touches
-    // another directory's files.
+// What create() does once the slide and scene are in hand: makes the directory, the store
+// with its provenance and the scratch directory, then has `make` build the workspace from
+// the store. A failure from here removes what this call made, and only that, which it
+// tracks rather than infers: a racing create on the same path may own everything else there.
+template <typename Make>
+WorkspacePtr createBound(const fs::path& directory, bool existed, const std::string& slideText, int32_t sceneIndex,
+                         const Configuration& configuration, const char* kOperation, Make make) {
     std::error_code error;
-    const fs::file_status status = fs::status(directory, error);
-    if (error && status.type() != fs::file_type::not_found) {
-        throwIo(std::string(kOperation) + ": cannot inspect '" + directory.u8string() + "'", error.message());
-    }
-    const bool existed = fs::exists(status);
-    if (existed) {
-        const bool emptyDirectory = fs::is_directory(status) && fs::is_empty(directory, error) && !error;
-        if (!emptyDirectory) {
-            throwIo(std::string(kOperation) + ": '" + directory.u8string() + "' exists and is not an empty directory",
-                    "");
-        }
-    }
-
-    // The slide and scene are checked before the directory is made, so a bad binding
-    // leaves nothing behind.
-    std::shared_ptr<slideio::Slide> slide = openSlide(slideText, kOperation);
-    const int32_t scenes = sceneCount(*slide, slideText, kOperation);
-    if (sceneIndex < 0 || sceneIndex >= scenes) {
-        throw InvalidArgumentError((std::string(kOperation) + ": the scene index is out of range for the slide '" +
-                                    slideText + "'")
-                                       .c_str());
-    }
-    std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
-
-    // From here a failure removes what this call made, and only that, so the path is
-    // as it was and a retry can succeed. What it made is tracked, never inferred: a
-    // racing create on the same path may own everything else there.
 #if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
     runCreateHook();
 #endif
@@ -267,12 +291,11 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
         // Not create_directories: the parent must exist, so a mistyped path makes nothing.
         madeDirectory = fs::create_directory(directory, error);
         if (error) {
-            throwIo(std::string(kOperation) + ": cannot create the workspace directory '" + directory.u8string() + "'",
+            throwIo(std::string(kOperation) + ": cannot create the workspace directory",
                     error.message());
         }
         if (!madeDirectory) {
-            throwIo(std::string(kOperation) + ": '" + directory.u8string() +
-                        "' was created by someone else while this create ran",
+            throwIo(std::string(kOperation) + ": the workspace directory was created by someone else while this create ran",
                     "");
         }
     }
@@ -287,13 +310,11 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
         store->setProvenance(provenance);
 #if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         if (gFailNextCreate.exchange(false)) {
-            throwIo(std::string(kOperation) + ": injected failure for '" + directory.u8string() + "'", "");
+            throwIo(std::string(kOperation) + ": injected failure", "");
         }
 #endif
         resetScratch(directory / kScratchName, kOperation);
-        return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, slideText, sceneIndex, false,
-                                                                 configuration, std::move(store), std::move(slide),
-                                                                 std::move(scene))));
+        return make(std::move(store));
     } catch (...) {
         // The store's files are held open, and its writer lock held, until it is released.
         store.reset();
@@ -302,9 +323,57 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     }
 }
 
+} // namespace
+
+WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath, int32_t sceneIndex,
+                               const Configuration& configuration) {
+    constexpr const char* kOperation = "Workspace::create";
+    requirePath(workspacePath, kOperation, "workspace");
+    requirePath(slidePath, kOperation, "slide");
+    const fs::path directory = fs::u8path(workspacePath);
+    const std::string slideText = absoluteSlidePath(slidePath, kOperation);
+    const bool existed = requireFreePath(directory, kOperation);
+
+    // The slide and scene are checked before the directory is made, so a bad binding
+    // leaves nothing behind.
+    std::shared_ptr<slideio::Slide> slide = openSlide(slideText, kOperation);
+    const int32_t scenes = sceneCount(*slide, slideText, kOperation);
+    if (sceneIndex < 0 || sceneIndex >= scenes) {
+        throw InvalidArgumentError((std::string(kOperation) + ": the scene index is out of range for the slide")
+                                       .c_str());
+    }
+    std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
+    return createBound(directory, existed, slideText, sceneIndex, configuration, kOperation,
+                       [&](StorePtr store) {
+                           return WorkspacePtr(new Workspace(std::make_unique<Impl>(
+                               directory, slideText, sceneIndex, false, configuration, std::move(store),
+                               std::move(slide), std::move(scene))));
+                       });
+}
+
+WorkspacePtr Workspace::create(const char* workspacePath, std::shared_ptr<slideio::Scene> scene,
+                               const char* slidePath, int32_t sceneIndex, const Configuration& configuration) {
+    constexpr const char* kOperation = "Workspace::create";
+    requirePath(workspacePath, kOperation, "workspace");
+    requirePath(slidePath, kOperation, "slide");
+    requireScene(scene, sceneIndex, kOperation);
+    const std::string slideText = absoluteSlidePath(slidePath, kOperation);
+    if (!sceneIsOfFile(*scene, slideText)) {
+        throw InvalidArgumentError((std::string(kOperation) + ": the scene does not belong to the slide").c_str());
+    }
+    const fs::path directory = fs::u8path(workspacePath);
+    const bool existed = requireFreePath(directory, kOperation);
+    return createBound(directory, existed, slideText, sceneIndex, configuration, kOperation,
+                       [&](StorePtr store) {
+                           return WorkspacePtr(new Workspace(std::make_unique<Impl>(
+                               directory, slideText, sceneIndex, false, configuration, std::move(store), nullptr,
+                               std::move(scene))));
+                       });
+}
+
 namespace {
 
-// The part open() and openReadOnly() share: the store, and the slide its provenance names.
+// The part the open functions share: the store, and the slide scene its provenance names.
 struct Opened {
     StorePtr store;
     std::string slidePath;
@@ -313,25 +382,67 @@ struct Opened {
     std::shared_ptr<slideio::Scene> scene;
 };
 
+// A scene the caller already holds, and the index it claims for it.
+struct GivenScene {
+    std::shared_ptr<slideio::Scene> scene;
+    int32_t sceneIndex;
+};
+
+// Refuses a given scene that is not the workspace's, from the provenance alone. The messages
+// name no path.
+void requireGivenSceneMatches(const GivenScene& given, const Provenance& provenance, const char* operation) {
+    if (!sceneIsOfFile(*given.scene, provenance.slideId())) {
+        throw InvalidArgumentError(
+            (std::string(operation) + ": the scene does not belong to the workspace's slide").c_str());
+    }
+    if (given.sceneIndex != provenance.sceneIndex()) {
+        throw InvalidArgumentError((std::string(operation) + ": the scene index differs from the workspace's").c_str());
+    }
+}
+
+// Opens the store and finds the scene: the given one, checked against the provenance and
+// leaving the slide file unopened, or else the one the provenance names, opened through
+// SlideIO. A given scene is checked through a read-only open first, so a refusal makes no
+// writable open: it migrates nothing, takes no writer lock and creates no lock file. The
+// check is repeated once the store is open for writing, in case it changed in between.
 Opened openExisting(const fs::path& directory, OpenMode mode, const Configuration& configuration,
-                    const char* operation) {
+                    const char* operation, const GivenScene* given = nullptr) {
     const fs::path storePath = directory / kStoreName;
     std::error_code error;
     if (!fs::is_regular_file(storePath, error)) {
-        throwIo(std::string(operation) + ": '" + directory.u8string() + "' holds no workspace store", "");
+        throwIo(std::string(operation) + ": the workspace directory holds no workspace store", "");
+    }
+    if (given != nullptr && mode != OpenMode::ReadOnly) {
+        StorePtr probe = Store::open(storePath.u8string().c_str(), OpenMode::ReadOnly, configuration);
+        requireGivenSceneMatches(*given, probe->provenance(), operation);
+        probe->close();
     }
     Opened opened;
     opened.store = Store::open(storePath.u8string().c_str(), mode, configuration);
     const Provenance provenance = opened.store->provenance();
     opened.slidePath = provenance.slideId();
     opened.sceneIndex = provenance.sceneIndex();
+    if (given != nullptr) {
+        requireGivenSceneMatches(*given, provenance, operation);
+        opened.scene = given->scene;
+        return opened;
+    }
     opened.slide = openSlide(opened.slidePath, operation);
     if (opened.sceneIndex >= sceneCount(*opened.slide, opened.slidePath, operation)) {
-        throwIo(std::string(operation) + ": the slide '" + opened.slidePath + "' no longer has the workspace's scene",
+        throwIo(std::string(operation) + ": the slide no longer has the workspace's scene",
                 "");
     }
     opened.scene = sceneOf(*opened.slide, opened.sceneIndex, opened.slidePath, operation);
     return opened;
+}
+
+// The writer lock is held, so nothing live owns scratch or an unreferenced raster
+// file: what is there was left by a process that died mid-stage.
+void reclaimAfterCrash(const fs::path& directory, Store& store, const char* operation) {
+    resetScratch(directory / kScratchName, operation);
+    const int64_t reclaimed = store.rasters().removeUnreferencedFiles();
+    logMessage(LogLevel::Info, "%s: reclaimed %lld bytes of unreferenced raster files", operation,
+               static_cast<long long>(reclaimed));
 }
 
 } // namespace
@@ -341,17 +452,25 @@ WorkspacePtr Workspace::open(const char* workspacePath, const Configuration& con
     requirePath(workspacePath, kOperation, "workspace");
     const fs::path directory = fs::u8path(workspacePath);
     Opened opened = openExisting(directory, OpenMode::ReadWrite, configuration, kOperation);
-
-    // The writer lock is held, so nothing live owns scratch or an unreferenced raster
-    // file: what is there was left by a process that died mid-stage.
-    resetScratch(directory / kScratchName, kOperation);
-    const int64_t reclaimed = opened.store->rasters().removeUnreferencedFiles();
-    logMessage(LogLevel::Info, "%s: reclaimed %lld bytes of unreferenced raster files in '%s'", kOperation,
-               static_cast<long long>(reclaimed), opened.store->rasters().directory());
-
+    reclaimAfterCrash(directory, *opened.store, kOperation);
     return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, std::move(opened.slidePath),
                                                              opened.sceneIndex, false, configuration,
                                                              std::move(opened.store), std::move(opened.slide),
+                                                             std::move(opened.scene))));
+}
+
+WorkspacePtr Workspace::open(const char* workspacePath, std::shared_ptr<slideio::Scene> scene, int32_t sceneIndex,
+                             const Configuration& configuration) {
+    constexpr const char* kOperation = "Workspace::open";
+    requirePath(workspacePath, kOperation, "workspace");
+    requireScene(scene, sceneIndex, kOperation);
+    const fs::path directory = fs::u8path(workspacePath);
+    const GivenScene given{std::move(scene), sceneIndex};
+    Opened opened = openExisting(directory, OpenMode::ReadWrite, configuration, kOperation, &given);
+    reclaimAfterCrash(directory, *opened.store, kOperation);
+    return WorkspacePtr(new Workspace(std::make_unique<Impl>(directory, std::move(opened.slidePath),
+                                                             opened.sceneIndex, false, configuration,
+                                                             std::move(opened.store), nullptr,
                                                              std::move(opened.scene))));
 }
 
@@ -370,9 +489,10 @@ Workspace::~Workspace() {
     try {
         close();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "Workspace: closing '%s' failed: %s", path(), e.what());
+        logMessage(LogLevel::Error, "Workspace: closing the workspace failed: %s",
+                   detail::diagnosticText(e).c_str());
     } catch (...) {
-        logMessage(LogLevel::Error, "Workspace: closing '%s' failed", path());
+        logMessage(LogLevel::Error, "Workspace: closing the workspace failed");
     }
 }
 

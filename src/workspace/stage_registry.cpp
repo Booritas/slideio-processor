@@ -16,6 +16,8 @@
 #include <workspace/detail/staleness_edges.hpp>
 #include <workspace/staleness_graph_impl.hpp>
 
+#include <rapidjson/document.h>
+
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -728,6 +730,17 @@ StageStatus StageRegistry::status(StageId stage) const { SLIDEIO_REGISTRY_READ(s
 bool StageRegistry::isStale(StageId stage) const { SLIDEIO_REGISTRY_READ(isStale(stage)); }
 
 const char* StageRegistry::configuration(StageId stage) const { SLIDEIO_REGISTRY_READ(configuration(stage)); }
+
+bool StageRegistry::isDeterministic(StageId stage) const {
+    std::string record;
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        record = impl_->store.stageStates().configuration(stage);
+    }
+    rapidjson::Document doc;
+    doc.Parse<rapidjson::kParseIterativeFlag>(record.c_str());
+    return doc.HasParseError() || !doc.IsObject() || !doc.HasMember("nondeterministicOperations");
+}
 
 int64_t StageRegistry::completedAtUnixMs(StageId stage) const { SLIDEIO_REGISTRY_READ(completedAtUnixMs(stage)); }
 

@@ -373,3 +373,41 @@ TEST(TileExecutor, ExecutorReportsTilesAndPoolShutsDownTwice) {
     pool.shutdown();
     EXPECT_THROW(executor.run(p, sink, nullptr, CancellationToken()), InvalidArgumentError);
 }
+
+// The 3 x 2 grid of 64-pixel tiles the truncated-count tests run over.
+static std::shared_ptr<slideio::Scene> truncationScene() {
+    ts::registerTestOperations();
+    ts::registerProbeOperation();
+    return ts::makeSyntheticScene({{192, 128, 0, 0}}, {slideio::DataType::DT_Byte}, texture);
+}
+
+TEST(Executor, SumsTruncatedObjects) {
+    auto scene = truncationScene();
+    for (const int32_t workers : {1, 4}) {
+        Pipeline p(scene, config(64, workers), probe(intParams({{"truncated", 1}})));
+        EXPECT_EQ(p.truncatedObjectCount(), 0) << "a fresh pipeline";
+        p.run(nullptr, CancellationToken());
+        EXPECT_EQ(p.truncatedObjectCount(), 6) << workers << " workers";
+        // A second run reports its own count.
+        p.run(nullptr, CancellationToken());
+        EXPECT_EQ(p.truncatedObjectCount(), 6) << workers << " workers, second run";
+    }
+    Pipeline quiet(scene, config(64, 4), probe(OperationParameters()));
+    quiet.run(nullptr, CancellationToken());
+    EXPECT_EQ(quiet.truncatedObjectCount(), 0);
+}
+
+TEST(Executor, RefusesANegativeTruncatedCount) {
+    auto scene = truncationScene();
+    Pipeline p(scene, config(64, 2), probe(intParams({{"truncated", -1}})));
+    // The operation's InvalidArgumentError is a ProcessorError, so it reaches the caller
+    // as the run's TileError, with the operation named and the refusal as the cause.
+    try {
+        p.run(nullptr, CancellationToken());
+        FAIL() << "no TileError";
+    } catch (const TileError& e) {
+        EXPECT_STREQ(e.operationName(), "test.probe");
+        EXPECT_NE(std::string(e.cause()).find("countTruncatedObjects"), std::string::npos) << e.cause();
+    }
+    EXPECT_EQ(p.truncatedObjectCount(), 0);
+}

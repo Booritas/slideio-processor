@@ -29,6 +29,7 @@ struct RunCounters {
     std::atomic<int64_t> droppedByFilter{0};        ///< Objects their producer's finishObject() discards.
     std::atomic<int64_t> tilesSkipped{0};           ///< Tiles whose mask is empty inside the tile.
     std::atomic<int64_t> tilesEvaluatedOnDemand{0}; ///< Skipped tiles evaluated for an object reaching into them.
+    std::atomic<int64_t> truncatedObjects{0};       ///< What operations reported through OperationContext::countTruncatedObjects().
 
     void reset() noexcept {
         droppedOutsideTile = 0;
@@ -36,6 +37,7 @@ struct RunCounters {
         droppedByFilter = 0;
         tilesSkipped = 0;
         tilesEvaluatedOnDemand = 0;
+        truncatedObjects = 0;
     }
 };
 

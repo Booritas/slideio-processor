@@ -148,6 +148,18 @@ public:
      */
     virtual bool producesObjects() const;
     /**
+     * @brief Tells whether the operations created give the same result on every run over the same input.
+     *
+     * An operation whose results may vary between runs (a GPU model, for example) overrides this to return false;
+     * stage records list such operations (SDS 04).
+     * @return True by default.
+     * @par Thread-safety
+     * Must be safe to call concurrently.
+     * @par Requirements
+     * UR-EXT-4
+     */
+    virtual bool isDeterministic() const;
+    /**
      * @brief Returns, for default parameters (the instance is authoritative), Operation::outputPlaneCount() of the operations created.
      * @param inputPlaneCount Number of input planes; at least 1.
      * @return @p inputPlaneCount by default.
@@ -377,6 +389,18 @@ public:
      */
     bool producesObjects(const char* name) const;
     /**
+     * @brief Returns OperationFactory::isDeterministic() of a registered
+     * operation.
+     * @param name The operation name.
+     * @return False when the operation's results may vary between runs.
+     * @throws InvalidArgumentError When the name is null or unknown.
+     * @par Thread-safety
+     * ThreadSafe.
+     * @par Requirements
+     * UR-EXT-4
+     */
+    bool isDeterministic(const char* name) const;
+    /**
      * @brief Returns, for default parameters, OperationFactory::outputPlaneCount() of a registered
      * operation.
      * @param name The operation name.
@@ -428,7 +452,7 @@ public:
      * @return The number of bytes written.
      * @throws InvalidArgumentError When @p path is null or empty.
      * @throws IoError When the file cannot be opened or written (the message
-     * names the path).
+     * names the file by its role, never its path).
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.

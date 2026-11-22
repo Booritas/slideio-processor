@@ -1,4 +1,6 @@
 // Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/workspace/stage_runner.hpp>
 
 #include <workspace/detail/run_fault.hpp>
@@ -237,7 +239,8 @@ public:
 #endif
             step();
         } catch (const std::exception& e) {
-            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what, e.what());
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what,
+                       detail::diagnosticText(e).c_str());
         } catch (...) {
             logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed", name.c_str(), what);
         }
@@ -298,11 +301,14 @@ public:
         } catch (const std::bad_alloc&) {
             throw;
         } catch (const std::ios_base::failure& e) {
-            throw IoError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw IoError(message.c_str(), contextOf(text.c_str()));
         } catch (const std::system_error& e) {  // std::filesystem::filesystem_error too
-            throw IoError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw IoError(message.c_str(), contextOf(text.c_str()));
         } catch (const std::exception& e) {
-            throw InternalError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw InternalError(message.c_str(), contextOf(text.c_str()));
         } catch (...) {
             throw InternalError((message + " with an exception of unknown type").c_str(), contextOf(nullptr));
         }
@@ -350,6 +356,7 @@ public:
 
         objects = 0;
         edges = 0;
+        truncated = 0;
         RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
         try {
             // Decision 3's order: dependents stale, then Running, then the discards, so a
@@ -384,6 +391,7 @@ public:
             if (rasterWriter) rasterWriter->flush();  // the raster is published last
             objects = sink->emittedCount();
             edges = edgeWriter->assertedCount();
+            truncated = pipeline.truncatedObjectCount();
 
             for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
                 layers.recordAnalysisLevel(definition.writtenLayerAt(i), pipeline.analysisLevel());
@@ -407,6 +415,7 @@ public:
 #endif
     int64_t objects = 0;
     int64_t edges = 0;
+    int64_t truncated = 0;
 };
 
 StageRunner::StageRunner(Workspace& workspace, StageId stage) : impl_(std::make_unique<Impl>(workspace, stage)) {}
@@ -444,5 +453,7 @@ bool StageRunner::isRerun() const noexcept { return impl_->rerun; }
 int64_t StageRunner::objectsWritten() const noexcept { return impl_->objects; }
 
 int64_t StageRunner::edgesAsserted() const noexcept { return impl_->edges; }
+
+int64_t StageRunner::truncatedObjects() const noexcept { return impl_->truncated; }
 
 } // namespace slideio::processor

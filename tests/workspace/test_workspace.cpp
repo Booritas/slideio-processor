@@ -7,7 +7,14 @@
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/memory_budget.hpp>
+#include <slideio/processor/core/geometry.hpp>
+#include <slideio/processor/core/object_query.hpp>
+#include <slideio/processor/pipeline/operation_parameters.hpp>
+#include <slideio/processor/pipeline/pipeline_spec.hpp>
+#include <slideio/processor/storage/object_store.hpp>
 #include <slideio/processor/storage/store.hpp>
+#include <slideio/processor/workspace/stage_definition.hpp>
+#include <slideio/processor/workspace/stage_runner.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <slideio/slideio/scene.hpp>
@@ -17,11 +24,18 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 using namespace slideio::processor;
 using testing_support::TempDirectory;
+using testing_support::writeBlobSlide;
 using testing_support::writeTestSlide;
 
 namespace fs = std::filesystem;
@@ -139,7 +153,9 @@ TEST(Workspace, OpenWithMissingSlideIsIoError) {
         Workspace::open(t.workspaceUtf8().c_str(), t.config);
         FAIL() << "open succeeded without its slide";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("cannot open the slide"), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find("slide.tif"), std::string::npos) << e.what();
     }
 }
 
@@ -330,7 +346,8 @@ TEST(Workspace, MissingParentIsIoErrorAndMakesNothing) {
         Workspace::create(path.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config);
         FAIL() << "create made a workspace under a missing parent";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find(path.u8string()), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("workspace directory"), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find(path.u8string()), std::string::npos) << e.what();
     }
     EXPECT_FALSE(fs::exists(parent));
 }
@@ -376,4 +393,210 @@ TEST(Workspace, RelativeSlidePathIsStoredAbsolute) {
     EXPECT_EQ(std::string(ws->slidePath()), expected);
     ASSERT_TRUE(ws->scene());
     EXPECT_EQ(sceneWidth(ws), 300);
+}
+
+// ---- A workspace over a scene the caller already opened ----
+
+namespace {
+
+std::shared_ptr<slideio::Scene> openSceneOf(const fs::path& slide) {
+    auto opened = slideio::openSlide(slide.u8string(), "");
+    // The scene keeps what it needs of the slide alive.
+    return opened->getScene(0);
+}
+
+// Every file under `root`, relative path to bytes, but for SQLite's -wal and -shm sidecars,
+// which a read-only open may create. An empty directory counts as an entry too.
+std::map<std::string, std::string> snapshotOf(const fs::path& root) {
+    std::map<std::string, std::string> files;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        const std::string name = entry.path().filename().u8string();
+        const auto endsWith = [&name](const char* suffix) {
+            const std::string s(suffix);
+            return name.size() >= s.size() && name.compare(name.size() - s.size(), s.size(), s) == 0;
+        };
+        if (endsWith("-wal") || endsWith("-shm")) continue;
+        const std::string key = fs::relative(entry.path(), root).generic_u8string();
+        if (!entry.is_regular_file()) {
+            files[key] = "<directory>";
+            continue;
+        }
+        std::ifstream in(entry.path(), std::ios::binary);
+        files[key] = std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    return files;
+}
+
+// Expects `call` to throw InvalidArgumentError whose message names neither slide path nor file name.
+template <typename Call>
+void expectRefusedWithoutPaths(Call call, const std::vector<fs::path>& slides) {
+    try {
+        call();
+        ADD_FAILURE() << "no exception";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        for (const fs::path& slide : slides) {
+            EXPECT_EQ(message.find(slide.u8string()), std::string::npos) << message;
+            EXPECT_EQ(message.find(slide.parent_path().u8string()), std::string::npos) << message;
+        }
+        EXPECT_EQ(message.find(".tif"), std::string::npos) << message;
+    }
+}
+
+PipelineSpec discChain() {
+    PipelineSpec spec;
+    spec.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    spec.operation("pixel.threshold_fixed",
+                   OperationParameters().setDouble("value", 128.0).setString("direction", "Below"));
+    spec.operation("segment.connected_components", OperationParameters());
+    return spec;
+}
+
+} // namespace
+
+TEST(Workspace, CreateFromSceneUsesThatScene) {
+    TempDirectory dir;
+    fs::create_directories(dir.path());
+    const fs::path slide = writeBlobSlide(dir.path() / "slide.tif", 300, 300);
+    const auto scene = openSceneOf(slide);
+    const std::string workspace = (dir.path() / "ws").u8string();
+    const Configuration config = Configuration::defaults();
+    WorkspacePtr ws = Workspace::create(workspace.c_str(), scene, slide.u8string().c_str(), 0, config);
+    ASSERT_TRUE(ws);
+    EXPECT_EQ(ws->scene().get(), scene.get());
+    EXPECT_EQ(std::string(ws->slidePath()), slide.u8string());
+    EXPECT_EQ(ws->sceneIndex(), 0);
+    EXPECT_FALSE(ws->isReadOnly());
+    EXPECT_EQ(std::string(ws->store()->provenance().slideId()), slide.u8string());
+    ws->close();
+    // The caller's scene outlives the workspace.
+    EXPECT_EQ(std::get<2>(scene->getRect()), 300);
+}
+
+TEST(Workspace, SceneWorkspaceReopensByPath) {
+    TempDirectory dir;
+    fs::create_directories(dir.path());
+    const fs::path slide = writeBlobSlide(dir.path() / "slide.tif", 300, 300);
+    const std::string workspaceA = (dir.path() / "a").u8string();
+    const std::string workspaceB = (dir.path() / "b").u8string();
+    const Configuration config = Configuration::defaults();
+    {
+        const auto scene = openSceneOf(slide);
+        WorkspacePtr ws = Workspace::create(workspaceA.c_str(), scene, slide.u8string().c_str(), 0, config);
+        ws->layers().declareSemantic("tissue", ws->layers().pixelLayer());
+        ws->close();
+    }
+    {
+        WorkspacePtr ws = Workspace::open(workspaceA.c_str(), config);
+        ASSERT_TRUE(ws->scene());
+        LayerId tissue;
+        EXPECT_TRUE(ws->layers().find("tissue", tissue));
+        ws->close();
+    }
+    // The reverse: created by path, reopened from a scene, which is the one handed in.
+    Workspace::create(workspaceB.c_str(), slide.u8string().c_str(), 0, config)->close();
+    const auto scene = openSceneOf(slide);
+    WorkspacePtr ws = Workspace::open(workspaceB.c_str(), scene, 0, config);
+    EXPECT_EQ(ws->scene().get(), scene.get());
+    EXPECT_EQ(std::string(ws->slidePath()), slide.u8string());
+    EXPECT_EQ(ws->sceneIndex(), 0);
+    EXPECT_FALSE(ws->isReadOnly());
+}
+
+TEST(Workspace, RefusesAMismatchedScene) {
+    TempDirectory dir;
+    fs::create_directories(dir.path() / "a");
+    fs::create_directories(dir.path() / "b");
+    const fs::path slideA = writeBlobSlide(dir.path() / "a" / "slide.tif", 300, 300);
+    const fs::path slideB = writeBlobSlide(dir.path() / "b" / "slide.tif", 300, 300);
+    const std::vector<fs::path> slides{slideA, slideB};
+    const auto sceneA = openSceneOf(slideA);
+    const auto sceneB = openSceneOf(slideB);
+    const std::string workspace = (dir.path() / "ws").u8string();
+    const std::string a = slideA.u8string();
+    const std::string b = slideB.u8string();
+    const Configuration config = Configuration::defaults();
+
+    // create: a scene of A with the path of B, a null scene, a negative index, a missing file.
+    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, b.c_str(), 0, config); }, slides);
+    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), nullptr, a.c_str(), 0, config); }, slides);
+    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, a.c_str(), -1, config); }, slides);
+    const std::string missing = (dir.path() / "missing.tif").u8string();
+    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, missing.c_str(), 0, config); },
+                              slides);
+    EXPECT_FALSE(fs::exists(dir.path() / "ws"));
+
+    // open: the store is unchanged by every refusal.
+    Workspace::create(workspace.c_str(), a.c_str(), 0, config)->close();
+    // Every refusal leaves every file of the closed workspace as it was.
+    const auto before = snapshotOf(dir.path() / "ws");
+    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneB, 0, config); }, slides);
+    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, 1, config); }, slides);
+    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), nullptr, 0, config); }, slides);
+    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, -1, config); }, slides);
+    EXPECT_EQ(snapshotOf(dir.path() / "ws"), before);
+
+    // None of them left the writer lock held: the workspace still opens.
+    WorkspacePtr ws = Workspace::open(workspace.c_str(), sceneA, 0, config);
+    EXPECT_EQ(ws->scene().get(), sceneA.get());
+}
+
+TEST(Workspace, SceneStageRunMatchesPathStageRun) {
+    TempDirectory dir;
+    fs::create_directories(dir.path());
+    const fs::path slide = writeBlobSlide(dir.path() / "slide.tif", 600, 600);
+    const Configuration config = Configuration::defaults();
+    const auto scene = openSceneOf(slide);
+
+    const auto run = [&](const char* name, bool fromScene) {
+        const std::string workspace = (dir.path() / name).u8string();
+        WorkspacePtr ws = fromScene
+                              ? Workspace::create(workspace.c_str(), scene, slide.u8string().c_str(), 0, config)
+                              : Workspace::create(workspace.c_str(), slide.u8string().c_str(), 0, config);
+        const LayerId nuclei = ws->layerLifecycle().declareSemantic("nuclei", ws->layers().pixelLayer());
+        StageDefinition def("nuclei");
+        def.writesLayer(nuclei).pipeline(discChain());
+        const StageId id = ws->stages().declare(def);
+        StageRunner runner(*ws, id);
+        runner.run();
+        EXPECT_EQ(ws->stages().status(id), StageStatus::Complete);
+        std::vector<Rect64> bounds;
+        const CursorPtr cursor = ws->store()->objects().query(ObjectQuery().layer(nuclei));
+        while (cursor->next()) bounds.push_back(cursor->current().boundingBox());
+        return std::make_pair(runner.objectsWritten(), bounds);
+    };
+    const auto byPath = run("path", false);
+    const auto byScene = run("scene", true);
+    EXPECT_EQ(byPath.first, 9);
+    EXPECT_EQ(byScene.first, byPath.first);
+    ASSERT_EQ(byScene.second.size(), byPath.second.size());
+    for (size_t i = 0; i < byPath.second.size(); ++i) {
+        EXPECT_EQ(byScene.second[i].x, byPath.second[i].x);
+        EXPECT_EQ(byScene.second[i].y, byPath.second[i].y);
+        EXPECT_EQ(byScene.second[i].width, byPath.second[i].width);
+        EXPECT_EQ(byScene.second[i].height, byPath.second[i].height);
+    }
+}
+
+TEST(Workspace, RefusedSceneLeavesAVersion1StoreUnmigrated) {
+    TempDirectory dir;
+    fs::create_directories(dir.path());
+    const fs::path slide = writeBlobSlide(dir.path() / "slide.tif", 300, 300);
+    // The v1 golden store, as a workspace: the library writes only the current format.
+    const fs::path golden = fs::u8path(SLIDEIO_PROCESSOR_TEST_DATA_DIR) / "store-v1.golden.store";
+    const fs::path ws = dir.path() / "ws";
+    fs::create_directories(ws);
+    fs::copy_file(golden, ws / "workspace.store");
+    fs::copy(fs::path(golden.u8string() + "-rasters"), ws / "workspace.store-rasters", fs::copy_options::recursive);
+    const auto before = snapshotOf(ws);
+    const auto scene = openSceneOf(slide);
+    const Configuration config = Configuration::defaults();
+    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 0, config); }, {slide});
+    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 1, config); }, {slide});
+    // Not migrated (the store's bytes), and no lock file made.
+    EXPECT_EQ(snapshotOf(ws), before);
+    {
+        const StorePtr store = Store::open((ws / "workspace.store").u8string().c_str(), OpenMode::ReadOnly, config);
+        EXPECT_EQ(store->formatVersion(), 1);
+    }
 }

@@ -1,6 +1,7 @@
 // Requirements: UR-SEG-3, UR-EXE-5
 #pragma once
 
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/error.hpp>
 
 #include <exception>
@@ -24,7 +25,7 @@ namespace slideio::processor::detail {
     } catch (const std::bad_alloc&) {
         throw;
     } catch (const std::exception& e) {
-        cause = e.what();
+        cause = detail::diagnosticText(e);
     } catch (...) {
         cause = "an exception that is not a std::exception";
     }

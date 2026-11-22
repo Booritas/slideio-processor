@@ -34,29 +34,29 @@ public:
     ~TiffHandle();
 
     // Creates or truncates the file at `utf8Path` as a BigTIFF (mode "w8"). Throws IoError
-    // naming the path when the file cannot be opened or libtiff refuses it, with the
-    // underlying text as the cause.
+    // when the file cannot be opened or libtiff refuses it (the message names the
+    // raster file, never its path), with the underlying text as the cause.
     static TiffHandle openWrite(const std::string& utf8Path);
-    // Opens the TIFF at `utf8Path` for reading. Throws IoError naming the path when the
+    // Opens the TIFF at `utf8Path` for reading. Throws IoError when the
     // file cannot be opened or libtiff cannot read it, with the underlying text as the cause.
     static TiffHandle openRead(const std::string& utf8Path);
 
     // The libtiff handle; null for a default-constructed, moved-from or closed handle.
     TIFF* get() const noexcept;
 
-    // Throws IoError "<operation>: libtiff failed on '<path>'", with the text libtiff has
+    // Throws IoError "<operation>: libtiff failed on the raster file", with the text libtiff has
     // reported since the last fail (if any) as the cause, and clears that text. For a
     // libtiff call on get() that returned failure.
     [[noreturn]] void fail(const char* operation) const;
 
     // Pushes what libtiff has written so far out of the stdio buffer to the OS, so another
     // handle on the same file sees it (the pyramid read-back opens one after each
-    // TIFFWriteDirectory). Throws IoError naming the path when the flush fails. A no-op on
+    // TIFFWriteDirectory). Throws IoError when the flush fails. A no-op on
     // a handle that holds nothing.
     void flush();
 
     // Flushes the TIFF (a write handle writes its pending directory), closes it, then
-    // closes the file. Throws IoError naming the path when either step fails; the handle
+    // closes the file. Throws IoError when either step fails; the handle
     // is released either way. A no-op on a handle that holds nothing.
     void close();
 

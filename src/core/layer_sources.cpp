@@ -1,3 +1,4 @@
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/raster_mask.hpp>
@@ -64,7 +65,8 @@ void forEachRecord(ObjectSource& source, const ObjectQuery& query, Visit&& visit
         throw;
     } catch (const std::exception& e) {
         ErrorContext ctx;
-        ctx.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        ctx.cause = causeText.c_str();
         throw InternalError("layer source: the ObjectSource failed", ctx);
     }
 }

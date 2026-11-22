@@ -68,7 +68,7 @@ StreamLogSink::StreamLogSink(const char* path) : toStderr_(path == nullptr || *p
         opened = false;
     }
     if (!opened) {
-        throw IoError((std::string("cannot open log file: ") + path).c_str());
+        throw IoError("cannot open the log file");
     }
 }
 

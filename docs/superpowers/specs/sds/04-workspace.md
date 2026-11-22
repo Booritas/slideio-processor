@@ -23,8 +23,23 @@ public:
                                int32_t sceneIndex,
                                const Configuration&);
 
+    /// Creates a workspace over a scene the caller already opened; the slide
+    /// file is not opened again. `scene` must belong to `slidePath`.
+    static WorkspacePtr create(const char* workspacePath,
+                               std::shared_ptr<slideio::Scene> scene,
+                               const char* slidePath,
+                               int32_t sceneIndex,
+                               const Configuration&);
+
     /// Opens an existing workspace, in this or any later process.
     static WorkspacePtr open(const char* workspacePath, const Configuration&);
+
+    /// Opens over a scene the caller already opened; `scene` must belong to the
+    /// recorded slide and `sceneIndex` equal the recorded one.
+    static WorkspacePtr open(const char* workspacePath,
+                             std::shared_ptr<slideio::Scene> scene,
+                             int32_t sceneIndex,
+                             const Configuration&);
 
     /// Opens without a writer lock: stage state and objects are readable,
     /// nothing may be run. Safe alongside another process's writer.
@@ -66,7 +81,7 @@ recorded state of every stage, and the binding to the slide and scene.
 (`-wal`, `-shm`, `-writer.lock`) and its raster directory
 `workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
 `<workspace>/scratch/`. `create` makes the directory, and only it: the parent
-must exist, and a missing parent is an `IoError` naming the path, with nothing
+must exist, and a missing parent is an `IoError` naming the workspace directory by its role (never its path, C-6), with nothing
 made. It throws `IoError` when the path exists and is not an empty directory; it
 opens the slide and checks the scene index (`InvalidArgumentError` when out of
 range) before making anything. A `create` that fails later removes what it made,
@@ -86,6 +101,34 @@ slide that no longer opens, or no longer has the scene, is an `IoError` naming
 the path. The workspace keeps the slide object alive as long as its scene, and
 `close` releases both, so a scene obtained from `scene()` must not be used after
 `close`.
+
+**A workspace over a scene the caller already opened (decision 6).** The Python
+package opens slides with `slideio` itself and hands the open `slideio::Scene`
+over, so two overloads bind that scene instead of opening the slide file again:
+`create(workspacePath, scene, slidePath, sceneIndex, configuration)` and
+`open(workspacePath, scene, sceneIndex, configuration)`. `scene()` returns the
+object given, the workspace keeps no `Slide` (the scene keeps what it needs of
+its slide alive), and `close` releases only the workspace's reference. Provenance,
+the store, the scratch clear, the raster sweep and the undo of a failed `create`
+are those of the path overloads, because they share their steps rather than copy
+them, so a workspace created either way reopens either way. The checks run
+before anything is created or written, and each failure is
+`InvalidArgumentError`: the scene is not null and `sceneIndex` is not negative;
+for `create`, the scene's `getFilePath()` is `std::filesystem::equivalent` to
+`slidePath` (a missing file or an error is a mismatch, never an escaping
+exception); for `open`, it is equivalent to the recorded slide path and
+`sceneIndex` equals the recorded scene index. `open` reads the provenance from the
+store through a read-only open first and opens it for writing only when the scene
+matches (the check is repeated on the writable store, in case it changed between).
+So a refusal changes nothing: no store byte (a version 1 store is not migrated),
+no `-writer.lock` file, no scratch or raster file, no other file; the one
+exception is SQLite's `-wal` and `-shm` sidecars, which a read-only open may
+create.
+**What is trusted:** the caller's `sceneIndex`. A `slideio::Scene` does not know
+its index in its slide, so `create` records it unconfirmed (and does not check it
+against the scene count) and `open` can only compare it with the record; the
+headers say so. The new messages name no path, the rule decision 7 extends to the
+existing ones.
 
 **Classification.** `Provenance.slideId` holds the slide path, stored absolute,
 and the workspace's error and log messages name it (a slide that does not open,
@@ -359,6 +402,23 @@ stage when their names, pipelines (`PipelineSpec::equals`) and every declaration
 list and optional are equal, each list compared without regard to order; that
 comparison, not the record's text, is what decides whether a redeclaration is a
 reconfiguration, so formatting and ordering never mark a stage stale.
+
+**Nondeterministic operations.** When `declare` builds the record, it adds
+`"nondeterministicOperations": [names]` after `pipeline`, listing in pipeline
+order every operation of the stage's pipeline that is registered in the
+`OperationCatalog` and whose factory's `isDeterministic()` is false (SDS 05, 5.1).
+The key is written only when the list is not empty, so every other record stays
+byte-identical to a version 2 store's. An operation not registered when the stage
+is declared counts as deterministic. The key is not part of `sameDeclaration`,
+so it never makes a stage stale, and the record parser ignores it.
+`StageRegistry::isDeterministic(StageId)` is false exactly when the stored record
+has the key. The key is therefore fixed at the declaration that wrote the record:
+a redeclaration that `sameDeclaration` finds identical is a no-op and rewrites
+nothing, so it does not refresh the key, even when an operation registered (or
+re-registered with another `isDeterministic()`) since then would change it. Only
+a changed declaration, which rewrites the record, recomputes it. `SlideRun`
+relies on this order: it validates every operation against the catalog, so each
+is registered, before it declares any stage (SDS 09, 9.3).
 `StageDefinition` gains a copy assignment beside its copy constructor, since a
 definition is a value a caller builds, stores and replaces.
 
@@ -785,6 +845,7 @@ public:
     bool    isRerun() const noexcept;
     int64_t objectsWritten() const noexcept;
     int64_t edgesAsserted() const noexcept;
+    int64_t truncatedObjects() const noexcept;
 };
 ```
 
@@ -894,7 +955,13 @@ dangerous one.
 **The counters.** `objectsWritten()` and `edgesAsserted()` are the
 `emittedCount()` of the run's `ObjectWriter` and the `assertedCount()` of its
 `EdgeWriter`, read after the flushes, so they count what was committed. Both
-are 0 before `run()` and after a failed run.
+are 0 before `run()` and after a failed run. `truncatedObjects()` is the
+pipeline's `truncatedObjectCount()` (SDS 05, 5.5), the objects operations dropped
+as truncated, read after the run; it is 0 before `run()` and after a failed run,
+and each run reports its own count. It counts dropped tile views, not distinct
+objects: each truncated object counts at least once, one dropped in several
+tiles' views counts once per view, and the figure depends on the tile size; 0
+means nothing was dropped.
 
 **The restriction is resolved per tile, never whole.** `makeLayerMaskSource`
 (`01-core.md` 1.9) hands the pipeline an object that answers one tile at a
