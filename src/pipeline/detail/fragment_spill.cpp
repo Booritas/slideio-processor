@@ -39,7 +39,7 @@ FragmentSpill::FragmentSpill(const std::string& directory)
       pathText_(path_.u8string()) {
     file_.open(path_, std::ios::in | std::ios::out | std::ios::binary | std::ios::trunc);
     if (!file_.is_open()) {
-        throw IoError(("SeamMerger: cannot create the scratch file '" + pathText_ + "'").c_str());
+        throw IoError("SeamMerger: cannot create the scratch file");
     }
 }
 
@@ -53,7 +53,7 @@ FragmentSpill::~FragmentSpill() {
 
 void FragmentSpill::fail(const char* what) {
     file_.clear();
-    throw IoError(("SeamMerger: cannot " + std::string(what) + " the scratch file '" + pathText_ + "'").c_str());
+    throw IoError(("SeamMerger: cannot " + std::string(what) + " the scratch file").c_str());
 }
 
 int64_t FragmentSpill::write(const Polygon& polygon, const std::vector<IntensityPartial>& partials, int64_t& bytes) {

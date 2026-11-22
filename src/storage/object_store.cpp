@@ -50,7 +50,7 @@ CursorPtr ObjectStore::query(const ObjectQuery& query) {
     detail::StoreImpl& store = impl_->store;
     detail::BuiltQuery built = detail::buildObjectQuery(query, kOperation);
     detail::ReadLease lease = store.acquireRead(kOperation);
-    return detail::openObjectCursor(store.path(), std::move(lease), std::move(built));
+    return detail::openObjectCursor(std::move(lease), std::move(built));
 }
 
 int64_t ObjectStore::count(const ObjectQuery& query) const {
@@ -59,7 +59,7 @@ int64_t ObjectStore::count(const ObjectQuery& query) const {
     detail::BuiltQuery built = detail::buildObjectQuery(query, kOperation);
     if (built.hasPolygon) {
         // The exact predicate runs in C++, so every candidate is read.
-        return detail::countWithPolygon(store.path(), store.acquireRead(kOperation), std::move(built));
+        return detail::countWithPolygon(store.acquireRead(kOperation), std::move(built));
     }
     return store.withReadConnection(kOperation, [&built](sqlite3* db) {
         detail::Statement select(db, built.countSql.c_str());

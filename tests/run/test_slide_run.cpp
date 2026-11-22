@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -472,4 +473,34 @@ TEST(SlideRun, ExportsCarryNoSlidePath) {
     EXPECT_NE(readFile(fs::u8path(f.out) / kGeoJson).find("\"slideId\":\"\""), std::string::npos);
     EXPECT_NE(readFile(fs::u8path(namedOut) / kCsv).find("# slide_id: study-17\n"), std::string::npos);
     EXPECT_NE(readFile(fs::u8path(namedOut) / kGeoJson).find("\"slideId\":\"study-17\""), std::string::npos);
+}
+
+// A slide that has moved or been deleted since the workspace was made: the run's error names
+// the slide by its role, and neither it nor its cause holds a path or the file name (the file
+// name can carry a patient identifier).
+TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
+    Fixture f;
+    f.run(threeStageFile());
+    const fs::path slide = fs::u8path(f.slide);
+    const std::vector<std::string> forbidden = {f.slide, fs::absolute(slide).u8string(),
+                                                fs::absolute(slide).generic_u8string(),
+                                                slide.filename().u8string(), f.workspace, f.dir.utf8()};
+    closeCleanly(f.workspace);
+    ASSERT_TRUE(fs::remove(slide));
+
+    const auto expectNoPath = [&](const std::function<void()>& action, const char* label) {
+        try {
+            action();
+            ADD_FAILURE() << label << " did not throw";
+        } catch (const std::exception& e) {
+            const std::string message = e.what();
+            EXPECT_NE(message.find("slide"), std::string::npos) << label << ": " << message;
+            for (const std::string& text : forbidden) EXPECT_EQ(message.find(text), std::string::npos) << label << ": " << message;
+        }
+    };
+    // The workspace is there and its recorded slide is not.
+    expectNoPath([&] { f.run(threeStageFile()); }, "an existing workspace whose slide moved");
+    // No workspace yet, and the slide named for the run is missing.
+    const std::string fresh = (f.dir.path() / "fresh-ws").u8string();
+    expectNoPath([&] { f.run(threeStageFile(), fresh, f.out); }, "a missing slide");
 }

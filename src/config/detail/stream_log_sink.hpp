@@ -13,7 +13,7 @@ namespace slideio::processor::detail {
 class StreamLogSink final : public LogSink {
 public:
     // path is UTF-8; empty selects stderr.
-    // Throws IoError (naming the path) when the file cannot be opened.
+    // Throws IoError when the file cannot be opened (the message says "the log file", never the path).
     explicit StreamLogSink(const char* path);
     void write(LogLevel level, const char* message) override;
 

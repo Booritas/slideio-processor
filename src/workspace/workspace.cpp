@@ -1,4 +1,5 @@
 // Requirements: UR-STG-1, UR-STG-9, UR-EXE-2
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <workspace/detail/create_fault.hpp>
@@ -34,22 +35,28 @@ void requirePath(const char* path, const char* operation, const char* what) {
     }
 }
 
+// SlideIO's text for use as a cause, with the slide path replaced by "<slide>".
+std::string slideCause(const std::exception& e, const std::string& slidePath) {
+    return detail::redactSlidePath(detail::diagnosticText(e), slidePath);
+}
+
 [[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
     const std::string text = cause.empty() ? message : message + ": " + cause;
     throw IoError(text.c_str());
 }
 
-// Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming
-// the slide path, so the caller learns which file to restore or rebind.
+// Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming the slide
+// by its role, never its path (a file name can carry a patient identifier); SlideIO's own text
+// is the cause, with the slide path replaced by "<slide>".
 std::shared_ptr<slideio::Slide> openSlide(const std::string& slidePath, const char* operation) {
     std::shared_ptr<slideio::Slide> slide;
     try {
         slide = slideio::openSlide(slidePath, "");
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot open the slide", slideCause(e, slidePath));
     }
     if (!slide) {
-        throwIo(std::string(operation) + ": cannot open the slide '" + slidePath + "'", "");
+        throwIo(std::string(operation) + ": cannot open the slide", "");
     }
     return slide;
 }
@@ -58,7 +65,7 @@ int32_t sceneCount(const slideio::Slide& slide, const std::string& slidePath, co
     try {
         return slide.getNumScenes();
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot read the scenes of the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot read the scenes of the slide", slideCause(e, slidePath));
     }
 }
 
@@ -68,10 +75,10 @@ std::shared_ptr<slideio::Scene> sceneOf(const slideio::Slide& slide, int32_t ind
     try {
         scene = slide.getScene(index);
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open a scene of the slide '" + slidePath + "'", e.what());
+        throwIo(std::string(operation) + ": cannot open a scene of the slide", slideCause(e, slidePath));
     }
     if (!scene) {
-        throwIo(std::string(operation) + ": cannot open a scene of the slide '" + slidePath + "'", "");
+        throwIo(std::string(operation) + ": cannot open a scene of the slide", "");
     }
     return scene;
 }
@@ -81,12 +88,12 @@ void resetScratch(const fs::path& scratch, const char* operation) {
     std::error_code error;
     fs::remove_all(scratch, error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot clear the scratch directory '" + scratch.u8string() + "'",
+        throwIo(std::string(operation) + ": cannot clear the scratch directory",
                 error.message());
     }
     fs::create_directories(scratch, error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot create the scratch directory '" + scratch.u8string() + "'",
+        throwIo(std::string(operation) + ": cannot create the scratch directory",
                 error.message());
     }
 }
@@ -97,7 +104,7 @@ std::string absoluteSlidePath(const char* slidePath, const char* operation) {
     std::error_code error;
     const fs::path absolute = fs::absolute(fs::u8path(slidePath), error);
     if (error) {
-        throwIo(std::string(operation) + ": cannot make the slide path '" + slidePath + "' absolute",
+        throwIo(std::string(operation) + ": cannot make the slide path absolute",
                 error.message());
     }
     return absolute.lexically_normal().u8string();
@@ -134,13 +141,13 @@ bool requireFreePath(const fs::path& directory, const char* operation) {
     std::error_code error;
     const fs::file_status status = fs::status(directory, error);
     if (error && status.type() != fs::file_type::not_found) {
-        throwIo(std::string(operation) + ": cannot inspect '" + directory.u8string() + "'", error.message());
+        throwIo(std::string(operation) + ": cannot inspect the workspace directory", error.message());
     }
     const bool existed = fs::exists(status);
     if (existed) {
         const bool emptyDirectory = fs::is_directory(status) && fs::is_empty(directory, error) && !error;
         if (!emptyDirectory) {
-            throwIo(std::string(operation) + ": '" + directory.u8string() + "' exists and is not an empty directory",
+            throwIo(std::string(operation) + ": the workspace directory exists and is not empty",
                     "");
         }
     }
@@ -181,11 +188,12 @@ void undoCreate(const fs::path& directory, bool madeDirectory, bool madeStore, c
             record(e);
         }
         if (error) {
-            logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left in '%s': %s", operation,
-                       directory.u8string().c_str(), error.message().c_str());
+            logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation,
+                       error.message().c_str());
         }
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation, e.what());
+        logMessage(LogLevel::Warning, "%s: cannot remove what the failed create left: %s", operation,
+                   detail::diagnosticText(e).c_str());
     }
 }
 
@@ -283,12 +291,11 @@ WorkspacePtr createBound(const fs::path& directory, bool existed, const std::str
         // Not create_directories: the parent must exist, so a mistyped path makes nothing.
         madeDirectory = fs::create_directory(directory, error);
         if (error) {
-            throwIo(std::string(kOperation) + ": cannot create the workspace directory '" + directory.u8string() + "'",
+            throwIo(std::string(kOperation) + ": cannot create the workspace directory",
                     error.message());
         }
         if (!madeDirectory) {
-            throwIo(std::string(kOperation) + ": '" + directory.u8string() +
-                        "' was created by someone else while this create ran",
+            throwIo(std::string(kOperation) + ": the workspace directory was created by someone else while this create ran",
                     "");
         }
     }
@@ -303,7 +310,7 @@ WorkspacePtr createBound(const fs::path& directory, bool existed, const std::str
         store->setProvenance(provenance);
 #if defined(SLIDEIO_PROCESSOR_TEST_SEAMS)
         if (gFailNextCreate.exchange(false)) {
-            throwIo(std::string(kOperation) + ": injected failure for '" + directory.u8string() + "'", "");
+            throwIo(std::string(kOperation) + ": injected failure", "");
         }
 #endif
         resetScratch(directory / kScratchName, kOperation);
@@ -332,8 +339,7 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     std::shared_ptr<slideio::Slide> slide = openSlide(slideText, kOperation);
     const int32_t scenes = sceneCount(*slide, slideText, kOperation);
     if (sceneIndex < 0 || sceneIndex >= scenes) {
-        throw InvalidArgumentError((std::string(kOperation) + ": the scene index is out of range for the slide '" +
-                                    slideText + "'")
+        throw InvalidArgumentError((std::string(kOperation) + ": the scene index is out of range for the slide")
                                        .c_str());
     }
     std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
@@ -404,7 +410,7 @@ Opened openExisting(const fs::path& directory, OpenMode mode, const Configuratio
     const fs::path storePath = directory / kStoreName;
     std::error_code error;
     if (!fs::is_regular_file(storePath, error)) {
-        throwIo(std::string(operation) + ": '" + directory.u8string() + "' holds no workspace store", "");
+        throwIo(std::string(operation) + ": the workspace directory holds no workspace store", "");
     }
     if (given != nullptr && mode != OpenMode::ReadOnly) {
         StorePtr probe = Store::open(storePath.u8string().c_str(), OpenMode::ReadOnly, configuration);
@@ -423,7 +429,7 @@ Opened openExisting(const fs::path& directory, OpenMode mode, const Configuratio
     }
     opened.slide = openSlide(opened.slidePath, operation);
     if (opened.sceneIndex >= sceneCount(*opened.slide, opened.slidePath, operation)) {
-        throwIo(std::string(operation) + ": the slide '" + opened.slidePath + "' no longer has the workspace's scene",
+        throwIo(std::string(operation) + ": the slide no longer has the workspace's scene",
                 "");
     }
     opened.scene = sceneOf(*opened.slide, opened.sceneIndex, opened.slidePath, operation);
@@ -435,8 +441,8 @@ Opened openExisting(const fs::path& directory, OpenMode mode, const Configuratio
 void reclaimAfterCrash(const fs::path& directory, Store& store, const char* operation) {
     resetScratch(directory / kScratchName, operation);
     const int64_t reclaimed = store.rasters().removeUnreferencedFiles();
-    logMessage(LogLevel::Info, "%s: reclaimed %lld bytes of unreferenced raster files in '%s'", operation,
-               static_cast<long long>(reclaimed), store.rasters().directory());
+    logMessage(LogLevel::Info, "%s: reclaimed %lld bytes of unreferenced raster files", operation,
+               static_cast<long long>(reclaimed));
 }
 
 } // namespace
@@ -483,9 +489,10 @@ Workspace::~Workspace() {
     try {
         close();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "Workspace: closing '%s' failed: %s", path(), e.what());
+        logMessage(LogLevel::Error, "Workspace: closing the workspace failed: %s",
+                   detail::diagnosticText(e).c_str());
     } catch (...) {
-        logMessage(LogLevel::Error, "Workspace: closing '%s' failed", path());
+        logMessage(LogLevel::Error, "Workspace: closing the workspace failed");
     }
 }
 

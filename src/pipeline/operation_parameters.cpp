@@ -1,5 +1,6 @@
 // Requirements: UR-STG-4, UR-RES-11
 #include <slideio/processor/pipeline/operation_parameters.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 
@@ -209,7 +210,8 @@ int32_t OperationParameters::toJson(char* buffer, int32_t capacity) const {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("OperationParameters::toJson: serialisation failed", context);
     }
     const int32_t length = static_cast<int32_t>(json.size());

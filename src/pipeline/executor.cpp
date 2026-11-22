@@ -1,5 +1,6 @@
 // Requirements: UR-EXE-1, UR-EXE-2, UR-EXE-3, UR-EXE-4, UR-EXE-5, UR-QA-3, UR-SEG-3
 #include <slideio/processor/pipeline/executor.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <pipeline/detail/finishing_sink.hpp>
 #include <pipeline/detail/fragment_spill.hpp>
@@ -38,7 +39,8 @@ namespace {
 
 [[noreturn]] void synchronisationFailed(const char* where, const std::system_error& e) {
     ErrorContext context;
-    context.cause = e.what();
+    const std::string causeText = detail::diagnosticText(e);
+    context.cause = causeText.c_str();
     throw InternalError((std::string(where) + ": a synchronisation primitive failed").c_str(), context);
 }
 
@@ -136,14 +138,12 @@ public:
             removeCreated();
             throw;
         } catch (const std::exception& e) {
-            cause = e.what();
+            cause = detail::diagnosticText(e);
         }
         removeCreated();
         ErrorContext context;
         context.cause = cause.c_str();
-        throw IoError(("TileExecutor::run: cannot create a scratch directory under '" +
-                       (base != nullptr ? std::string(base) : std::string()) + "'")
-                          .c_str(),
+        throw IoError("TileExecutor::run: cannot create a scratch directory under the configured scratch location",
                       context);
     }
     ~RunScratchDirectory() {
@@ -240,7 +240,7 @@ private:
     } catch (const CancelledError&) {
         throw;
     } catch (const std::exception& e) {
-        cause = e.what();
+        cause = detail::diagnosticText(e);
     } catch (...) {
         cause = "an exception that is not a std::exception";
     }
@@ -359,7 +359,8 @@ WorkerPool::WorkerPool(int32_t workerCount, MemoryBudgetPtr budget) {
     } catch (const std::system_error& e) {
         impl_->stop();
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("WorkerPool: a worker thread could not be started", context);
     } catch (...) {
         impl_->stop();

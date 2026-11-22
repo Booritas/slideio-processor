@@ -1,4 +1,6 @@
 // Requirements: UR-STG-3, UR-STG-5, UR-STG-6, UR-STG-7, UR-STG-10, UR-EXE-1, UR-EXE-4, UR-EXE-5
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/workspace/stage_runner.hpp>
 
 #include <workspace/detail/run_fault.hpp>
@@ -237,7 +239,8 @@ public:
 #endif
             step();
         } catch (const std::exception& e) {
-            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what, e.what());
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what,
+                       detail::diagnosticText(e).c_str());
         } catch (...) {
             logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed", name.c_str(), what);
         }
@@ -298,11 +301,14 @@ public:
         } catch (const std::bad_alloc&) {
             throw;
         } catch (const std::ios_base::failure& e) {
-            throw IoError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw IoError(message.c_str(), contextOf(text.c_str()));
         } catch (const std::system_error& e) {  // std::filesystem::filesystem_error too
-            throw IoError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw IoError(message.c_str(), contextOf(text.c_str()));
         } catch (const std::exception& e) {
-            throw InternalError(message.c_str(), contextOf(e.what()));
+            const std::string text = detail::diagnosticText(e);
+            throw InternalError(message.c_str(), contextOf(text.c_str()));
         } catch (...) {
             throw InternalError((message + " with an exception of unknown type").c_str(), contextOf(nullptr));
         }

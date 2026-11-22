@@ -120,8 +120,8 @@ memory exhaustion already catches it by its standard type. Every other
 exception — from SQLite, OpenCV or the standard library (`std::system_error`,
 `std::filesystem::filesystem_error`, `std::ios_base::failure`,
 `std::length_error` and so on) — is caught at the boundary and translated, with
-its `what()` preserved as `cause()`: to `IoError` when it is an input/output
-failure, and to `InternalError` for anything else.
+its `what()` preserved as `cause()` (subject to the path rule below): to `IoError` when
+it is an input/output failure, and to `InternalError` for anything else.
 
 A `noexcept` function cannot report a failure, so where its only possible one
 is a mutex error — `setLogSink`'s lock (`01-core.md` 1.15) — that failure is
@@ -130,6 +130,32 @@ documented as fatal: `std::terminate` is called.
 Every error carries actionable context — stage, operation, tile coordinates,
 underlying cause (UR-EXE-5). Fields not applicable read as empty string or
 report `false` from their `has*` accessor.
+
+**No paths in diagnostics.** Slide file names often carry patient identifiers
+(HIPAA, GDPR), and the Python bindings pass errors and log lines on, to a
+language model among others. So no exception message, no `cause()` and no log
+line contains a file path:
+
+- A message names a file by its role: the store, the slide, the raster file,
+  the scratch file, the journal, the log file, the output file. It may name
+  pipeline-file entities (a stage, layer, raster, operation, parameter key or
+  export kind), never a parameter value or a coordinate.
+- A cause that comes from a `std::filesystem::filesystem_error` is
+  `code().message()`, never `what()`, which holds both paths. A cause from
+  SlideIO is its text with the slide path, as given and made absolute, and the
+  slide's file name replaced by `<slide>`. Any other cause is unchanged.
+  `src/core/detail/diagnostics.hpp` holds the helpers (`diagnosticText`,
+  `redactSlidePath`).
+- A name libtiff or SQLite would print for a file is a fixed role name, not the
+  path.
+- Log lines follow the same rules, at every level.
+- Accessors that return a path (`Workspace::path()`, `Workspace::slidePath()`,
+  `Store::path()`) still do; only diagnostic text changes. The caller already
+  knows the paths it passed.
+- Enforcement: `Diagnostics.NoPathsInErrorsOrLogs` (`tests/workspace/test_no_paths_in_diagnostics.cpp`)
+  puts a marker in every directory it uses, provokes the errors above and
+  collects the log at Trace level, and fails when any message, cause or log line
+  contains the marker. A new site that names a path needs a case there.
 
 Query methods that legitimately find nothing return `bool` with an out
 parameter rather than throwing:

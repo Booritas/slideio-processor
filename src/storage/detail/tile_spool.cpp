@@ -123,7 +123,7 @@ TileSpool::TileSpool(std::filesystem::path spoolFile, RasterFormat format)
     file_ = openSpool(path_);
     if (file_ == nullptr) {
         const int error = errno;
-        throwIo("cannot create spool '" + path_.u8string() + "'",
+        throwIo("cannot create the scratch file",
                 error != 0 ? errnoText(error) : std::string("the file cannot be opened"));
     }
 }
@@ -160,11 +160,11 @@ void TileSpool::append(const Rect64& slideRect, int64_t width, int64_t height, c
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_ == nullptr) throw InternalError("TileSpool::append: the spool was removed");
-    if (seekFile(file_, end_, SEEK_SET) != 0) throwIo("cannot seek in spool '" + path_.u8string() + "'", errnoText(errno));
+    if (seekFile(file_, end_, SEEK_SET) != 0) throwIo("cannot seek in the scratch file", errnoText(errno));
     errno = 0;
     if (std::fwrite(bytes.data(), 1, bytes.size(), file_) != bytes.size()) {
         const int error = errno != 0 ? errno : EIO;
-        throwIo("cannot write spool '" + path_.u8string() + "'", errnoText(error));
+        throwIo("cannot write the scratch file", errnoText(error));
     }
     SpoolEntry entry;
     entry.slideRect = slideRect;
@@ -226,7 +226,7 @@ void TileSpool::decodeInto(const SpoolPiece& piece, int64_t pieceWidth, int64_t 
                            int64_t targetY, std::vector<uint8_t>& row, std::vector<uint8_t>& chunk) const {
     ++piecesDecoded_;
     int64_t remaining = piece.bytes;
-    const std::string where = "spool '" + path_.u8string() + "'";
+    const std::string where = "the scratch file";
     if (seekFile(file_, piece.offset, SEEK_SET) != 0) throwIo("cannot read " + where, errnoText(errno));
 
     const size_t rowBytes = static_cast<size_t>(pieceWidth) * sampleBytes_;
@@ -346,7 +346,7 @@ void TileSpool::remove() {
     }
     std::error_code error;
     std::filesystem::remove(path_, error);
-    if (error) throwIo("cannot delete spool '" + path_.u8string() + "'", error.message());
+    if (error) throwIo("cannot delete the scratch file", error.message());
 }
 
 } // namespace slideio::processor::detail

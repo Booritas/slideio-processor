@@ -1,5 +1,6 @@
 // Requirements: UR-API-2, UR-STG-4, UR-RES-11
 #include <slideio/processor/run/pipeline_file.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -273,7 +274,8 @@ public:
             PipelineSpec::fromJson(compact(pipeline).c_str());
         } catch (const InvalidArgumentError& e) {
             ErrorContext context;
-            context.cause = e.what();
+            const std::string causeText = detail::diagnosticText(e);
+            context.cause = causeText.c_str();
             context.stageName = stage.name.c_str();
             throw InvalidArgumentError(("PipelineFile: the pipeline of " + named + " does not parse").c_str(), context);
         }
@@ -502,7 +504,8 @@ PipelineFile PipelineFile::fromJson(const char* json) {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("PipelineFile::fromJson: reading failed", context);
     }
 }
@@ -651,7 +654,8 @@ int32_t PipelineFile::toJson(char* buffer, int32_t capacity) const {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("PipelineFile::toJson: serialisation failed", context);
     }
     const int32_t length = static_cast<int32_t>(json.size());

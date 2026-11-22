@@ -1,5 +1,6 @@
 // Requirements: UR-RES-7, UR-QA-3
 #include <slideio/processor/masks/mask_writer.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -41,7 +42,8 @@ auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw IoError(message, context);
     }
 }

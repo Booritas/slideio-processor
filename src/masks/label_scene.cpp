@@ -1,5 +1,6 @@
 // Requirements: UR-RES-7
 #include <slideio/processor/masks/label_scene.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -145,7 +146,8 @@ std::shared_ptr<slideio::Scene> rasteriseLabels(Store& store, const ObjectQuery&
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("rasteriseLabels: SlideIO refused the scene's description", context);
     }
 }

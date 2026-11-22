@@ -1,6 +1,7 @@
 // Requirements: UR-STG-4, UR-RES-11
 #include <workspace/detail/stage_record.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 
@@ -325,7 +326,8 @@ StageDefinition stageFromRecord(const char* json, const LayerRegistry& layers, c
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("stage record: reading failed", context);
     }
 }

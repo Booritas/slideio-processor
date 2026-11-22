@@ -31,9 +31,8 @@ void sleepFor(int32_t timeoutMs) noexcept {
 
 bool ChangeSignal::isSupported() noexcept { return false; }
 
-ChangeSignal::ChangeSignal(const std::string& storeUuid, const std::string& storePath, Role role) noexcept {
+ChangeSignal::ChangeSignal(const std::string& storeUuid, Role role) noexcept {
     (void)storeUuid;
-    (void)storePath;
     (void)role;
 }
 
@@ -57,20 +56,19 @@ namespace {
 sem_t* semaphoreOf(void* handle) noexcept { return static_cast<sem_t*>(handle); }
 
 // Logs a failed signal call with errno; the caller falls back to polling.
-void warnFailure(const char* step, const std::string& name, const std::string& storePath, int error) noexcept {
-    logMessage(LogLevel::Warning, "ChangeSignal: %s '%s' for '%s' failed (%s); event cursors poll", step,
-               name.c_str(), storePath.c_str(), std::strerror(error));
+void warnFailure(const char* step, const std::string& name, int error) noexcept {
+    logMessage(LogLevel::Warning, "ChangeSignal: %s '%s' failed (%s); event cursors poll", step,
+               name.c_str(), std::strerror(error));
 }
 
 } // namespace
 
 bool ChangeSignal::isSupported() noexcept { return true; }
 
-ChangeSignal::ChangeSignal(const std::string& storeUuid, const std::string& storePath, Role role) noexcept
+ChangeSignal::ChangeSignal(const std::string& storeUuid, Role role) noexcept
     : role_(role) {
     try {
         name_ = "/slideio-processor-" + storeUuid;
-        storePath_ = storePath;
         replaced_.reserve(4);
     } catch (...) {
         name_.clear();  // out of memory: no signal, so cursors poll
@@ -158,7 +156,7 @@ void ChangeSignal::warnOnce(const char* step, int error) noexcept {
         if (warned_) return;
         warned_ = true;
     }
-    warnFailure(step, name_, storePath_, error);
+    warnFailure(step, name_, error);
 }
 
 void ChangeSignal::post() noexcept {
@@ -166,7 +164,7 @@ void ChangeSignal::post() noexcept {
     if (semaphore == nullptr) return;
     // EOVERFLOW means posts are piling up with nobody waiting: a waiter wakes all the same.
     if (sem_post(semaphoreOf(semaphore)) != 0 && errno != EOVERFLOW) {
-        warnFailure("posting the semaphore", name_, storePath_, errno);
+        warnFailure("posting the semaphore", name_, errno);
     }
     release(semaphore);
 }
@@ -202,7 +200,7 @@ bool ChangeSignal::wait(int32_t timeoutMs) noexcept {
     release(handle);
     if (rc == 0) return true;
     if (error != ETIMEDOUT) {
-        warnFailure("waiting on the semaphore", name_, storePath_, error);
+        warnFailure("waiting on the semaphore", name_, error);
         sleepFor(timeoutMs);
     } else if (role_ == Role::Reader && !reopened) {
         // Nothing woke us: the writer may have closed and a new one recreated the name.
@@ -213,7 +211,7 @@ bool ChangeSignal::wait(int32_t timeoutMs) noexcept {
 
 void ChangeSignal::unlink() noexcept {
     if (role_ == Role::Writer && isOpen() && sem_unlink(name_.c_str()) != 0 && errno != ENOENT) {
-        warnFailure("unlinking the semaphore", name_, storePath_, errno);
+        warnFailure("unlinking the semaphore", name_, errno);
     }
 }
 

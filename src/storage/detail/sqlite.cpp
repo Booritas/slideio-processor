@@ -6,12 +6,8 @@
 
 namespace slideio::processor::detail {
 
-void throwSqliteError(sqlite3* db, int code, const char* operation, const char* storePath) {
-    const char* path = storePath;
-    if (path == nullptr && db != nullptr) path = sqlite3_db_filename(db, "main");
-    if (path == nullptr) path = "";
-    const std::string message = std::string(operation != nullptr ? operation : "SQLite") +
-                                ": SQLite failed on '" + path + "'";
+void throwSqliteError(sqlite3* db, int code, const char* operation) {
+    const std::string message = std::string(operation != nullptr ? operation : "SQLite") + ": SQLite failed on the store";
     ErrorContext context;
     context.cause = db != nullptr ? sqlite3_errmsg(db) : sqlite3_errstr(code);
     throw IoError(message.c_str(), context);
@@ -33,9 +29,9 @@ Connection Connection::open(const std::string& path, int flags) {
     sqlite3* db = nullptr;
     const int rc = sqlite3_open_v2(path.c_str(), &db, flags, nullptr);
     Connection connection(db);  // owns db even when the open failed
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, "Store::open", path.c_str());
+    if (rc != SQLITE_OK) throwSqliteError(db, rc, "Store::open");
     const int timeout = sqlite3_busy_timeout(db, 5000);
-    if (timeout != SQLITE_OK) throwSqliteError(db, timeout, "Store::open", path.c_str());
+    if (timeout != SQLITE_OK) throwSqliteError(db, timeout, "Store::open");
     return connection;
 }
 

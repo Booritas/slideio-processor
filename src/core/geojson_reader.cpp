@@ -1,4 +1,5 @@
 #include <slideio/processor/core/geojson.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
@@ -271,9 +272,9 @@ std::ifstream openInput(const std::string& path, size_t& bomSize) {
     return in;
 }
 
-void warnSkipped(const std::string& path, int64_t index, const std::string& reason) {
-    logMessage(LogLevel::Warning, "GeoJsonReader: skipping feature %lld of %s: %s",
-               static_cast<long long>(index), path.c_str(), reason.c_str());
+void warnSkipped(int64_t index, const std::string& reason) {
+    logMessage(LogLevel::Warning, "GeoJsonReader: skipping feature %lld of the file: %s",
+               static_cast<long long>(index), reason.c_str());
 }
 
 // Names an unsupported geometry type for a warning. Only the RFC 7946 names
@@ -312,7 +313,6 @@ public:
     };
     enum class Scalar { Null, Bool, String, Number };
 
-    explicit Handler(const std::string& path) : path_(path) {}
 
     // The root's "provenance" object member, as read; mistyped members read as "" or 0.
     struct FileProvenance {
@@ -356,7 +356,6 @@ private:
         Coordinate y;
     };
 
-    const std::string& path_;
     std::vector<Ctx> stack_;
     std::vector<CoordArray> coords_;
     std::string key_;
@@ -375,7 +374,7 @@ private:
     void notAnObject() {
         const int64_t index = nextIndex_++;
         if (warnings) {
-            warnSkipped(path_, index, "the element is not an object");
+            warnSkipped(index, "the element is not an object");
         }
     }
 
@@ -614,7 +613,7 @@ class GeoJsonReader::Impl {
 public:
     explicit Impl(const char* p)
         : path(p), in(openInput(path, bomSize)), buffer(kReadBufferSize), stream(in, buffer.data(), buffer.size()),
-          handler(path) {
+          handler() {
         reader.IterativeParseInit();
     }
 
@@ -636,13 +635,13 @@ public:
 
     void warn(const std::string& reason) const {
         if (handler.warnings) {
-            warnSkipped(path, handler.pending.index, reason);
+            warnSkipped(handler.pending.index, reason);
         }
     }
 
     InvalidArgumentError geometryError(const std::string& reason) const {
-        return InvalidArgumentError(("GeoJsonReader: feature " + std::to_string(handler.pending.index) + " of " +
-                                     path + ": " + reason)
+        return InvalidArgumentError(("GeoJsonReader: feature " + std::to_string(handler.pending.index) + " of the file: " +
+                                     reason)
                                         .c_str());
     }
 
@@ -661,10 +660,10 @@ public:
     [[noreturn]] void throwParseError() {
         const std::string offset = std::to_string(reader.GetErrorOffset() + bomSize);
         if (in.bad()) {
-            failure = "GeoJsonReader: reading " + path + " failed at byte offset " + offset;
+            failure = "GeoJsonReader: reading the file failed at byte offset " + offset;
             throw IoError(failure.c_str());
         }
-        failure = "GeoJsonReader: parse error in " + path + " at byte offset " + offset + ": " +
+        failure = "GeoJsonReader: parse error in the file at byte offset " + offset + ": " +
                   (handler.notGeoJson ? "the top-level value must be an object or an array"
                                       : rapidjson::GetParseError_En(reader.GetParseErrorCode()));
         throw InvalidArgumentError(failure.c_str());
@@ -748,7 +747,7 @@ GeoJsonReader::GeoJsonReader(const char* path) {
     if (path == nullptr) {
         throw InvalidArgumentError("GeoJsonReader: path must not be null");
     }
-    const std::string message = std::string("GeoJsonReader: cannot open ") + path;
+    const std::string message = std::string("GeoJsonReader: cannot open the file");
     std::unique_ptr<Impl> impl;
     try {
         impl = std::make_unique<Impl>(path);
@@ -756,7 +755,8 @@ GeoJsonReader::GeoJsonReader(const char* path) {
         throw;
     } catch (const std::exception& e) {
         ErrorContext ctx;
-        ctx.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        ctx.cause = causeText.c_str();
         throw IoError(message.c_str(), ctx);
     }
     if (!impl->in.is_open()) {
@@ -790,17 +790,19 @@ bool GeoJsonReader::next() {
         } catch (const ProcessorError&) {
             throw;
         } catch (const std::bad_alloc&) {
-            d.failure = "GeoJsonReader: out of memory reading " + d.path;
+            d.failure = "GeoJsonReader: out of memory reading the file";
             throw;
         } catch (const std::ios_base::failure& e) {
-            d.failure = "GeoJsonReader: reading " + d.path + " failed";
+            d.failure = "GeoJsonReader: reading the file failed";
             ErrorContext ctx;
-            ctx.cause = e.what();
+            const std::string causeText = detail::diagnosticText(e);
+            ctx.cause = causeText.c_str();
             throw IoError(d.failure.c_str(), ctx);
         } catch (const std::exception& e) {
-            d.failure = "GeoJsonReader: reading " + d.path + " failed";
+            d.failure = "GeoJsonReader: reading the file failed";
             ErrorContext ctx;
-            ctx.cause = e.what();
+            const std::string causeText = detail::diagnosticText(e);
+            ctx.cause = causeText.c_str();
             throw InternalError(d.failure.c_str(), ctx);
         }
         if (!d.handler.featureComplete) {

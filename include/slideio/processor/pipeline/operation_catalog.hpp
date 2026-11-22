@@ -452,7 +452,7 @@ public:
      * @return The number of bytes written.
      * @throws InvalidArgumentError When @p path is null or empty.
      * @throws IoError When the file cannot be opened or written (the message
-     * names the path).
+     * names the file by its role, never its path).
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.

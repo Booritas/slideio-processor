@@ -43,8 +43,8 @@ namespace {
 // polygon predicate and the limit to the rows SQL returns.
 class ObjectCursorImpl final : public Cursor {
 public:
-    ObjectCursorImpl(std::string path, ReadLease&& lease, BuiltQuery&& built)
-        : path_(std::move(path)), lease_(std::move(lease)), built_(std::move(built)) {
+    ObjectCursorImpl(ReadLease&& lease, BuiltQuery&& built)
+        : lease_(std::move(lease)), built_(std::move(built)) {
         sqlite3* db = lease_->get();
         // One read transaction for the cursor's lifetime: one snapshot, taken now by the
         // first read. The pool rolls it back when the lease returns.
@@ -93,10 +93,10 @@ public:
 
     void checkUsable(const char* operation) const {
         if (!lease_) {
-            const std::string message = std::string(operation) + ": the cursor is closed ('" + path_ + "')";
+            const std::string message = std::string(operation) + ": the cursor is closed";
             throw IoError(message.c_str());
         }
-        lease_->checkStoreOpen(operation, path_);
+        lease_->checkStoreOpen(operation);
     }
 
 private:
@@ -107,7 +107,6 @@ private:
 
     // Declaration order is destruction order in reverse: statements finalise before the
     // lease returns the connection.
-    std::string path_;
     std::optional<ReadLease> lease_;
     BuiltQuery built_;
     std::optional<Statement> select_;
@@ -121,12 +120,12 @@ private:
 
 } // namespace
 
-CursorPtr openObjectCursor(std::string path, ReadLease&& lease, BuiltQuery&& built) {
-    return std::make_shared<ObjectCursorImpl>(std::move(path), std::move(lease), std::move(built));
+CursorPtr openObjectCursor(ReadLease&& lease, BuiltQuery&& built) {
+    return std::make_shared<ObjectCursorImpl>(std::move(lease), std::move(built));
 }
 
-int64_t countWithPolygon(std::string path, ReadLease&& lease, BuiltQuery&& built) {
-    ObjectCursorImpl cursor(std::move(path), std::move(lease), std::move(built));
+int64_t countWithPolygon(ReadLease&& lease, BuiltQuery&& built) {
+    ObjectCursorImpl cursor(std::move(lease), std::move(built));
     int64_t count = 0;
     while (cursor.advance()) ++count;
     return count;

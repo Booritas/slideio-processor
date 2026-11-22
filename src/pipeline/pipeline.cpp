@@ -1,5 +1,6 @@
 // Requirements: UR-EXE-1, UR-ALG-1, UR-ALG-5, UR-PIX-6, UR-IMG-5, UR-STG-3
 #include <slideio/processor/pipeline/pipeline.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <pipeline/detail/pipeline_impl.hpp>
 #include <pipeline/detail/pipeline_scene_source.hpp>
@@ -161,7 +162,8 @@ std::shared_ptr<slideio::Scene> Pipeline::asScene() const {
     } catch (const std::exception& e) {
         // The description is built here, so SlideIO refusing it is a defect of this library.
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError("Pipeline::asScene: SlideIO refused the scene description", context);
     }
 }

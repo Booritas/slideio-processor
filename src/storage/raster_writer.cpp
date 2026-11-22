@@ -1,4 +1,5 @@
 #include <slideio/processor/storage/raster_store.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include "storage/detail/errors.hpp"
 #include "storage/detail/event_log.hpp"
@@ -51,7 +52,7 @@ void deleteOrWarn(const std::filesystem::path& path, const char* why) noexcept {
     try {
         removeFile(path);
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Warning, "RasterWriter: %s: %s", why, e.what());
+        logMessage(LogLevel::Warning, "RasterWriter: %s: %s", why, detail::diagnosticText(e).c_str());
     } catch (...) {
         logMessage(LogLevel::Warning, "RasterWriter: %s: cannot delete a file", why);
     }
@@ -178,9 +179,9 @@ public:
         return tiles;
     }
 
-    // Throws IoError "<operation>: store is closed ('<path>')".
+    // Throws IoError "<operation>: store is closed".
     [[noreturn]] void throwClosed(const char* operation) const {
-        const std::string message = std::string(operation) + ": store is closed ('" + setup.gate->path() + "')";
+        const std::string message = std::string(operation) + ": store is closed";
         throw IoError(message.c_str());
     }
 
@@ -271,7 +272,7 @@ public:
             syncFile(tif);
             std::error_code error;
             const std::uintmax_t size = std::filesystem::file_size(tif, error);
-            if (error) throwIo(std::string(kFlush) + ": cannot read the size of '" + tif.u8string() + "'", error.message());
+            if (error) throwIo(std::string(kFlush) + ": cannot read the size of the raster file", error.message());
             bytes = static_cast<int64_t>(size);
         } catch (...) {
             deleteOrWarn(tif, "deleting a partial raster file");
@@ -347,7 +348,7 @@ public:
         try {
             spool->remove();
         } catch (const std::exception& e) {
-            logMessage(LogLevel::Warning, "RasterWriter: deleting the spool of %s: %s", rasterText().c_str(), e.what());
+            logMessage(LogLevel::Warning, "RasterWriter: deleting the spool of %s: %s", rasterText().c_str(), detail::diagnosticText(e).c_str());
         } catch (...) {
         }
     }
@@ -366,9 +367,8 @@ public:
             const int64_t abandoned = tileCount();
             if (abandoned > 0) {
                 logMessage(LogLevel::Warning,
-                           "RasterWriter: %lld tile(s) of %s by stage %d in '%s' were abandoned unflushed (%s)",
-                           static_cast<long long>(abandoned), rasterText().c_str(), setup.stage.value(),
-                           setup.gate->path().c_str(), why);
+                           "RasterWriter: %lld tile(s) of %s by stage %d were abandoned unflushed (%s)",
+                           static_cast<long long>(abandoned), rasterText().c_str(), setup.stage.value(), why);
             }
         } catch (...) {
         }

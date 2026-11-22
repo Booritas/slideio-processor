@@ -3,6 +3,8 @@
 
 #include <pipeline/detail/level_table.hpp>
 
+#include "core/detail/diagnostics.hpp"
+#include <pipeline/detail/slide_cause.hpp>
 #include <slideio/processor/core/error.hpp>
 
 #include <slideio/core/levelinfo.hpp>
@@ -20,7 +22,7 @@ namespace slideio::processor::detail {
 
 namespace {
 
-[[noreturn]] void rethrowAsIoError(const char* what) {
+[[noreturn]] void rethrowAsIoError(const char* what, const slideio::Scene& scene) {
     try {
         throw;
     } catch (const ProcessorError&) {
@@ -29,7 +31,8 @@ namespace {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        context.cause = e.what();
+        const std::string causeText = detail::slideCauseText(e, scene);
+        context.cause = causeText.c_str();
         throw IoError(what, context);
     }
 }
@@ -65,7 +68,7 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
             return LevelDims{size.width, size.height, tile.width, tile.height};
         });
     } catch (...) {
-        rethrowAsIoError("SceneReader: SlideIO failed to describe the scene");
+        rethrowAsIoError("SceneReader: SlideIO failed to describe the scene", *scene_);
     }
 }
 
@@ -162,7 +165,7 @@ void SceneReader::read(int32_t level, const Rect64& levelRect, const std::vector
             }
         }
     } catch (...) {
-        rethrowAsIoError("SceneReader::read: SlideIO failed to read the block");
+        rethrowAsIoError("SceneReader::read: SlideIO failed to read the block", *scene_);
     }
 }
 

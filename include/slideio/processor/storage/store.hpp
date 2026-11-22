@@ -55,7 +55,7 @@ using StorePtr = std::shared_ptr<Store>;
  *
  * After close(), path(), formatVersion(), mode() and isReadOnly() still answer;
  * every other member throws IoError containing "store is closed". Every mutating
- * member of a ReadOnly store throws IoError naming the path and the word
+ * member of a ReadOnly store throws IoError naming the store (by its role, never its path) and the word
  * "read-only".
  * @par Thread-safety
  * ThreadSafe: every member may be called from any thread with no external locking.
@@ -82,9 +82,9 @@ public:
      * @throws InvalidArgumentError When path is null or empty, or mode is not an
      * OpenMode.
      * @throws IoError When CreateNew finds the path existing; when ReadWrite or
-     * ReadOnly finds it missing (the message names the path); when another handle,
-     * in this process or another, holds the writer lock (the message names the path
-     * and, where it is known, "process <pid>"); when the migration of a version 1
+     * ReadOnly finds it missing (the message names the store by its role, never its
+     * path); when another handle, in this process or another, holds the writer lock
+     * (the message says so and, where it is known, "process <pid>"); when the migration of a version 1
      * store fails, which leaves the file at version 1; or when SQLite fails (the cause
      * is SQLite's message).
      * @throws StoreFormatError When the file is not a store (storeVersion() 0) or has

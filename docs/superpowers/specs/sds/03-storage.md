@@ -142,10 +142,10 @@ same way with store version 0.
 
 **Modes.** `CreateNew` creates the file and throws `IoError` if the path
 exists. `ReadWrite` and `ReadOnly` require an existing file and throw `IoError`
-naming the path if it is missing. `mode()` returns the mode passed in, and
+naming the store by its role (never its path, C-6) if it is missing. `mode()` returns the mode passed in, and
 `isReadOnly()` is true only for `ReadOnly`. A null or empty path, or a value
 outside `OpenMode`, throws `InvalidArgumentError`. Every mutating call on a
-`ReadOnly` store throws `IoError` naming the path and the word `read-only`.
+`ReadOnly` store throws `IoError` naming the store (not its path) and the word `read-only`.
 
 **After `close()`**, `path()`, `formatVersion()`, `mode()` and `isReadOnly()`
 still answer, and every throwing member throws `IoError` containing `store is
@@ -177,7 +177,7 @@ replaced by `setProvenance`. `provenance()` parses it and returns
 `Provenance::restored(...)` (`01-core.md` 1.13), so the library version and
 creation time are the persisted ones rather than the reading library's and the
 time of the read (UR-RES-11). An unreadable record throws `InternalError`
-naming the store path, the parse offset and the record size, but never the
+naming the store (not its path), the parse offset and the record size, but never the
 record's text, which carries the slide identifier.
 
 **Connections.** WAL mode, `synchronous=NORMAL`, `foreign_keys=ON`,
@@ -202,7 +202,7 @@ cannot interpose on the copy SlideIO's converter carries, or be interposed by it
 `ReadWrite` and `CreateNew` take an exclusive writer lock: a file at
 `<path>-writer.lock` holding the owner's process id as decimal text, locked
 with `LockFileEx` on Windows and `flock(LOCK_EX | LOCK_NB)` on POSIX, and held
-until `close()`. A second writer throws `IoError` naming the path and, when
+until `close()`. A second writer throws `IoError` naming the store (not its path, C-6) and, when
 the lock file's text parses, `process <pid>` — concurrent writers remain out of
 scope (Assumption 6, §15). Both platforms lock per handle, so a second
 `ReadWrite` open in the same process fails the same way. `ReadOnly` takes no

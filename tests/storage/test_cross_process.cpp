@@ -162,7 +162,7 @@ std::vector<int64_t> followUntilBatches(EventCursorPtr cursor, int batches) {
 bool signalCanOpen() {
     if (!detail::ChangeSignal::isSupported()) return false;
     const std::string uuid = "probe" + std::to_string(Clock::now().time_since_epoch().count());
-    detail::ChangeSignal probe(uuid, "probe", detail::ChangeSignal::Role::Writer);
+    detail::ChangeSignal probe(uuid, detail::ChangeSignal::Role::Writer);
     const bool open = probe.isOpen();
     probe.unlink();
     return open;

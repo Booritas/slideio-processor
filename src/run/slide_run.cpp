@@ -327,7 +327,7 @@ ExportResult SlideRun::Impl::writeExport(Workspace& workspace, const ExportSpec&
             }
             const int32_t level = rasters.writtenAtLevel(raster);
             const std::shared_ptr<slideio::Scene> scene = workspace.scene();
-            const std::vector<detail::LevelDims> table = detail::levelTable(*scene);
+            const std::vector<detail::LevelDims> table = fromScene([&] { return detail::levelTable(*scene); });
             if (level < 0 || static_cast<size_t>(level) >= table.size()) {
                 throw InternalError(("SlideRun: the raster '" + std::string(spec.raster()) +
                                      "' was written at a level the scene does not have")

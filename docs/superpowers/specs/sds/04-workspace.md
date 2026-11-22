@@ -81,7 +81,7 @@ recorded state of every stage, and the binding to the slide and scene.
 (`-wal`, `-shm`, `-writer.lock`) and its raster directory
 `workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
 `<workspace>/scratch/`. `create` makes the directory, and only it: the parent
-must exist, and a missing parent is an `IoError` naming the path, with nothing
+must exist, and a missing parent is an `IoError` naming the workspace directory by its role (never its path, C-6), with nothing
 made. It throws `IoError` when the path exists and is not an empty directory; it
 opens the slide and checks the scene index (`InvalidArgumentError` when out of
 range) before making anything. A `create` that fails later removes what it made,

@@ -64,7 +64,7 @@ public:
         built.countSql.clear();  // its parameters no longer line up with values
         return gate_->with(kOperation, [&](StoreImpl& store) {
             ReadLease lease = store.acquireRead(kOperation);
-            return openObjectCursor(store.path(), std::move(lease), std::move(built));
+            return openObjectCursor(std::move(lease), std::move(built));
         });
     }
 
@@ -73,7 +73,7 @@ public:
         BuiltQuery built = buildObjectQuery(query, kOperation);
         return gate_->with(kOperation, [&](StoreImpl& store) {
             if (built.hasPolygon) {
-                return countWithPolygon(store.path(), store.acquireRead(kOperation), std::move(built));
+                return countWithPolygon(store.acquireRead(kOperation), std::move(built));
             }
             return store.withReadConnection(kOperation, [&built](sqlite3* db) {
                 Statement select(db, built.countSql.c_str());

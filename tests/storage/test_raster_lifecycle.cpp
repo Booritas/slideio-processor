@@ -290,10 +290,11 @@ TEST_F(RasterLifecycleTest, DeleteBlockedByAnOpenSourceIsLoggedNotThrown) {
         ASSERT_EQ(eventsOfKind(store(), EventKind::RasterDropped).size(), 1u);
 #ifdef _WIN32
         EXPECT_TRUE(std::filesystem::exists(file));
-        EXPECT_EQ(warnings.count(pFile), 1);
+        EXPECT_EQ(warnings.count("cannot delete the file"), 1);
+        EXPECT_EQ(warnings.count(pFile), 0);  // the warning names no file
 #else
         EXPECT_FALSE(std::filesystem::exists(file));
-        EXPECT_EQ(warnings.count(pFile), 0);
+        EXPECT_EQ(warnings.count("cannot delete the file"), 0);
 #endif
     }
     // The open source keeps reading the old pixels; a new one reads zero.

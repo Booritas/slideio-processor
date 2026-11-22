@@ -1,5 +1,6 @@
 // Requirements: UR-IMG-12, UR-ALG-4, UR-ALG-6, UR-ALG-8, UR-EXT-5
 #include <slideio/processor/pipeline/operation_catalog.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 
@@ -147,7 +148,8 @@ OperationPtr OperationCatalog::create(const char* name, const OperationParameter
     } catch (const std::exception& e) {
         ErrorContext context;
         context.operationName = name;
-        context.cause = e.what();
+        const std::string causeText = detail::diagnosticText(e);
+        context.cause = causeText.c_str();
         throw InternalError((label + " failed in its factory").c_str(), context);
     } catch (...) {
         ErrorContext context;
@@ -272,12 +274,12 @@ int64_t OperationCatalog::writeSupportMatrix(const char* path) const {
     const std::string where = path;
     std::ofstream out(std::filesystem::u8path(where), std::ios::binary | std::ios::trunc);
     if (!out) {
-        throw IoError(("OperationCatalog::writeSupportMatrix: cannot open '" + where + "' for writing").c_str());
+        throw IoError("OperationCatalog::writeSupportMatrix: cannot open the file for writing");
     }
     out.write(text.data(), static_cast<std::streamsize>(text.size()));
     out.flush();
     if (!out) {
-        throw IoError(("OperationCatalog::writeSupportMatrix: cannot write '" + where + "'").c_str());
+        throw IoError("OperationCatalog::writeSupportMatrix: cannot write the file");
     }
     return static_cast<int64_t>(text.size());
 }

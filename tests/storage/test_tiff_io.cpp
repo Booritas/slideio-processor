@@ -115,7 +115,9 @@ TEST(TiffIo, ErrorsBecomeIoErrorWithLibtiffText) {
         detail::TiffHandle::openRead(utf8(path));
     } catch (const IoError& e) {
         thrown = true;
-        EXPECT_NE(std::string(e.what()).find(utf8(path)), std::string::npos) << e.what();
+        // The raster file is named by its role; neither the message nor the cause holds the path.
+        EXPECT_NE(std::string(e.what()).find("raster file"), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find(utf8(path)), std::string::npos) << e.what();
         ASSERT_NE(e.cause(), nullptr);
         EXPECT_STRNE(e.cause(), "");
     }
@@ -124,13 +126,14 @@ TEST(TiffIo, ErrorsBecomeIoErrorWithLibtiffText) {
     EXPECT_EQ(err, "");
 }
 
-TEST(TiffIo, MissingFileIsIoErrorNamingThePath) {
+TEST(TiffIo, MissingFileIsIoErrorNamingTheRasterFile) {
     const std::filesystem::path path = uniqueTempPath("missing", ".tif"); // never created
     try {
         detail::TiffHandle::openRead(utf8(path));
         FAIL() << "no IoError";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find(utf8(path)), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("raster file"), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find(utf8(path)), std::string::npos) << e.what();
     }
 }
 
@@ -149,8 +152,9 @@ TEST(TiffIo, FailNamesTheOperationAndClearsTheCollectedText) {
         handle.fail("TIFFReadEncodedTile");
         FAIL() << "no IoError";
     } catch (const IoError& e) {
-        const std::string expected = "TIFFReadEncodedTile: libtiff failed on '" + utf8(path) + "'";
+        const std::string expected = "TIFFReadEncodedTile: libtiff failed on the raster file";
         EXPECT_NE(std::string(e.what()).find(expected), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()).find(utf8(path)), std::string::npos) << e.what();
         ASSERT_NE(e.cause(), nullptr);
         EXPECT_STRNE(e.cause(), "");
     }
@@ -178,7 +182,9 @@ TEST(TiffIo, HandlesOnManyThreadsKeepTheirOwnErrors) {
     for (int i = 0; i < kThreads / 2; ++i) {
         garbage.push_back(uniqueTempPath("garbage", ".tif"));
         guards.push_back(std::make_unique<TempFileGuard>(garbage.back()));
-        writeFile(garbage.back(), "garbage " + std::to_string(i));
+        // Two equal bytes lead the file, so libtiff's "bad magic number" text is this file's own:
+        // 65 + i, twice, is 0x4141, 0x4242, ... The error names the file by its role only.
+        writeFile(garbage.back(), std::string(2, static_cast<char>(65 + i)) + " garbage");
     }
 
     std::atomic<int> validFailures{0};
@@ -200,18 +206,23 @@ TEST(TiffIo, HandlesOnManyThreadsKeepTheirOwnErrors) {
                         ++validFailures;
                     }
                 } else {
-                    const std::string own = utf8(garbage[static_cast<size_t>(t / 2)]);
+                    const size_t ownIndex = static_cast<size_t>(t / 2);
+                    const std::string own = utf8(garbage[ownIndex]);
+                    const auto magicText = [](size_t index) {
+                        return "bad magic number " + std::to_string((65 + index) * 257) + " ";
+                    };
                     try {
                         detail::TiffHandle::openRead(own);
                         ++garbageMisreports;
                     } catch (const IoError& e) {
                         const std::string what = e.what();
-                        if (what.find(own) == std::string::npos || e.cause() == nullptr ||
-                            std::strlen(e.cause()) == 0)
+                        // The error names the raster file by its role, never a path, and carries this handle's
+                        // own libtiff text: its file's magic number, and no other file's.
+                        if (what.find("raster file") == std::string::npos || what.find(own) != std::string::npos ||
+                            what.find(magicText(ownIndex)) == std::string::npos)
                             ++garbageMisreports;
-                        for (const auto& other : garbage)
-                            if (utf8(other) != own && what.find(utf8(other)) != std::string::npos)
-                                ++garbageMisreports;
+                        for (size_t other = 0; other < garbage.size(); ++other)
+                            if (other != ownIndex && what.find(magicText(other)) != std::string::npos) ++garbageMisreports;
                     } catch (...) {
                         ++garbageMisreports;
                     }

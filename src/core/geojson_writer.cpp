@@ -1,5 +1,7 @@
 #include <slideio/processor/core/geojson.hpp>
 
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/core/error.hpp>
 
 #include <rapidjson/stringbuffer.h>
@@ -135,10 +137,10 @@ public:
 
     void raw(const char* data, size_t size) { out.write(data, static_cast<std::streamsize>(size)); }
     void raw(const char* text) { raw(text, std::char_traits<char>::length(text)); }
-    IoError failure(const char* what, const char* cause = nullptr) const {
+    IoError failure(const char* what, const std::string* cause = nullptr) const {
         ErrorContext ctx;
-        ctx.cause = cause;
-        return IoError((std::string("GeoJsonWriter: ") + what + " failed for " + path).c_str(), ctx);
+        if (cause != nullptr) ctx.cause = cause->c_str();
+        return IoError((std::string("GeoJsonWriter: ") + what + " failed for the output file").c_str(), ctx);
     }
     void checkStream(const char* what) const {
         if (!out) {
@@ -158,7 +160,8 @@ GeoJsonWriter::GeoJsonWriter(const char* path) {
     } catch (const std::bad_alloc&) {
         throw; // C-6: never wrapped
     } catch (const std::exception& e) {
-        throw impl->failure("open", e.what());
+        const std::string cause = detail::diagnosticText(e);
+        throw impl->failure("open", &cause);
     }
     if (!impl->out.is_open()) {
         throw impl->failure("open");
@@ -185,7 +188,8 @@ void GeoJsonWriter::begin(const Provenance& provenance) {
     } catch (const std::bad_alloc&) {
         throw; // C-6: never wrapped
     } catch (const std::exception& e) {
-        throw impl_->failure("write", e.what());
+        const std::string cause = detail::diagnosticText(e);
+        throw impl_->failure("write", &cause);
     }
     impl_->checkStream("write");
 }
@@ -295,7 +299,8 @@ void GeoJsonWriter::writeFeature(const ObjectRecord& record, const char* layerNa
     } catch (const std::bad_alloc&) {
         throw; // C-6: never wrapped
     } catch (const std::exception& e) {
-        throw impl_->failure("write", e.what());
+        const std::string cause = detail::diagnosticText(e);
+        throw impl_->failure("write", &cause);
     }
     ++impl_->written;
     impl_->checkStream("write");
@@ -312,7 +317,8 @@ void GeoJsonWriter::end() {
     } catch (const std::bad_alloc&) {
         throw; // C-6: never wrapped
     } catch (const std::exception& e) {
-        throw impl_->failure("write", e.what());
+        const std::string cause = detail::diagnosticText(e);
+        throw impl_->failure("write", &cause);
     }
     impl_->checkStream("write");
     impl_->out.close();

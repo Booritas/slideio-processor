@@ -156,10 +156,9 @@ void throwIfTruncated(sqlite3* db, int64_t position) {
 
 class EventCursorImpl final : public EventCursor {
 public:
-    EventCursorImpl(std::string path, detail::ReadLease&& lease, int64_t start, int32_t pollIntervalMs,
+    EventCursorImpl(detail::ReadLease&& lease, int64_t start, int32_t pollIntervalMs,
                     std::shared_ptr<detail::CommitWaiter> waiter)
-        : path_(std::move(path)),
-          lease_(std::move(lease)),
+        : lease_(std::move(lease)),
           position_(start),
           pollIntervalMs_(std::max<int32_t>(1, pollIntervalMs)),
           waiter_(std::move(waiter)) {}
@@ -207,10 +206,10 @@ public:
 private:
     void checkUsable() const {
         if (!lease_) {
-            const std::string message = std::string("EventCursor::next: the cursor is closed ('") + path_ + "')";
+            const std::string message = std::string("EventCursor::next: the cursor is closed");
             throw IoError(message.c_str());
         }
-        lease_->checkStoreOpen("EventCursor::next", path_);
+        lease_->checkStoreOpen("EventCursor::next");
     }
 
     // Reads the next page above the last row buffered, in its own read transaction.
@@ -232,7 +231,6 @@ private:
         return !page_.empty();
     }
 
-    std::string path_;
     std::optional<detail::ReadLease> lease_;
     int64_t position_;  // the sequence last returned, or the resolved start
     int32_t pollIntervalMs_;
@@ -298,20 +296,19 @@ EventCursorPtr EventJournal::subscribe(int64_t fromSequence) {
             start = newestOn(db);
         } else {
             throwIfTruncated(db, fromSequence);
-            // A position past the newest event belongs to another store (or to this path
+            // A position past the newest event belongs to another store (or to this store
             // before it was recreated); starting there would skip the events up to it.
             const int64_t newest = newestOn(db);
             if (fromSequence > newest) {
                 const std::string message = "EventJournal::subscribe: position " + std::to_string(fromSequence) +
-                                            " is beyond the newest event " + std::to_string(newest) + " of '" +
-                                            store.path() + "'; a position must come from position() on this store";
+                                            " is beyond the newest event " + std::to_string(newest) + " of the store; a position must come from position() on this store";
                 throw InvalidArgumentError(message.c_str());
             }
             start = fromSequence;
         }
         transaction.commit();
     }
-    return std::make_shared<EventCursorImpl>(store.path(), std::move(lease), start,
+    return std::make_shared<EventCursorImpl>(std::move(lease), start,
                                              store.configuration().eventPollIntervalMs(), store.commitWaiter());
 }
 

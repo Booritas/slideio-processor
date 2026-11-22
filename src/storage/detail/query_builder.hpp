@@ -77,12 +77,12 @@ void decodeRowGeometry(const Statement& row, Polygon& out);
 ObjectRecord recordFromRow(const Statement& row, const Polygon& geometry, Statement& measurements);
 
 // A cursor over `built` on `lease`, holding one read transaction, opened here, for its
-// lifetime. `path` names the store in errors. Throws IoError, std::bad_alloc.
-CursorPtr openObjectCursor(std::string path, ReadLease&& lease, BuiltQuery&& built);
+// lifetime. Throws IoError, std::bad_alloc.
+CursorPtr openObjectCursor(ReadLease&& lease, BuiltQuery&& built);
 
 // The number of rows `built` yields with its polygon predicate and limit applied, read in
 // one read transaction on `lease`. Throws IoError, InternalError, std::bad_alloc.
-int64_t countWithPolygon(std::string path, ReadLease&& lease, BuiltQuery&& built);
+int64_t countWithPolygon(ReadLease&& lease, BuiltQuery&& built);
 
 // ---- Defined in label_raster_source.cpp ---------------------------------------------
 
