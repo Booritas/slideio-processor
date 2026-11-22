@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace slideio::processor;
@@ -277,4 +278,26 @@ TEST(PipelineFile, FromWorkspace) {
     EXPECT_TRUE(f.equals(again));
     EXPECT_EQ(jsonOf(again), text);
     ws->close();
+}
+
+TEST(PipelineFile, CopiesAMovedFromFile) {
+    PipelineFile source = PipelineFile::fromJson(example().c_str());
+    const PipelineFile taken(std::move(source));
+    EXPECT_EQ(taken.stageCount(), 2);
+
+    // Copy-constructing from the moved-from file gives an empty, usable file.
+    PipelineFile constructed(source);  // NOLINT(bugprone-use-after-move): the case under test
+    EXPECT_TRUE(constructed.equals(PipelineFile()));
+    EXPECT_EQ(constructed.layerCount(), 0);
+    constructed.require("mylab.models");
+    EXPECT_EQ(constructed.requireCount(), 1);
+
+    // So does copy-assigning from it, over a file that held content.
+    PipelineFile assigned = PipelineFile::fromJson(example().c_str());
+    assigned = source;  // NOLINT(bugprone-use-after-move): the case under test
+    EXPECT_TRUE(assigned.equals(PipelineFile()));
+    EXPECT_EQ(assigned.stageCount(), 0);
+    assigned.require("mylab.models");
+    EXPECT_EQ(assigned.requireCount(), 1);
+    EXPECT_EQ(source.stageCount(), 0) << "the moved-from file still reads as empty";
 }

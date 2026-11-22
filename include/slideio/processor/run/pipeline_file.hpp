@@ -60,7 +60,8 @@ public:
      */
     PipelineFile();
     /**
-     * @brief Copies a file; the copy shares nothing with the original.
+     * @brief Copies a file; the copy shares nothing with the original. A moved-from file
+     * copies as an empty file.
      * @param other The file to copy.
      * @throws std::bad_alloc When allocation fails.
      * @par Thread-safety

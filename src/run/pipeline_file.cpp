@@ -326,20 +326,15 @@ public:
     }
 };
 
-namespace {
-
-
-} // namespace
-
 PipelineFile::PipelineFile() : impl_(std::make_unique<Impl>()) {}
 
-PipelineFile::PipelineFile(const PipelineFile& other) : impl_(std::make_unique<Impl>(*other.impl_)) {}
+PipelineFile::PipelineFile(const PipelineFile& other) : impl_(std::make_unique<Impl>(read(other.impl_))) {}
 
 PipelineFile::PipelineFile(PipelineFile&& other) noexcept : impl_(std::move(other.impl_)) {}
 
 PipelineFile& PipelineFile::operator=(const PipelineFile& other) {
     if (this != &other) {
-        impl_ = std::make_unique<Impl>(*other.impl_);
+        impl_ = std::make_unique<Impl>(read(other.impl_));
     }
     return *this;
 }
