@@ -33,7 +33,7 @@ endif()
 
 # The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
 # SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
-find_package(slideio 2.10 REQUIRED)
+find_package(slideio 2.11 REQUIRED)
 # The data library uses OpenCV for its version only; the engine links it statically
 # and privately (see src/CMakeLists.txt).
 # No version in find_package: the Conan-generated OpenCVConfigVersion.cmake accepts
