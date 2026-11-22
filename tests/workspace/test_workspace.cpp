@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -401,9 +402,26 @@ std::shared_ptr<slideio::Scene> openSceneOf(const fs::path& slide) {
     return opened->getScene(0);
 }
 
-std::string bytesOf(const fs::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+// Every file under `root`, relative path to bytes, but for SQLite's -wal and -shm sidecars,
+// which a read-only open may create. An empty directory counts as an entry too.
+std::map<std::string, std::string> snapshotOf(const fs::path& root) {
+    std::map<std::string, std::string> files;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        const std::string name = entry.path().filename().u8string();
+        const auto endsWith = [&name](const char* suffix) {
+            const std::string s(suffix);
+            return name.size() >= s.size() && name.compare(name.size() - s.size(), s.size(), s) == 0;
+        };
+        if (endsWith("-wal") || endsWith("-shm")) continue;
+        const std::string key = fs::relative(entry.path(), root).generic_u8string();
+        if (!entry.is_regular_file()) {
+            files[key] = "<directory>";
+            continue;
+        }
+        std::ifstream in(entry.path(), std::ios::binary);
+        files[key] = std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    return files;
 }
 
 // Expects `call` to throw InvalidArgumentError whose message names neither slide path nor file name.
@@ -507,13 +525,13 @@ TEST(Workspace, RefusesAMismatchedScene) {
 
     // open: the store is unchanged by every refusal.
     Workspace::create(workspace.c_str(), a.c_str(), 0, config)->close();
-    const fs::path store = dir.path() / "ws" / "workspace.store";
-    const std::string before = bytesOf(store);
+    // Every refusal leaves every file of the closed workspace as it was.
+    const auto before = snapshotOf(dir.path() / "ws");
     expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneB, 0, config); }, slides);
     expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, 1, config); }, slides);
     expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), nullptr, 0, config); }, slides);
     expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, -1, config); }, slides);
-    EXPECT_EQ(bytesOf(store), before);
+    EXPECT_EQ(snapshotOf(dir.path() / "ws"), before);
 
     // None of them left the writer lock held: the workspace still opens.
     WorkspacePtr ws = Workspace::open(workspace.c_str(), sceneA, 0, config);
@@ -554,5 +572,28 @@ TEST(Workspace, SceneStageRunMatchesPathStageRun) {
         EXPECT_EQ(byScene.second[i].y, byPath.second[i].y);
         EXPECT_EQ(byScene.second[i].width, byPath.second[i].width);
         EXPECT_EQ(byScene.second[i].height, byPath.second[i].height);
+    }
+}
+
+TEST(Workspace, RefusedSceneLeavesAVersion1StoreUnmigrated) {
+    TempDirectory dir;
+    fs::create_directories(dir.path());
+    const fs::path slide = writeBlobSlide(dir.path() / "slide.tif", 300, 300);
+    // The v1 golden store, as a workspace: the library writes only the current format.
+    const fs::path golden = fs::u8path(SLIDEIO_PROCESSOR_TEST_DATA_DIR) / "store-v1.golden.store";
+    const fs::path ws = dir.path() / "ws";
+    fs::create_directories(ws);
+    fs::copy_file(golden, ws / "workspace.store");
+    fs::copy(fs::path(golden.u8string() + "-rasters"), ws / "workspace.store-rasters", fs::copy_options::recursive);
+    const auto before = snapshotOf(ws);
+    const auto scene = openSceneOf(slide);
+    const Configuration config = Configuration::defaults();
+    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 0, config); }, {slide});
+    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 1, config); }, {slide});
+    // Not migrated (the store's bytes), and no lock file made.
+    EXPECT_EQ(snapshotOf(ws), before);
+    {
+        const StorePtr store = Store::open((ws / "workspace.store").u8string().c_str(), OpenMode::ReadOnly, config);
+        EXPECT_EQ(store->formatVersion(), 1);
     }
 }

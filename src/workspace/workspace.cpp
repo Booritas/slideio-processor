@@ -382,9 +382,23 @@ struct GivenScene {
     int32_t sceneIndex;
 };
 
+// Refuses a given scene that is not the workspace's, from the provenance alone. The messages
+// name no path.
+void requireGivenSceneMatches(const GivenScene& given, const Provenance& provenance, const char* operation) {
+    if (!sceneIsOfFile(*given.scene, provenance.slideId())) {
+        throw InvalidArgumentError(
+            (std::string(operation) + ": the scene does not belong to the workspace's slide").c_str());
+    }
+    if (given.sceneIndex != provenance.sceneIndex()) {
+        throw InvalidArgumentError((std::string(operation) + ": the scene index differs from the workspace's").c_str());
+    }
+}
+
 // Opens the store and finds the scene: the given one, checked against the provenance and
 // leaving the slide file unopened, or else the one the provenance names, opened through
-// SlideIO. A refused given scene leaves the store as it was.
+// SlideIO. A given scene is checked through a read-only open first, so a refusal makes no
+// writable open: it migrates nothing, takes no writer lock and creates no lock file. The
+// check is repeated once the store is open for writing, in case it changed in between.
 Opened openExisting(const fs::path& directory, OpenMode mode, const Configuration& configuration,
                     const char* operation, const GivenScene* given = nullptr) {
     const fs::path storePath = directory / kStoreName;
@@ -392,20 +406,18 @@ Opened openExisting(const fs::path& directory, OpenMode mode, const Configuratio
     if (!fs::is_regular_file(storePath, error)) {
         throwIo(std::string(operation) + ": '" + directory.u8string() + "' holds no workspace store", "");
     }
+    if (given != nullptr && mode != OpenMode::ReadOnly) {
+        StorePtr probe = Store::open(storePath.u8string().c_str(), OpenMode::ReadOnly, configuration);
+        requireGivenSceneMatches(*given, probe->provenance(), operation);
+        probe->close();
+    }
     Opened opened;
     opened.store = Store::open(storePath.u8string().c_str(), mode, configuration);
     const Provenance provenance = opened.store->provenance();
     opened.slidePath = provenance.slideId();
     opened.sceneIndex = provenance.sceneIndex();
     if (given != nullptr) {
-        if (!sceneIsOfFile(*given->scene, opened.slidePath)) {
-            throw InvalidArgumentError(
-                (std::string(operation) + ": the scene does not belong to the workspace's slide").c_str());
-        }
-        if (given->sceneIndex != opened.sceneIndex) {
-            throw InvalidArgumentError(
-                (std::string(operation) + ": the scene index differs from the workspace's").c_str());
-        }
+        requireGivenSceneMatches(*given, provenance, operation);
         opened.scene = given->scene;
         return opened;
     }

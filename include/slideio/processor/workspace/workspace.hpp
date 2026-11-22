@@ -166,9 +166,11 @@ public:
      * As the path overload, including the scratch clear and the raster-file sweep, but
      * the slide file is not opened: the given scene is bound. The scene's file path must
      * be the same file (std::filesystem::equivalent) as the slide path the workspace
-     * recorded, and sceneIndex must equal the recorded scene index; otherwise nothing is
-     * changed (the store is closed again, no scratch or raster file touched). The
-     * messages carry no path.
+     * recorded, and sceneIndex must equal the recorded scene index. The check is made through
+     * a read-only open of the store before any writable one, so a refusal changes nothing:
+     * no store byte (a version 1 store is not
+     * migrated), no lock file, no scratch or raster file. The one exception is SQLite's
+     * -wal and -shm sidecars, which a read-only open may create. The messages carry no path.
      *
      * @par What is trusted
      * Only the sceneIndex match is checked, never that the scene truly is that scene of

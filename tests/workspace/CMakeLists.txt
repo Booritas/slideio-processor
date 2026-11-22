@@ -21,6 +21,9 @@ add_executable(slideio_processor_workspace_tests
 )
 target_link_libraries(slideio_processor_workspace_tests PRIVATE
     slideio-processor-engine slideio_processor_pipeline_test_support SQLite::SQLite3 TIFF::TIFF rapidjson GTest::gtest_main)
+# The v1 golden store of the storage tests: a refused scene must leave it unmigrated.
+target_compile_definitions(slideio_processor_workspace_tests PRIVATE
+    SLIDEIO_PROCESSOR_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/storage/data")
 target_include_directories(slideio_processor_workspace_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/tests)

@@ -117,8 +117,13 @@ before anything is created or written, and each failure is
 for `create`, the scene's `getFilePath()` is `std::filesystem::equivalent` to
 `slidePath` (a missing file or an error is a mismatch, never an escaping
 exception); for `open`, it is equivalent to the recorded slide path and
-`sceneIndex` equals the recorded scene index. `open` reads the provenance
-from the store, so a refused scene closes the store again and changes nothing.
+`sceneIndex` equals the recorded scene index. `open` reads the provenance from the
+store through a read-only open first and opens it for writing only when the scene
+matches (the check is repeated on the writable store, in case it changed between).
+So a refusal changes nothing: no store byte (a version 1 store is not migrated),
+no `-writer.lock` file, no scratch or raster file, no other file; the one
+exception is SQLite's `-wal` and `-shm` sidecars, which a read-only open may
+create.
 **What is trusted:** the caller's `sceneIndex`. A `slideio::Scene` does not know
 its index in its slide, so `create` records it unconfirmed (and does not check it
 against the scene count) and `open` can only compare it with the record; the
