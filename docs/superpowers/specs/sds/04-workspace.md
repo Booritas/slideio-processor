@@ -23,8 +23,23 @@ public:
                                int32_t sceneIndex,
                                const Configuration&);
 
+    /// Creates a workspace over a scene the caller already opened; the slide
+    /// file is not opened again. `scene` must belong to `slidePath`.
+    static WorkspacePtr create(const char* workspacePath,
+                               std::shared_ptr<slideio::Scene> scene,
+                               const char* slidePath,
+                               int32_t sceneIndex,
+                               const Configuration&);
+
     /// Opens an existing workspace, in this or any later process.
     static WorkspacePtr open(const char* workspacePath, const Configuration&);
+
+    /// Opens over a scene the caller already opened; `scene` must belong to the
+    /// recorded slide and `sceneIndex` equal the recorded one.
+    static WorkspacePtr open(const char* workspacePath,
+                             std::shared_ptr<slideio::Scene> scene,
+                             int32_t sceneIndex,
+                             const Configuration&);
 
     /// Opens without a writer lock: stage state and objects are readable,
     /// nothing may be run. Safe alongside another process's writer.
@@ -86,6 +101,29 @@ slide that no longer opens, or no longer has the scene, is an `IoError` naming
 the path. The workspace keeps the slide object alive as long as its scene, and
 `close` releases both, so a scene obtained from `scene()` must not be used after
 `close`.
+
+**A workspace over a scene the caller already opened (decision 6).** The Python
+package opens slides with `slideio` itself and hands the open `slideio::Scene`
+over, so two overloads bind that scene instead of opening the slide file again:
+`create(workspacePath, scene, slidePath, sceneIndex, configuration)` and
+`open(workspacePath, scene, sceneIndex, configuration)`. `scene()` returns the
+object given, the workspace keeps no `Slide` (the scene keeps what it needs of
+its slide alive), and `close` releases only the workspace's reference. Provenance,
+the store, the scratch clear, the raster sweep and the undo of a failed `create`
+are those of the path overloads, because they share their steps rather than copy
+them, so a workspace created either way reopens either way. The checks run
+before anything is created or written, and each failure is
+`InvalidArgumentError`: the scene is not null and `sceneIndex` is not negative;
+for `create`, the scene's `getFilePath()` is `std::filesystem::equivalent` to
+`slidePath` (a missing file or an error is a mismatch, never an escaping
+exception); for `open`, it is equivalent to the recorded slide path and
+`sceneIndex` equals the recorded scene index. `open` reads the provenance
+from the store, so a refused scene closes the store again and changes nothing.
+**What is trusted:** the caller's `sceneIndex`. A `slideio::Scene` does not know
+its index in its slide, so `create` records it unconfirmed (and does not check it
+against the scene count) and `open` can only compare it with the record; the
+headers say so. The new messages name no path, the rule decision 7 extends to the
+existing ones.
 
 **Classification.** `Provenance.slideId` holds the slide path, stored absolute,
 and the workspace's error and log messages name it (a slide that does not open,
