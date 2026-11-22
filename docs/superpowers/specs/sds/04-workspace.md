@@ -412,7 +412,13 @@ byte-identical to a version 2 store's. An operation not registered when the stag
 is declared counts as deterministic. The key is not part of `sameDeclaration`,
 so it never makes a stage stale, and the record parser ignores it.
 `StageRegistry::isDeterministic(StageId)` is false exactly when the stored record
-has the key.
+has the key. The key is therefore fixed at the declaration that wrote the record:
+a redeclaration that `sameDeclaration` finds identical is a no-op and rewrites
+nothing, so it does not refresh the key, even when an operation registered (or
+re-registered with another `isDeterministic()`) since then would change it. Only
+a changed declaration, which rewrites the record, recomputes it. `SlideRun`
+relies on this order: it validates every operation against the catalog, so each
+is registered, before it declares any stage (SDS 09, 9.3).
 `StageDefinition` gains a copy assignment beside its copy constructor, since a
 definition is a value a caller builds, stores and replaces.
 
