@@ -222,7 +222,7 @@ void StoreImpl::migrateFromVersion1() {
 }
 
 WriterLock lockForCreateNew(const std::string& path) {
-    const auto throwExists = [&path] {
+    const auto throwExists = [] {
         throwIo("Store::open: the store already exists; CreateNew needs a new path");
     };
     WriterLock lock;

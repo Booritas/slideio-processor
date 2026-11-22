@@ -71,7 +71,7 @@ bool Store::isOpen() const noexcept { return impl_->core.isOpen(); }
 
 Provenance Store::provenance() const {
     const detail::StoreImpl& core = impl_->core;
-    return core.withReadConnection("Store::provenance", [&core](sqlite3* db) {
+    return core.withReadConnection("Store::provenance", [](sqlite3* db) {
         const std::optional<std::string> json = detail::StoreImpl::metaText(db, detail::kMetaProvenance);
         if (!json) {
             const std::string message = "Store::provenance: the store has no provenance record";
