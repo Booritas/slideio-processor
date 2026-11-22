@@ -616,8 +616,10 @@ TEST(PyramidTiffWriter, OmeLayoutUsesSubIfds) {
           "PhysicalSizeY=\"0.25\"", "PhysicalSizeYUnit=\"\xC2\xB5m\"", "<TiffData IFD=\"0\" PlaneCount=\"1\"/>"})
         EXPECT_NE(description.find(expected), std::string::npos) << expected << " in " << description;
     // No path, file name or other identifier: nothing of the file's location, and no UUID.
+    // The directory is checked as a whole path: its last component alone can be a single
+    // letter (macOS's temporary directory is .../T), which the OME-XML may well contain.
     EXPECT_EQ(description.find(files.tif.filename().u8string()), std::string::npos) << description;
-    EXPECT_EQ(description.find(files.tif.parent_path().filename().u8string()), std::string::npos) << description;
+    EXPECT_EQ(description.find(files.tif.parent_path().u8string()), std::string::npos) << description;
     EXPECT_EQ(description.find("UUID"), std::string::npos) << description;
     EXPECT_EQ(description.find("FileName"), std::string::npos) << description;
 

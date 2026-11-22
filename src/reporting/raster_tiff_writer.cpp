@@ -161,11 +161,16 @@ ExportResult RasterTiffWriter::write(TileRasterSource& source, const Rect64& reg
             const int64_t w = std::min(kTile, outWidth - ox);
             const int64_t h = std::min(kTile, outHeight - oy);
             const int64_t stride = w * sampleBytes;
+            // At most one tile of the widest sample (8 bytes). The bound is stated so the
+            // compiler sees it too: GCC 14 otherwise takes the size to be possibly negative.
+            const int64_t bytes = stride * h;
+            if (bytes <= 0 || bytes > kTile * kTile * 8)
+                throw InternalError("RasterTiffWriter: a tile's size is out of range");
             std::vector<const void*> data(static_cast<size_t>(planes));
             std::vector<int64_t> strides(static_cast<size_t>(planes), stride);
             for (int32_t p = 0; p < planes; ++p) {
                 auto& buffer = buffers[static_cast<size_t>(p)];
-                buffer.assign(static_cast<size_t>(stride * h), 0);
+                buffer.assign(static_cast<size_t>(bytes), 0);
                 viewPlanes[static_cast<size_t>(p)] = BlockPlane{buffer.data(), type, stride, p};
                 data[static_cast<size_t>(p)] = buffer.data();
             }
