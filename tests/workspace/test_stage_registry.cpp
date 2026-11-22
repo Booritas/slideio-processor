@@ -1276,3 +1276,65 @@ TEST(StageRegistry, ReorderedDependsOnKeepsTheUnresolvedName) {
     EXPECT_EQ(f.stages().runBlocker(s, name), RunBlocker::UnresolvedDependency);
     EXPECT_STREQ(name, "p");
 }
+
+namespace {
+
+// A factory whose operations may vary between runs; a spec may name it without creating it.
+class NondeterministicFactory : public OperationFactory {
+public:
+    explicit NondeterministicFactory(const char* name) : name_(name) {}
+    OperationPtr create(const OperationParameters&) const override { return nullptr; }
+    const char* name() const override { return name_; }
+    ChannelArity arity() const override { return ChannelArity::PerChannel; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet(); }
+    Halo halo() const override { return Halo::none(); }
+    const char* correctnessReference() const override { return "x"; }
+    const char* complexityNote() const override { return ""; }
+    bool isDeterministic() const override { return false; }
+
+private:
+    const char* name_;
+};
+
+const char* registerNondeterministic() {
+    static const char* const name = "test.RecordsNondeterministicOperations.gpu";
+    if (!OperationCatalog::instance().isRegistered(name)) {
+        OperationCatalog::instance().registerFactory(std::make_shared<NondeterministicFactory>(name));
+    }
+    return name;
+}
+
+} // namespace
+
+TEST(StageRegistry, RecordsNondeterministicOperations) {
+    const char* gpu = registerNondeterministic();
+    Fixture f;
+
+    StageDefinition model("model");
+    model.writesLayer(f.x);
+    PipelineSpec modelSpec = blurSpec(1.0);
+    modelSpec.operation(gpu, OperationParameters());
+    model.pipeline(modelSpec);
+    const StageId modelId = f.stages().declare(model);
+    const std::string record = f.stages().configuration(modelId);
+    EXPECT_NE(record.find(std::string("\"nondeterministicOperations\":[\"") + gpu + "\"]"), std::string::npos)
+        << record;
+    EXPECT_FALSE(f.stages().isDeterministic(modelId));
+
+    StageDefinition plain("plain");
+    plain.writesLayer(f.y);
+    plain.pipeline(blurSpec(1.0));
+    const StageId plainId = f.stages().declare(plain);
+    EXPECT_EQ(std::string(f.stages().configuration(plainId)).find("nondeterministicOperations"), std::string::npos);
+    EXPECT_TRUE(f.stages().isDeterministic(plainId));
+
+    // Redeclaring either is a no-op: nothing is stale, and the records are unchanged.
+    EXPECT_EQ(f.stages().declare(model), modelId);
+    EXPECT_EQ(f.stages().declare(plain), plainId);
+    EXPECT_EQ(std::string(f.stages().configuration(modelId)), record);
+    EXPECT_FALSE(f.stages().isStale(modelId));
+    EXPECT_FALSE(f.stages().isStale(plainId));
+    EXPECT_FALSE(f.stages().isDeterministic(modelId));
+    EXPECT_TRUE(f.stages().isDeterministic(plainId));
+}

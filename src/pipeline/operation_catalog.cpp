@@ -50,6 +50,10 @@ bool OperationFactory::producesObjects() const {
     return false;
 }
 
+bool OperationFactory::isDeterministic() const {
+    return true;
+}
+
 int32_t OperationFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return inputPlaneCount;
 }
@@ -223,6 +227,10 @@ int64_t OperationCatalog::workingSetBytesPerLevelPixel(const char* name) const {
 
 bool OperationCatalog::producesObjects(const char* name) const {
     return impl_->find(name, "OperationCatalog::producesObjects")->producesObjects();
+}
+
+bool OperationCatalog::isDeterministic(const char* name) const {
+    return impl_->find(name, "OperationCatalog::isDeterministic")->isDeterministic();
 }
 
 int32_t OperationCatalog::outputPlaneCount(const char* name, int32_t inputPlaneCount) const {

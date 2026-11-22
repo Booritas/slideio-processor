@@ -359,6 +359,17 @@ stage when their names, pipelines (`PipelineSpec::equals`) and every declaration
 list and optional are equal, each list compared without regard to order; that
 comparison, not the record's text, is what decides whether a redeclaration is a
 reconfiguration, so formatting and ordering never mark a stage stale.
+
+**Nondeterministic operations.** When `declare` builds the record, it adds
+`"nondeterministicOperations": [names]` after `pipeline`, listing in pipeline
+order every operation of the stage's pipeline that is registered in the
+`OperationCatalog` and whose factory's `isDeterministic()` is false (SDS 05, 5.1).
+The key is written only when the list is not empty, so every other record stays
+byte-identical to a version 2 store's. An operation not registered when the stage
+is declared counts as deterministic. The key is not part of `sameDeclaration`,
+so it never makes a stage stale, and the record parser ignores it.
+`StageRegistry::isDeterministic(StageId)` is false exactly when the stored record
+has the key.
 `StageDefinition` gains a copy assignment beside its copy constructor, since a
 definition is a value a caller builds, stores and replaces.
 

@@ -492,3 +492,33 @@ TEST(OperationCatalog, ParameterDependentDeclarationsComeFromTheInstance) {
     // The catalog answers for the default parameters (radius 1).
     EXPECT_EQ(catalog.halo("test.boxMean").left, 1);
 }
+
+namespace {
+
+// A factory whose operations may vary between runs.
+class NondeterministicFactory : public StubFactory {
+public:
+    using StubFactory::StubFactory;
+    bool isDeterministic() const override { return false; }
+};
+
+} // namespace
+
+TEST(OperationCatalog, DeterministicByDefault) {
+    // A factory that does not override isDeterministic() is deterministic; the built-ins do not override it.
+    OperationFactoryPtr plain = stub(specNamed("test.DeterministicByDefault.plain"));
+    EXPECT_TRUE(plain->isDeterministic());
+    registerOnce(plain);
+    const OperationCatalog& catalog = OperationCatalog::instance();
+    EXPECT_TRUE(catalog.isDeterministic("test.DeterministicByDefault.plain"));
+    if (catalog.isRegistered("segment.contours")) {
+        EXPECT_TRUE(catalog.isDeterministic("segment.contours"));
+    }
+    EXPECT_THROW(catalog.isDeterministic("test.DeterministicByDefault.unknown"), InvalidArgumentError);
+    EXPECT_THROW(catalog.isDeterministic(nullptr), InvalidArgumentError);
+}
+
+TEST(OperationCatalog, ReportsANondeterministicFactory) {
+    registerOnce(std::make_shared<NondeterministicFactory>(specNamed("test.ReportsANondeterministicFactory.gpu")));
+    EXPECT_FALSE(OperationCatalog::instance().isDeterministic("test.ReportsANondeterministicFactory.gpu"));
+}

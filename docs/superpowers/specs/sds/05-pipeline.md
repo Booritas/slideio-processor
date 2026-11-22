@@ -175,6 +175,7 @@ public:
     virtual int64_t workingSetBytesPerLevelPixel() const;             // 0
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
+    virtual bool isDeterministic() const;                             // true
     virtual int64_t workingSetBytesPerTile() const;                   // 0
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
     virtual bool objectsAreEightConnected() const;                    // false
@@ -567,6 +568,7 @@ public:
     TileRequirement tileRequirement(const char* name) const;
     int64_t workingSetBytesPerLevelPixel(const char* name) const;
     bool producesObjects(const char* name) const;
+    bool isDeterministic(const char* name) const;
     int32_t outputPlaneCount(const char* name, int32_t inputPlaneCount) const;
     int64_t workingSetBytesPerTile(const char* name) const;
     int64_t accumulatedStateBytes(const char* name, int32_t planeCount) const;
@@ -603,6 +605,12 @@ process. Names are kept in ascending bytewise order, so `nameAt(i)` does not
 depend on registration order, though positions shift when a smaller name is
 registered later. Every by-name query and `create` throws `InvalidArgumentError`
 naming a null or unknown name.
+
+**Determinism.** `OperationFactory::isDeterministic()` is `true` by default; an
+operation whose results may vary between runs (a GPU model) overrides it to
+return `false`. `OperationCatalog::isDeterministic(name)` answers for a
+registered name and throws `InvalidArgumentError` for a null or unknown one. The
+stage record lists such operations (SDS 04, 4.2).
 
 **What `create` checks, and which declarations the factory only predicts.**
 `create` throws `InternalError` when the factory returns null, and also when the
