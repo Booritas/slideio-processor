@@ -47,6 +47,7 @@ ProbeOperation::ProbeOperation(const OperationParameters& parameters) : paramete
     parameters_.getInt("failKind", failKind_);
     parameters_.getInt("sleepMs", sleepMs_);
     parameters_.getInt("copy", copy_);
+    parameters_.getInt("truncated", truncated_);
     if (failKind_ < 0 || failKind_ > 2) {
         throw InvalidArgumentError("test.probe: failKind must be 0, 1 or 2");
     }
@@ -67,6 +68,9 @@ void ProbeOperation::apply(OperationContext& context) {
     const RunningScope running;
     if (sleepMs_ > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs_));
+    }
+    if (truncated_ != 0) {
+        context.countTruncatedObjects(truncated_);
     }
     const Rect64 tile = context.tileRectAtLevel();
     if (fails_ && gArmed && failX_ >= tile.x && failX_ < tile.x + tile.width && failY_ >= tile.y &&

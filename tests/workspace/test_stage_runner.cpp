@@ -1499,3 +1499,23 @@ TEST(StageRunner, FailedRunLeavesTheAnalysisLevelUnrecorded) {
     EXPECT_EQ(f.stages().status(id), StageStatus::Complete);
     EXPECT_EQ(f.workspace->layers().coarsestAnalysisLevel(f.nuclei), 2);
 }
+
+TEST(StageRunner, ReportsTruncatedObjects) {
+    testing_support::registerProbeOperation();
+    // A 600 x 600 slide in 200 x 300 tiles: 3 columns by 2 rows.
+    Fixture f(SlideKind::Blobs, 1,
+              ConfigurationBuilder().tileSize(200, 300).tileSizeFromSlide(false).workerCount(2).build());
+    PipelineSpec spec;
+    spec.operation("pixel.colour_convert", OperationParameters().setString("from", "Rgb").setString("to", "Grey"));
+    spec.operation("test.probe", OperationParameters().setInt("truncated", 1));
+    StageDefinition def("probe");
+    def.pipeline(spec);
+    const StageId id = f.stages().declare(def);
+    StageRunner runner(*f.workspace, id);
+    EXPECT_EQ(runner.truncatedObjects(), 0);
+    runner.run();
+    EXPECT_EQ(runner.truncatedObjects(), 6);
+    runner.run();
+    EXPECT_TRUE(runner.isRerun());
+    EXPECT_EQ(runner.truncatedObjects(), 6) << "the second run reports its own count, not a sum";
+}

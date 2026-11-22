@@ -796,6 +796,7 @@ public:
     bool    isRerun() const noexcept;
     int64_t objectsWritten() const noexcept;
     int64_t edgesAsserted() const noexcept;
+    int64_t truncatedObjects() const noexcept;
 };
 ```
 
@@ -905,7 +906,10 @@ dangerous one.
 **The counters.** `objectsWritten()` and `edgesAsserted()` are the
 `emittedCount()` of the run's `ObjectWriter` and the `assertedCount()` of its
 `EdgeWriter`, read after the flushes, so they count what was committed. Both
-are 0 before `run()` and after a failed run.
+are 0 before `run()` and after a failed run. `truncatedObjects()` is the
+pipeline's `truncatedObjectCount()` (SDS 05, 5.5), the objects operations dropped
+as truncated, read after the run; it is 0 before `run()` and after a failed run,
+and each run reports its own count.
 
 **The restriction is resolved per tile, never whole.** `makeLayerMaskSource`
 (`01-core.md` 1.9) hands the pipeline an object that answers one tile at a

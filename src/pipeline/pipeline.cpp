@@ -196,6 +196,8 @@ void Pipeline::run(ProgressObserver* progress, const CancellationToken& token) {
     runInto(discard, progress, token);
 }
 
+int64_t Pipeline::truncatedObjectCount() const noexcept { return impl_->counters.truncatedObjects.load(); }
+
 int32_t Pipeline::levelCount() const { return lazySource(*this)->levelCount(); }
 
 Rect64 Pipeline::rect(int32_t level) const { return lazySource(*this)->rect(level); }

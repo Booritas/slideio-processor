@@ -137,6 +137,15 @@ const RasterMask* OperationContext::mask() const noexcept {
     return impl_->state.mask;
 }
 
+void OperationContext::countTruncatedObjects(int64_t count) {
+    if (count < 0) {
+        throw InvalidArgumentError("countTruncatedObjects: the count must not be negative");
+    }
+    if (impl_->state.truncatedCounter != nullptr) {
+        impl_->state.truncatedCounter->fetch_add(count);
+    }
+}
+
 void OperationContext::emitSeamFragment(const Polygon& fragment, LayerId layer) {
     emitSeamFragment(fragment, layer, nullptr, 0);
 }

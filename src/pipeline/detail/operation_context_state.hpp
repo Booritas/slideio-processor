@@ -3,6 +3,7 @@
 
 #include <slideio/processor/pipeline/operation.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -47,6 +48,9 @@ struct OperationContextState {
     int64_t tileIndex = -1;
     /// The seam merger's entry point; empty when the run has none.
     SeamFragmentCallback seamFragment;
+    /// The run's total of objects operations dropped as truncated; null in a pass or
+    /// a lazy read that keeps no count, where countTruncatedObjects() validates and drops.
+    std::atomic<int64_t>* truncatedCounter = nullptr;
 };
 
 /// Builds the context the framework hands to Operation::apply().

@@ -168,6 +168,17 @@ public:
      * UR-STG-3
      */
     int64_t edgesAsserted() const noexcept;
+    /**
+     * @brief The objects the operations of the last run dropped as truncated
+     * (Pipeline::truncatedObjectCount()); 0 before run() and after a failed run.
+     * @return The count; each run reports its own, not a sum.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-STG-3
+     */
+    int64_t truncatedObjects() const noexcept;
 
 private:
     class Impl;

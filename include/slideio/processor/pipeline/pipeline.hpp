@@ -367,6 +367,21 @@ public:
      * UR-EXE-1, UR-ALG-5
      */
     void run(ProgressObserver* progress, const CancellationToken& token);
+    /**
+     * @brief The objects operations dropped as truncated in the last run.
+     *
+     * The sum of what the operations reported through
+     * OperationContext::countTruncatedObjects(), over every tile and worker.
+     * Valid after runInto() or run(); 0 before the first run. Each run starts
+     * from 0, and a run that failed leaves what it had counted.
+     * @return The count.
+     * @throws Nothing.
+     * @par Thread-safety
+     * ThreadConfined.
+     * @par Requirements
+     * UR-EXE-1
+     */
+    int64_t truncatedObjectCount() const noexcept;
 
     /**
      * @brief The number of pyramid levels of the output.

@@ -130,6 +130,10 @@ public:
     /// would otherwise do and discard.
     const RasterMask* mask() const noexcept;
 
+    /// Adds to the run's total of objects this call dropped as truncated; a
+    /// negative count throws InvalidArgumentError. ThreadSafe.
+    void countTruncatedObjects(int64_t count);
+
     /// Records a fragment touching a tile seam, for cross-tile merging.
     /// Level-0 coordinates, like every emitted polygon.
     /// Equivalent to the four-argument form with no partials.
@@ -854,6 +858,9 @@ public:
     /// Eager: streams the whole slide or ROI.
     void runInto(ObjectSink&, ProgressObserver*, const CancellationToken&);
     void run(ProgressObserver*, const CancellationToken&);
+    /// What the last run's operations reported through countTruncatedObjects();
+    /// 0 before the first run.
+    int64_t truncatedObjectCount() const noexcept;
 
     int32_t levelCount() const;
     Rect64  rect(int32_t level) const;
@@ -1457,6 +1464,19 @@ on every way out of the run, failure and cancellation included. That is what a
 `Pipeline` used directly does; `StageRunner` is to pass a subdirectory of the
 workspace instead (5.7). A chain producing no objects gets neither merger nor
 directory.
+
+**Truncated objects.** An operation that drops an object it cannot deliver whole
+reports it with `OperationContext::countTruncatedObjects(count)`. The count
+adds to an atomic member of the run's counters, which every worker of the run
+shares and the start of each run resets, so the total is the sum over all tiles
+and workers. Only the final pass counts: in a global-context accumulation pass
+and in a lazy read the call validates its argument and drops it. A negative
+count throws `InvalidArgumentError`, which fails the run as any operation error
+does (a `TileError` naming the operation). `Pipeline::truncatedObjectCount()`
+reads the total after `runInto` or `run` and is 0 before the first run; it
+keeps what a failed run had counted. `StageRunner::truncatedObjects()` (SDS 04)
+copies it after a successful run and is 0 before, and after a failed run; a
+second `run()` reports its own count, not a sum.
 
 `runInto` and `run` throw what `validate()` throws; a `TileError` for a failed
 tile (`hasTile()` true), or for a failure creating or finalising a

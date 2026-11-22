@@ -306,6 +306,7 @@ TileOutcome TileEvaluator::evaluate(int64_t tileIndex, const CancellationToken& 
             state.edgeSink = bindings_.edgeSink;
             state.annotationSink = bindings_.annotationSink;
             state.seamFragment = bindings_.seamFragment;
+            state.truncatedCounter = &bindings_.counters->truncatedObjects;
         } else {
             state.seamFragment = dropFragment;
         }

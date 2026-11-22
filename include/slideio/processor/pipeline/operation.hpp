@@ -419,6 +419,26 @@ public:
     /// UR-EXT-4
     const RasterMask* mask() const noexcept;
 
+    /**
+     * @brief Reports objects this call dropped because they were truncated.
+     *
+     * An operation that drops an object it cannot deliver whole, because the
+     * object touches a side of its halo rect that lies inside the level, adds
+     * the number of such objects here. The run sums the counts over every tile
+     * and worker and reports the total as Pipeline::truncatedObjectCount().
+     * Only the final pass counts: in a global-context accumulation pass and in
+     * a lazy read the count is validated and dropped.
+     * @param count Objects dropped; not negative. Zero is allowed.
+     * @throws InvalidArgumentError When @p count is negative; the run then
+     * fails as any operation error does.
+     * @par Thread-safety
+     * ThreadSafe: the total is atomic, so an operation may call it from
+     * threads of its own.
+     * @par Requirements
+     * UR-EXT-4
+     */
+    void countTruncatedObjects(int64_t count);
+
     /// Records a fragment touching a tile seam, for cross-tile merging.
     /// Level-0 coordinates, like every emitted polygon.
     /// Equivalent to the four-argument form with no partials.

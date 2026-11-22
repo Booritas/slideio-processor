@@ -350,6 +350,7 @@ public:
 
         objects = 0;
         edges = 0;
+        truncated = 0;
         RasterWriterPtr rasterWriter;  // outside the try: the failure path abandons it
         try {
             // Decision 3's order: dependents stale, then Running, then the discards, so a
@@ -384,6 +385,7 @@ public:
             if (rasterWriter) rasterWriter->flush();  // the raster is published last
             objects = sink->emittedCount();
             edges = edgeWriter->assertedCount();
+            truncated = pipeline.truncatedObjectCount();
 
             for (int32_t i = 0; i < definition.writtenLayerCount(); ++i) {
                 layers.recordAnalysisLevel(definition.writtenLayerAt(i), pipeline.analysisLevel());
@@ -407,6 +409,7 @@ public:
 #endif
     int64_t objects = 0;
     int64_t edges = 0;
+    int64_t truncated = 0;
 };
 
 StageRunner::StageRunner(Workspace& workspace, StageId stage) : impl_(std::make_unique<Impl>(workspace, stage)) {}
@@ -444,5 +447,7 @@ bool StageRunner::isRerun() const noexcept { return impl_->rerun; }
 int64_t StageRunner::objectsWritten() const noexcept { return impl_->objects; }
 
 int64_t StageRunner::edgesAsserted() const noexcept { return impl_->edges; }
+
+int64_t StageRunner::truncatedObjects() const noexcept { return impl_->truncated; }
 
 } // namespace slideio::processor
