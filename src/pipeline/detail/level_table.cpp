@@ -42,7 +42,9 @@ std::vector<LevelDims> levelTable(const slideio::Scene& scene) {
         return levelTable(scene.getNumZoomLevels(), std::get<2>(rect), std::get<3>(rect), [&scene](int32_t level) {
             const slideio::LevelInfo* info = scene.getLevelInfo(level);
             if (info == nullptr) {
-                throw InternalError(("LevelSelector: SlideIO reported no level " + std::to_string(level)).c_str());
+                throw InternalError(
+                    withSlidePath("LevelSelector: SlideIO reported no level " + std::to_string(level), sceneFilePath(scene))
+                        .c_str());
             }
             const slideio::Size size = info->getSize();
             const slideio::Size tile = info->getTileSize();
@@ -56,8 +58,26 @@ std::vector<LevelDims> levelTable(const slideio::Scene& scene) {
         ErrorContext context;
         const std::string causeText = detail::diagnosticText(e);
         context.cause = causeText.c_str();
-        throw InternalError("LevelSelector: SlideIO failed to report the scene's levels", context);
+        throw InternalError(
+            withSlidePath("LevelSelector: SlideIO failed to report the scene's levels", sceneFilePath(scene)).c_str(),
+            context);
     }
+}
+
+std::string sceneFilePath(const slideio::Scene& scene) {
+    try {
+        return scene.getFilePath();
+    } catch (const ProcessorError&) {
+        throw;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception&) {
+        return std::string();
+    }
+}
+
+std::string withSlidePath(const std::string& message, const std::string& slide) {
+    return slide.empty() ? message : detail::withPath(message, slide);
 }
 
 void tileSizeOfLevel(const LevelDims& level, const Configuration& config, int32_t& widthOut, int32_t& heightOut) {

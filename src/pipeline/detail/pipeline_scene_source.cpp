@@ -354,7 +354,10 @@ slideio::SceneMetadata PipelineSceneSource::metadata() const {
         ErrorContext context;
         const std::string causeText = detail::diagnosticText(e);
         context.cause = causeText.c_str();
-        throw IoError("PipelineSceneSource: SlideIO failed to describe the source scene", context);
+        throw IoError(
+            withSlidePath("PipelineSceneSource: SlideIO failed to describe the source scene", snapshot_.reader->slidePath())
+                .c_str(),
+            context);
     }
     return m;
 }

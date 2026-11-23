@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace slideio::processor {
@@ -34,6 +35,15 @@ std::vector<LevelDims> levelTable(int32_t reportedLevels, int64_t sceneWidth, in
 /// The pyramid of a SlideIO scene, through the overload above. SlideIO failures
 /// become InternalError with the cause preserved.
 std::vector<LevelDims> levelTable(const slideio::Scene& scene);
+
+/// The path of the file `scene` reports, or "" when it reports none or cannot say: named in
+/// the messages of SlideIO failures. std::bad_alloc and ProcessorError pass through; any other
+/// exception gives "".
+std::string sceneFilePath(const slideio::Scene& scene);
+
+/// `message` naming `slide` as withPath does, "<message> (<slide>)", or `message` alone when
+/// `slide` is empty (a scene that reports no file).
+std::string withSlidePath(const std::string& message, const std::string& slide);
 
 /// The tile size of a level: its native tile size when the configuration
 /// takes the tile size from the slide and the level has one on both sides,
