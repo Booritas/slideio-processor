@@ -153,9 +153,10 @@ TEST(Workspace, OpenWithMissingSlideIsIoError) {
         Workspace::open(t.workspaceUtf8().c_str(), t.config);
         FAIL() << "open succeeded without its slide";
     } catch (const IoError& e) {
+        // SlideIO's own text, unaltered, is the cause, and it names the missing file.
         EXPECT_NE(std::string(e.what()).find("cannot open the slide"), std::string::npos) << e.what();
-        EXPECT_EQ(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
-        EXPECT_EQ(std::string(e.what()).find("slide.tif"), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("slide.tif"), std::string::npos) << e.what();
     }
 }
 

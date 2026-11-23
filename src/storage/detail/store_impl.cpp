@@ -14,6 +14,7 @@
 #include <random>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 namespace slideio::processor::detail {
 

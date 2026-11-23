@@ -7,7 +7,6 @@
 #include <pipeline/detail/tile_reservation.hpp>
 
 #include "core/detail/diagnostics.hpp"
-#include <pipeline/detail/slide_cause.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -26,6 +25,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace slideio::processor::detail {
 
@@ -352,7 +352,7 @@ slideio::SceneMetadata PipelineSceneSource::metadata() const {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        const std::string causeText = detail::slideCauseText(e, *snapshot_.scene);
+        const std::string causeText = detail::diagnosticText(e);
         context.cause = causeText.c_str();
         throw IoError("PipelineSceneSource: SlideIO failed to describe the source scene", context);
     }

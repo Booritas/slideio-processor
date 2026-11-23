@@ -19,6 +19,7 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace slideio::processor {
 

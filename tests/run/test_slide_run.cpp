@@ -480,6 +480,7 @@ TEST(SlideRun, ExportsCarryNoSlidePath) {
 // name can carry a patient identifier). The workspace's binding is read from its store alone,
 // so a run naming the old path is told the slide cannot be found (IoError), and a run naming
 // the new path is refused as another slide (the recorded one no longer exists to compare).
+// A run with no workspace yet passes SlideIO's text through, which names the missing slide.
 TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
     Fixture f;
     f.run(threeStageFile());
@@ -517,7 +518,15 @@ TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
         },
         "an existing workspace run on the moved slide");
     EXPECT_NE(message.find("the workspace belongs to another slide or scene"), std::string::npos) << message;
-    // No workspace yet, and the slide named for the run is missing.
+    // No workspace yet, and the slide named for the run is missing: SlideIO's own text,
+    // unaltered, is the cause, and it names the missing file (paths in diagnostics, 2026-11-23).
     const std::string fresh = (f.dir.path() / "fresh-ws").u8string();
-    expectNoPath([&] { f.run(threeStageFile(), fresh, f.out); }, "a missing slide");
+    try {
+        f.run(threeStageFile(), fresh, f.out);
+        ADD_FAILURE() << "a missing slide did not throw";
+    } catch (const IoError& e) {
+        const std::string text = e.what();
+        EXPECT_EQ(text.rfind("Workspace::create: cannot open the slide: ", 0), 0u) << text;
+        EXPECT_NE(text.find(f.slide), std::string::npos) << text;
+    }
 }

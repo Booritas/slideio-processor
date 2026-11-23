@@ -1,13 +1,28 @@
 // Requirements: UR-EXE-5, UR-STG-9
-// No exception message, error cause or log line may contain a file path. Slide file names
-// often carry patient identifiers, and the bindings' errors and logs can reach a language
-// model. The slide, the workspace and every file below sit in directories whose names hold a
-// marker; every failure the library can be made to report is collected with its cause (what()
-// carries the cause), and so is every log line at Debug level. None may contain the marker.
+// Paths in diagnostics (the rule of 2026-11-23, which revoked "no paths in diagnostics"): an
+// exception message, error cause or log line about a specific file or directory names it by
+// its path, and third-party text (std::filesystem, SlideIO, libtiff, SQLite) reaches causes and
+// logs unaltered. The slide, the workspace and every file below sit in a directory whose name
+// holds a marker, and some file names hold it too. Each failure the library can be made to
+// report is recorded with its what() (which carries the cause); each log line expectation picks
+// the captured lines (every level) that contain a needle. Every live row must contain the
+// marker.
+//
+// Pending rows. The rule lands in tasks (docs/superpowers/plans/2026-11-23-paths-in-
+// diagnostics.md): Task 1 lets third-party text through, and Tasks 2 (storage), 3 (workspace,
+// run, pipeline, config) and 4 (exports, masks, GeoJSON) append the path to the library's own
+// messages. A row whose path is a later task's job carries that task's number as its last
+// argument (`pendingTask`, one of the kPendingTask* constants); a row without one is live. A
+// pending row is still run and recorded, but not asserted: the test prints each pending row
+// with its owning task and whether it already carries the marker. A task enables its rows by
+// deleting their kPendingTask argument; once Task 4 has landed, no row is pending and the
+// constants go.
 #include "common/temp_path.hpp"
 #include "pipeline/test_support/synthetic_scene.hpp"
 #include "storage/raster_test_util.hpp"
 #include "workspace/support/test_slide.hpp"
+
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -38,10 +53,12 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace slideio::processor;
@@ -53,6 +70,12 @@ namespace fs = std::filesystem;
 namespace {
 
 const std::string kMarker = "PATIENT-MARKER-42";
+
+// The owning task of a pending row (see the comment at the top). 0 is a live row.
+constexpr int kLive = 0;
+constexpr int kPendingTask2 = 2;
+constexpr int kPendingTask3 = 3;
+constexpr int kPendingTask4 = 4;
 
 // Collects every log line, at every level, while it lives.
 class CapturedLog {
@@ -88,25 +111,51 @@ private:
     LogLevel previousLevel_;
 };
 
-// Every text the test has seen, labelled with how it arose.
+bool carriesMarker(const std::string& text) { return text.find(kMarker) != std::string::npos; }
+
+// One recorded diagnostic: an error's what() or a log line.
+struct Row {
+    std::string label;
+    std::string text;
+    int pendingTask;
+};
+
+// The log lines that contain `needle`, expected to name their file.
+struct LogExpectation {
+    std::string label;
+    std::string needle;
+    bool mustAppear;  // a live expectation with no matching line fails when set
+    int pendingTask;
+};
+
+// Every diagnostic the test has seen.
 struct Collected {
-    std::vector<std::string> texts;
+    std::vector<Row> rows;
+    std::vector<LogExpectation> logExpectations;
     int expectedFailures = 0;
 
     // Runs `action`, which must throw; records what() (message and cause) of the error.
-    void failure(const char* label, const std::function<void()>& action) {
+    void failure(const char* label, const std::function<void()>& action, int pendingTask = kLive) {
         try {
             action();
         } catch (const std::exception& e) {
-            texts.push_back(std::string(label) + " -> " + e.what());
+            rows.push_back(Row{label, e.what(), pendingTask});
             ++expectedFailures;
             return;
         }
         ADD_FAILURE() << label << " did not throw";
     }
-};
 
-bool leaks(const std::string& text) { return text.find(kMarker) != std::string::npos; }
+    // Records the text of a failure that may or may not happen.
+    void observed(const std::string& label, const std::string& text, int pendingTask = kLive) {
+        rows.push_back(Row{label, text, pendingTask});
+    }
+
+    // Expects the log lines that contain `needle` to carry the marker.
+    void logLine(const std::string& label, const std::string& needle, bool mustAppear, int pendingTask = kLive) {
+        logExpectations.push_back(LogExpectation{label, needle, mustAppear, pendingTask});
+    }
+};
 
 // The little-endian unsigned integer of `size` bytes at `at`.
 uint32_t readLe(const std::string& bytes, size_t at, size_t size) {
@@ -148,9 +197,73 @@ void pointTileOffsetsPastTheEnd(const fs::path& file) {
     writeFile(file, bytes);
 }
 
+// A scene that reports a slide file and whose reads fail with that path in SlideIO's text,
+// as some SlideIO drivers word their read errors.
+std::shared_ptr<slideio::Scene> sceneWhoseReadsNameItsFile(const std::string& reported) {
+    auto source = std::make_shared<testing_support::SyntheticSource>(
+        std::vector<testing_support::SyntheticLevel>{{128, 96, 64, 64}},
+        std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, [](int, int64_t, int64_t) { return 1.0; });
+    slideio::SceneMetadata metadata = source->metadata();
+    metadata.reportedFilePath = reported;
+    std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
+    source->failReadsWith("cannot read a tile of the file " + reported);
+    return scene;
+}
+
 }  // namespace
 
-TEST(Diagnostics, NoPathsInErrorsOrLogs) {
+TEST(Diagnostics, WithPathAppendsThePath) {
+    EXPECT_EQ(detail::withPath("cannot open the store file", "D:/x/s.db"), "cannot open the store file (D:/x/s.db)");
+}
+
+TEST(Diagnostics, FilesystemErrorKeepsItsPaths) {
+    const std::filesystem::filesystem_error error("cannot remove", fs::u8path("a/" + kMarker),
+                                                  std::make_error_code(std::errc::permission_denied));
+    const std::string text = detail::diagnosticText(error);
+    EXPECT_EQ(text, error.what());
+    EXPECT_NE(text.find(kMarker), std::string::npos) << text;
+}
+
+TEST(Diagnostics, SlideCauseIsNotRedacted) {
+    const Configuration config = Configuration::defaults();
+    TempDirectory root;
+    const fs::path dir = root.path() / kMarker;
+    fs::create_directories(dir);
+
+    // A missing slide: SlideIO's text is the cause, after "cannot open the slide: " (the
+    // workspace words a slide failure as message and cause in one what()).
+    const std::string workspace = (dir / "ws").u8string();
+    const std::string missing = (dir / ("missing-" + kMarker + ".tif")).u8string();
+    try {
+        Workspace::create(workspace.c_str(), missing.c_str(), 0, config);
+        FAIL() << "Workspace::create succeeded with a missing slide";
+    } catch (const IoError& e) {
+        const std::string text = e.what();
+        const std::string lead = "Workspace::create: cannot open the slide: ";
+        ASSERT_EQ(text.rfind(lead, 0), 0u) << text;
+        const std::string cause = text.substr(lead.size());
+        EXPECT_FALSE(cause.empty()) << text;
+        EXPECT_NE(cause, "<slide>") << text;
+        EXPECT_EQ(cause.find("<slide>"), std::string::npos) << text;
+        // SlideIO words its "no driver" error with the path it was given.
+        EXPECT_NE(cause.find(missing), std::string::npos) << text;
+    }
+
+    // A scene whose reads fail with its file's path in SlideIO's text: cause() is that text,
+    // unaltered.
+    const std::string reported = (dir / ("reported-" + kMarker + ".svs")).u8string();
+    std::shared_ptr<slideio::Scene> scene = sceneWhoseReadsNameItsFile(reported);
+    const std::string maskOut = (dir / "mask-out.ome.tif").u8string();
+    try {
+        MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken());
+        FAIL() << "MaskWriter succeeded over a scene whose reads fail";
+    } catch (const IoError& e) {
+        ASSERT_NE(e.cause(), nullptr) << e.what();
+        EXPECT_EQ(std::string(e.cause()), "cannot read a tile of the file " + reported) << e.what();
+    }
+}
+
+TEST(Diagnostics, PathsInErrorsAndLogs) {
     CapturedLog log;
     Collected seen;
     const Configuration config = Configuration::defaults();
@@ -165,43 +278,46 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
     // The store: missing, over an existing one, read-only for writing, held, closed.
     const std::string missingStore = u8(dir / "missing.store");
     seen.failure("Store::open of a missing store",
-                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadWrite, config); });
+                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadWrite, config); }, kPendingTask2);
     seen.failure("Store::open ReadOnly of a missing store",
-                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadOnly, config); });
+                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadOnly, config); }, kPendingTask2);
     const std::string storeText = u8(dir / "a.store");
     {
         StorePtr store = Store::open(storeText.c_str(), OpenMode::CreateNew, config);
         seen.failure("CreateNew over an existing store",
-                     [&] { Store::open(storeText.c_str(), OpenMode::CreateNew, config); });
-        seen.failure("a second writer", [&] { Store::open(storeText.c_str(), OpenMode::ReadWrite, config); });
+                     [&] { Store::open(storeText.c_str(), OpenMode::CreateNew, config); }, kPendingTask2);
+        seen.failure("a second writer", [&] { Store::open(storeText.c_str(), OpenMode::ReadWrite, config); },
+                     kPendingTask2);
         store->layers().declareSemantic("cells", store->layers().pixelLayer());
         store->stageStateWriter().declare("imp", "");
         store->close();
-        seen.failure("a closed store", [&] { store->layers().pixelLayer(); store->provenance(); });
-        seen.failure("a closed store's rasters", [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
+        seen.failure("a closed store", [&] { store->layers().pixelLayer(); store->provenance(); }, kPendingTask2);
+        seen.failure("a closed store's rasters",
+                     [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); }, kPendingTask2);
     }
     {
         StorePtr readOnly = Store::open(storeText.c_str(), OpenMode::ReadOnly, config);
         seen.failure("a read-only store declaring a raster",
-                     [&] { readOnly->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
-        seen.failure("a read-only store declaring a stage", [&] { readOnly->stageStateWriter().declare("s", ""); });
+                     [&] { readOnly->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); }, kPendingTask2);
+        seen.failure("a read-only store declaring a stage", [&] { readOnly->stageStateWriter().declare("s", ""); },
+                     kPendingTask2);
         seen.failure("a read-only store's importer", [&] {
             LayerId cells;
             readOnly->layers().find("cells", cells);
             GeoJsonImporter importer(*readOnly, cells, StageId(1));
-        });
+        }, kPendingTask2);
         EventCursorPtr cursor = readOnly->events().subscribe(0);
         cursor->close();
-        seen.failure("a closed event cursor", [&] { cursor->next(0); });
+        seen.failure("a closed event cursor", [&] { cursor->next(0); }, kPendingTask2);
     }
     // A file that is not a store.
     const fs::path garbage = dir / "garbage.store";
     writeFile(garbage, std::string(8192, 'x'));
     const std::string garbageText = u8(garbage);
     seen.failure("a file that is not a store",
-                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadWrite, config); });
+                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadWrite, config); }, kPendingTask2);
     seen.failure("a file that is not a store, read-only",
-                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadOnly, config); });
+                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadOnly, config); }, kPendingTask2);
 
     // A corrupt raster file, read through RasterRegistry::sourceFor.
     {
@@ -228,7 +344,7 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
             TileRasterSourcePtr source = rasters.sourceFor(raster);
             auto owned = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, source->planeType(), source->planeCount(), 7.0);
             source->fillTile(owned->view);
-        });
+        }, kPendingTask2);
     }
 
     // Log lines: an unflushed raster writer, features the importer skips, a reopened workspace.
@@ -241,6 +357,7 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
             RasterWriterPtr writer = store->rasters().writerForStage(stage, raster);
             writer->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Int32, 1, 3.0)->view);
         }  // destroyed unflushed: logs a warning
+        seen.logLine("an unflushed raster writer", "RasterWriter:", true, kPendingTask2);
         const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
         const StageId imp = store->stageStateWriter().declare("imp", "");
         const fs::path skipping = dir / "skipping.geojson";
@@ -248,9 +365,11 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
                   R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}},)"
                   R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         GeoJsonImporter(*store, cells, imp).import(u8(skipping).c_str());
+        seen.logLine("a feature the importer skips (GeoJsonReader's line)", "skipping feature", true, kPendingTask4);
         const std::string reopened = u8(dir / "ws-reopened");
         Workspace::create(reopened.c_str(), slideText.c_str(), 0, config)->close();
         Workspace::open(reopened.c_str(), config)->close();
+        seen.logLine("a reopened workspace's sweep", "reclaimed", false, kPendingTask3);
     }
 
     // GeoJSON: a missing file, a file that is not GeoJSON, an unknown label, a file without a polygon.
@@ -261,35 +380,41 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         const StageId stage = store->stageStateWriter().declare("imp", "");
         GeoJsonImporter importer(*store, cells, stage);
         const std::string missingJson = u8(dir / "missing.geojson");
-        seen.failure("a GeoJSON import of a missing file", [&] { importer.import(missingJson.c_str()); });
-        seen.failure("a GeoJSON ROI of a missing file", [&] { importRoiPolygon(missingJson.c_str()); });
+        seen.failure("a GeoJSON import of a missing file", [&] { importer.import(missingJson.c_str()); },
+                     kPendingTask4);
+        seen.failure("a GeoJSON ROI of a missing file", [&] { importRoiPolygon(missingJson.c_str()); },
+                     kPendingTask4);
         const fs::path notJson = dir / "not.geojson";
         writeFile(notJson, "this is not json");
         const std::string notJsonText = u8(notJson);
-        seen.failure("a GeoJSON import of a file that is not GeoJSON", [&] { importer.import(notJsonText.c_str()); });
-        seen.failure("a GeoJSON ROI of a file that is not GeoJSON", [&] { importRoiPolygon(notJsonText.c_str()); });
+        seen.failure("a GeoJSON import of a file that is not GeoJSON", [&] { importer.import(notJsonText.c_str()); },
+                     kPendingTask4);
+        seen.failure("a GeoJSON ROI of a file that is not GeoJSON", [&] { importRoiPolygon(notJsonText.c_str()); },
+                     kPendingTask4);
         const fs::path noPolygon = dir / "empty.geojson";
         writeFile(noPolygon, R"({"type":"FeatureCollection","features":[]})");
         const std::string noPolygonText = u8(noPolygon);
-        seen.failure("a GeoJSON ROI without a polygon", [&] { importRoiPolygon(noPolygonText.c_str()); });
+        seen.failure("a GeoJSON ROI without a polygon", [&] { importRoiPolygon(noPolygonText.c_str()); },
+                     kPendingTask2);
         const fs::path unknownLabel = dir / "label.geojson";
         writeFile(unknownLabel,
                   R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{"classification":{"name":"zzz-unknown"}},)"
                   R"("geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         const std::string unknownLabelText = u8(unknownLabel);
-        seen.failure("a GeoJSON import with an unknown label", [&] { importer.import(unknownLabelText.c_str()); });
+        seen.failure("a GeoJSON import with an unknown label", [&] { importer.import(unknownLabelText.c_str()); },
+                     kPendingTask2);
         // Exporters writing into a directory that does not exist.
         const std::string noDir = u8(dir / "nowhere" / "out.csv");
         seen.failure("a CSV export into a missing directory", [&] {
             CsvWriter(noDir.c_str()).write(*store, ObjectQuery());
-        });
+        }, kPendingTask4);
         const std::string noDirJson = u8(dir / "nowhere" / "out.geojson");
         seen.failure("a GeoJSON export into a missing directory", [&] {
             GeoJsonExporter(noDirJson.c_str()).write(*store, ObjectQuery());
-        });
+        }, kPendingTask4);
         const std::string matrix = u8(dir / "nowhere" / "matrix.md");
         seen.failure("a support matrix into a missing directory",
-                     [&] { OperationCatalog::instance().writeSupportMatrix(matrix.c_str()); });
+                     [&] { OperationCatalog::instance().writeSupportMatrix(matrix.c_str()); }, kPendingTask3);
     }
 
     // The workspace: a missing slide, a scene out of range, a missing workspace.
@@ -298,19 +423,20 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
     seen.failure("Workspace::create with a missing slide",
                  [&] { Workspace::create(workspaceText.c_str(), missingSlide.c_str(), 0, config); });
     seen.failure("Workspace::create with a scene out of range",
-                 [&] { Workspace::create(workspaceText.c_str(), slideText.c_str(), 5, config); });
+                 [&] { Workspace::create(workspaceText.c_str(), slideText.c_str(), 5, config); }, kPendingTask3);
     seen.failure("Workspace::open of a missing workspace",
-                 [&] { Workspace::open(workspaceText.c_str(), config); });
+                 [&] { Workspace::open(workspaceText.c_str(), config); }, kPendingTask3);
     seen.failure("Workspace::openReadOnly of a missing workspace",
-                 [&] { Workspace::openReadOnly(workspaceText.c_str(), config); });
+                 [&] { Workspace::openReadOnly(workspaceText.c_str(), config); }, kPendingTask3);
     fs::create_directories(dir / "ws-full");
     writeFile(dir / "ws-full" / "x.txt", "x");
     const std::string full = u8(dir / "ws-full");
     seen.failure("Workspace::create over a non-empty directory",
-                 [&] { Workspace::create(full.c_str(), slideText.c_str(), 0, config); });
+                 [&] { Workspace::create(full.c_str(), slideText.c_str(), 0, config); }, kPendingTask3);
     fs::create_directories(dir / "ws-empty");
     const std::string emptyDir = u8(dir / "ws-empty");
-    seen.failure("Workspace::open of an empty directory", [&] { Workspace::open(emptyDir.c_str(), config); });
+    seen.failure("Workspace::open of an empty directory", [&] { Workspace::open(emptyDir.c_str(), config); },
+                 kPendingTask3);
 
     // A workspace whose recorded slide has moved.
     {
@@ -323,8 +449,8 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
                      [&] { Workspace::openReadOnly(moved.c_str(), config); });
     }
 
-    // Closing a workspace whose directory was removed underneath it: the error, then the
-    // destructor's log line.
+    // Closing a workspace whose directory was removed underneath it: the error, if there is
+    // one, then the destructor's log line, if there is one.
     {
         const std::string doomed = u8(dir / "ws-doomed");
         WorkspacePtr ws = Workspace::create(doomed.c_str(), slideText.c_str(), 0, config);
@@ -333,7 +459,7 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         try {
             ws->close();
         } catch (const std::exception& e) {
-            seen.texts.push_back(std::string("closing a workspace whose directory is gone -> ") + e.what());
+            seen.observed("closing a workspace whose directory is gone", e.what(), kPendingTask3);
         }
         ws.reset();
     }
@@ -343,11 +469,11 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         std::error_code ec;
         fs::remove_all(dir / "ws-doomed2", ec);
         ws.reset();  // the destructor logs a failed close, if there is one
+        seen.logLine("a workspace destructor's failed close", "closing the workspace failed", false, kPendingTask3);
     }
 
     // MaskWriter over a file-backed scene of a corrupt slide (its tiles lie past the end of
-    // the file, so it opens but no tile reads): SlideIO's read error may word itself with the
-    // slide path.
+    // the file, so it opens but no tile reads).
     {
         const fs::path corrupt = writeTestSlide(dir / "corrupt-PATIENT-MARKER-42.tif", 300, 200);
         pointTileOffsetsPastTheEnd(corrupt);
@@ -355,34 +481,53 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         std::shared_ptr<slideio::Scene> scene = opened->getScene(0);
         const std::string maskOut = u8(dir / "mask-out.ome.tif");
         seen.failure("MaskWriter over a corrupt slide",
-                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
+                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); }, kPendingTask4);
     }
     // The same through a scene that reports a slide file and whose reads fail with the path
-    // in the text, as some SlideIO drivers word their read errors.
+    // in SlideIO's text: the text reaches the cause unaltered.
     {
-        const std::string reported = u8(dir / "reported-PATIENT-MARKER-42.svs");
-        auto source = std::make_shared<testing_support::SyntheticSource>(
-            std::vector<testing_support::SyntheticLevel>{{128, 96, 64, 64}},
-            std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, [](int, int64_t, int64_t) { return 1.0; });
-        slideio::SceneMetadata metadata = source->metadata();
-        metadata.reportedFilePath = reported;
-        std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
-        source->failReadsWith("cannot read a tile of the file " + reported);
+        std::shared_ptr<slideio::Scene> scene = sceneWhoseReadsNameItsFile(u8(dir / "reported-PATIENT-MARKER-42.svs"));
         const std::string maskOut = u8(dir / "mask-out-2.ome.tif");
         seen.failure("MaskWriter over a scene whose reads name its file",
                      [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
     }
 
     EXPECT_GE(seen.expectedFailures, 25);
-    EXPECT_GE(log.lines().size(), 3u) << "the log capture saw too little for the check to mean anything";
+    const std::vector<std::string> lines = log.lines();
+    EXPECT_GE(lines.size(), 3u) << "the log capture saw too little for the check to mean anything";
+
     std::vector<std::string> offenders;
-    for (const std::string& text : seen.texts) {
-        if (leaks(text)) offenders.push_back("ERROR: " + text);
+    std::vector<std::string> pending;
+    const auto check = [&](const std::string& kind, const Row& row) {
+        const std::string entry = kind + row.label + " -> " + row.text;
+        if (row.pendingTask != kLive) {
+            pending.push_back("Task " + std::to_string(row.pendingTask) +
+                              (carriesMarker(row.text) ? " (already names its path) " : " (no path yet) ") + entry);
+        } else if (!carriesMarker(row.text)) {
+            offenders.push_back(entry);
+        }
+    };
+    for (const Row& row : seen.rows) check("ERROR: ", row);
+    for (const LogExpectation& expectation : seen.logExpectations) {
+        bool matched = false;
+        for (const std::string& line : lines) {
+            if (line.find(expectation.needle) == std::string::npos) continue;
+            matched = true;
+            check("LOG: ", Row{expectation.label, line, expectation.pendingTask});
+        }
+        if (matched) continue;
+        if (expectation.pendingTask != kLive) {
+            pending.push_back("Task " + std::to_string(expectation.pendingTask) + " (no such line) LOG: " +
+                              expectation.label);
+        } else if (expectation.mustAppear) {
+            offenders.push_back("LOG: " + expectation.label + " -> no line contains \"" + expectation.needle + "\"");
+        }
     }
-    for (const std::string& line : log.lines()) {
-        if (leaks(line)) offenders.push_back("LOG: " + line);
-    }
+
+    std::string pendingReport;
+    for (const std::string& row : pending) pendingReport += "\n  " + row;
+    if (!pending.empty()) std::cout << "[ PENDING  ] " << pending.size() << " rows wait for a later task:" << pendingReport << "\n";
     std::string report;
     for (const std::string& offender : offenders) report += "\n  " + offender;
-    EXPECT_TRUE(offenders.empty()) << offenders.size() << " diagnostics carry a path:" << report;
+    EXPECT_TRUE(offenders.empty()) << offenders.size() << " diagnostics name no path:" << report;
 }

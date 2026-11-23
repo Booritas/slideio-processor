@@ -18,6 +18,7 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace slideio::processor {
 

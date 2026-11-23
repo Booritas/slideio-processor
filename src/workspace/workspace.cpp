@@ -35,25 +35,19 @@ void requirePath(const char* path, const char* operation, const char* what) {
     }
 }
 
-// SlideIO's text for use as a cause, with the slide path replaced by "<slide>".
-std::string slideCause(const std::exception& e, const std::string& slidePath) {
-    return detail::redactSlidePath(detail::diagnosticText(e), slidePath);
-}
-
 [[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
     const std::string text = cause.empty() ? message : message + ": " + cause;
     throw IoError(text.c_str());
 }
 
 // Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming the slide
-// by its role, never its path (a file name can carry a patient identifier); SlideIO's own text
-// is the cause, with the slide path replaced by "<slide>".
+// by its role; SlideIO's own text, unaltered (it may name the slide path), is the cause.
 std::shared_ptr<slideio::Slide> openSlide(const std::string& slidePath, const char* operation) {
     std::shared_ptr<slideio::Slide> slide;
     try {
         slide = slideio::openSlide(slidePath, "");
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open the slide", slideCause(e, slidePath));
+        throwIo(std::string(operation) + ": cannot open the slide", detail::diagnosticText(e));
     }
     if (!slide) {
         throwIo(std::string(operation) + ": cannot open the slide", "");
@@ -61,21 +55,20 @@ std::shared_ptr<slideio::Slide> openSlide(const std::string& slidePath, const ch
     return slide;
 }
 
-int32_t sceneCount(const slideio::Slide& slide, const std::string& slidePath, const char* operation) {
+int32_t sceneCount(const slideio::Slide& slide, const char* operation) {
     try {
         return slide.getNumScenes();
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot read the scenes of the slide", slideCause(e, slidePath));
+        throwIo(std::string(operation) + ": cannot read the scenes of the slide", detail::diagnosticText(e));
     }
 }
 
-std::shared_ptr<slideio::Scene> sceneOf(const slideio::Slide& slide, int32_t index, const std::string& slidePath,
-                                        const char* operation) {
+std::shared_ptr<slideio::Scene> sceneOf(const slideio::Slide& slide, int32_t index, const char* operation) {
     std::shared_ptr<slideio::Scene> scene;
     try {
         scene = slide.getScene(index);
     } catch (const std::exception& e) {
-        throwIo(std::string(operation) + ": cannot open a scene of the slide", slideCause(e, slidePath));
+        throwIo(std::string(operation) + ": cannot open a scene of the slide", detail::diagnosticText(e));
     }
     if (!scene) {
         throwIo(std::string(operation) + ": cannot open a scene of the slide", "");
@@ -337,12 +330,12 @@ WorkspacePtr Workspace::create(const char* workspacePath, const char* slidePath,
     // The slide and scene are checked before the directory is made, so a bad binding
     // leaves nothing behind.
     std::shared_ptr<slideio::Slide> slide = openSlide(slideText, kOperation);
-    const int32_t scenes = sceneCount(*slide, slideText, kOperation);
+    const int32_t scenes = sceneCount(*slide, kOperation);
     if (sceneIndex < 0 || sceneIndex >= scenes) {
         throw InvalidArgumentError((std::string(kOperation) + ": the scene index is out of range for the slide")
                                        .c_str());
     }
-    std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, slideText, kOperation);
+    std::shared_ptr<slideio::Scene> scene = sceneOf(*slide, sceneIndex, kOperation);
     return createBound(directory, existed, slideText, sceneIndex, configuration, kOperation,
                        [&](StorePtr store) {
                            return WorkspacePtr(new Workspace(std::make_unique<Impl>(
@@ -428,11 +421,11 @@ Opened openExisting(const fs::path& directory, OpenMode mode, const Configuratio
         return opened;
     }
     opened.slide = openSlide(opened.slidePath, operation);
-    if (opened.sceneIndex >= sceneCount(*opened.slide, opened.slidePath, operation)) {
+    if (opened.sceneIndex >= sceneCount(*opened.slide, operation)) {
         throwIo(std::string(operation) + ": the slide no longer has the workspace's scene",
                 "");
     }
-    opened.scene = sceneOf(*opened.slide, opened.sceneIndex, opened.slidePath, operation);
+    opened.scene = sceneOf(*opened.slide, opened.sceneIndex, operation);
     return opened;
 }
 
