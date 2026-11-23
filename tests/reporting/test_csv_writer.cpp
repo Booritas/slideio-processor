@@ -403,9 +403,44 @@ TEST_F(CsvExportTest, UnwritablePathThrowsAndLeavesNothing) {
     std::filesystem::path partial = missing;
     partial += ".partial";
     CsvWriter writer(missing.u8string().c_str());
-    EXPECT_THROW(writer.write(store(), ObjectQuery()), IoError);
+    try {
+        writer.write(store(), ObjectQuery());
+        ADD_FAILURE() << "expected IoError";
+    } catch (const IoError& e) {
+        // The message names the partial file it could not create (paths in diagnostics).
+        EXPECT_EQ(std::string(e.what()), "CsvWriter::write: cannot create the output file (" + partial.u8string() + ")");
+    }
     EXPECT_FALSE(std::filesystem::exists(missing));
     EXPECT_FALSE(std::filesystem::exists(partial));
+}
+
+// Paths in diagnostics (2026-11-23): when the finished partial file cannot replace the target
+// (here a non-empty directory), the message names both files and the OS's text is the cause.
+// Driven through CsvWriter, the driver's simplest sink.
+TEST(ExportDriver, ReplaceFailureNamesBothFilesAndTheCause) {
+    StoreFilesGuard files;
+    Configuration config;
+    StorePtr store = Store::open(files.utf8().c_str(), OpenMode::CreateNew, config);
+    const OutputPath out("replace-fails", ".csv");
+    std::filesystem::create_directories(out.path());
+    writeText(out.path() / "keep.txt", "keep");
+    const std::string target = out.utf8();
+    const std::string partial = out.partial().u8string();
+    try {
+        CsvWriter(target.c_str()).write(*store, ObjectQuery());
+        ADD_FAILURE() << "expected IoError";
+    } catch (const IoError& e) {
+        const std::string what = e.what();
+        const std::string lead = "CsvWriter::write: replacing the output file (" + target +
+                                 ") with the partial file (" + partial + ") failed; cause: ";
+        EXPECT_EQ(what.rfind(lead, 0), 0u) << what;
+        ASSERT_NE(e.cause(), nullptr) << what;
+        EXPECT_FALSE(std::string(e.cause()).empty()) << what;
+    }
+    EXPECT_EQ(readText(out.path() / "keep.txt"), "keep");
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
+    std::error_code ec;
+    std::filesystem::remove_all(out.path(), ec);
 }
 
 TEST(CsvWriter, ReportsProgress) {

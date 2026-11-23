@@ -1,7 +1,9 @@
 // Requirements: UR-RES-7, UR-QA-3
 #include <slideio/processor/reporting/raster_tiff_writer.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "core/detail/utf8.hpp"
+#include "reporting/detail/export_driver.hpp"
 #include "storage/detail/pyramid_tiff_writer.hpp"
 #include "storage/detail/tile_spool.hpp"
 
@@ -198,9 +200,16 @@ ExportResult RasterTiffWriter::write(TileRasterSource& source, const Rect64& reg
 
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(partial, ec);
-    if (ec) throw IoError((std::string(who) + ": reading the output file's size failed").c_str());
+    if (ec) {
+        const std::string cause = ec.message();
+        ErrorContext context;
+        context.cause = cause.c_str();
+        const std::string message =
+            detail::withPath(std::string(who) + ": reading the output file's size failed", partial.u8string());
+        throw IoError(message.c_str(), context);
+    }
     std::filesystem::rename(partial, impl_->path, ec);
-    if (ec) throw IoError((std::string(who) + ": replacing the output file failed").c_str());
+    if (ec) detail::throwReplaceFailed(who, impl_->path, partial, ec);
     partialGuard.release();
     return ExportResult(done, static_cast<int64_t>(size), false);
 }

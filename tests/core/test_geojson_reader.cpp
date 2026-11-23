@@ -108,19 +108,18 @@ TEST(GeoJsonReader, SingleFeatureStringClassificationAndErrors) {
     EXPECT_THROW(GeoJsonReader(uniqueTempPath("missing", ".geojson").u8string().c_str()), IoError);
 }
 
-TEST(GeoJsonReader, MissingFileMessageNamesTheFileNotItsPathAndNullPathRejected) {
+TEST(GeoJsonReader, MissingFileMessageNamesTheFileByItsPathAndNullPathRejected) {
     const std::string missing = uniqueTempPath("missing", ".geojson").u8string();
     try {
         GeoJsonReader r(missing.c_str());
         FAIL() << "expected IoError";
     } catch (const IoError& e) {
-        EXPECT_NE(messageOf(e).find("cannot open the file"), std::string::npos) << e.what();
-        EXPECT_EQ(messageOf(e).find(missing), std::string::npos) << e.what();
+        EXPECT_EQ(messageOf(e), "GeoJsonReader: cannot open the file (" + missing + ")");
     }
     EXPECT_THROW(GeoJsonReader(nullptr), InvalidArgumentError);
 }
 
-TEST(GeoJsonReader, ParseErrorNamesOffsetAndTextNotThePathAndIsFinal) {
+TEST(GeoJsonReader, ParseErrorNamesThePathOffsetAndTextAndIsFinal) {
     auto path = uniqueTempPath("parse", ".geojson");
     TempFileGuard guard(path);
     writeFile(path, R"({"type":"FeatureCollection","features":[ x ]})");
@@ -129,11 +128,8 @@ TEST(GeoJsonReader, ParseErrorNamesOffsetAndTextNotThePathAndIsFinal) {
         r.next();
         FAIL() << "expected InvalidArgumentError";
     } catch (const InvalidArgumentError& e) {
-        const std::string m = e.what();
-        EXPECT_EQ(m.find(path.u8string()), std::string::npos) << m;
-        EXPECT_NE(m.find("parse error in the file"), std::string::npos) << m;
-        EXPECT_NE(m.find("offset 41"), std::string::npos) << m;
-        EXPECT_NE(m.find("Invalid value."), std::string::npos) << m;
+        EXPECT_EQ(messageOf(e), "GeoJsonReader: parse error in the file (" + path.u8string() +
+                                    ") at byte offset 41: Invalid value.");
     }
     EXPECT_THROW(r.next(), InvalidArgumentError);
     EXPECT_EQ(r.propertyCount(), 0);
@@ -314,6 +310,32 @@ TEST(GeoJsonReader, DegenerateRingNamesFeatureAndReaderStaysUsable) {
     EXPECT_STREQ(r.layerName(), "good");
     EXPECT_FALSE(r.next());
     EXPECT_EQ(r.featuresRead(), 1);
+}
+
+// Paths in diagnostics (2026-11-23): the reader's errors and warnings about a file name it by
+// its path.
+TEST(GeoJsonReader, ErrorNamesTheFile) {
+    LogCapture capture;
+    auto path = uniqueTempPath("named", ".geojson");
+    TempFileGuard guard(path);
+    const std::string text = path.u8string();
+    writeFile(path, R"([
+      42,
+      {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]}},
+      {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[0,0],[0,0],[0,0]]]}}])");
+    GeoJsonReader r(text.c_str());
+    try {
+        r.next();
+        FAIL() << "expected InvalidArgumentError";
+    } catch (const InvalidArgumentError& e) {
+        EXPECT_EQ(messageOf(e), "GeoJsonReader: feature 2 of the file (" + text +
+                                    "): ring 0 has fewer than 3 distinct points after rounding");
+    }
+    const auto& got = capture.messages();
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[0].second, "GeoJsonReader: skipping feature 0 of the file (" + text + "): the element is not an object");
+    EXPECT_EQ(got[1].second,
+              "GeoJsonReader: skipping feature 1 of the file (" + text + "): geometry type 'Point' is not supported");
 }
 
 // The reader's own non-finite check is a guard only: RapidJSON rejects a number

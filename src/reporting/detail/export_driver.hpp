@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <system_error>
 
 namespace slideio::processor::detail {
 
@@ -73,6 +74,13 @@ public:
 };
 
 /**
+ * Throws IoError "<who>: replacing the output file (<target>) with the partial file
+ * (<partial>) failed", with the message of `ec` (the rename's failure) as the cause.
+ */
+[[noreturn]] void throwReplaceFailed(const char* who, const std::filesystem::path& target,
+                                     const std::filesystem::path& partial, const std::error_code& ec);
+
+/**
  * Runs one export: writes through `sink` to "<target>.partial", then renames it onto
  * `target`. Progress is reported to `observer` (stage "export") every 1000 objects and
  * once at the end, before the file is finished and renamed, so an observer that throws
@@ -80,7 +88,8 @@ public:
  * failure the partial file is removed and an existing `target` is left untouched.
  * @param who Prefix of the failure messages, for example "CsvWriter::write".
  * @return The result; a cancelled run reports 0 bytes.
- * @throws IoError When the file cannot be created or written, or cannot replace the target.
+ * @throws IoError When the file cannot be created or written (naming the partial file), or
+ *         cannot replace the target (naming both files, the rename's error as the cause).
  */
 ExportResult runExport(Store& store, const ObjectQuery& query,
                        const std::filesystem::path& target, const char* who, ExportSink& sink,

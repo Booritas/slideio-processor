@@ -34,7 +34,7 @@ namespace {
 // SlideIO text, unaltered, as its cause (some drivers word their errors with the slide
 // path, which then reaches the cause: core/detail/diagnostics.hpp).
 template <typename Call>
-auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
+auto fromSlideio(const std::string& message, Call&& call) -> decltype(call()) {
     try {
         return call();
     } catch (const ProcessorError&) {
@@ -45,8 +45,14 @@ auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
         ErrorContext context;
         const std::string causeText = detail::diagnosticText(e);
         context.cause = causeText.c_str();
-        throw IoError(message, context);
+        throw IoError(message.c_str(), context);
     }
+}
+
+// `message` naming the slide the scene reports by its path: "<message> (<slide>)", or
+// `message` alone when the scene reports none.
+std::string aboutTheSlide(const char* message, const std::string& slide) {
+    return slide.empty() ? std::string(message) : detail::withPath(message, slide);
 }
 
 // A whole scene, z slice 0 and time frame 0, as a tile raster source in its own pixels:
@@ -55,8 +61,9 @@ auto fromSlideio(const char* message, Call&& call) -> decltype(call()) {
 class SceneRasterSource final : public TileRasterSource {
 public:
     SceneRasterSource(std::shared_ptr<slideio::Scene> scene, DataType type, int32_t planes, int64_t width,
-                      int64_t height)
-        : scene_(std::move(scene)), type_(type), planes_(planes), width_(width), height_(height) {}
+                      int64_t height, const std::string& slide)
+        : scene_(std::move(scene)), type_(type), planes_(planes), width_(width), height_(height),
+          readFailed_(aboutTheSlide("MaskWriter: SlideIO failed to read the scene", slide)) {}
 
     DataType planeType() const override { return type_; }
     int32_t planeCount() const override { return planes_; }
@@ -95,7 +102,7 @@ public:
         const std::tuple<int, int, int, int> rect(static_cast<int>(sx0), static_cast<int>(sy0),
                                                   static_cast<int>(sx1 - sx0), static_cast<int>(sy1 - sy0));
         const std::tuple<int, int> size(static_cast<int>(w), static_cast<int>(h));
-        fromSlideio("MaskWriter: SlideIO failed to read the scene", [&] {
+        fromSlideio(readFailed_, [&] {
             scene_->readResampledBlock(rect, size, block.data(), block.size());
         });
 
@@ -139,6 +146,7 @@ private:
     int32_t planes_;
     int64_t width_;
     int64_t height_;
+    std::string readFailed_;  // the message of a failed read, naming the slide
 };
 
 } // namespace
@@ -182,7 +190,16 @@ ExportResult MaskWriter::write(std::shared_ptr<slideio::Scene> scene, ProgressOb
                                const CancellationToken& token) {
     if (!scene) throw InvalidArgumentError("MaskWriter::write: the scene is null");
 
-    constexpr const char* describe = "MaskWriter::write: SlideIO failed to describe the scene";
+    // The slide the scene reports, named in SlideIO failures; "" when the scene cannot say.
+    std::string slide;
+    try {
+        slide = scene->getFilePath();
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception&) {
+        slide.clear();
+    }
+    const std::string describe = aboutTheSlide("MaskWriter::write: SlideIO failed to describe the scene", slide);
     const int channels = fromSlideio(describe, [&] { return scene->getNumChannels(); });
     if (channels < 1) throw InvalidArgumentError("MaskWriter::write: the scene has no channel");
     const slideio::DataType first = fromSlideio(describe, [&] { return scene->getChannelDataType(0); });
@@ -209,7 +226,7 @@ ExportResult MaskWriter::write(std::shared_ptr<slideio::Scene> scene, ProgressOb
         if (std::isfinite(own) && own > 0.0) micronsPerPixel = own;
     }
 
-    SceneRasterSource source(scene, type, static_cast<int32_t>(channels), width, height);
+    SceneRasterSource source(scene, type, static_cast<int32_t>(channels), width, height, slide);
     RasterTiffWriter writer(impl_->path.c_str());
     writer.compression(impl_->compression).resolution(micronsPerPixel).name(impl_->name.c_str());
     return writer.write(source, Rect64{0, 0, width, height}, 1.0, observer, token);

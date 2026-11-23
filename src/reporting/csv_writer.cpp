@@ -1,6 +1,7 @@
 // Requirements: UR-RES-9, UR-RES-11, UR-RES-15, UR-RES-18, UR-SEG-6, UR-QA-3
 #include <slideio/processor/reporting/csv_writer.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "reporting/detail/columns.hpp"
 #include "reporting/detail/csv_format.hpp"
 #include "reporting/detail/export_driver.hpp"
@@ -225,8 +226,9 @@ public:
           slideId_(slideId) {}
 
     void begin(const std::filesystem::path& partialPath) override {
+        partial_ = partialPath.u8string();
         out_.open(partialPath, std::ios::binary | std::ios::trunc);
-        if (!out_.is_open()) throw IoError("CsvWriter::write: cannot create the output file");
+        if (!out_.is_open()) throwAboutTheFile("cannot create the output file");
 
         std::string line;
         if (provenance_) line = provenanceLines(store_, slideId_);
@@ -245,13 +247,13 @@ public:
         line_.clear();
         appendRow(line_, record, resolved_, delimiter_, store_, *csvNames_);
         out_.write(line_.data(), static_cast<std::streamsize>(line_.size()));
-        if (!out_) throw IoError("CsvWriter::write: writing the output file failed");
+        if (!out_) throwAboutTheFile("writing the output file failed");
         bytes_ += static_cast<int64_t>(line_.size());
     }
 
     int64_t finish() override {
         out_.close();
-        if (!out_) throw IoError("CsvWriter::write: writing the output file failed");
+        if (!out_) throwAboutTheFile("writing the output file failed");
         return bytes_;
     }
 
@@ -260,12 +262,18 @@ public:
     }
 
 private:
+    // Throws "CsvWriter::write: <message> (<path>)", naming the partial file by its path.
+    [[noreturn]] void throwAboutTheFile(const char* message) const {
+        throw IoError(detail::withPath(std::string("CsvWriter::write: ") + message, partial_).c_str());
+    }
+
     Store& store_;
     const detail::ResolvedColumns& resolved_;
     char delimiter_;
     bool provenance_;
     const std::string* slideId_;
     std::ofstream out_;
+    std::string partial_;  // the partial file's path (UTF-8), named in failures
     std::string line_;
     int64_t bytes_ = 0;
     std::optional<CsvNames> csvNames_;

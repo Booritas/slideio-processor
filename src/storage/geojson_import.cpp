@@ -33,7 +33,7 @@ constexpr const char* kMeasurementPrefix = "measurements.";
 
 // Tells a geometry error, after which the reader moves on to the next feature, from a parse
 // or read error, which ends reading: GeoJsonReader words every geometry error as
-// "GeoJsonReader: feature <index> of the file: <reason>".
+// "GeoJsonReader: feature <index> of the file (<path>): <reason>".
 bool isGeometryError(const InvalidArgumentError& error) {
     static const char kPrefix[] = "GeoJsonReader: feature ";
     return std::strncmp(error.what(), kPrefix, sizeof(kPrefix) - 1) == 0;

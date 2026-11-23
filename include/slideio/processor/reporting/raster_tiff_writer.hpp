@@ -112,7 +112,8 @@ public:
      * @throws UnsupportedDataTypeError When the source's type is not one the OME-TIFF
      * layout holds; before any file is created.
      * @throws IoError When a file cannot be written or renamed; the partial files are
-     * removed. Messages carry no paths, names or values.
+     * removed. Messages name the files they are about by their paths (a write, the partial
+     * file; a rename, both files, with the OS's text as the cause), never names or values.
      * @throws ProcessorError Whatever the source or the observer throws; the partial files
      * are removed.
      * @throws std::bad_alloc When memory is exhausted; the partial files are removed.

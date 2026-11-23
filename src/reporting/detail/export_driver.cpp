@@ -1,5 +1,6 @@
 // Requirements: UR-RES-9, UR-RES-11, UR-RES-15, UR-QA-3
 #include "reporting/detail/export_driver.hpp"
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
@@ -50,6 +51,16 @@ private:
 };
 
 } // namespace
+
+void throwReplaceFailed(const char* who, const std::filesystem::path& target,
+                        const std::filesystem::path& partial, const std::error_code& ec) {
+    const std::string replacing = withPath(std::string(who) + ": replacing the output file", target.u8string());
+    const std::string message = withPath(replacing + " with the partial file", partial.u8string()) + " failed";
+    const std::string cause = ec.message();
+    ErrorContext context;
+    context.cause = cause.c_str();
+    throw IoError(message.c_str(), context);
+}
 
 const std::string& NameCache::layer(LayerId id) {
     auto it = layers_.find(id.value());
@@ -118,7 +129,7 @@ ExportResult runExport(Store& store, const ObjectQuery& query,
     const int64_t bytes = sink.finish();
     std::error_code ec;
     std::filesystem::rename(partial, target, ec);
-    if (ec) throw IoError((std::string(who) + ": replacing the output file failed").c_str());
+    if (ec) throwReplaceFailed(who, target, partial, ec);
     guard.release();
     return ExportResult(written, bytes, false);
 }

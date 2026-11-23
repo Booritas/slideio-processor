@@ -368,7 +368,7 @@ public:
      * outside the raster's extent read 0. Only the view's geometry counts, not its
      * level() number. fillTile() throws InvalidArgumentError unless the view has exactly
      * planeCount() planes of planeType() and a non-empty size and slideRect, and IoError
-     * naming the raster file (by its role, never its path) when it cannot be read. The source is ThreadSafe, needs nothing
+     * naming the raster file (by its role and its path) when it cannot be read. The source is ThreadSafe, needs nothing
      * of the store once made, and may outlive it.
      * @param raster The raster.
      * @return The source.

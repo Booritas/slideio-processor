@@ -120,7 +120,8 @@ public:
      * @param query The selection.
      * @return What was written.
      * @throws IoError When the store is closed, SQLite fails, or the file cannot be
-     * written or renamed; the partial file is removed. Messages carry no paths.
+     * written or renamed; the partial file is removed. A failure of the file names the partial
+     * file by its path; a failed rename names both files, with the OS's text as the cause.
      * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query, or
      * when two resolved columns share a name; the latter before any file is created.
      * @throws std::bad_alloc When memory is exhausted; the partial file is removed.
@@ -140,7 +141,8 @@ public:
      * @return What was written; bytesWritten() is the finished file's size.
      * wasCancelled() is true after a cancellation, and then bytesWritten() is 0.
      * @throws IoError When the store is closed, SQLite fails, or the file cannot be
-     * written or renamed; the partial file is removed. Messages carry no paths.
+     * written or renamed; the partial file is removed. A failure of the file names the partial
+     * file by its path; a failed rename names both files, with the OS's text as the cause.
      * @throws InvalidArgumentError As ObjectStore::query() throws for a bad query, or
      * when two resolved columns share a name; the latter before any file is created.
      * @throws std::bad_alloc When memory is exhausted; the partial file is removed.

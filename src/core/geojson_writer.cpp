@@ -140,7 +140,8 @@ public:
     IoError failure(const char* what, const std::string* cause = nullptr) const {
         ErrorContext ctx;
         if (cause != nullptr) ctx.cause = cause->c_str();
-        return IoError((std::string("GeoJsonWriter: ") + what + " failed for the output file").c_str(), ctx);
+        return IoError(
+            detail::withPath(std::string("GeoJsonWriter: ") + what + " failed for the output file", path).c_str(), ctx);
     }
     void checkStream(const char* what) const {
         if (!out) {

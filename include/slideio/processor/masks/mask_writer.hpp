@@ -105,7 +105,9 @@ public:
      * layout holds; before any file is created.
      * @throws IoError When SlideIO fails to describe or read the scene (its text is the
      * error's cause), or a file cannot be written or renamed; the partial files are
-     * removed. Messages carry no paths, names or values.
+     * removed. Messages name the files they are about by their paths (a SlideIO failure, the
+     * slide the scene reports; a write, the partial file; a rename, both files), never
+     * names or values.
      * @throws ProcessorError Whatever the scene's own source or the observer throws; the
      * partial files are removed.
      * @throws std::bad_alloc When memory is exhausted; the partial files are removed.

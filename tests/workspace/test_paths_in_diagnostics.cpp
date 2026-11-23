@@ -5,18 +5,7 @@
 // logs unaltered. The slide, the workspace and every file below sit in a directory whose name
 // holds a marker, and some file names hold it too. Each failure the library can be made to
 // report is recorded with its what() (which carries the cause); each log line expectation picks
-// the captured lines (every level) that contain a needle. Every live row must contain the
-// marker.
-//
-// Pending rows. The rule lands in tasks (docs/superpowers/plans/2026-11-23-paths-in-
-// diagnostics.md): Task 1 lets third-party text through, and Tasks 2 (storage), 3 (workspace,
-// run, pipeline, config) and 4 (exports, masks, GeoJSON) append the path to the library's own
-// messages. A row whose path is a later task's job carries that task's number as its last
-// argument (`pendingTask`, one of the kPendingTask* constants); a row without one is live. A
-// pending row is still run and recorded, but not asserted: the test prints each pending row
-// with its owning task and whether it already carries the marker. A task enables its rows by
-// deleting their kPendingTask argument; once Task 4 has landed, no row is pending and the
-// constants go.
+// the captured lines (every level) that contain a needle. Every row must contain the marker.
 #include "common/temp_path.hpp"
 #include "pipeline/test_support/synthetic_scene.hpp"
 #include "storage/raster_test_util.hpp"
@@ -53,7 +42,6 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -70,10 +58,6 @@ namespace fs = std::filesystem;
 namespace {
 
 const std::string kMarker = "PATIENT-MARKER-42";
-
-// The owning task of a pending row (see the comment at the top). 0 is a live row.
-constexpr int kLive = 0;
-constexpr int kPendingTask4 = 4;
 
 // Collects every log line, at every level, while it lives.
 class CapturedLog {
@@ -115,15 +99,13 @@ bool carriesMarker(const std::string& text) { return text.find(kMarker) != std::
 struct Row {
     std::string label;
     std::string text;
-    int pendingTask;
 };
 
 // The log lines that contain `needle`, expected to name their file.
 struct LogExpectation {
     std::string label;
     std::string needle;
-    bool mustAppear;  // a live expectation with no matching line fails when set
-    int pendingTask;
+    bool mustAppear;  // an expectation with no matching line fails when set
 };
 
 // Every diagnostic the test has seen.
@@ -133,11 +115,11 @@ struct Collected {
     int expectedFailures = 0;
 
     // Runs `action`, which must throw; records what() (message and cause) of the error.
-    void failure(const char* label, const std::function<void()>& action, int pendingTask = kLive) {
+    void failure(const char* label, const std::function<void()>& action) {
         try {
             action();
         } catch (const std::exception& e) {
-            rows.push_back(Row{label, e.what(), pendingTask});
+            rows.push_back(Row{label, e.what()});
             ++expectedFailures;
             return;
         }
@@ -145,8 +127,8 @@ struct Collected {
     }
 
     // Expects the log lines that contain `needle` to carry the marker.
-    void logLine(const std::string& label, const std::string& needle, bool mustAppear, int pendingTask = kLive) {
-        logExpectations.push_back(LogExpectation{label, needle, mustAppear, pendingTask});
+    void logLine(const std::string& label, const std::string& needle, bool mustAppear) {
+        logExpectations.push_back(LogExpectation{label, needle, mustAppear});
     }
 };
 
@@ -253,6 +235,9 @@ TEST(Diagnostics, SlideCauseIsNotRedacted) {
     } catch (const IoError& e) {
         ASSERT_NE(e.cause(), nullptr) << e.what();
         EXPECT_EQ(std::string(e.cause()), "cannot read a tile of the file " + reported) << e.what();
+        // The mask writer's own message names the slide the scene reports.
+        EXPECT_EQ(std::string(e.what()), "MaskWriter: SlideIO failed to read the scene (" + reported +
+                                             "); cause: cannot read a tile of the file " + reported);
     }
 }
 
@@ -357,8 +342,7 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
                   R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[5,0],[0,0]]]}},)"
                   R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         GeoJsonImporter(*store, cells, imp).import(u8(skipping).c_str());
-        seen.logLine("a feature the reader skips (GeoJsonReader's line)", "GeoJsonReader: skipping feature", true,
-                     kPendingTask4);
+        seen.logLine("a feature the reader skips (GeoJsonReader's line)", "GeoJsonReader: skipping feature", true);
         // The degenerate polygon: the reader rejects its geometry, and the importer logs the skip.
         seen.logLine("a feature the importer skips for its geometry (GeoJsonImporter's line)",
                      "GeoJsonImporter::import: skipping feature", true);
@@ -376,17 +360,13 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         const StageId stage = store->stageStateWriter().declare("imp", "");
         GeoJsonImporter importer(*store, cells, stage);
         const std::string missingJson = u8(dir / "missing.geojson");
-        seen.failure("a GeoJSON import of a missing file", [&] { importer.import(missingJson.c_str()); },
-                     kPendingTask4);
-        seen.failure("a GeoJSON ROI of a missing file", [&] { importRoiPolygon(missingJson.c_str()); },
-                     kPendingTask4);
+        seen.failure("a GeoJSON import of a missing file", [&] { importer.import(missingJson.c_str()); });
+        seen.failure("a GeoJSON ROI of a missing file", [&] { importRoiPolygon(missingJson.c_str()); });
         const fs::path notJson = dir / "not.geojson";
         writeFile(notJson, "this is not json");
         const std::string notJsonText = u8(notJson);
-        seen.failure("a GeoJSON import of a file that is not GeoJSON", [&] { importer.import(notJsonText.c_str()); },
-                     kPendingTask4);
-        seen.failure("a GeoJSON ROI of a file that is not GeoJSON", [&] { importRoiPolygon(notJsonText.c_str()); },
-                     kPendingTask4);
+        seen.failure("a GeoJSON import of a file that is not GeoJSON", [&] { importer.import(notJsonText.c_str()); });
+        seen.failure("a GeoJSON ROI of a file that is not GeoJSON", [&] { importRoiPolygon(notJsonText.c_str()); });
         const fs::path noPolygon = dir / "empty.geojson";
         writeFile(noPolygon, R"({"type":"FeatureCollection","features":[]})");
         const std::string noPolygonText = u8(noPolygon);
@@ -401,11 +381,11 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         const std::string noDir = u8(dir / "nowhere" / "out.csv");
         seen.failure("a CSV export into a missing directory", [&] {
             CsvWriter(noDir.c_str()).write(*store, ObjectQuery());
-        }, kPendingTask4);
+        });
         const std::string noDirJson = u8(dir / "nowhere" / "out.geojson");
         seen.failure("a GeoJSON export into a missing directory", [&] {
             GeoJsonExporter(noDirJson.c_str()).write(*store, ObjectQuery());
-        }, kPendingTask4);
+        });
         const std::string matrix = u8(dir / "nowhere" / "matrix.md");
         seen.failure("a support matrix into a missing directory",
                      [&] { OperationCatalog::instance().writeSupportMatrix(matrix.c_str()); });
@@ -452,7 +432,7 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         std::shared_ptr<slideio::Scene> scene = opened->getScene(0);
         const std::string maskOut = u8(dir / "mask-out.ome.tif");
         seen.failure("MaskWriter over a corrupt slide",
-                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); }, kPendingTask4);
+                     [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
     }
     // The same through a scene that reports a slide file and whose reads fail with the path
     // in SlideIO's text: the text reaches the cause unaltered.
@@ -468,15 +448,8 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
     EXPECT_GE(lines.size(), 3u) << "the log capture saw too little for the check to mean anything";
 
     std::vector<std::string> offenders;
-    std::vector<std::string> pending;
     const auto check = [&](const std::string& kind, const Row& row) {
-        const std::string entry = kind + row.label + " -> " + row.text;
-        if (row.pendingTask != kLive) {
-            pending.push_back("Task " + std::to_string(row.pendingTask) +
-                              (carriesMarker(row.text) ? " (already names its path) " : " (no path yet) ") + entry);
-        } else if (!carriesMarker(row.text)) {
-            offenders.push_back(entry);
-        }
+        if (!carriesMarker(row.text)) offenders.push_back(kind + row.label + " -> " + row.text);
     };
     for (const Row& row : seen.rows) check("ERROR: ", row);
     for (const LogExpectation& expectation : seen.logExpectations) {
@@ -484,20 +457,13 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         for (const std::string& line : lines) {
             if (line.find(expectation.needle) == std::string::npos) continue;
             matched = true;
-            check("LOG: ", Row{expectation.label, line, expectation.pendingTask});
+            check("LOG: ", Row{expectation.label, line});
         }
-        if (matched) continue;
-        if (expectation.pendingTask != kLive) {
-            pending.push_back("Task " + std::to_string(expectation.pendingTask) + " (no such line) LOG: " +
-                              expectation.label);
-        } else if (expectation.mustAppear) {
+        if (!matched && expectation.mustAppear) {
             offenders.push_back("LOG: " + expectation.label + " -> no line contains \"" + expectation.needle + "\"");
         }
     }
 
-    std::string pendingReport;
-    for (const std::string& row : pending) pendingReport += "\n  " + row;
-    if (!pending.empty()) std::cout << "[ PENDING  ] " << pending.size() << " rows wait for a later task:" << pendingReport << "\n";
     std::string report;
     for (const std::string& offender : offenders) report += "\n  " + offender;
     EXPECT_TRUE(offenders.empty()) << offenders.size() << " diagnostics name no path:" << report;
