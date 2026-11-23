@@ -807,7 +807,7 @@ TEST(SeamRun, SeamMergeFailuresAreTranslated) {
 
 #ifdef _WIN32
 // A scratch directory whose path cannot be formed (not UTF-8) is an IoError
-// naming the run's scratch directory, not a raw standard exception.
+// naming the run's scratch directory and its location, not a raw standard exception.
 TEST(SeamRun, UnusableScratchDirectoryIsAnIoError) {
     ts::CollectingObjectSink stored;
     Pipeline p(blobScene(), config(64, 1, "\xff\xfe-not-utf8"), components(true));
@@ -817,6 +817,8 @@ TEST(SeamRun, UnusableScratchDirectoryIsAnIoError) {
         FAIL() << "the run did not fail";
     } catch (const IoError& e) {
         EXPECT_NE(std::string(e.what()).find("scratch directory"), std::string::npos) << e.what();
+        // The message names the scratch location, as the configuration gave it.
+        EXPECT_NE(std::string(e.what()).find("(\xff\xfe-not-utf8)"), std::string::npos) << e.what();
         EXPECT_STRNE(e.cause(), "");
     } catch (const std::exception& e) {
         FAIL() << "untranslated: " << e.what();

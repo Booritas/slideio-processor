@@ -406,10 +406,14 @@ TEST(SeamSpill, UnwritableScratchIsIoError) {
         add(merger, Fragment{3, rectangle(5, 22, 5, 4), {}});
         FAIL() << "expected IoError";
     } catch (const IoError& e) {
+        // "SeamMerger: cannot create the scratch file (<where>/seam-<32 hex digits>.bin)".
         const std::string message = e.what();
-        EXPECT_EQ(message.find(where.u8string()), std::string::npos) << message;
-        EXPECT_NE(message.find("cannot create the scratch file"), std::string::npos) << message;
-        EXPECT_EQ(message.find("seam-"), std::string::npos) << message;
+        const std::string lead = "SeamMerger: cannot create the scratch file (" + (where / "seam-").u8string();
+        const std::string tail = ".bin)";
+        ASSERT_EQ(message.size(), lead.size() + 32 + tail.size()) << message;
+        EXPECT_EQ(message.substr(0, lead.size()), lead) << message;
+        EXPECT_EQ(message.substr(lead.size() + 32), tail) << message;
+        EXPECT_EQ(message.find_first_not_of("0123456789abcdef", lead.size()), lead.size() + 32) << message;
     }
     EXPECT_EQ(merger.spilledFragmentCount(), 0);
 }

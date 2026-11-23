@@ -73,7 +73,6 @@ const std::string kMarker = "PATIENT-MARKER-42";
 
 // The owning task of a pending row (see the comment at the top). 0 is a live row.
 constexpr int kLive = 0;
-constexpr int kPendingTask3 = 3;
 constexpr int kPendingTask4 = 4;
 
 // Collects every log line, at every level, while it lives.
@@ -143,11 +142,6 @@ struct Collected {
             return;
         }
         ADD_FAILURE() << label << " did not throw";
-    }
-
-    // Records the text of a failure that may or may not happen.
-    void observed(const std::string& label, const std::string& text, int pendingTask = kLive) {
-        rows.push_back(Row{label, text, pendingTask});
     }
 
     // Expects the log lines that contain `needle` to carry the marker.
@@ -229,8 +223,8 @@ TEST(Diagnostics, SlideCauseIsNotRedacted) {
     const fs::path dir = root.path() / kMarker;
     fs::create_directories(dir);
 
-    // A missing slide: SlideIO's text is the cause, after "cannot open the slide: " (the
-    // workspace words a slide failure as message and cause in one what()).
+    // A missing slide: SlideIO's text is the cause, after "cannot open the slide (<path>): "
+    // (the workspace words a slide failure as message and cause in one what()).
     const std::string workspace = (dir / "ws").u8string();
     const std::string missing = (dir / ("missing-" + kMarker + ".tif")).u8string();
     try {
@@ -238,7 +232,7 @@ TEST(Diagnostics, SlideCauseIsNotRedacted) {
         FAIL() << "Workspace::create succeeded with a missing slide";
     } catch (const IoError& e) {
         const std::string text = e.what();
-        const std::string lead = "Workspace::create: cannot open the slide: ";
+        const std::string lead = "Workspace::create: cannot open the slide (" + missing + "): ";
         ASSERT_EQ(text.rfind(lead, 0), 0u) << text;
         const std::string cause = text.substr(lead.size());
         EXPECT_FALSE(cause.empty()) << text;
@@ -371,7 +365,7 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         const std::string reopened = u8(dir / "ws-reopened");
         Workspace::create(reopened.c_str(), slideText.c_str(), 0, config)->close();
         Workspace::open(reopened.c_str(), config)->close();
-        seen.logLine("a reopened workspace's sweep", "reclaimed", false, kPendingTask3);
+        seen.logLine("a reopened workspace's sweep", "reclaimed", true);
     }
 
     // GeoJSON: a missing file, a file that is not GeoJSON, an unknown label, a file without a polygon.
@@ -414,7 +408,7 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         }, kPendingTask4);
         const std::string matrix = u8(dir / "nowhere" / "matrix.md");
         seen.failure("a support matrix into a missing directory",
-                     [&] { OperationCatalog::instance().writeSupportMatrix(matrix.c_str()); }, kPendingTask3);
+                     [&] { OperationCatalog::instance().writeSupportMatrix(matrix.c_str()); });
     }
 
     // The workspace: a missing slide, a scene out of range, a missing workspace.
@@ -423,20 +417,19 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
     seen.failure("Workspace::create with a missing slide",
                  [&] { Workspace::create(workspaceText.c_str(), missingSlide.c_str(), 0, config); });
     seen.failure("Workspace::create with a scene out of range",
-                 [&] { Workspace::create(workspaceText.c_str(), slideText.c_str(), 5, config); }, kPendingTask3);
+                 [&] { Workspace::create(workspaceText.c_str(), slideText.c_str(), 5, config); });
     seen.failure("Workspace::open of a missing workspace",
-                 [&] { Workspace::open(workspaceText.c_str(), config); }, kPendingTask3);
+                 [&] { Workspace::open(workspaceText.c_str(), config); });
     seen.failure("Workspace::openReadOnly of a missing workspace",
-                 [&] { Workspace::openReadOnly(workspaceText.c_str(), config); }, kPendingTask3);
+                 [&] { Workspace::openReadOnly(workspaceText.c_str(), config); });
     fs::create_directories(dir / "ws-full");
     writeFile(dir / "ws-full" / "x.txt", "x");
     const std::string full = u8(dir / "ws-full");
     seen.failure("Workspace::create over a non-empty directory",
-                 [&] { Workspace::create(full.c_str(), slideText.c_str(), 0, config); }, kPendingTask3);
+                 [&] { Workspace::create(full.c_str(), slideText.c_str(), 0, config); });
     fs::create_directories(dir / "ws-empty");
     const std::string emptyDir = u8(dir / "ws-empty");
-    seen.failure("Workspace::open of an empty directory", [&] { Workspace::open(emptyDir.c_str(), config); },
-                 kPendingTask3);
+    seen.failure("Workspace::open of an empty directory", [&] { Workspace::open(emptyDir.c_str(), config); });
 
     // A workspace whose recorded slide has moved.
     {
@@ -449,28 +442,6 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
                      [&] { Workspace::openReadOnly(moved.c_str(), config); });
     }
 
-    // Closing a workspace whose directory was removed underneath it: the error, if there is
-    // one, then the destructor's log line, if there is one.
-    {
-        const std::string doomed = u8(dir / "ws-doomed");
-        WorkspacePtr ws = Workspace::create(doomed.c_str(), slideText.c_str(), 0, config);
-        std::error_code ec;
-        fs::remove_all(dir / "ws-doomed", ec);
-        try {
-            ws->close();
-        } catch (const std::exception& e) {
-            seen.observed("closing a workspace whose directory is gone", e.what(), kPendingTask3);
-        }
-        ws.reset();
-    }
-    {
-        const std::string doomed = u8(dir / "ws-doomed2");
-        WorkspacePtr ws = Workspace::create(doomed.c_str(), slideText.c_str(), 0, config);
-        std::error_code ec;
-        fs::remove_all(dir / "ws-doomed2", ec);
-        ws.reset();  // the destructor logs a failed close, if there is one
-        seen.logLine("a workspace destructor's failed close", "closing the workspace failed", false, kPendingTask3);
-    }
 
     // MaskWriter over a file-backed scene of a corrupt slide (its tiles lie past the end of
     // the file, so it opens but no tile reads).

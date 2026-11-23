@@ -563,8 +563,9 @@ SeamMerger::SeamMerger(const TileGrid& grid, MemoryBudgetPtr budget, const char*
     if (!isDirectory) {
         ErrorContext context;
         context.cause = cause.c_str();
-        throw InvalidArgumentError(
-            "SeamMerger: the scratch directory is not a directory", context);
+        const std::string message =
+            detail::withPath("SeamMerger: the scratch directory is not a directory", scratchDirectory);
+        throw InvalidArgumentError(message.c_str(), context);
     }
     impl_ = std::make_unique<Impl>(grid, std::move(budget), std::string(scratchDirectory));
 }

@@ -274,12 +274,13 @@ int64_t OperationCatalog::writeSupportMatrix(const char* path) const {
     const std::string where = path;
     std::ofstream out(std::filesystem::u8path(where), std::ios::binary | std::ios::trunc);
     if (!out) {
-        throw IoError("OperationCatalog::writeSupportMatrix: cannot open the file for writing");
+        throw IoError(
+            detail::withPath("OperationCatalog::writeSupportMatrix: cannot open the file for writing", where).c_str());
     }
     out.write(text.data(), static_cast<std::streamsize>(text.size()));
     out.flush();
     if (!out) {
-        throw IoError("OperationCatalog::writeSupportMatrix: cannot write the file");
+        throw IoError(detail::withPath("OperationCatalog::writeSupportMatrix: cannot write the file", where).c_str());
     }
     return static_cast<int64_t>(text.size());
 }

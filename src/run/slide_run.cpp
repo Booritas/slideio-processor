@@ -1,5 +1,6 @@
 // Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
 #include <slideio/processor/run/slide_run.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <pipeline/detail/level_table.hpp>
 #include <workspace/detail/stage_record.hpp>
@@ -124,8 +125,8 @@ bool sameFile(const char* a, const char* b) {
     return !error && same;
 }
 
-// Translates what SlideIO throws while describing the scene, without its text, which may
-// carry the slide's path.
+// Translates what SlideIO throws while describing the scene; SlideIO's text, unaltered (it
+// may name the slide's path), is the cause.
 template <typename F>
 auto fromScene(F&& call) -> decltype(call()) {
     try {
@@ -134,8 +135,11 @@ auto fromScene(F&& call) -> decltype(call()) {
         throw;
     } catch (const std::bad_alloc&) {
         throw;
-    } catch (const std::exception&) {
-        throw InternalError("SlideRun: SlideIO failed to describe the scene");
+    } catch (const std::exception& e) {
+        const std::string cause = detail::diagnosticText(e);
+        ErrorContext context;
+        context.cause = cause.c_str();
+        throw InternalError("SlideRun: SlideIO failed to describe the scene", context);
     }
 }
 
@@ -178,7 +182,7 @@ WorkspacePtr SlideRun::Impl::openOrCreate() const {
     const fs::path storePath = fs::u8path(workspacePath) / kStoreName;
     if (fs::is_regular_file(storePath, error)) {
         if (!fs::exists(fs::u8path(slidePath), error)) {
-            throw IoError("SlideRun: the slide cannot be found");
+            throw IoError(detail::withPath("SlideRun: the slide cannot be found", slidePath).c_str());
         }
         StorePtr probe = Store::open(storePath.u8string().c_str(), OpenMode::ReadOnly, configuration);
         const Provenance provenance = probe->provenance();
@@ -186,7 +190,7 @@ WorkspacePtr SlideRun::Impl::openOrCreate() const {
         const char* recorded = provenance.slideId();
         if (recorded == nullptr || !sameFile(recorded, slidePath.c_str()) ||
             provenance.sceneIndex() != sceneIndex) {
-            refuse("the workspace belongs to another slide or scene");
+            refuse(detail::withPath("the workspace belongs to another slide or scene", workspacePath));
         }
         return Workspace::open(workspacePath.c_str(), configuration);
     }
@@ -366,7 +370,8 @@ void SlideRun::Impl::writeExports(Workspace& workspace, SlideRunResult& result) 
         ErrorContext context;
         const std::string cause = error.message();
         context.cause = cause.c_str();
-        throw IoError("SlideRun: the export directory cannot be made", context);
+        const std::string message = detail::withPath("SlideRun: the export directory cannot be made", exportDirectory);
+        throw IoError(message.c_str(), context);
     }
     for (int32_t i = 0; i < file.exportCount(); ++i) {
         const ExportSpec& spec = file.exportAt(i);

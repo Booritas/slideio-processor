@@ -1,13 +1,16 @@
 #include "config/detail/stream_log_sink.hpp"
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <new>
 #include <string>
+#include <system_error>
 
 namespace slideio::processor::detail {
 
@@ -58,17 +61,27 @@ StreamLogSink::StreamLogSink(const char* path) : toStderr_(path == nullptr || *p
     if (toStderr_) {
         return;
     }
+    // The open's own failure is the cause: the exception forming or opening the path
+    // threw, or else what the C library reports through errno.
     bool opened = false;
+    std::string cause;
     try {
+        errno = 0;
         file_.open(std::filesystem::u8path(path), std::ios::app | std::ios::binary);
         opened = file_.is_open();
+        if (!opened && errno != 0) {
+            cause = std::generic_category().message(errno);
+        }
     } catch (const std::bad_alloc&) {
         throw;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
         opened = false;
+        cause = diagnosticText(e);
     }
     if (!opened) {
-        throw IoError("cannot open the log file");
+        ErrorContext context;
+        context.cause = cause.c_str();
+        throw IoError(withPath("cannot open the log file", path).c_str(), context);
     }
 }
 

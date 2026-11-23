@@ -109,6 +109,19 @@ TEST(PipelineFile, RoundTrips) {
     EXPECT_EQ(jsonOf(third), text);
 }
 
+// A pipeline file that cannot be opened is named by its path (paths in diagnostics, 2026-11-23).
+TEST(PipelineFile, LoadMissingNamesThePath) {
+    TempDirectory dir;
+    const std::string missing = (dir.path() / "missing-pipeline.json").u8string();
+    try {
+        PipelineFile::load(missing.c_str());
+        FAIL() << "a missing pipeline file loaded";
+    } catch (const IoError& e) {
+        EXPECT_NE(std::string(e.what()).find(missing), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()), "PipelineFile: the pipeline file cannot be opened (" + missing + ")");
+    }
+}
+
 TEST(PipelineFile, KeepsUnknownStageRecordKeys) {
     std::string stage = record("tissue", "", "\"tissue\"");
     stage.pop_back();

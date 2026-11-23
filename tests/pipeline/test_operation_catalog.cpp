@@ -415,9 +415,7 @@ TEST(OperationCatalog, SupportMatrixReportsAnUnwritablePath) {
     const std::string text = path.u8string();
     EXPECT_THROW(catalog.writeSupportMatrix(text.c_str()), IoError);
     const std::string message = messageOf([&] { catalog.writeSupportMatrix(text.c_str()); });
-    EXPECT_NE(message.find("cannot open the file for writing"), std::string::npos) << message;
-    EXPECT_EQ(message.find("matrix.csv"), std::string::npos) << message;
-    EXPECT_EQ(message.find("slideio_processor_no_such_dir"), std::string::npos) << message;
+    EXPECT_EQ(message, "OperationCatalog::writeSupportMatrix: cannot open the file for writing (" + text + ")");
     EXPECT_THROW(catalog.writeSupportMatrix(nullptr), InvalidArgumentError);
     EXPECT_THROW(catalog.writeSupportMatrix(""), InvalidArgumentError);
 }

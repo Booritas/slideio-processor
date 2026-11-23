@@ -24,7 +24,7 @@ namespace slideio::processor {
  * changed, so on failure the sink and level already installed stay as they were.
  * @param configuration Supplies the log file path and the threshold.
  * @throws IoError When the log file cannot be opened; the message names the log
- * file by its role, never its path.
+ * file by its role and its path, and the open's own failure is the cause.
  * @throws InternalError When an unexpected standard exception other than
  * std::bad_alloc is raised; its message is the cause.
  * @throws std::bad_alloc When memory is exhausted.

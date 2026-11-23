@@ -115,14 +115,19 @@ class RunScratchDirectory {
 public:
     // Forming the path (not UTF-8, say) or drawing the random name can throw a
     // standard exception; it is reported as the IoError a failed creation is.
+    // The message names the scratch location: the configured one as given, or
+    // the platform's temporary directory once it is known.
     explicit RunScratchDirectory(const char* base) {
         std::string cause;
+        std::string where;
         try {
             std::error_code error;
             std::filesystem::path root;
             if (base == nullptr || base[0] == '\0') {
                 root = std::filesystem::temp_directory_path(error);
+                if (!error) where = root.u8string();
             } else {
+                where = base;
                 root = std::filesystem::u8path(base);
             }
             if (!error) {
@@ -143,8 +148,9 @@ public:
         removeCreated();
         ErrorContext context;
         context.cause = cause.c_str();
-        throw IoError("TileExecutor::run: cannot create a scratch directory under the configured scratch location",
-                      context);
+        const std::string message =
+            "TileExecutor::run: cannot create a scratch directory under the configured scratch location";
+        throw IoError((where.empty() ? message : detail::withPath(message, where)).c_str(), context);
     }
     ~RunScratchDirectory() {
         std::error_code error;

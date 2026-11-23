@@ -30,7 +30,8 @@ namespace slideio::processor {
  *    declaration so that a stage's record lists its nondeterministic operations.
  * 2. **Open or create the workspace.** A workspace directory holding a store
  *    ("<workspace>/workspace.store", Workspace's layout) is first checked: when the slide
- *    given does not exist, the run fails with IoError ("the slide cannot be found").
+ *    given does not exist, the run fails with IoError ("the slide cannot be found",
+ *    followed by the slide's path).
  *    Then the store alone is opened read-only to read its binding, opening no slide:
  *    when its recorded slide is not the same existing file as the slide given
  *    (std::filesystem::equivalent; a recorded slide that has moved or been deleted
@@ -145,8 +146,8 @@ public:
      * @throws InvalidArgumentError When an operation is not registered (the message names
      * it and its stage) or its factory refuses its parameters, before anything is created;
      * when the workspace belongs to another slide or scene ("the workspace belongs to
-     * another slide or scene"), leaving the workspace as the class describes (only SQLite's
-     * sidecars may change); when a layer or raster of the
+     * another slide or scene", naming the workspace directory), leaving the workspace as
+     * the class describes (only SQLite's sidecars may change); when a layer or raster of the
      * workspace differs from the file's (the message names it); when a stage record does
      * not declare (as StageRegistry::declare()); or when an export names a layer or raster
      * the workspace does not hold, or a raster no stage has written.
@@ -154,8 +155,9 @@ public:
      * the first and why), or as StageRunner::run().
      * @throws CancelledError When the token is cancelled; no partial file is left.
      * @throws IoError When the workspace exists and the slide given does not ("the slide
-     * cannot be found", naming no path); as Workspace::create() and Workspace::open(); when
-     * the export directory cannot be made; or as the export writers.
+     * cannot be found", naming the slide's path); as Workspace::create() and
+     * Workspace::open(); when the export directory cannot be made (naming it); or as the
+     * export writers.
      * @throws StoreFormatError When the workspace's store has another format version.
      * @throws ProcessorError Any other error of a writer, propagated.
      * @throws std::bad_alloc When allocation fails.
