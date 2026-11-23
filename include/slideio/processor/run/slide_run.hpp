@@ -145,8 +145,8 @@ public:
      * @return Per stage, whether it ran and what it wrote; per export, its file and size.
      * @throws InvalidArgumentError When an operation is not registered (the message names
      * it and its stage) or its factory refuses its parameters, before anything is created;
-     * when the workspace belongs to another slide or scene ("the workspace belongs to
-     * another slide or scene", naming the workspace directory), leaving the workspace as
+     * when the workspace belongs to another slide or scene (the message names the workspace
+     * directory and the slide and scene given to the run), leaving the workspace as
      * the class describes (only SQLite's sidecars may change); when a layer or raster of the
      * workspace differs from the file's (the message names it); when a stage record does
      * not declare (as StageRegistry::declare()); or when an export names a layer or raster

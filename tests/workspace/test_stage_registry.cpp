@@ -1111,6 +1111,28 @@ TEST(StageRegistry, ReadOnlyMarkStaleOfALaterStageIsIoError) {
     ro->close();
 }
 
+// The read-only refusals name the workspace's store file.
+TEST(StageRegistry, ReadOnlyRefusalsNameTheStore) {
+    Fixture f;
+    const StageId a = f.stages().declare(writer("a", f.x));
+    WorkspacePtr ro = Workspace::openReadOnly(workspacePath(f).c_str(), Configuration::defaults());
+    StageRegistry& r = ro->stages();
+    const std::string store = ro->store()->path();
+    const auto refusal = [](const std::function<void()>& action) {
+        try {
+            action();
+        } catch (const IoError& e) {
+            return std::string(e.what());
+        }
+        return std::string("<no IoError>");
+    };
+    EXPECT_EQ(refusal([&] { r.markStale(a); }), "StageRegistry::markStale: the workspace is read-only (" + store + ")");
+    EXPECT_EQ(refusal([&] { r.markAffectedStale(a); }),
+              "StageRegistry::markAffectedStale: the workspace is read-only (" + store + ")");
+    EXPECT_EQ(refusal([&] { r.clearStale(a); }), "StageRegistry::clearStale: the workspace is read-only (" + store + ")");
+    ro->close();
+}
+
 namespace {
 
 // The reader registry a hookNextDeclareMidwayForTesting hook queries, the stage, and how

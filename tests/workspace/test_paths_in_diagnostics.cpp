@@ -205,8 +205,7 @@ TEST(Diagnostics, SlideCauseIsNotRedacted) {
     const fs::path dir = root.path() / kMarker;
     fs::create_directories(dir);
 
-    // A missing slide: SlideIO's text is the cause, after "cannot open the slide (<path>): "
-    // (the workspace words a slide failure as message and cause in one what()).
+    // A missing slide: the message names the slide, and SlideIO's text, unaltered, is cause().
     const std::string workspace = (dir / "ws").u8string();
     const std::string missing = (dir / ("missing-" + kMarker + ".tif")).u8string();
     try {
@@ -214,10 +213,9 @@ TEST(Diagnostics, SlideCauseIsNotRedacted) {
         FAIL() << "Workspace::create succeeded with a missing slide";
     } catch (const IoError& e) {
         const std::string text = e.what();
-        const std::string lead = "Workspace::create: cannot open the slide (" + missing + "): ";
-        ASSERT_EQ(text.rfind(lead, 0), 0u) << text;
-        const std::string cause = text.substr(lead.size());
+        const std::string cause = e.cause();
         EXPECT_FALSE(cause.empty()) << text;
+        EXPECT_EQ(text, "Workspace::create: cannot open the slide (" + missing + "); cause: " + cause);
         EXPECT_NE(cause, "<slide>") << text;
         EXPECT_EQ(cause.find("<slide>"), std::string::npos) << text;
         // SlideIO words its "no driver" error with the path it was given.

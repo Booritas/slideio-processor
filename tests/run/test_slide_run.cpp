@@ -338,9 +338,11 @@ TEST(SlideRun, RefusesAWorkspaceOfAnotherSlide) {
             .run();
         ADD_FAILURE() << "a workspace of another slide was accepted";
     } catch (const InvalidArgumentError& e) {
-        // The refusal names the workspace it is about (paths in diagnostics, 2026-11-23).
-        EXPECT_EQ(std::string(e.what()),
-                  "SlideRun: the workspace belongs to another slide or scene (" + f.workspace + ")");
+        // The refusal names the workspace it is about and the slide given to the run (paths in
+        // diagnostics, 2026-11-23).
+        EXPECT_EQ(std::string(e.what()), "SlideRun: the workspace (" + f.workspace +
+                                             ") belongs to another slide or scene than the slide (" + other +
+                                             "), scene 0");
     }
     // Every file but the sidecars, and every directory, is as it was, with the same bytes.
     EXPECT_EQ(contentsUnder(root, false), before);
@@ -513,12 +515,13 @@ TEST(SlideRun, AMovedSlideNamesItsPath) {
                           .run();
                   },
                   f.workspace, "an existing workspace run on the moved slide"),
-              "SlideRun: the workspace belongs to another slide or scene (" + f.workspace + ")");
+              "SlideRun: the workspace (" + f.workspace + ") belongs to another slide or scene than the slide (" +
+                  movedText + "), scene 0");
     // No workspace yet, and the slide named for the run is missing: the message names it, and
     // SlideIO's own text, unaltered, follows as the cause, naming it too.
     const std::string fresh = (f.dir.path() / "fresh-ws").u8string();
     const std::string message = expectPath([&] { f.run(threeStageFile(), fresh, f.out); }, f.slide, "a missing slide");
-    const std::string lead = "IoError: Workspace::create: cannot open the slide (" + f.slide + "): ";
+    const std::string lead = "IoError: Workspace::create: cannot open the slide (" + f.slide + "); cause: ";
     EXPECT_EQ(message.rfind(lead, 0), 0u) << message;
     EXPECT_NE(message.find(f.slide, lead.size()), std::string::npos) << message;
 }

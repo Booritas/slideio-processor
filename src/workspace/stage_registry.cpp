@@ -1,5 +1,6 @@
 // Requirements: UR-STG-2, UR-STG-4, UR-STG-8, UR-STG-10, UR-STG-11, UR-OBS-1
 #include <slideio/processor/workspace/stage_registry.hpp>
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
@@ -690,14 +691,20 @@ StageId StageRegistry::declare(const StageDefinition& definition) {
 void StageRegistry::markStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::markStale");
-    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::markStale: the workspace is read-only");
+    if (impl_->store.isReadOnly()) {
+        throw IoError(detail::withPath("StageRegistry::markStale: the workspace is read-only", impl_->store.path()).c_str());
+    }
     impl_->markStaleLocked(stage);
 }
 
 void StageRegistry::markAffectedStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::markAffectedStale");
-    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::markAffectedStale: the workspace is read-only");
+    if (impl_->store.isReadOnly()) {
+        throw IoError(
+            detail::withPath("StageRegistry::markAffectedStale: the workspace is read-only", impl_->store.path())
+                .c_str());
+    }
     impl_->markAffectedLocked(stage);
 }
 
@@ -706,7 +713,9 @@ const StalenessGraph& StageRegistry::staleness() const noexcept { return *impl_-
 void StageRegistry::clearStale(StageId stage) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     impl_->requireOpen("StageRegistry::clearStale");
-    if (impl_->store.isReadOnly()) throw IoError("StageRegistry::clearStale: the workspace is read-only");
+    if (impl_->store.isReadOnly()) {
+        throw IoError(detail::withPath("StageRegistry::clearStale: the workspace is read-only", impl_->store.path()).c_str());
+    }
     impl_->edgesOf(stage);
     impl_->store.stageStateWriter().setStale(stage, false);
 }

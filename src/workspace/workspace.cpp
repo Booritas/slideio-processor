@@ -35,13 +35,16 @@ void requirePath(const char* path, const char* operation, const char* what) {
     }
 }
 
+// An IoError with `message` (role wording and path) as its message and `cause`, third-party
+// text unaltered, as its cause() (empty for none).
 [[noreturn]] void throwIo(const std::string& message, const std::string& cause) {
-    const std::string text = cause.empty() ? message : message + ": " + cause;
-    throw IoError(text.c_str());
+    ErrorContext context;
+    context.cause = cause.c_str();
+    throw IoError(message.c_str(), context);
 }
 
 // Opens the slide through SlideIO's driver lookup. Any failure is an IoError naming the slide
-// by its role and its path; SlideIO's own text, unaltered (it may name the path too), follows.
+// by its role and its path; SlideIO's own text, unaltered (it may name the path too), is its cause().
 std::shared_ptr<slideio::Slide> openSlide(const std::string& slidePath, const char* operation) {
     const std::string message = detail::withPath(std::string(operation) + ": cannot open the slide", slidePath);
     std::shared_ptr<slideio::Slide> slide;

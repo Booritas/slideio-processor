@@ -153,10 +153,12 @@ TEST(Workspace, OpenWithMissingSlideIsIoError) {
         Workspace::open(t.workspaceUtf8().c_str(), t.config);
         FAIL() << "open succeeded without its slide";
     } catch (const IoError& e) {
-        // SlideIO's own text, unaltered, is the cause, and it names the missing file.
-        EXPECT_NE(std::string(e.what()).find("cannot open the slide"), std::string::npos) << e.what();
-        EXPECT_NE(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
-        EXPECT_NE(std::string(e.what()).find("slide.tif"), std::string::npos) << e.what();
+        // The message names the slide; SlideIO's own text, unaltered, is the cause, and it
+        // names the missing file.
+        EXPECT_EQ(std::string(e.what()), "Workspace::open: cannot open the slide (" + t.slideUtf8() + "); cause: " +
+                                             e.cause())
+            << e.what();
+        EXPECT_NE(std::string(e.cause()).find("slide.tif"), std::string::npos) << e.what();
     }
 }
 
@@ -347,9 +349,10 @@ TEST(Workspace, MissingParentIsIoErrorAndMakesNothing) {
         Workspace::create(path.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config);
         FAIL() << "create made a workspace under a missing parent";
     } catch (const IoError& e) {
-        // The message names the directory it could not make; std::error_code's text follows.
-        const std::string lead = "Workspace::create: cannot create the workspace directory (" + path.u8string() + "): ";
-        EXPECT_EQ(std::string(e.what()).rfind(lead, 0), 0u) << e.what();
+        // The message names the directory it could not make; std::error_code's text is the cause.
+        EXPECT_NE(std::string(e.cause()), "") << e.what();
+        EXPECT_EQ(std::string(e.what()), "Workspace::create: cannot create the workspace directory (" +
+                                             path.u8string() + "); cause: " + e.cause());
     }
     EXPECT_FALSE(fs::exists(parent));
 }
