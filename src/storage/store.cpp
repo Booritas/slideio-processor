@@ -54,11 +54,10 @@ Store::~Store() {
     try {
         close();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "%s: %s",
-                   detail::withPath("Store: closing the store failed", impl_->core.path()).c_str(),
-                   detail::diagnosticText(e).c_str());
+        // printf-style, no std::string: a destructor must not throw (bad_alloc).
+        logMessage(LogLevel::Error, "Store: closing the store failed (%s): %s", impl_->core.path().c_str(), e.what());
     } catch (...) {
-        logMessage(LogLevel::Error, "%s", detail::withPath("Store: closing the store failed", impl_->core.path()).c_str());
+        logMessage(LogLevel::Error, "Store: closing the store failed (%s)", impl_->core.path().c_str());
     }
 }
 

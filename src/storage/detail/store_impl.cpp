@@ -352,8 +352,9 @@ StoreImpl::SynchronousScope::~SynchronousScope() {
     // caller believe otherwise. The connection then stays at FULL, which is safe.
     sqlite3* db = store_.writeConnection_.get();
     if (sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        const std::string message = withPath("Store: cannot restore synchronous=NORMAL", store_.path_);
-        logMessage(LogLevel::Warning, "%s: %s", message.c_str(), sqlite3_errmsg(db));
+        // printf-style, no std::string: this destructor must not throw (bad_alloc).
+        logMessage(LogLevel::Warning, "Store: cannot restore synchronous=NORMAL (%s): %s", store_.path_.c_str(),
+                   sqlite3_errmsg(db));
     }
 }
 
@@ -504,8 +505,9 @@ void CommitWaiter::unlinkSignal() noexcept {
 void StoreImpl::openChangeSignal() noexcept {
     if (!configuration_.eventSignalEnabled() || !ChangeSignal::isSupported()) return;
     if (storeUuid_.empty()) {
-        const std::string message = withPath("Store::open: the store has no store_uuid; event cursors poll", path_);
-        logMessage(LogLevel::Warning, "%s", message.c_str());
+        // printf-style, no std::string: this function is noexcept (bad_alloc).
+        logMessage(LogLevel::Warning, "Store::open: the store has no store_uuid; event cursors poll (%s)",
+                   path_.c_str());
         return;
     }
     try {
