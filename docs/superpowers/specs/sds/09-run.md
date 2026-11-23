@@ -145,9 +145,9 @@ and refuses only null or empty paths and a negative scene index.
    and migrates no store. `SlideRun.RefusesAWorkspaceOfAnotherSlide` snapshots
    every file and directory of a cleanly closed workspace (no sidecars) and
    compares their bytes after each refusal, sidecars excepted, with the stage
-   records. `SlideRun.AMovedSlideGivesAnErrorWithNoPath` moves the slide of a
+   records. `SlideRun.AMovedSlideNamesItsPath` moves the slide of a
    workspace: a run naming the old path gets the `IoError`, a run naming the new
-   path the refusal, and neither message holds a path or file name. Otherwise
+   path the refusal, and both messages name their path. Otherwise
    the workspace is opened with `Workspace::open`. Any other path is made with
    `Workspace::create`.
 3. **Declare.** Each layer of the file is declared through `LayerLifecycle`,
