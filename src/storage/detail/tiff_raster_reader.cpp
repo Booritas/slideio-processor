@@ -1,5 +1,6 @@
 #include "storage/detail/tiff_raster_reader.hpp"
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/file_io.hpp"
 #include "storage/detail/tiff_io.hpp"
 
@@ -59,13 +60,16 @@ std::vector<Run> runsOf(const std::vector<int64_t>& pixels, int64_t tileSize) {
     return runs;
 }
 
-// Reads a TIFF field of type T, or throws IoError naming the file by its role, never its path, and the field.
+// Reads a TIFF field of type T, or throws IoError naming the file by its role and its path,
+// and the field.
 template <class T>
 T field(const TiffHandle& handle, uint32_t tag, const char* name, bool defaulted = false) {
     T value{};
     const int found = defaulted ? TIFFGetFieldDefaulted(handle.get(), tag, &value)
                                 : TIFFGetField(handle.get(), tag, &value);
-    if (found != 1) throwIo(std::string("TIFFGetField: the raster file has no ") + name, std::string());
+    if (found != 1) {
+        throwIo(withPath(std::string("TIFFGetField: the raster file has no ") + name, handle.path()), std::string());
+    }
     return value;
 }
 
@@ -77,7 +81,7 @@ TiffRasterReader::TiffRasterReader(std::filesystem::path path, RasterFormat form
     std::unique_ptr<Handle> first = open();
     TIFF* tif = first->tiff.get();
     const auto mismatch = [&](const std::string& what) {
-        throwIo("TiffRasterReader: the raster file is not the raster its row describes", what);
+        throwIo(withPath("TiffRasterReader: the raster file is not the raster its row describes", pathUtf8_), what);
     };
     const tdir_t count = TIFFNumberOfDirectories(tif);
     if (count < 1) mismatch("it has no page");

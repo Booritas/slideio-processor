@@ -1,5 +1,6 @@
 #include "storage/detail/tiff_io.hpp"
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/file_io.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -24,9 +25,6 @@
 
 namespace slideio::processor::detail {
 
-// The name libtiff is given for the file: it prefixes libtiff's own messages, so it must not be the path.
-constexpr const char* kModuleName = "raster file";
-
 // One handle's file, libtiff handle and error collector (declared in the header). libtiff keeps a pointer to it as
 // the handlers' user data and as the client data, so it lives on the heap and never moves.
 struct TiffHandleState {
@@ -34,6 +32,9 @@ struct TiffHandleState {
     enum class Direction { None, Read, Write };
 
     bool write = false;
+    // The file's path (UTF-8). libtiff is given it as the file's name, so it prefixes
+    // libtiff's own messages, and every error of this handle names it.
+    std::string path;
     std::FILE* file = nullptr;
     Direction direction = Direction::None;
     TIFF* tif = nullptr;
@@ -61,6 +62,7 @@ std::string formatMessage(const char* module, const char* fmt, va_list ap) {
 int collectError(TIFF*, void* userData, const char* module, const char* fmt, va_list ap) {
     try {
         auto* state = static_cast<TiffHandleState*>(userData);
+        if (state == nullptr) return 1;
         const std::string message = formatMessage(module, fmt, ap);
         if (!state->errors.empty()) state->errors += "; ";
         state->errors += message;
@@ -70,10 +72,13 @@ int collectError(TIFF*, void* userData, const char* module, const char* fmt, va_
     return 1;
 }
 
-int logWarning(TIFF*, void*, const char* module, const char* fmt, va_list ap) {
+int logWarning(TIFF*, void* userData, const char* module, const char* fmt, va_list ap) {
     try {
         const std::string message = formatMessage(module, fmt, ap);
-        logMessage(LogLevel::Debug, "libtiff warning on a raster file: %s", message.c_str());
+        const auto* state = static_cast<const TiffHandleState*>(userData);
+        const std::string lead = state != nullptr ? withPath("libtiff warning on a raster file", state->path)
+                                                  : std::string("libtiff warning on a raster file");
+        logMessage(LogLevel::Debug, "%s: %s", lead.c_str(), message.c_str());
     } catch (...) {
     }
     return 1;
@@ -171,11 +176,12 @@ std::unique_ptr<TiffHandleState> openHandle(const std::string& utf8Path, const c
     silenceGlobalHandlers();
     auto state = std::make_unique<TiffHandleState>();
     state->write = write;
+    state->path = utf8Path;
     errno = 0;
     state->file = openFile(utf8Path, write);
     if (state->file == nullptr) {
         const int error = errno;
-        throwIo("TIFFOpen: cannot open the raster file",
+        throwIo(withPath("TIFFOpen: cannot open the raster file", utf8Path),
                 error != 0 ? errnoText(error) : std::string("the file cannot be opened"));
     }
 
@@ -186,12 +192,13 @@ std::unique_ptr<TiffHandleState> openHandle(const std::string& utf8Path, const c
     }
     TIFFOpenOptionsSetErrorHandlerExtR(options, collectError, state.get());
     TIFFOpenOptionsSetWarningHandlerExtR(options, logWarning, state.get());
-    state->tif = TIFFClientOpenExt(kModuleName, mode, state.get(), readProc, writeProc, seekProc, closeProc,
+    // libtiff copies the name; it is the path, so libtiff's own text names the file.
+    state->tif = TIFFClientOpenExt(state->path.c_str(), mode, state.get(), readProc, writeProc, seekProc, closeProc,
                                    sizeProc, mapProc, unmapProc, options);
     TIFFOpenOptionsFree(options);
     if (state->tif == nullptr) {
         std::fclose(state->file);
-        throwIo("TIFFClientOpen: libtiff failed on the raster file", state->errors);
+        throwIo(withPath("TIFFClientOpen: libtiff failed on the raster file", utf8Path), state->errors);
     }
     return state;
 }
@@ -230,10 +237,17 @@ TiffHandle TiffHandle::openRead(const std::string& utf8Path) {
 
 TIFF* TiffHandle::get() const noexcept { return state_ ? state_->tif : nullptr; }
 
+const std::string& TiffHandle::path() const noexcept {
+    static const std::string kNone;
+    return state_ ? state_->path : kNone;
+}
+
 void TiffHandle::fail(const char* operation) const {
     std::string cause;
     if (state_) cause.swap(state_->errors);
-    throwIo(std::string(operation) + ": libtiff failed on the raster file", cause);
+    std::string message = std::string(operation) + ": libtiff failed on the raster file";
+    if (state_) message = withPath(message, state_->path);
+    throwIo(message, cause);
 }
 
 void TiffHandle::flush() {
@@ -241,7 +255,7 @@ void TiffHandle::flush() {
     errno = 0;
     if (std::fflush(state_->file) != 0) {
         const int error = errno != 0 ? errno : EIO;
-        throwIo("fflush: cannot flush the raster file", errnoText(error));
+        throwIo(withPath("fflush: cannot flush the raster file", state_->path), errnoText(error));
     }
 }
 
@@ -253,7 +267,7 @@ void TiffHandle::close() {
     if (state->tif != nullptr) {
         // TIFFFlush writes a write handle's pending directory; TIFFClose reports nothing.
         if (state->write && TIFFFlush(state->tif) == 0) {
-            failure = "TIFFFlush: libtiff failed on the raster file";
+            failure = withPath("TIFFFlush: libtiff failed on the raster file", state->path);
             cause = state->errors;
         }
         TIFFClose(state->tif);
@@ -265,7 +279,7 @@ void TiffHandle::close() {
         if (std::fclose(state->file) != 0 && error == 0) error = errno != 0 ? errno : EIO;
         state->file = nullptr;
         if (error != 0 && failure.empty()) {
-            failure = "fclose: cannot close the raster file";
+            failure = withPath("fclose: cannot close the raster file", state->path);
             cause = errnoText(error);
         }
     }

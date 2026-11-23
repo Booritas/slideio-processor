@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/event_journal.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/schema.hpp"
 #include "storage/detail/sqlite.hpp"
 #include "storage/detail/store_impl.hpp"
@@ -143,13 +144,15 @@ int64_t oldestOn(sqlite3* db, int64_t newest) {
 }
 
 // Throws InvalidArgumentError when events above `position` were truncated away: a
-// subscriber is told so, never silently moved past the gap (UR-OBS-7).
-void throwIfTruncated(sqlite3* db, int64_t position) {
+// subscriber is told so, never silently moved past the gap (UR-OBS-7). The message names
+// the store at `storePath`.
+void throwIfTruncated(sqlite3* db, int64_t position, const std::string& storePath) {
     const int64_t watermark = watermarkOn(db);
     if (position + 1 < watermark) {
-        const std::string message = "EventJournal: position " + std::to_string(position) +
-                                    " has been truncated away; the journal now begins at sequence " +
-                                    std::to_string(watermark);
+        const std::string message = detail::withPath("EventJournal: position " + std::to_string(position) +
+                                                         " has been truncated away; the journal now begins at sequence " +
+                                                         std::to_string(watermark),
+                                                     storePath);
         throw InvalidArgumentError(message.c_str());
     }
 }
@@ -159,6 +162,7 @@ public:
     EventCursorImpl(detail::ReadLease&& lease, int64_t start, int32_t pollIntervalMs,
                     std::shared_ptr<detail::CommitWaiter> waiter)
         : lease_(std::move(lease)),
+          storePath_(lease_->storePath()),
           position_(start),
           pollIntervalMs_(std::max<int32_t>(1, pollIntervalMs)),
           waiter_(std::move(waiter)) {}
@@ -175,7 +179,7 @@ public:
             checkUsable();
             // A buffered page was read before any truncation; the watermark is checked anyway,
             // so a cursor behind it is told rather than served rows the journal has dropped.
-            if (index_ < page_.size()) throwIfTruncated(lease_->get(), position_);
+            if (index_ < page_.size()) throwIfTruncated(lease_->get(), position_, storePath_);
             if (index_ >= page_.size() && !fetchPage()) {
                 if (timeoutMs == 0) return false;
                 int32_t slice = pollIntervalMs_;
@@ -206,7 +210,8 @@ public:
 private:
     void checkUsable() const {
         if (!lease_) {
-            const std::string message = std::string("EventCursor::next: the cursor is closed");
+            // The lease is gone; the store is named by the path kept for this.
+            const std::string message = detail::withPath("EventCursor::next: the cursor is closed", storePath_);
             throw IoError(message.c_str());
         }
         lease_->checkStoreOpen("EventCursor::next");
@@ -219,7 +224,7 @@ private:
         index_ = 0;
         sqlite3* db = lease_->get();
         ReadTransaction transaction(db);
-        throwIfTruncated(db, position_);
+        throwIfTruncated(db, position_, storePath_);
         detail::Statement select(db,
                                  "SELECT seq, kind, stage_id, layer_id, label_id, object_count, min_x, min_y, "
                                  "max_x, max_y, stage_status, timestamp_ms, raster_id FROM events WHERE seq > ? "
@@ -232,6 +237,7 @@ private:
     }
 
     std::optional<detail::ReadLease> lease_;
+    const std::string storePath_;  // the store's path, for messages once the lease is gone
     int64_t position_;  // the sequence last returned, or the resolved start
     int32_t pollIntervalMs_;
     std::shared_ptr<detail::CommitWaiter> waiter_;
@@ -295,13 +301,15 @@ EventCursorPtr EventJournal::subscribe(int64_t fromSequence) {
         } else if (fromSequence == kFromNow) {
             start = newestOn(db);
         } else {
-            throwIfTruncated(db, fromSequence);
+            throwIfTruncated(db, fromSequence, store.path());
             // A position past the newest event belongs to another store (or to this store
             // before it was recreated); starting there would skip the events up to it.
             const int64_t newest = newestOn(db);
             if (fromSequence > newest) {
-                const std::string message = "EventJournal::subscribe: position " + std::to_string(fromSequence) +
-                                            " is beyond the newest event " + std::to_string(newest) + " of the store; a position must come from position() on this store";
+                const std::string message = detail::withPath(
+                    "EventJournal::subscribe: position " + std::to_string(fromSequence) + " is beyond the newest event " +
+                        std::to_string(newest) + " of the store; a position must come from position() on this store",
+                    store.path());
                 throw InvalidArgumentError(message.c_str());
             }
             start = fromSequence;

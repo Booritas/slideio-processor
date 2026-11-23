@@ -21,11 +21,12 @@ public:
     ~WriterLock();
 
     // Takes the lock for the store at `storePath` (UTF-8), without waiting. Throws
-    // IoError (naming the store by its role, never its path) and, when the lock file's text parses,
-    // "process <pid>" when another handle holds it; IoError naming the lock file by its role when
-    // it cannot be created or written. A lock on a lock file that was removed while it was
-    // being locked (see removeFileAndRelease) does not count: acquire reopens the path and
-    // tries again, and throws IoError naming the lock file by its role after 8 such attempts.
+    // IoError naming the store by its role and, when the lock file's text parses,
+    // "process <pid>", followed by the lock file's path, when another handle holds it;
+    // IoError naming the lock file by its role and its path when it cannot be created or
+    // written. A lock on a lock file that was removed while it was being locked (see
+    // removeFileAndRelease) does not count: acquire reopens the path and tries again, and
+    // throws IoError naming the lock file by its role and its path after 8 such attempts.
     static WriterLock acquire(const std::string& storePath);
     // acquire, running afterOpen (when not empty) between opening the lock file and
     // locking it, on the first attempt only: a test seam for the race with

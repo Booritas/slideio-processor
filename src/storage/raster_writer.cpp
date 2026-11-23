@@ -46,15 +46,20 @@ void leaveLive(LiveRasterWriters& live, RasterId raster, const LiveRasterFiles& 
     if (found != live.byRaster.end() && found->second.spoolName == files.spoolName) live.byRaster.erase(found);
 }
 
-// Deletes `path` on a clean-up path: a failure is logged at Warning, never thrown, and the
-// file is left for RasterRegistry::removeUnreferencedFiles.
+// Deletes `path` on a clean-up path: a failure is logged at Warning, naming the file, never
+// thrown, and the file is left for RasterRegistry::removeUnreferencedFiles.
 void deleteOrWarn(const std::filesystem::path& path, const char* why) noexcept {
     try {
-        removeFile(path);
+        removeFile(path);  // its error names the file
     } catch (const std::exception& e) {
         logMessage(LogLevel::Warning, "RasterWriter: %s: %s", why, detail::diagnosticText(e).c_str());
     } catch (...) {
-        logMessage(LogLevel::Warning, "RasterWriter: %s: cannot delete a file", why);
+        try {
+            logMessage(LogLevel::Warning, "RasterWriter: %s: %s", why,
+                       withPath("cannot delete a file", path.u8string()).c_str());
+        } catch (...) {
+            logMessage(LogLevel::Warning, "RasterWriter: %s: cannot delete a file", why);
+        }
     }
 }
 
@@ -179,9 +184,9 @@ public:
         return tiles;
     }
 
-    // Throws IoError "<operation>: store is closed".
+    // Throws IoError "<operation>: store is closed (<store path>)".
     [[noreturn]] void throwClosed(const char* operation) const {
-        const std::string message = std::string(operation) + ": store is closed";
+        const std::string message = withPath(std::string(operation) + ": store is closed", setup.gate->path());
         throw IoError(message.c_str());
     }
 
@@ -272,7 +277,10 @@ public:
             syncFile(tif);
             std::error_code error;
             const std::uintmax_t size = std::filesystem::file_size(tif, error);
-            if (error) throwIo(std::string(kFlush) + ": cannot read the size of the raster file", error.message());
+            if (error) {
+                throwIo(withPath(std::string(kFlush) + ": cannot read the size of the raster file", tif.u8string()),
+                        error.message());
+            }
             bytes = static_cast<int64_t>(size);
         } catch (...) {
             deleteOrWarn(tif, "deleting a partial raster file");
@@ -366,9 +374,13 @@ public:
             leaveLive(*setup.live, setup.raster, setup.files);
             const int64_t abandoned = tileCount();
             if (abandoned > 0) {
-                logMessage(LogLevel::Warning,
-                           "RasterWriter: %lld tile(s) of %s by stage %d were abandoned unflushed (%s)",
-                           static_cast<long long>(abandoned), rasterText().c_str(), setup.stage.value(), why);
+                // Named by the spool file that held the tiles.
+                const std::string message =
+                    withPath("RasterWriter: " + std::to_string(abandoned) + " tile(s) of " + rasterText() +
+                                 " by stage " + std::to_string(setup.stage.value()) + " were abandoned unflushed (" +
+                                 why + ")",
+                             pathOf(setup.files.spoolName).u8string());
+                logMessage(LogLevel::Warning, "%s", message.c_str());
             }
         } catch (...) {
         }

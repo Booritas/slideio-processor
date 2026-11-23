@@ -369,6 +369,8 @@ TEST_F(GeoJsonImport, EachSkippedFeatureIsLoggedOnceUnderTheReadersIndex) {
     EXPECT_EQ(count("GeoJsonReader: skipping feature 0 "), 1);
     EXPECT_EQ(count("GeoJsonReader: skipping feature 1 "), 1);
     EXPECT_EQ(count("GeoJsonImporter::import: skipping feature 2 "), 1);
+    EXPECT_EQ(count("GeoJsonImporter::import: skipping feature 2 of the file (" + file.utf8() + "): "), 1);
+    EXPECT_EQ(count("GeoJsonImporter::import: feature 3 of the file (" + file.utf8() + "): "), 1);
     EXPECT_EQ(count("GeoJsonReader: feature 2 "), 1);  // the reader's own error, quoted by the importer
     EXPECT_EQ(count("GeoJsonImporter::import: feature 3 "), 1);
     EXPECT_FALSE(log.anyContains("SECRET"));
@@ -385,6 +387,9 @@ TEST_F(GeoJsonImport, StrictUnknownLabelIsNamedUnderTheReadersIndex) {  // UR-RE
         const std::string message = e.what();
         EXPECT_NE(message.find("feature 3 of"), std::string::npos) << message;  // the two non-objects count
         EXPECT_NE(message.find("my-weird-class"), std::string::npos) << message;
+        EXPECT_EQ(message, "GeoJsonImporter::import: feature 3 of the file (" + file.utf8() +
+                               ") has the label 'my-weird-class', which the vocabulary does not hold (import policy "
+                               "Strict)");
     }
     EXPECT_EQ(store().objects().totalObjectCount(), 0);
 }
@@ -476,7 +481,7 @@ TEST(GeoJsonImportRoi, RoiPolygonIsTheFirstSupportedFeature) {  // UR-IMG-5
         importRoiPolygon(points.utf8().c_str());
         FAIL() << "a file of points yielded a polygon";
     } catch (const InvalidArgumentError& e) {
-        EXPECT_NE(std::string(e.what()).find("holds no polygon"), std::string::npos) << e.what();
+        EXPECT_EQ(std::string(e.what()), "importRoiPolygon: the file holds no polygon (" + points.utf8() + ")");
     }
 
     // An invalid first polygon is an error, not a reason to take the next one.

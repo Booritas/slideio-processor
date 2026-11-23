@@ -184,12 +184,20 @@ public:
     // the file is left for removeUnreferencedFiles (ruling S51).
     bool deleteOrWarn(const char* operation, const std::string& fileName) noexcept {
         try {
+            // removeFile's error names the file.
             return detail::removeFile(directoryPath / std::filesystem::u8path(fileName));
         } catch (const std::exception& e) {
             logMessage(LogLevel::Warning, "%s: %s; it is left for removeUnreferencedFiles", operation,
                        detail::diagnosticText(e).c_str());
         } catch (...) {
-            logMessage(LogLevel::Warning, "%s: cannot delete a raster file; it is left for removeUnreferencedFiles", operation);
+            try {
+                const std::string file = (directoryPath / std::filesystem::u8path(fileName)).u8string();
+                logMessage(LogLevel::Warning, "%s: %s; it is left for removeUnreferencedFiles", operation,
+                           detail::withPath("cannot delete a raster file", file).c_str());
+            } catch (...) {
+                logMessage(LogLevel::Warning, "%s: cannot delete a raster file; it is left for removeUnreferencedFiles",
+                           operation);
+            }
         }
         return false;
     }
@@ -334,7 +342,8 @@ RasterWriterPtr RasterRegistry::writerForStage(StageId stage, RasterId raster) {
         std::error_code error;
         std::filesystem::create_directories(impl_->directoryPath, error);
         if (error) {
-            detail::throwIo(std::string(kOperation) + ": cannot create the raster directory",
+            detail::throwIo(detail::withPath(std::string(kOperation) + ": cannot create the raster directory",
+                                             impl_->directory),
                             error.message());
         }
         setup.gate = impl_->store.gate();
@@ -455,7 +464,8 @@ int64_t RasterRegistry::removeUnreferencedFiles() {
     std::error_code error;
     const bool present = std::filesystem::exists(impl_->directoryPath, error);
     if (error) {
-        detail::throwIo(std::string(kOperation) + ": cannot inspect the raster directory",
+        detail::throwIo(detail::withPath(std::string(kOperation) + ": cannot inspect the raster directory",
+                                         impl_->directory),
                         error.message());
     }
     if (!present) return 0;
@@ -474,7 +484,8 @@ int64_t RasterRegistry::removeUnreferencedFiles() {
         if (detail::isGeneratedRasterFileName(name)) candidates.push_back(std::move(name));
     }
     if (error) {
-        detail::throwIo(std::string(kOperation) + ": cannot list the raster directory",
+        detail::throwIo(detail::withPath(std::string(kOperation) + ": cannot list the raster directory",
+                                         impl_->directory),
                         error.message());
     }
 

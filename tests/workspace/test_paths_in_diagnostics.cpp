@@ -73,7 +73,6 @@ const std::string kMarker = "PATIENT-MARKER-42";
 
 // The owning task of a pending row (see the comment at the top). 0 is a live row.
 constexpr int kLive = 0;
-constexpr int kPendingTask2 = 2;
 constexpr int kPendingTask3 = 3;
 constexpr int kPendingTask4 = 4;
 
@@ -278,46 +277,44 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
     // The store: missing, over an existing one, read-only for writing, held, closed.
     const std::string missingStore = u8(dir / "missing.store");
     seen.failure("Store::open of a missing store",
-                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadWrite, config); }, kPendingTask2);
+                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadWrite, config); });
     seen.failure("Store::open ReadOnly of a missing store",
-                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadOnly, config); }, kPendingTask2);
+                 [&] { Store::open(missingStore.c_str(), OpenMode::ReadOnly, config); });
     const std::string storeText = u8(dir / "a.store");
     {
         StorePtr store = Store::open(storeText.c_str(), OpenMode::CreateNew, config);
         seen.failure("CreateNew over an existing store",
-                     [&] { Store::open(storeText.c_str(), OpenMode::CreateNew, config); }, kPendingTask2);
-        seen.failure("a second writer", [&] { Store::open(storeText.c_str(), OpenMode::ReadWrite, config); },
-                     kPendingTask2);
+                     [&] { Store::open(storeText.c_str(), OpenMode::CreateNew, config); });
+        seen.failure("a second writer", [&] { Store::open(storeText.c_str(), OpenMode::ReadWrite, config); });
         store->layers().declareSemantic("cells", store->layers().pixelLayer());
         store->stageStateWriter().declare("imp", "");
         store->close();
-        seen.failure("a closed store", [&] { store->layers().pixelLayer(); store->provenance(); }, kPendingTask2);
+        seen.failure("a closed store", [&] { store->layers().pixelLayer(); store->provenance(); });
         seen.failure("a closed store's rasters",
-                     [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); }, kPendingTask2);
+                     [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
     }
     {
         StorePtr readOnly = Store::open(storeText.c_str(), OpenMode::ReadOnly, config);
         seen.failure("a read-only store declaring a raster",
-                     [&] { readOnly->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); }, kPendingTask2);
-        seen.failure("a read-only store declaring a stage", [&] { readOnly->stageStateWriter().declare("s", ""); },
-                     kPendingTask2);
+                     [&] { readOnly->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
+        seen.failure("a read-only store declaring a stage", [&] { readOnly->stageStateWriter().declare("s", ""); });
         seen.failure("a read-only store's importer", [&] {
             LayerId cells;
             readOnly->layers().find("cells", cells);
             GeoJsonImporter importer(*readOnly, cells, StageId(1));
-        }, kPendingTask2);
+        });
         EventCursorPtr cursor = readOnly->events().subscribe(0);
         cursor->close();
-        seen.failure("a closed event cursor", [&] { cursor->next(0); }, kPendingTask2);
+        seen.failure("a closed event cursor", [&] { cursor->next(0); });
     }
     // A file that is not a store.
     const fs::path garbage = dir / "garbage.store";
     writeFile(garbage, std::string(8192, 'x'));
     const std::string garbageText = u8(garbage);
     seen.failure("a file that is not a store",
-                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadWrite, config); }, kPendingTask2);
+                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadWrite, config); });
     seen.failure("a file that is not a store, read-only",
-                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadOnly, config); }, kPendingTask2);
+                 [&] { Store::open(garbageText.c_str(), OpenMode::ReadOnly, config); });
 
     // A corrupt raster file, read through RasterRegistry::sourceFor.
     {
@@ -344,7 +341,7 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
             TileRasterSourcePtr source = rasters.sourceFor(raster);
             auto owned = makeView(0, Rect64{0, 0, 64, 64}, 64, 64, source->planeType(), source->planeCount(), 7.0);
             source->fillTile(owned->view);
-        }, kPendingTask2);
+        });
     }
 
     // Log lines: an unflushed raster writer, features the importer skips, a reopened workspace.
@@ -357,15 +354,20 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
             RasterWriterPtr writer = store->rasters().writerForStage(stage, raster);
             writer->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Int32, 1, 3.0)->view);
         }  // destroyed unflushed: logs a warning
-        seen.logLine("an unflushed raster writer", "RasterWriter:", true, kPendingTask2);
+        seen.logLine("an unflushed raster writer", "RasterWriter:", true);
         const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
         const StageId imp = store->stageStateWriter().declare("imp", "");
         const fs::path skipping = dir / "skipping.geojson";
         writeFile(skipping,
                   R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}},)"
+                  R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[5,0],[0,0]]]}},)"
                   R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         GeoJsonImporter(*store, cells, imp).import(u8(skipping).c_str());
-        seen.logLine("a feature the importer skips (GeoJsonReader's line)", "skipping feature", true, kPendingTask4);
+        seen.logLine("a feature the reader skips (GeoJsonReader's line)", "GeoJsonReader: skipping feature", true,
+                     kPendingTask4);
+        // The degenerate polygon: the reader rejects its geometry, and the importer logs the skip.
+        seen.logLine("a feature the importer skips for its geometry (GeoJsonImporter's line)",
+                     "GeoJsonImporter::import: skipping feature", true);
         const std::string reopened = u8(dir / "ws-reopened");
         Workspace::create(reopened.c_str(), slideText.c_str(), 0, config)->close();
         Workspace::open(reopened.c_str(), config)->close();
@@ -394,15 +396,13 @@ TEST(Diagnostics, PathsInErrorsAndLogs) {
         const fs::path noPolygon = dir / "empty.geojson";
         writeFile(noPolygon, R"({"type":"FeatureCollection","features":[]})");
         const std::string noPolygonText = u8(noPolygon);
-        seen.failure("a GeoJSON ROI without a polygon", [&] { importRoiPolygon(noPolygonText.c_str()); },
-                     kPendingTask2);
+        seen.failure("a GeoJSON ROI without a polygon", [&] { importRoiPolygon(noPolygonText.c_str()); });
         const fs::path unknownLabel = dir / "label.geojson";
         writeFile(unknownLabel,
                   R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{"classification":{"name":"zzz-unknown"}},)"
                   R"("geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         const std::string unknownLabelText = u8(unknownLabel);
-        seen.failure("a GeoJSON import with an unknown label", [&] { importer.import(unknownLabelText.c_str()); },
-                     kPendingTask2);
+        seen.failure("a GeoJSON import with an unknown label", [&] { importer.import(unknownLabelText.c_str()); });
         // Exporters writing into a directory that does not exist.
         const std::string noDir = u8(dir / "nowhere" / "out.csv");
         seen.failure("a CSV export into a missing directory", [&] {

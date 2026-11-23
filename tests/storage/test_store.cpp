@@ -78,10 +78,15 @@ TEST(Store, CreateReopenAndModes) {
         Store::open(missing.c_str(), OpenMode::ReadWrite, cfg);
         FAIL() << "opened a missing store";
     } catch (const IoError& e) {
-        EXPECT_TRUE(contains(e.what(), "no store at the given path")) << e.what();
-        EXPECT_FALSE(contains(e.what(), missing.c_str())) << e.what();
+        // The message names the missing store by its path.
+        EXPECT_STREQ(e.what(), ("Store::open: there is no store at the given path (" + missing + ")").c_str());
     }
-    EXPECT_THROW(Store::open(missing.c_str(), OpenMode::ReadOnly, cfg), IoError);
+    try {
+        Store::open(missing.c_str(), OpenMode::ReadOnly, cfg);
+        FAIL() << "opened a missing store read-only";
+    } catch (const IoError& e) {
+        EXPECT_STREQ(e.what(), ("Store::open: there is no store at the given path (" + missing + ")").c_str());
+    }
     EXPECT_FALSE(std::filesystem::exists(missingFiles.path()));
 
     EXPECT_THROW(Store::open(nullptr, OpenMode::ReadOnly, cfg), InvalidArgumentError);
@@ -148,6 +153,11 @@ TEST(Store, NonStoreFileIsAFormatError) {
         } catch (const StoreFormatError& e) {
             EXPECT_EQ(e.storeVersion(), 0);
             EXPECT_EQ(e.libraryVersion(), 2);
+            // The message names the file by its path; SQLite's text follows as the cause.
+            const std::string expected = "Store::open: the file is not a slideio-processor store (store format version "
+                                         "0; this library reads version 2 and upgrades version 1) (" +
+                                         files.utf8() + "); cause: ";
+            EXPECT_EQ(std::string(e.what()).rfind(expected, 0), 0u) << e.what();
         }
     }
     EXPECT_EQ(readFile(files.path()), "hello");
@@ -178,9 +188,12 @@ TEST(Store, SecondWriterIsRefusedReaderIsNot) {
         FAIL() << "a second writer was admitted";
     } catch (const IoError& e) {
         EXPECT_TRUE(contains(e.what(), "process")) << e.what();
-        // The store is named by its role; its path never appears.
+        // The store is named by its role, and the message ends with the held writer lock file.
         EXPECT_TRUE(contains(e.what(), "the store")) << e.what();
-        EXPECT_FALSE(contains(e.what(), path.c_str())) << e.what();
+        const std::string what = e.what();
+        const std::string lockFile = "; concurrent writers are not supported (" + path + "-writer.lock)";
+        ASSERT_GE(what.size(), lockFile.size()) << what;
+        EXPECT_EQ(what.substr(what.size() - lockFile.size()), lockFile) << what;
     }
     EXPECT_NO_THROW(Store::open(path.c_str(), OpenMode::ReadOnly, cfg));
     w->close();
@@ -219,6 +232,7 @@ TEST(Store, ClosedAndReadOnlyRefuseWork) {
         FAIL() << "a closed store answered";
     } catch (const IoError& e) {
         EXPECT_TRUE(contains(e.what(), "store is closed")) << e.what();
+        EXPECT_STREQ(e.what(), ("Store::provenance: store is closed (" + path + ")").c_str());
     }
     EXPECT_THROW(s->setProvenance(Provenance()), IoError);
     EXPECT_STREQ(s->path(), path.c_str());
@@ -232,7 +246,7 @@ TEST(Store, ClosedAndReadOnlyRefuseWork) {
     } catch (const IoError& e) {
         EXPECT_TRUE(contains(e.what(), "read-only")) << e.what();
         EXPECT_TRUE(contains(e.what(), "the store")) << e.what();
-        EXPECT_FALSE(contains(e.what(), path.c_str())) << e.what();
+        EXPECT_STREQ(e.what(), ("Store::setProvenance: the store is read-only (" + path + ")").c_str());
     }
     EXPECT_NO_THROW(r->provenance());
 }

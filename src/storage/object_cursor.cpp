@@ -1,3 +1,4 @@
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/geometry_codec.hpp"
 #include "storage/detail/polygon_predicates.hpp"
 #include "storage/detail/query_builder.hpp"
@@ -44,7 +45,7 @@ namespace {
 class ObjectCursorImpl final : public Cursor {
 public:
     ObjectCursorImpl(ReadLease&& lease, BuiltQuery&& built)
-        : lease_(std::move(lease)), built_(std::move(built)) {
+        : lease_(std::move(lease)), storePath_(lease_->storePath()), built_(std::move(built)) {
         sqlite3* db = lease_->get();
         // One read transaction for the cursor's lifetime: one snapshot, taken now by the
         // first read. The pool rolls it back when the lease returns.
@@ -93,7 +94,7 @@ public:
 
     void checkUsable(const char* operation) const {
         if (!lease_) {
-            const std::string message = std::string(operation) + ": the cursor is closed";
+            const std::string message = withPath(std::string(operation) + ": the cursor is closed", storePath_);
             throw IoError(message.c_str());
         }
         lease_->checkStoreOpen(operation);
@@ -108,6 +109,7 @@ private:
     // Declaration order is destruction order in reverse: statements finalise before the
     // lease returns the connection.
     std::optional<ReadLease> lease_;
+    const std::string storePath_;  // the store's path, for messages once the lease is gone
     BuiltQuery built_;
     std::optional<Statement> select_;
     std::optional<Statement> measurements_;

@@ -1,5 +1,6 @@
 #include "storage/detail/tile_spool.hpp"
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/file_io.hpp"
 
 #include <slideio/processor/core/error.hpp>
@@ -123,7 +124,7 @@ TileSpool::TileSpool(std::filesystem::path spoolFile, RasterFormat format)
     file_ = openSpool(path_);
     if (file_ == nullptr) {
         const int error = errno;
-        throwIo("cannot create the scratch file",
+        throwIo(withPath("cannot create the scratch file", path_.u8string()),
                 error != 0 ? errnoText(error) : std::string("the file cannot be opened"));
     }
 }
@@ -160,11 +161,14 @@ void TileSpool::append(const Rect64& slideRect, int64_t width, int64_t height, c
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_ == nullptr) throw InternalError("TileSpool::append: the spool was removed");
-    if (seekFile(file_, end_, SEEK_SET) != 0) throwIo("cannot seek in the scratch file", errnoText(errno));
+    if (seekFile(file_, end_, SEEK_SET) != 0) {
+        const int error = errno;
+        throwIo(withPath("cannot seek in the scratch file", path_.u8string()), errnoText(error));
+    }
     errno = 0;
     if (std::fwrite(bytes.data(), 1, bytes.size(), file_) != bytes.size()) {
         const int error = errno != 0 ? errno : EIO;
-        throwIo("cannot write the scratch file", errnoText(error));
+        throwIo(withPath("cannot write the scratch file", path_.u8string()), errnoText(error));
     }
     SpoolEntry entry;
     entry.slideRect = slideRect;
@@ -226,8 +230,10 @@ void TileSpool::decodeInto(const SpoolPiece& piece, int64_t pieceWidth, int64_t 
                            int64_t targetY, std::vector<uint8_t>& row, std::vector<uint8_t>& chunk) const {
     ++piecesDecoded_;
     int64_t remaining = piece.bytes;
-    const std::string where = "the scratch file";
-    if (seekFile(file_, piece.offset, SEEK_SET) != 0) throwIo("cannot read " + where, errnoText(errno));
+    if (seekFile(file_, piece.offset, SEEK_SET) != 0) {
+        const int error = errno;
+        throwIo(withPath("cannot read the scratch file", path_.u8string()), errnoText(error));
+    }
 
     const size_t rowBytes = static_cast<size_t>(pieceWidth) * sampleBytes_;
     const size_t copyBytes = static_cast<size_t>(columnEnd - columnBegin) * sampleBytes_;
@@ -247,7 +253,7 @@ void TileSpool::decodeInto(const SpoolPiece& piece, int64_t pieceWidth, int64_t 
                 errno = 0;
                 if (std::fread(chunk.data(), 1, n, file_) != n) {
                     const int error = errno != 0 ? errno : EIO;
-                    throwIo("cannot read " + where, errnoText(error));
+                    throwIo(withPath("cannot read the scratch file", path_.u8string()), errnoText(error));
                 }
                 zs.stream.next_in = chunk.data();
                 zs.stream.avail_in = static_cast<uInt>(n);
@@ -346,7 +352,7 @@ void TileSpool::remove() {
     }
     std::error_code error;
     std::filesystem::remove(path_, error);
-    if (error) throwIo("cannot delete the scratch file", error.message());
+    if (error) throwIo(withPath("cannot delete the scratch file", path_.u8string()), error.message());
 }
 
 } // namespace slideio::processor::detail
