@@ -317,7 +317,7 @@ every provenance line, and with it the provenance UR-RES-11 asks for.
   `bytesWritten()` is the final file's size, counted as the bytes were written,
   so nothing can fail once the finished file is in place.
 - On any exception the partial file is removed and the exception propagates;
-  failures of the file itself are `IoError`, whose messages carry no path.
+  failures of the file itself are `IoError`, whose messages name the file by its path.
 - The two-argument `write` calls the four-argument one with no observer and a
   token never cancelled. `CsvWriter` is ThreadConfined.
 
@@ -441,7 +441,7 @@ renamed onto `path`. Progress, cancellation and failure behave as in
 any file at `path` untouched. `GeoJsonWriter`'s own `IoError` messages already name the output file by its
 role (`GeoJsonWriter: <step> failed for the output file`); the exporter still
 replaces them with its own (`cannot create the output file`, `writing the output
-file failed`), which name no path.
+file failed`), which name the output file by its path.
 
 **Provenance and PHI** (decision 7). `provenance.slideId` is the id set with
 `slideId()`, as for `CsvWriter` (§7.3); without one it is the store's slide

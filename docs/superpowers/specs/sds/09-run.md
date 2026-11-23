@@ -129,7 +129,7 @@ and refuses only null or empty paths and a negative scene index.
    holds a store file, `<workspace>/workspace.store`, which is what
    `Workspace::open` requires (Workspace's fixed layout, SDS 04 §4.1). For an
    existing workspace, a `slidePath` that does not exist fails the run with
-   `IoError` "SlideRun: the slide cannot be found", naming no path. Otherwise
+   `IoError` "SlideRun: the slide cannot be found", naming the slide by its path. Otherwise
    the store alone is opened with `Store::open(..., OpenMode::ReadOnly)` and its
    provenance read, as `Workspace`'s own scene check does; no slide is opened,
    so the run opens the slide once, through `Workspace::open`. When the recorded

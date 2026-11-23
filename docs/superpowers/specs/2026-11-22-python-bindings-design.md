@@ -50,6 +50,7 @@ product.
   Slide names and metadata can carry patient identifiers. The library's
   existing message rules hold for everything the bindings add. Under HIPAA and
   GDPR, the MCP layer will need its own review of what it sends to a model.
+  Revoked for errors and logs on 2026-11-23 (paths-in-diagnostics design); exports unchanged.
 
 ## 2. Decisions
 
@@ -369,7 +370,7 @@ workspace afterwards.
 - Runs that do not block: `SlideRun` and `StageRunner` usable from a background
   thread with the GIL released, with progress callbacks and a cancellation
   handle.
-- Typed exceptions whose messages contain no slide paths, metadata or pixel
+- Typed exceptions whose messages contain no slide metadata or pixel
   values.
 - Result summaries (counts, measurement statistics) computable without
   exporting files. In the first version these are small Python helpers over
