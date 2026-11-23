@@ -137,7 +137,7 @@ and refuses only null or empty paths and a negative scene index.
    that has moved or been deleted is equivalent to nothing), or its scene index
    differs, the run is refused with an `InvalidArgumentError`
    whose message, "SlideRun: the workspace belongs to another slide or scene",
-   names neither path. A refused run leaves the store's contents,
+   names the workspace by its path (SDS 00 "Paths in diagnostics"). A refused run leaves the store's contents,
    its stage records and every file other than SQLite's `-wal` and `-shm`
    sidecars unchanged, and creates no other file or directory. The sidecars are
    SQLite's housekeeping, not data: the read-only open may create or touch them,
