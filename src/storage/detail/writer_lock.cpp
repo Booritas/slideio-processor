@@ -1,5 +1,7 @@
 #include "storage/detail/writer_lock.hpp"
 
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/core/error.hpp>
 
 #include <cerrno>
@@ -54,16 +56,18 @@ std::string parsePid(const std::string& text) {
     return text.substr(0, end);
 }
 
-[[noreturn]] void throwHeld(const std::string& lockText) {
+// `lockPath` is the held lock file's path (UTF-8), which the message ends with.
+[[noreturn]] void throwHeld(const std::string& lockPath, const std::string& lockText) {
     const std::string pid = parsePid(lockText);
     std::string message = "Store::open: the store is already open for writing";
     if (!pid.empty()) message += " by process " + pid;
     message += "; concurrent writers are not supported";
+    message = withPath(message, lockPath);
     throw IoError(message.c_str());
 }
 
-[[noreturn]] void throwLockFileError(const char* step, const std::string& cause) {
-    const std::string message = "Store::open: cannot " + std::string(step) + " the writer lock file";
+[[noreturn]] void throwLockFileError(const char* step, const std::string& lockPath, const std::string& cause) {
+    const std::string message = withPath("Store::open: cannot " + std::string(step) + " the writer lock file", lockPath);
     ErrorContext context;
     context.cause = cause.c_str();
     throw IoError(message.c_str(), context);
@@ -146,7 +150,7 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
         HANDLE h = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) throwLockFileError("open", lastErrorText());
+        if (h == INVALID_HANDLE_VALUE) throwLockFileError("open", lockPath, lastErrorText());
         WriterLock lock;
         lock.handle_ = h;  // closed by ~WriterLock on every failure and retry below
         if (attempt == 0 && afterOpen) afterOpen();
@@ -158,7 +162,7 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
             lock.handle_ = nullptr;
             if (error != ERROR_LOCK_VIOLATION && error != ERROR_IO_PENDING) {
                 CloseHandle(h);
-                throwLockFileError("lock", std::system_category().message(static_cast<int>(error)));
+                throwLockFileError("lock", lockPath, std::system_category().message(static_cast<int>(error)));
             }
             if (!namesFile(h, wide)) {  // locked by a holder that is removing it; no writer's
                 CloseHandle(h);
@@ -168,7 +172,7 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
             DWORD read = 0;
             const BOOL ok = ReadFile(h, buffer, sizeof(buffer) - 1, &read, nullptr);
             CloseHandle(h);
-            throwHeld(ok ? std::string(buffer, read) : std::string());
+            throwHeld(lockPath, ok ? std::string(buffer, read) : std::string());
         }
         if (!namesFile(h, wide)) continue;  // an orphan (see kLockAttempts); released here
         // Lock held: replace the text with this process's id.
@@ -177,11 +181,11 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
         DWORD written = 0;
         if (!SetFilePointerEx(h, zero, nullptr, FILE_BEGIN) || !SetEndOfFile(h) ||
             !WriteFile(h, pid.data(), static_cast<DWORD>(pid.size()), &written, nullptr) || written != pid.size()) {
-            throwLockFileError("write", lastErrorText());
+            throwLockFileError("write", lockPath, lastErrorText());
         }
         return lock;
     }
-    throwLockFileError("lock", "the lock file was replaced while it was being locked");
+    throwLockFileError("lock", lockPath, "the lock file was replaced while it was being locked");
 }
 
 bool WriterLock::held() const noexcept { return handle_ != nullptr; }
@@ -213,7 +217,7 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
     const std::string lockPath = lockPathOf(storePath);
     for (int attempt = 0; attempt < kLockAttempts; ++attempt) {
         const int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-        if (fd < 0) throwLockFileError("open", std::strerror(errno));
+        if (fd < 0) throwLockFileError("open", lockPath, std::strerror(errno));
         WriterLock lock;
         lock.fd_ = fd;  // closed by ~WriterLock on every failure and retry below
         if (attempt == 0 && afterOpen) afterOpen();
@@ -223,7 +227,7 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
             lock.fd_ = -1;
             if (error != EWOULDBLOCK) {
                 ::close(fd);
-                throwLockFileError("lock", std::strerror(error));
+                throwLockFileError("lock", lockPath, std::strerror(error));
             }
             if (!namesFile(fd, lockPath)) {  // locked by a holder that is removing it; no writer's
                 ::close(fd);
@@ -232,17 +236,17 @@ WriterLock WriterLock::acquire(const std::string& storePath, const std::function
             char buffer[32] = {};
             const ssize_t n = ::pread(fd, buffer, sizeof(buffer) - 1, 0);
             ::close(fd);
-            throwHeld(n > 0 ? std::string(buffer, static_cast<size_t>(n)) : std::string());
+            throwHeld(lockPath, n > 0 ? std::string(buffer, static_cast<size_t>(n)) : std::string());
         }
         if (!namesFile(fd, lockPath)) continue;  // an orphan (see kLockAttempts); released here
         const std::string pid = std::to_string(currentPid());
         if (::ftruncate(fd, 0) != 0 ||
             ::pwrite(fd, pid.data(), pid.size(), 0) != static_cast<ssize_t>(pid.size())) {
-            throwLockFileError("write", std::strerror(errno));
+            throwLockFileError("write", lockPath, std::strerror(errno));
         }
         return lock;
     }
-    throwLockFileError("lock", "the lock file was replaced while it was being locked");
+    throwLockFileError("lock", lockPath, "the lock file was replaced while it was being locked");
 }
 
 bool WriterLock::held() const noexcept { return fd_ >= 0; }

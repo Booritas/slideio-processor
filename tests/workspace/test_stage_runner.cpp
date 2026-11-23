@@ -1417,10 +1417,13 @@ TEST(StageRunner, FailedRecordingIsLoggedAndTheOriginalPropagates) {
         EXPECT_NE(std::string(e.cause()).find("deliberate failure"), std::string::npos)
             << "the run's own failure, not one of the recording's: " << e.what();
     }
+    // Each line names the stage and the workspace directory (paths in diagnostics).
+    const std::string where = std::string(" (") + f.workspace->path() + ")";
     int64_t named = 0;
     for (const auto& entry : log.entries()) {
         if (entry.first == LogLevel::Error && entry.second.find("StageRunner") != std::string::npos &&
             entry.second.find("\"nuclei\"") != std::string::npos) {
+            EXPECT_NE(entry.second.find(where), std::string::npos) << entry.second;
             ++named;
         }
     }

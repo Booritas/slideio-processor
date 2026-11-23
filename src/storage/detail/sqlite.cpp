@@ -1,16 +1,32 @@
 #include "storage/detail/sqlite.hpp"
 
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/core/error.hpp>
 
 #include <utility>
 
 namespace slideio::processor::detail {
 
-void throwSqliteError(sqlite3* db, int code, const char* operation) {
-    const std::string message = std::string(operation != nullptr ? operation : "SQLite") + ": SQLite failed on the store";
+namespace {
+
+// Throws IoError "<operation>: SQLite failed on the store", followed by the store's path
+// when `path` is not empty, with sqlite3_errmsg(db) (or the text for `code` when `db` is
+// null) as the cause.
+[[noreturn]] void throwSqlite(sqlite3* db, int code, const char* operation, const std::string& path) {
+    std::string message = std::string(operation != nullptr ? operation : "SQLite") + ": SQLite failed on the store";
+    if (!path.empty()) message = withPath(message, path);
     ErrorContext context;
     context.cause = db != nullptr ? sqlite3_errmsg(db) : sqlite3_errstr(code);
     throw IoError(message.c_str(), context);
+}
+
+} // namespace
+
+void throwSqliteError(sqlite3* db, int code, const char* operation) {
+    // Never asked of a null connection; a temporary or in-memory database has no name.
+    const char* name = db != nullptr ? sqlite3_db_filename(db, "main") : nullptr;
+    throwSqlite(db, code, operation, name != nullptr ? std::string(name) : std::string());
 }
 
 Connection::Connection(Connection&& other) noexcept : db_(std::exchange(other.db_, nullptr)) {}
@@ -29,9 +45,10 @@ Connection Connection::open(const std::string& path, int flags) {
     sqlite3* db = nullptr;
     const int rc = sqlite3_open_v2(path.c_str(), &db, flags, nullptr);
     Connection connection(db);  // owns db even when the open failed
-    if (rc != SQLITE_OK) throwSqliteError(db, rc, "Store::open");
+    // Named by the path as given: a connection whose open failed may have no file name.
+    if (rc != SQLITE_OK) throwSqlite(db, rc, "Store::open", path);
     const int timeout = sqlite3_busy_timeout(db, 5000);
-    if (timeout != SQLITE_OK) throwSqliteError(db, timeout, "Store::open");
+    if (timeout != SQLITE_OK) throwSqlite(db, timeout, "Store::open", path);
     return connection;
 }
 

@@ -39,7 +39,7 @@ class TiffRasterReader {
 public:
     // `path` is the file; `format` the declared sample type and plane count; `scaleX` and
     // `scaleY` the level-0 pixels per page-0 pixel and `width` x `height` page 0's size,
-    // all from the row. Throws IoError naming the file by its role, never its path, when it cannot be opened, or when
+    // all from the row. Throws IoError naming the file by its role and its path, when it cannot be opened, or when
     // its pages, samples or planes are not the ones the row and S41 describe; and
     // std::bad_alloc.
     TiffRasterReader(std::filesystem::path path, RasterFormat format, double scaleX, double scaleY, int64_t width,
@@ -54,7 +54,7 @@ public:
     // with scaleX * 2^k <= t * (1 + 1e-9), else page 0. View pixel (i, j) takes page pixel
     // (floor((x0 + (i + 0.5) * tx) / (scaleX * 2^k)), likewise for y); pixels outside the
     // page are 0. Each TIFF tile it touches is decoded once per plane. ThreadSafe. Throws
-    // IoError naming the file by its role, never its path, when libtiff fails, or when no handle is open and the file
+    // IoError naming the file by its role and its path, when libtiff fails, or when no handle is open and the file
     // can no longer be opened; and std::bad_alloc.
     void fill(BlockView& out);
 

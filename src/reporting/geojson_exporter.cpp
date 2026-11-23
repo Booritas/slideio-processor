@@ -1,6 +1,7 @@
 // Requirements: UR-RES-8, UR-RES-11, UR-RES-15, UR-RES-18, UR-SEG-6, UR-QA-3
 #include <slideio/processor/reporting/geojson_exporter.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "reporting/detail/columns.hpp"
 #include "reporting/detail/export_driver.hpp"
 
@@ -28,12 +29,18 @@ namespace {
 
 constexpr const char* kWho = "GeoJsonExporter::write";
 
-[[noreturn]] void throwWriteFailed() {
-    throw IoError((std::string(kWho) + ": writing the output file failed").c_str());
+// Throws "<kWho>: <message> (<path>)", naming the output file by its path, with `cause` (the
+// writer's message or the OS's text) as the cause.
+[[noreturn]] void throwAboutTheFile(const char* message, const std::filesystem::path& path,
+                                    const std::string& cause) {
+    ErrorContext context;
+    if (!cause.empty()) context.cause = cause.c_str();
+    throw IoError(detail::withPath(std::string(kWho) + ": " + message, path.u8string()).c_str(), context);
 }
 
-// Streams features through GeoJsonWriter into the partial file the driver names. The
-// writer's own IoError messages are replaced by ones that name the output file by its role.
+// Streams features through GeoJsonWriter into the partial file the driver names. A failure is
+// worded by the exporter and names the partial file; the writer's own message, which names it
+// too, is the cause.
 class GeoJsonSink : public detail::ExportSink {
 public:
     GeoJsonSink(Store& store, const detail::ResolvedColumns& resolved, LabelPolicy labelPolicy,
@@ -54,15 +61,15 @@ public:
         partial_ = partialPath;
         try {
             writer_.emplace(partialPath.u8string().c_str());
-        } catch (const IoError&) {
-            throw IoError((std::string(kWho) + ": cannot create the output file").c_str());
+        } catch (const IoError& e) {
+            throwAboutTheFile("cannot create the output file", partialPath, e.what());
         }
         try {
             Provenance provenance = store_.provenance();
             if (slideId_ != nullptr) provenance.setSlideId(slideId_->c_str());
             writer_->begin(provenance);
-        } catch (const IoError&) {
-            throwWriteFailed();
+        } catch (const IoError& e) {
+            throwAboutTheFile("writing the output file failed", partial_, e.what());
         }
     }
 
@@ -79,21 +86,21 @@ public:
                                   labelNames_.data(), labelLocal_.get(),
                                   static_cast<int32_t>(labelNames_.size()),
                                   hasParent ? &parent : nullptr);
-        } catch (const IoError&) {
-            throwWriteFailed();
+        } catch (const IoError& e) {
+            throwAboutTheFile("writing the output file failed", partial_, e.what());
         }
     }
 
     int64_t finish() override {
         try {
             writer_->end();
-        } catch (const IoError&) {
-            throwWriteFailed();
+        } catch (const IoError& e) {
+            throwAboutTheFile("writing the output file failed", partial_, e.what());
         }
         // The finished partial file's size, taken before the driver renames it.
         std::error_code ec;
         const std::uintmax_t size = std::filesystem::file_size(partial_, ec);
-        if (ec) throwWriteFailed();
+        if (ec) throwAboutTheFile("reading the output file's size failed", partial_, ec.message());
         return static_cast<int64_t>(size);
     }
 

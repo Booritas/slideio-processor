@@ -153,9 +153,12 @@ TEST(Workspace, OpenWithMissingSlideIsIoError) {
         Workspace::open(t.workspaceUtf8().c_str(), t.config);
         FAIL() << "open succeeded without its slide";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find("cannot open the slide"), std::string::npos) << e.what();
-        EXPECT_EQ(std::string(e.what()).find(t.slideUtf8()), std::string::npos) << e.what();
-        EXPECT_EQ(std::string(e.what()).find("slide.tif"), std::string::npos) << e.what();
+        // The message names the slide; SlideIO's own text, unaltered, is the cause, and it
+        // names the missing file.
+        EXPECT_EQ(std::string(e.what()), "Workspace::open: cannot open the slide (" + t.slideUtf8() + "); cause: " +
+                                             e.cause())
+            << e.what();
+        EXPECT_NE(std::string(e.cause()).find("slide.tif"), std::string::npos) << e.what();
     }
 }
 
@@ -346,8 +349,10 @@ TEST(Workspace, MissingParentIsIoErrorAndMakesNothing) {
         Workspace::create(path.u8string().c_str(), t.slideUtf8().c_str(), 0, t.config);
         FAIL() << "create made a workspace under a missing parent";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find("workspace directory"), std::string::npos) << e.what();
-        EXPECT_EQ(std::string(e.what()).find(path.u8string()), std::string::npos) << e.what();
+        // The message names the directory it could not make; std::error_code's text is the cause.
+        EXPECT_NE(std::string(e.cause()), "") << e.what();
+        EXPECT_EQ(std::string(e.what()), "Workspace::create: cannot create the workspace directory (" +
+                                             path.u8string() + "); cause: " + e.cause());
     }
     EXPECT_FALSE(fs::exists(parent));
 }
@@ -427,19 +432,23 @@ std::map<std::string, std::string> snapshotOf(const fs::path& root) {
     return files;
 }
 
-// Expects `call` to throw InvalidArgumentError whose message names neither slide path nor file name.
+// Expects `call` to throw InvalidArgumentError. A refusal about a slide file names that file
+// by its path (`named`) and no other of `slides`; one about no file (`named` empty: a null
+// scene, an index) names none of them.
 template <typename Call>
-void expectRefusedWithoutPaths(Call call, const std::vector<fs::path>& slides) {
+void expectRefused(Call call, const std::vector<fs::path>& slides, const fs::path& named = fs::path()) {
     try {
         call();
         ADD_FAILURE() << "no exception";
     } catch (const InvalidArgumentError& e) {
         const std::string message = e.what();
-        for (const fs::path& slide : slides) {
-            EXPECT_EQ(message.find(slide.u8string()), std::string::npos) << message;
-            EXPECT_EQ(message.find(slide.parent_path().u8string()), std::string::npos) << message;
+        if (!named.empty()) {
+            EXPECT_NE(message.find(" (" + named.u8string() + ")"), std::string::npos) << message;
         }
-        EXPECT_EQ(message.find(".tif"), std::string::npos) << message;
+        for (const fs::path& slide : slides) {
+            if (slide == named) continue;
+            EXPECT_EQ(message.find(slide.u8string()), std::string::npos) << message;
+        }
     }
 }
 
@@ -518,22 +527,22 @@ TEST(Workspace, RefusesAMismatchedScene) {
     const Configuration config = Configuration::defaults();
 
     // create: a scene of A with the path of B, a null scene, a negative index, a missing file.
-    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, b.c_str(), 0, config); }, slides);
-    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), nullptr, a.c_str(), 0, config); }, slides);
-    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, a.c_str(), -1, config); }, slides);
+    expectRefused([&] { Workspace::create(workspace.c_str(), sceneA, b.c_str(), 0, config); }, slides, slideB);
+    expectRefused([&] { Workspace::create(workspace.c_str(), nullptr, a.c_str(), 0, config); }, slides);
+    expectRefused([&] { Workspace::create(workspace.c_str(), sceneA, a.c_str(), -1, config); }, slides);
     const std::string missing = (dir.path() / "missing.tif").u8string();
-    expectRefusedWithoutPaths([&] { Workspace::create(workspace.c_str(), sceneA, missing.c_str(), 0, config); },
-                              slides);
+    expectRefused([&] { Workspace::create(workspace.c_str(), sceneA, missing.c_str(), 0, config); }, slides,
+                  fs::u8path(missing));
     EXPECT_FALSE(fs::exists(dir.path() / "ws"));
 
     // open: the store is unchanged by every refusal.
     Workspace::create(workspace.c_str(), a.c_str(), 0, config)->close();
     // Every refusal leaves every file of the closed workspace as it was.
     const auto before = snapshotOf(dir.path() / "ws");
-    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneB, 0, config); }, slides);
-    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, 1, config); }, slides);
-    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), nullptr, 0, config); }, slides);
-    expectRefusedWithoutPaths([&] { Workspace::open(workspace.c_str(), sceneA, -1, config); }, slides);
+    expectRefused([&] { Workspace::open(workspace.c_str(), sceneB, 0, config); }, slides, slideA);
+    expectRefused([&] { Workspace::open(workspace.c_str(), sceneA, 1, config); }, slides);
+    expectRefused([&] { Workspace::open(workspace.c_str(), nullptr, 0, config); }, slides);
+    expectRefused([&] { Workspace::open(workspace.c_str(), sceneA, -1, config); }, slides);
     EXPECT_EQ(snapshotOf(dir.path() / "ws"), before);
 
     // None of them left the writer lock held: the workspace still opens.
@@ -591,8 +600,8 @@ TEST(Workspace, RefusedSceneLeavesAVersion1StoreUnmigrated) {
     const auto before = snapshotOf(ws);
     const auto scene = openSceneOf(slide);
     const Configuration config = Configuration::defaults();
-    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 0, config); }, {slide});
-    expectRefusedWithoutPaths([&] { Workspace::open(ws.u8string().c_str(), scene, 1, config); }, {slide});
+    expectRefused([&] { Workspace::open(ws.u8string().c_str(), scene, 0, config); }, {slide});
+    expectRefused([&] { Workspace::open(ws.u8string().c_str(), scene, 1, config); }, {slide});
     // Not migrated (the store's bytes), and no lock file made.
     EXPECT_EQ(snapshotOf(ws), before);
     {

@@ -129,15 +129,16 @@ and refuses only null or empty paths and a negative scene index.
    holds a store file, `<workspace>/workspace.store`, which is what
    `Workspace::open` requires (Workspace's fixed layout, SDS 04 §4.1). For an
    existing workspace, a `slidePath` that does not exist fails the run with
-   `IoError` "SlideRun: the slide cannot be found", naming no path. Otherwise
+   `IoError` "SlideRun: the slide cannot be found", naming the slide by its path. Otherwise
    the store alone is opened with `Store::open(..., OpenMode::ReadOnly)` and its
    provenance read, as `Workspace`'s own scene check does; no slide is opened,
    so the run opens the slide once, through `Workspace::open`. When the recorded
    slide is not `std::filesystem::equivalent` to `slidePath` (a recorded slide
    that has moved or been deleted is equivalent to nothing), or its scene index
    differs, the run is refused with an `InvalidArgumentError`
-   whose message, "SlideRun: the workspace belongs to another slide or scene",
-   names neither path. A refused run leaves the store's contents,
+   whose message, `SlideRun: the workspace (<workspace>) belongs to another slide
+   or scene than the slide (<slide>), scene <index>`, names the workspace and the
+   slide given to the run by their paths (SDS 00 "Paths in diagnostics"). A refused run leaves the store's contents,
    its stage records and every file other than SQLite's `-wal` and `-shm`
    sidecars unchanged, and creates no other file or directory. The sidecars are
    SQLite's housekeeping, not data: the read-only open may create or touch them,
@@ -145,9 +146,9 @@ and refuses only null or empty paths and a negative scene index.
    and migrates no store. `SlideRun.RefusesAWorkspaceOfAnotherSlide` snapshots
    every file and directory of a cleanly closed workspace (no sidecars) and
    compares their bytes after each refusal, sidecars excepted, with the stage
-   records. `SlideRun.AMovedSlideGivesAnErrorWithNoPath` moves the slide of a
+   records. `SlideRun.AMovedSlideNamesItsPath` moves the slide of a
    workspace: a run naming the old path gets the `IoError`, a run naming the new
-   path the refusal, and neither message holds a path or file name. Otherwise
+   path the refusal, and both messages name their path. Otherwise
    the workspace is opened with `Workspace::open`. Any other path is made with
    `Workspace::create`.
 3. **Declare.** Each layer of the file is declared through `LayerLifecycle`,

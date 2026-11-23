@@ -2,8 +2,8 @@
 #pragma once
 
 // RAII wrappers over the SQLite C API. Every SQLite failure is reported through
-// throwSqliteError, which throws IoError naming the store by role (never its path) with sqlite3_errmsg
-// as the cause (C-6).
+// throwSqliteError, which throws IoError naming the store by its role and its path, with
+// sqlite3_errmsg as the cause.
 
 #include <sqlite3.h>
 
@@ -13,8 +13,10 @@
 
 namespace slideio::processor::detail {
 
-// Throws IoError "<operation>: SQLite failed on the store" with sqlite3_errmsg(db) as the
-// cause (never a path); a null `db` gives the cause for `code`.
+// Throws IoError "<operation>: SQLite failed on the store (<path>)" with sqlite3_errmsg(db)
+// as the cause; the path is sqlite3_db_filename(db, "main"), as SQLite holds it (absolute).
+// A null `db` gives the cause for `code` and names no path; so does a database without a
+// file name.
 [[noreturn]] void throwSqliteError(sqlite3* db, int code, const char* operation);
 
 // One owned sqlite3 connection, closed (sqlite3_close_v2) on destruction. Move-only.
@@ -28,7 +30,7 @@ public:
     ~Connection();
 
     // Opens `path` (UTF-8) with sqlite3_open_v2 `flags` and sets busy_timeout to 5000 ms.
-    // Throws IoError; the message does not name the path.
+    // Throws IoError naming `path`, as given.
     static Connection open(const std::string& path, int flags);
 
     sqlite3* get() const noexcept { return db_; }

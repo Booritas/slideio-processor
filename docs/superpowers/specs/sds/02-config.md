@@ -403,7 +403,7 @@ bytes, so a line ends in a bare newline on every platform and two runs that
 share a log file do not overwrite each other. Flushing every line costs a
 little throughput and keeps the last lines before a crash. The sink is built
 before anything is changed: when the file cannot be opened the call throws
-`IoError` naming the log file by its role (never its path), and the sink and level
+`IoError` naming the log file by its role and its path, and the sink and level
 already installed stay as they were. A sink whose stream fails clears the failed state, so logging
 resumes once the stream can be written again.
 

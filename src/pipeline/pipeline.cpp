@@ -18,6 +18,7 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace slideio::processor {
 
@@ -223,7 +224,10 @@ void Pipeline::validate() const {
             // path it is a failure to describe the scene, so IoError.
             ErrorContext context;
             context.cause = e.cause()[0] != '\0' ? e.cause() : e.what();
-            throw IoError("Pipeline::validate: SlideIO failed to describe the scene", context);
+            throw IoError(
+                detail::withSlidePath("Pipeline::validate: SlideIO failed to describe the scene", reader->slidePath())
+                    .c_str(),
+                context);
         }
         impl.levels = reader->levels();
         impl.selector = std::move(selector);

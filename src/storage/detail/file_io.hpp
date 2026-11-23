@@ -16,7 +16,8 @@ namespace slideio::processor::detail {
 // The text of an errno value. std::strerror is deprecated on MSVC and not thread-safe.
 std::string errnoText(int error);
 
-// Throws IoError `message`, with `cause` as its cause; no cause when `cause` is empty.
+// Throws IoError `message`, with `cause` as its cause; no cause when `cause` is empty. A
+// message about a file names it: callers pass withPath(message, path).
 [[noreturn]] void throwIo(const std::string& message, const std::string& cause);
 
 // fseek and ftell with 64-bit offsets: _fseeki64 and _ftelli64 on Windows, fseeko and
@@ -29,12 +30,14 @@ int64_t tellFile(std::FILE* file);
 // F_FULLFSYNC (falling back to fsync) on macOS, fsync elsewhere. On POSIX the directory
 // holding it is synced too, so a new file's name is as durable as its bytes; where the
 // filesystem cannot sync a directory (EINVAL, EBADF or ENOTSUP) that step is skipped and
-// logged at Debug. Throws IoError "cannot sync the file" with the system's text as the
+// logged at Debug. Throws IoError "cannot sync the file (<path>)" (or, for the directory,
+// "cannot sync the directory of the file (<directory>)") with the system's text as the
 // cause.
 void syncFile(const std::filesystem::path& path);
 
 // Deletes the file and returns true; returns false when it was already gone, which is not
-// an error. Throws IoError "cannot delete the file" with the system's text as the cause.
+// an error. Throws IoError "cannot delete the file (<path>)" with the system's text as the
+// cause.
 bool removeFile(const std::filesystem::path& path);
 
 } // namespace slideio::processor::detail

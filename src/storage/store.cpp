@@ -41,7 +41,8 @@ StorePtr Store::open(const char* path, OpenMode mode, const Configuration& confi
         throw;
     } catch (const std::exception& e) {
         // For example an invalid UTF-8 path refused by std::filesystem.
-        const std::string message = std::string("Store::open: cannot open the store");
+        const std::string message = path != nullptr ? detail::withPath("Store::open: cannot open the store", path)
+                                                    : std::string("Store::open: cannot open the store");
         ErrorContext context;
         const std::string cause = detail::diagnosticText(e);
         context.cause = cause.c_str();
@@ -53,9 +54,10 @@ Store::~Store() {
     try {
         close();
     } catch (const std::exception& e) {
-        logMessage(LogLevel::Error, "Store: closing the store failed: %s", detail::diagnosticText(e).c_str());
+        // printf-style, no std::string: a destructor must not throw (bad_alloc).
+        logMessage(LogLevel::Error, "Store: closing the store failed (%s): %s", impl_->core.path().c_str(), e.what());
     } catch (...) {
-        logMessage(LogLevel::Error, "Store: closing the store failed");
+        logMessage(LogLevel::Error, "Store: closing the store failed (%s)", impl_->core.path().c_str());
     }
 }
 
@@ -71,13 +73,13 @@ bool Store::isOpen() const noexcept { return impl_->core.isOpen(); }
 
 Provenance Store::provenance() const {
     const detail::StoreImpl& core = impl_->core;
-    return core.withReadConnection("Store::provenance", [](sqlite3* db) {
+    return core.withReadConnection("Store::provenance", [&core](sqlite3* db) {
         const std::optional<std::string> json = detail::StoreImpl::metaText(db, detail::kMetaProvenance);
         if (!json) {
-            const std::string message = "Store::provenance: the store has no provenance record";
+            const std::string message = detail::withPath("Store::provenance: the store has no provenance record", core.path());
             throw InternalError(message.c_str());
         }
-        return detail::parseProvenanceJson(*json);
+        return detail::parseProvenanceJson(*json, core.path());
     });
 }
 

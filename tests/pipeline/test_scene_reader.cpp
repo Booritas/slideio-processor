@@ -1,10 +1,17 @@
 // Requirements: UR-IMG-9, UR-IMG-4, UR-EXT-3
+#include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/pipeline/pipeline.hpp>
 
 #include <core/detail/level_mapping.hpp>
+#include <pipeline/detail/level_table.hpp>
 #include <pipeline/detail/plane_buffers.hpp>
 #include <pipeline/detail/scene_reader.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
+#include <pipeline/test_support/test_operations.hpp>
+
+#include <slideio/slideio/scenemetadata.hpp>
+#include <slideio/slideio/scenesource.hpp>
 
 #include <gtest/gtest.h>
 
@@ -138,6 +145,74 @@ TEST(SceneReader, SlideioFailureIsIoError) {
     } catch (const IoError& e) {
         EXPECT_NE(std::string(e.cause()).find("disk on fire"), std::string::npos);
     }
+}
+
+// A scene that reports `reported` as its file and whose reads fail with `failure`.
+std::shared_ptr<slideio::Scene> failingSceneOfFile(const std::string& reported, const std::string& failure) {
+    auto source = std::make_shared<ts::SyntheticSource>(
+        std::vector<ts::SyntheticLevel>{{8, 8, 0, 0}}, std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, f);
+    slideio::SceneMetadata metadata = source->metadata();
+    metadata.reportedFilePath = reported;
+    std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
+    source->failReadsWith(failure);
+    return scene;
+}
+
+TEST(SceneReader, SlideioFailureNamesTheSlide) {
+    const std::string slide = "D:/slides/slide-PATIENT-MARKER-42.svs";
+    SceneReader reader(failingSceneOfFile(slide, "disk on fire"));
+    PlaneBuffers planes(4, 4, {DataType::Byte}, {0});
+    try {
+        reader.read(0, Rect64{0, 0, 4, 4}, {0}, planes);
+        FAIL() << "expected IoError";
+    } catch (const IoError& e) {
+        EXPECT_EQ(std::string(e.cause()), "disk on fire");
+        EXPECT_EQ(std::string(e.what()),
+                  "SceneReader::read: SlideIO failed to read the block (" + slide + "); cause: disk on fire");
+    }
+}
+
+TEST(SceneReader, SlideioFailureOfASceneWithoutAFileNamesNone) {
+    auto source = std::make_shared<ts::SyntheticSource>(
+        std::vector<ts::SyntheticLevel>{{8, 8, 0, 0}}, std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, f);
+    SceneReader reader(ts::makeSyntheticScene(source));
+    source->failReadsWith("disk on fire");
+    PlaneBuffers planes(4, 4, {DataType::Byte}, {0});
+    try {
+        reader.read(0, Rect64{0, 0, 4, 4}, {0}, planes);
+        FAIL() << "expected IoError";
+    } catch (const IoError& e) {
+        EXPECT_EQ(std::string(e.what()), "SceneReader::read: SlideIO failed to read the block; cause: disk on fire");
+    }
+}
+
+TEST(SceneReader, PipelineReadFailureNamesTheSlide) {
+    const std::string slide = "D:/slides/slide-PATIENT-MARKER-42.svs";
+    ts::registerTestOperations();
+    OperationParameters p;
+    p.setInt("radius", 1);
+    PipelineSpec spec;
+    spec.operation("test.boxMean", p);
+    Pipeline pipeline(failingSceneOfFile(slide, "disk on fire"),
+                      ConfigurationBuilder().tileSize(8, 8).tileSizeFromSlide(false).workerCount(1).build(), spec);
+    PlaneBuffers planes(4, 4, {DataType::Float32}, {0});
+    BlockView view = planes.view(0, Rect64{0, 0, 4, 4}, 1.0);
+    try {
+        pipeline.readBlock(0, Rect64{0, 0, 4, 4}, view);
+        FAIL() << "expected an error";
+    } catch (const ProcessorError& e) {
+        // The tile's failure carries the reader's error, slide named, as its cause.
+        EXPECT_EQ(std::string(e.cause()),
+                  "SceneReader::read: SlideIO failed to read the block (" + slide + "); cause: disk on fire")
+            << e.what();
+    }
+}
+
+TEST(LevelTable, SceneFilePathIsWhatTheSceneReports) {
+    const std::string slide = "D:/slides/slide-PATIENT-MARKER-42.svs";
+    EXPECT_EQ(detail::sceneFilePath(*failingSceneOfFile(slide, "x")), slide);
+    EXPECT_EQ(detail::withSlidePath("m", slide), "m (" + slide + ")");
+    EXPECT_EQ(detail::withSlidePath("m", ""), "m");
 }
 
 TEST(SceneReader, RejectsBadArguments) {

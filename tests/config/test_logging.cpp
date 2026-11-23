@@ -115,7 +115,7 @@ TEST_F(ConfigureLogging, FileSinkAppendsTimestampedLines) {
     EXPECT_NE(lines[1].find("INFO again"), std::string::npos);
 }
 
-TEST_F(ConfigureLogging, UnopenableFileThrowsNamingNoPathAndKeepsThePreviousSink) {
+TEST_F(ConfigureLogging, UnopenableFileThrowsNamingItsPathAndKeepsThePreviousSink) {
     auto sink = std::make_shared<CaptureSink>();
     configureLogging(sink, LogLevel::Debug);
     auto dir = uniqueTempPath("missing_dir", ""); // never created
@@ -124,8 +124,10 @@ TEST_F(ConfigureLogging, UnopenableFileThrowsNamingNoPathAndKeepsThePreviousSink
         configureLogging(ConfigurationBuilder().logFilePath(bad.c_str()).build());
         FAIL() << "expected IoError";
     } catch (const IoError& e) {
-        EXPECT_NE(std::string(e.what()).find("log file"), std::string::npos);
-        EXPECT_EQ(std::string(e.what()).find(bad), std::string::npos);
+        // The message names the log file; the open's own failure is the cause.
+        const std::string lead = "cannot open the log file (" + bad + ")";
+        EXPECT_EQ(std::string(e.what()).rfind(lead, 0), 0u) << e.what();
+        EXPECT_STRNE(e.cause(), "") << e.what();
     }
     EXPECT_EQ(logLevel(), LogLevel::Debug);
     logMessage(LogLevel::Debug, "still here");

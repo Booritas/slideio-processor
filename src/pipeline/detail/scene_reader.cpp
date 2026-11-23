@@ -4,7 +4,6 @@
 #include <pipeline/detail/level_table.hpp>
 
 #include "core/detail/diagnostics.hpp"
-#include <pipeline/detail/slide_cause.hpp>
 #include <slideio/processor/core/error.hpp>
 
 #include <slideio/core/levelinfo.hpp>
@@ -17,12 +16,13 @@
 #include <new>
 #include <string>
 #include <tuple>
+#include <vector>
 
 namespace slideio::processor::detail {
 
 namespace {
 
-[[noreturn]] void rethrowAsIoError(const char* what, const slideio::Scene& scene) {
+[[noreturn]] void rethrowAsIoError(const std::string& what) {
     try {
         throw;
     } catch (const ProcessorError&) {
@@ -31,9 +31,9 @@ namespace {
         throw;
     } catch (const std::exception& e) {
         ErrorContext context;
-        const std::string causeText = detail::slideCauseText(e, scene);
+        const std::string causeText = detail::diagnosticText(e);
         context.cause = causeText.c_str();
-        throw IoError(what, context);
+        throw IoError(what.c_str(), context);
     }
 }
 
@@ -52,6 +52,8 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
     if (!scene_) {
         throw InvalidArgumentError("SceneReader: the scene is null");
     }
+    // The slide the scene reports, named in SlideIO failures; "" when the scene cannot say.
+    slidePath_ = sceneFilePath(*scene_);
     try {
         const int channels = scene_->getNumChannels();
         for (int c = 0; c < channels; ++c) {
@@ -61,18 +63,20 @@ SceneReader::SceneReader(std::shared_ptr<slideio::Scene> scene) : scene_(std::mo
         levels_ = levelTable(scene_->getNumZoomLevels(), std::get<2>(rect), std::get<3>(rect), [this](int32_t level) {
             const slideio::LevelInfo* info = scene_->getLevelInfo(level);
             if (info == nullptr) {
-                throw IoError("SceneReader: SlideIO reported no such level");
+                throw IoError(withSlidePath("SceneReader: SlideIO reported no such level", slidePath_).c_str());
             }
             const slideio::Size size = info->getSize();
             const slideio::Size tile = info->getTileSize();
             return LevelDims{size.width, size.height, tile.width, tile.height};
         });
     } catch (...) {
-        rethrowAsIoError("SceneReader: SlideIO failed to describe the scene", *scene_);
+        rethrowAsIoError(withSlidePath("SceneReader: SlideIO failed to describe the scene", slidePath_));
     }
 }
 
 const std::vector<LevelDims>& SceneReader::levels() const noexcept { return levels_; }
+
+const std::string& SceneReader::slidePath() const noexcept { return slidePath_; }
 
 std::vector<DataType> SceneReader::channelTypes() const {
     return types_;
@@ -165,7 +169,7 @@ void SceneReader::read(int32_t level, const Rect64& levelRect, const std::vector
             }
         }
     } catch (...) {
-        rethrowAsIoError("SceneReader::read: SlideIO failed to read the block", *scene_);
+        rethrowAsIoError(withSlidePath("SceneReader::read: SlideIO failed to read the block", slidePath_));
     }
 }
 

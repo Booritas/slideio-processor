@@ -84,13 +84,13 @@ public:
      * @param configuration The settings; copied.
      * @return The open, writable workspace.
      * @throws InvalidArgumentError When a path is null or empty, or sceneIndex is out of
-     * range for the slide.
+     * range for the slide (the message names the slide by its path).
      * @throws IoError When workspacePath exists and is not an empty directory, or is
      * made by someone else while this call runs; when the slide does not open (the
-     * message names the slide by its role, never its path); when the parent directory
-     * is missing or the directory, the store or the scratch directory cannot be made
-     * (the message names the workspace directory by its role, never its path); or
-     * when the store already exists because a racing create made it.
+     * message names the slide by its role and its path, then SlideIO's own text); when
+     * the parent directory is missing or the directory, the store or the scratch
+     * directory cannot be made (the message names the one that failed by its role and
+     * its path); or when the store already exists because a racing create made it.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
      * ThreadSafe.
@@ -111,7 +111,8 @@ public:
      *
      * Checked before anything is made: the scene is not null, sceneIndex is not
      * negative, and the scene's file path is the same file as slidePath
-     * (std::filesystem::equivalent). The messages carry no path.
+     * (std::filesystem::equivalent). A scene of another file is refused naming slidePath
+     * (absolute and normalised); the other refusals are about no file and name none.
      *
      * @par What is trusted
      * sceneIndex: a slideio::Scene cannot say which scene of its slide it is, so the
@@ -148,10 +149,10 @@ public:
      * @param configuration The settings; copied.
      * @return The open, writable workspace.
      * @throws InvalidArgumentError When workspacePath is null or empty.
-     * @throws IoError When the path holds no workspace store, when another handle holds
-     * the writer lock, when the slide no longer opens or no longer has the scene (the
-     * message names the slide by its role, never its path), or when the scratch
-     * directory cannot be cleared.
+     * @throws IoError When the path holds no workspace store (the message names the
+     * workspace directory), when another handle holds the writer lock, when the slide no
+     * longer opens or no longer has the scene (the message names the slide by its role
+     * and its path), or when the scratch directory cannot be cleared (naming it).
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety
@@ -172,7 +173,8 @@ public:
      * a read-only open of the store before any writable one, so a refusal changes nothing:
      * no store byte (a version 1 store is not
      * migrated), no lock file, no scratch or raster file. The one exception is SQLite's
-     * -wal and -shm sidecars, which a read-only open may create. The messages carry no path.
+     * -wal and -shm sidecars, which a read-only open may create. A scene of another file
+     * is refused naming the recorded slide by its path; an index refusal names no file.
      *
      * @par What is trusted
      * Only the sceneIndex match is checked, never that the scene truly is that scene of
@@ -207,9 +209,9 @@ public:
      * @param configuration The settings; copied.
      * @return The open, read-only workspace.
      * @throws InvalidArgumentError When workspacePath is null or empty.
-     * @throws IoError When the path holds no workspace store, or when the slide no
-     * longer opens or no longer has the scene (the message names the slide by its
-     * role, never its path).
+     * @throws IoError When the path holds no workspace store (the message names the
+     * workspace directory), or when the slide no longer opens or no longer has the scene
+     * (the message names the slide by its role and its path).
      * @throws StoreFormatError When the store has another format version.
      * @throws std::bad_alloc When memory is exhausted.
      * @par Thread-safety

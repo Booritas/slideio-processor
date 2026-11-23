@@ -52,7 +52,7 @@ struct PyramidInfo {
 // types the mean of the samples present, in double. The file is complete and closed on
 // return. The spool must be placed (TileSpool::place); its extent is page 0's size.
 // Throws InternalError for an empty or unplaced spool or a `format` whose type or plane
-// count is not the spool's, IoError naming the file by its role, never its path, when libtiff or the file fails, and IoError from
+// count is not the spool's, IoError naming the file by its role and its path when libtiff or the file fails, and IoError from
 // the spool. On a throw the partial file is left for the caller to delete.
 //
 // With PyramidLayout::OmeSubIfds, page 0's ImageDescription is OME-XML naming the image

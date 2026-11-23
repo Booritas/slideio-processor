@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,10 @@ public:
     /// The scene's pyramid, read once at construction, as levelTable() builds it.
     const std::vector<LevelDims>& levels() const noexcept;
 
+    /// The path of the file the scene reports, "" when it reports none; named in the
+    /// messages of SlideIO failures.
+    const std::string& slidePath() const noexcept;
+
     /// Fills `out` with `channels` of `levelRect` at `level`. `out` must have
     /// levelRect's size, one plane per channel, each plane holding that channel
     /// with its type. The part of the rect outside the level is zero-filled here,
@@ -46,6 +51,7 @@ public:
 
 private:
     std::shared_ptr<slideio::Scene> scene_;
+    std::string slidePath_;                        // "" when the scene reports no file
     std::vector<DataType> types_;                  // Unknown kept; read() rejects it for a selected channel
     std::vector<LevelDims> levels_;
 };

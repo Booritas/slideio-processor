@@ -88,8 +88,9 @@ public:
     // The first refusal; it needs no run slot.
     void checkWritable() const {
         if (workspace.isReadOnly()) {
-            throw IoError(("stage \"" + name + "\" cannot run: the workspace is read-only").c_str(),
-                          contextOf(nullptr));
+            const std::string message =
+                detail::withPath("stage \"" + name + "\" cannot run: the workspace is read-only", workspace.path());
+            throw IoError(message.c_str(), contextOf(nullptr));
         }
     }
 
@@ -239,10 +240,11 @@ public:
 #endif
             step();
         } catch (const std::exception& e) {
-            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed: %s", name.c_str(), what,
-                       detail::diagnosticText(e).c_str());
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed (%s): %s", name.c_str(), what,
+                       workspace.path(), e.what());
         } catch (...) {
-            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed", name.c_str(), what);
+            logMessage(LogLevel::Error, "StageRunner: stage \"%s\": %s failed (%s)", name.c_str(), what,
+                       workspace.path());
         }
     }
 

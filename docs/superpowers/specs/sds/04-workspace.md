@@ -81,7 +81,7 @@ recorded state of every stage, and the binding to the slide and scene.
 (`-wal`, `-shm`, `-writer.lock`) and its raster directory
 `workspace.store-rasters/` sit beside it, so inside the workspace. Scratch is
 `<workspace>/scratch/`. `create` makes the directory, and only it: the parent
-must exist, and a missing parent is an `IoError` naming the workspace directory by its role (never its path, C-6), with nothing
+must exist, and a missing parent is an `IoError` naming the workspace directory by its role and its path, with nothing
 made. It throws `IoError` when the path exists and is not an empty directory; it
 opens the slide and checks the scene index (`InvalidArgumentError` when out of
 range) before making anything. A `create` that fails later removes what it made,
@@ -127,15 +127,15 @@ create.
 **What is trusted:** the caller's `sceneIndex`. A `slideio::Scene` does not know
 its index in its slide, so `create` records it unconfirmed (and does not check it
 against the scene count) and `open` can only compare it with the record; the
-headers say so. The new messages name no path, the rule decision 7 extends to the
-existing ones.
+headers say so. The new messages name the file or directory by its path (SDS 00 "Paths in
+diagnostics").
 
 **Classification.** `Provenance.slideId` holds the slide path, stored absolute,
 and the workspace's error and log messages name it (a slide that does not open,
 a scene out of range, a failed create or close). Slide paths can embed patient
 identifiers or accession numbers, so a workspace store, and any log that
 carries workspace messages, is classed Confidential (HIPAA Security Rule
-§164.312(b); GDPR Art. 5(1)(c)). The library does not redact the path.
+§164.312(b); GDPR Art. 5(1)(c)).
 
 `create` and `open` clear the scratch subdirectory that `scratchConfiguration`
 points at. Seam spill files (5.7) are owned by one run and removed when it

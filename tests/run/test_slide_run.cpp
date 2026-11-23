@@ -338,11 +338,11 @@ TEST(SlideRun, RefusesAWorkspaceOfAnotherSlide) {
             .run();
         ADD_FAILURE() << "a workspace of another slide was accepted";
     } catch (const InvalidArgumentError& e) {
-        const std::string message = e.what();
-        EXPECT_NE(message.find("another slide or scene"), std::string::npos) << message;
-        for (const std::string& path : {other, f.slide, f.workspace, std::string("slide.tif"), std::string("other.tif")}) {
-            EXPECT_EQ(message.find(path), std::string::npos) << message;
-        }
+        // The refusal names the workspace it is about and the slide given to the run (paths in
+        // diagnostics, 2026-11-23).
+        EXPECT_EQ(std::string(e.what()), "SlideRun: the workspace (" + f.workspace +
+                                             ") belongs to another slide or scene than the slide (" + other +
+                                             "), scene 0");
     }
     // Every file but the sidecars, and every directory, is as it was, with the same bytes.
     EXPECT_EQ(contentsUnder(root, false), before);
@@ -475,49 +475,53 @@ TEST(SlideRun, ExportsCarryNoSlidePath) {
     EXPECT_NE(readFile(fs::u8path(namedOut) / kGeoJson).find("\"slideId\":\"study-17\""), std::string::npos);
 }
 
-// A slide that has moved or been deleted since the workspace was made: the run's error names
-// the slide by its role, and neither it nor its cause holds a path or the file name (the file
-// name can carry a patient identifier). The workspace's binding is read from its store alone,
-// so a run naming the old path is told the slide cannot be found (IoError), and a run naming
-// the new path is refused as another slide (the recorded one no longer exists to compare).
-TEST(SlideRun, AMovedSlideGivesAnErrorWithNoPath) {
+// A slide that has moved or been deleted since the workspace was made: each error names the
+// file it is about by its path (paths in diagnostics, 2026-11-23). The workspace's binding is
+// read from its store alone, so a run naming the old path is told the slide cannot be found
+// (IoError, naming that path), and a run naming the new path is refused as another slide (the
+// recorded one no longer exists to compare), naming the workspace. A run with no workspace
+// yet names the missing slide and passes SlideIO's text through, which names it too.
+TEST(SlideRun, AMovedSlideNamesItsPath) {
     Fixture f;
     f.run(threeStageFile());
     const fs::path slide = fs::u8path(f.slide);
     const fs::path moved = slide.parent_path() / "moved-slide.tif";
-    const std::vector<std::string> forbidden = {f.slide, fs::absolute(slide).u8string(),
-                                                fs::absolute(slide).generic_u8string(),
-                                                slide.filename().u8string(), moved.u8string(),
-                                                moved.filename().u8string(), f.workspace, f.dir.utf8()};
     closeCleanly(f.workspace);
     fs::rename(slide, moved);
 
-    const auto expectNoPath = [&](const std::function<void()>& action, const char* label) -> std::string {
+    // The error's text, prefixed "IoError: " for an IoError; `path` must be in it.
+    const auto expectPath = [&](const std::function<void()>& action, const std::string& path,
+                                const char* label) -> std::string {
         try {
             action();
             ADD_FAILURE() << label << " did not throw";
         } catch (const std::exception& e) {
             const std::string message = e.what();
             EXPECT_NE(message.find("slide"), std::string::npos) << label << ": " << message;
-            for (const std::string& text : forbidden) EXPECT_EQ(message.find(text), std::string::npos) << label << ": " << message;
+            EXPECT_NE(message.find(path), std::string::npos) << label << ": " << message;
             return (dynamic_cast<const IoError*>(&e) != nullptr ? "IoError: " : "") + message;
         }
         return std::string();
     };
     // The workspace is there and the run names the recorded slide, which is gone.
-    EXPECT_EQ(expectNoPath([&] { f.run(threeStageFile()); }, "an existing workspace whose slide moved"),
-              "IoError: SlideRun: the slide cannot be found");
+    EXPECT_EQ(expectPath([&] { f.run(threeStageFile()); }, f.slide, "an existing workspace whose slide moved"),
+              "IoError: SlideRun: the slide cannot be found (" + f.slide + ")");
     // The run names the slide where it now is: the recorded slide is missing, so it is not this one.
     const std::string movedText = moved.u8string();
-    const std::string message = expectNoPath(
-        [&] {
-            SlideRun(threeStageFile(), movedText.c_str(), 0, f.workspace.c_str(), f.out.c_str(),
-                     Configuration::defaults())
-                .run();
-        },
-        "an existing workspace run on the moved slide");
-    EXPECT_NE(message.find("the workspace belongs to another slide or scene"), std::string::npos) << message;
-    // No workspace yet, and the slide named for the run is missing.
+    EXPECT_EQ(expectPath(
+                  [&] {
+                      SlideRun(threeStageFile(), movedText.c_str(), 0, f.workspace.c_str(), f.out.c_str(),
+                               Configuration::defaults())
+                          .run();
+                  },
+                  f.workspace, "an existing workspace run on the moved slide"),
+              "SlideRun: the workspace (" + f.workspace + ") belongs to another slide or scene than the slide (" +
+                  movedText + "), scene 0");
+    // No workspace yet, and the slide named for the run is missing: the message names it, and
+    // SlideIO's own text, unaltered, follows as the cause, naming it too.
     const std::string fresh = (f.dir.path() / "fresh-ws").u8string();
-    expectNoPath([&] { f.run(threeStageFile(), fresh, f.out); }, "a missing slide");
+    const std::string message = expectPath([&] { f.run(threeStageFile(), fresh, f.out); }, f.slide, "a missing slide");
+    const std::string lead = "IoError: Workspace::create: cannot open the slide (" + f.slide + "); cause: ";
+    EXPECT_EQ(message.rfind(lead, 0), 0u) << message;
+    EXPECT_NE(message.find(f.slide, lead.size()), std::string::npos) << message;
 }

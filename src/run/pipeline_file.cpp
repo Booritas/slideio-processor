@@ -550,11 +550,11 @@ PipelineFile PipelineFile::load(const char* path) {
     {
         std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
         if (!in) {
-            throw IoError("PipelineFile: the pipeline file cannot be opened");
+            throw IoError(detail::withPath("PipelineFile: the pipeline file cannot be opened", path).c_str());
         }
         text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         if (in.bad()) {
-            throw IoError("PipelineFile: the pipeline file cannot be read");
+            throw IoError(detail::withPath("PipelineFile: the pipeline file cannot be read", path).c_str());
         }
     }
     return fromJson(text.c_str());

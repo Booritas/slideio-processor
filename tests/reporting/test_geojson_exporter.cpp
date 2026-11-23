@@ -500,9 +500,14 @@ TEST_F(GeoJsonExport, UnwritablePathThrowsAndLeavesNothing) {
         exporter.write(store(), ObjectQuery());
         ADD_FAILURE() << "expected IoError";
     } catch (const IoError& e) {
-        // The writer's own message names the path; the exporter's does not.
-        EXPECT_EQ(std::string(e.what()).find("no-such-dir-geojson"), std::string::npos)
-            << e.what();
+        // The exporter's message names the partial file it could not create; the writer's own
+        // message, naming it too, is the cause.
+        const std::string named = partial.u8string();
+        EXPECT_EQ(std::string(e.what()), "GeoJsonExporter::write: cannot create the output file (" + named +
+                                             "); cause: GeoJsonWriter: open failed for the output file (" + named +
+                                             ")");
+        ASSERT_NE(e.cause(), nullptr);
+        EXPECT_EQ(std::string(e.cause()), "GeoJsonWriter: open failed for the output file (" + named + ")");
     }
     EXPECT_FALSE(std::filesystem::exists(missing));
     EXPECT_FALSE(std::filesystem::exists(partial));

@@ -291,7 +291,8 @@ TEST_F(RasterLifecycleTest, DeleteBlockedByAnOpenSourceIsLoggedNotThrown) {
 #ifdef _WIN32
         EXPECT_TRUE(std::filesystem::exists(file));
         EXPECT_EQ(warnings.count("cannot delete the file"), 1);
-        EXPECT_EQ(warnings.count(pFile), 0);  // the warning names no file
+        // The warning names the file by its path.
+        EXPECT_EQ(warnings.count("cannot delete the file (" + file.u8string() + ")"), 1);
 #else
         EXPECT_FALSE(std::filesystem::exists(file));
         EXPECT_EQ(warnings.count("cannot delete the file"), 0);

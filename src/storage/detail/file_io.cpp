@@ -1,5 +1,7 @@
 #include "storage/detail/file_io.hpp"
 
+#include "core/detail/diagnostics.hpp"
+
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/log.hpp>
 
@@ -42,14 +44,14 @@ void syncFile(const std::filesystem::path& path) {
                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
-        throwIo("cannot sync the file",
+        throwIo(withPath("cannot sync the file", path.u8string()),
                 std::error_code(static_cast<int>(error), std::system_category()).message());
     }
     const BOOL flushed = FlushFileBuffers(handle);
     const DWORD error = flushed ? 0 : GetLastError();
     CloseHandle(handle);
     if (!flushed) {
-        throwIo("cannot sync the file",
+        throwIo(withPath("cannot sync the file", path.u8string()),
                 std::error_code(static_cast<int>(error), std::system_category()).message());
     }
 }
@@ -78,10 +80,13 @@ int syncDescriptor(int fd, bool full) {
 }
 
 // Syncs `path`, opened read-only, and returns 0, or the errno of the failed sync. Throws
-// IoError when it cannot be opened.
-int syncPath(const std::filesystem::path& path, bool full) {
+// IoError `what`, naming `path`, when it cannot be opened.
+int syncPath(const std::filesystem::path& path, bool full, const char* what) {
     const int fd = ::open(path.c_str(), O_RDONLY);
-    if (fd < 0) throwIo("cannot sync the file", errnoText(errno));
+    if (fd < 0) {
+        const int error = errno;
+        throwIo(withPath(what, path.u8string()), errnoText(error));
+    }
     const int error = syncDescriptor(fd, full);
     ::close(fd);
     return error;
@@ -90,18 +95,19 @@ int syncPath(const std::filesystem::path& path, bool full) {
 } // namespace
 
 void syncFile(const std::filesystem::path& path) {
-    const int error = syncPath(path, true);
-    if (error != 0) throwIo("cannot sync the file", errnoText(error));
+    const int error = syncPath(path, true, "cannot sync the file");
+    if (error != 0) throwIo(withPath("cannot sync the file", path.u8string()), errnoText(error));
     // A new file's name lives in its directory, which has to reach the disk as well. Some
     // filesystems (FUSE, network) cannot sync a directory and say so with EINVAL, EBADF
     // or ENOTSUP; there that sync is best-effort, as it is all they offer.
     const std::filesystem::path parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
-    const int directoryError = syncPath(parent, false);
+    const int directoryError = syncPath(parent, false, "cannot sync the directory of the file");
     if (directoryError == EINVAL || directoryError == EBADF || directoryError == ENOTSUP) {
-        logMessage(LogLevel::Debug, "cannot sync the directory of a file (%s); its filesystem does not support it",
+        const std::string message = withPath("cannot sync the directory of a file", parent.u8string());
+        logMessage(LogLevel::Debug, "%s: %s; its filesystem does not support it", message.c_str(),
                    errnoText(directoryError).c_str());
     } else if (directoryError != 0) {
-        throwIo("cannot sync the directory of the file", errnoText(directoryError));
+        throwIo(withPath("cannot sync the directory of the file", parent.u8string()), errnoText(directoryError));
     }
 }
 
@@ -110,7 +116,7 @@ void syncFile(const std::filesystem::path& path) {
 bool removeFile(const std::filesystem::path& path) {
     std::error_code error;
     const bool removed = std::filesystem::remove(path, error);
-    if (error) throwIo("cannot delete the file", error.message());
+    if (error) throwIo(withPath("cannot delete the file", path.u8string()), error.message());
     return removed;
 }
 

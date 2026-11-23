@@ -120,7 +120,7 @@ memory exhaustion already catches it by its standard type. Every other
 exception — from SQLite, OpenCV or the standard library (`std::system_error`,
 `std::filesystem::filesystem_error`, `std::ios_base::failure`,
 `std::length_error` and so on) — is caught at the boundary and translated, with
-its `what()` preserved as `cause()` (subject to the path rule below): to `IoError` when
+its `what()` preserved as `cause()` (see "Paths in diagnostics" below): to `IoError` when
 it is an input/output failure, and to `InternalError` for anything else.
 
 A `noexcept` function cannot report a failure, so where its only possible one
@@ -131,31 +131,32 @@ Every error carries actionable context — stage, operation, tile coordinates,
 underlying cause (UR-EXE-5). Fields not applicable read as empty string or
 report `false` from their `has*` accessor.
 
-**No paths in diagnostics.** Slide file names often carry patient identifiers
-(HIPAA, GDPR), and the Python bindings pass errors and log lines on, to a
-language model among others. So no exception message, no `cause()` and no log
-line contains a file path:
+**Paths in diagnostics.** On 2026-11-23 the owner revoked the earlier rule that
+kept file paths out of diagnostics: the software runs in a secure environment
+and is not exposed to the outside world, and an error that names its file can be
+diagnosed without reproducing it. So an exception message, a `cause()` or a log
+line that is about a specific file or directory names it by its path:
 
-- A message names a file by its role: the store, the slide, the raster file,
-  the scratch file, the journal, the log file, the output file. It may name
-  pipeline-file entities (a stage, layer, raster, operation, parameter key or
-  export kind), never a parameter value or a coordinate.
-- A cause that comes from a `std::filesystem::filesystem_error` is
-  `code().message()`, never `what()`, which holds both paths. A cause from
-  SlideIO is its text with the slide path, as given and made absolute, and the
-  slide's file name replaced by `<slide>`. Any other cause is unchanged.
-  `src/core/detail/diagnostics.hpp` holds the helpers (`diagnosticText`,
-  `redactSlidePath`).
-- A name libtiff or SQLite would print for a file is a fixed role name, not the
-  path.
-- Log lines follow the same rules, at every level.
-- Accessors that return a path (`Workspace::path()`, `Workspace::slidePath()`,
-  `Store::path()`) still do; only diagnostic text changes. The caller already
-  knows the paths it passed.
-- Enforcement: `Diagnostics.NoPathsInErrorsOrLogs` (`tests/workspace/test_no_paths_in_diagnostics.cpp`)
-  puts a marker in every directory it uses, provokes the errors above and
-  collects the log at Trace level, and fails when any message, cause or log line
-  contains the marker. A new site that names a path needs a case there.
+- A message keeps its role wording (the store, the slide, the raster file, the
+  scratch file, the log file, the output file) and appends the path with
+  `detail::withPath(message, path)`, giving `message (path)`. The path is the
+  UTF-8 string the caller gave. It may name pipeline-file entities, never a
+  parameter value or a coordinate.
+- Third-party text (`std::filesystem`, SlideIO, libtiff, SQLite) reaches
+  `cause()` and the log unaltered, paths included: `diagnosticText(e)` returns
+  `e.what()` for every exception. `src/core/detail/diagnostics.hpp` holds the
+  helpers.
+- Log lines follow the same rule, at every level.
+- Exports are unchanged: CSV, GeoJSON, label masks and raster TIFFs carry no
+  slide path, and the slide id stays `""` unless the caller sets one. That rule
+  is about output data, not diagnostics.
+- Enforcement: `Diagnostics.PathsInErrorsAndLogs`
+  (`tests/workspace/test_paths_in_diagnostics.cpp`) provokes representative
+  failures, collects the log at Trace level, and fails when a message, cause or
+  log line lacks the path. A new site that names a file needs a case there.
+- PHI caution: slide file names often carry patient identifiers, so logs and
+  error text may now hold them. Access to and retention of logs fall under the
+  HIPAA Security Rule and GDPR; treat them as Confidential.
 
 Query methods that legitimately find nothing return `bool` with an out
 parameter rather than throwing:

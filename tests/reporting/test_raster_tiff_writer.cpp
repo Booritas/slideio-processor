@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -365,6 +366,31 @@ TEST_F(RasterTiffWriterTest, AFailingSourceLeavesNoFile) {
     EXPECT_EQ(export_test::readText(out.path()), "keep");
     EXPECT_FALSE(std::filesystem::exists(out.partial()));
     EXPECT_FALSE(std::filesystem::exists(spoolOf(out)));
+}
+
+// Paths in diagnostics (2026-11-23): when the finished partial file cannot replace the target
+// (here a non-empty directory), the message names both files and the OS's text is the cause.
+TEST_F(RasterTiffWriterTest, ReplaceFailureNamesBothFilesAndTheCause) {
+    std::filesystem::create_directories(out.path());
+    export_test::writeText(out.path() / "keep.txt", "keep");
+    const std::string target = out.utf8();
+    const std::string partial = out.partial().u8string();
+    try {
+        RasterTiffWriter(target.c_str()).write(source, Rect64{0, 0, 40, 30}, 1.0, nullptr, never);
+        ADD_FAILURE() << "expected IoError";
+    } catch (const IoError& e) {
+        const std::string what = e.what();
+        const std::string lead = "RasterTiffWriter::write: replacing the output file (" + target +
+                                 ") with the partial file (" + partial + ") failed; cause: ";
+        EXPECT_EQ(what.rfind(lead, 0), 0u) << what;
+        ASSERT_NE(e.cause(), nullptr) << what;
+        EXPECT_FALSE(std::string(e.cause()).empty()) << what;
+    }
+    EXPECT_EQ(export_test::readText(out.path() / "keep.txt"), "keep");
+    EXPECT_FALSE(std::filesystem::exists(out.partial()));
+    EXPECT_FALSE(std::filesystem::exists(spoolOf(out)));
+    std::error_code ec;
+    std::filesystem::remove_all(out.path(), ec);
 }
 
 TEST_F(RasterTiffWriterTest, WriteIsDeterministic) {

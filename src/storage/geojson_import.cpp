@@ -1,5 +1,6 @@
 #include <slideio/processor/storage/geojson_import.hpp>
 
+#include "core/detail/diagnostics.hpp"
 #include "storage/detail/errors.hpp"
 #include "storage/detail/vocabulary_import.hpp"
 
@@ -32,7 +33,7 @@ constexpr const char* kMeasurementPrefix = "measurements.";
 
 // Tells a geometry error, after which the reader moves on to the next feature, from a parse
 // or read error, which ends reading: GeoJsonReader words every geometry error as
-// "GeoJsonReader: feature <index> of the file: <reason>".
+// "GeoJsonReader: feature <index> of the file (<path>): <reason>".
 bool isGeometryError(const InvalidArgumentError& error) {
     static const char kPrefix[] = "GeoJsonReader: feature ";
     return std::strncmp(error.what(), kPrefix, sizeof(kPrefix) - 1) == 0;
@@ -56,7 +57,7 @@ bool parseFinite(std::istringstream& in, const char* text, double& out) {
 class FeatureWalk {
 public:
     // `warn` false silences the reader's own warnings, for a pass that only counts.
-    FeatureWalk(const char* path, bool warn) : reader_(path) { reader_.setWarningsEnabled(warn); }
+    FeatureWalk(const char* path, bool warn) : path_(path), reader_(path) { reader_.setWarningsEnabled(warn); }
 
     // Advances to the next importable feature, checking `token` before each feature;
     // logs and skips features with invalid geometry. False at the end of the file.
@@ -68,8 +69,11 @@ public:
             } catch (const InvalidArgumentError& e) {
                 if (!isGeometryError(e)) throw;
                 if (reportingFor != nullptr) {
-                    logMessage(LogLevel::Warning, "%s: skipping feature %lld of the file: %s", reportingFor,
-                               static_cast<long long>(reader_.featureIndex()), e.what());
+                    const std::string lead = detail::withPath(
+                        std::string(reportingFor) + ": skipping feature " + std::to_string(reader_.featureIndex()) +
+                            " of the file",
+                        path_);
+                    logMessage(LogLevel::Warning, "%s: %s", lead.c_str(), e.what());
                 }
                 ++rejected_;
             }
@@ -82,11 +86,20 @@ public:
     int64_t index() const noexcept { return reader_.featureIndex(); }
     int64_t skipped() const noexcept { return reader_.featuresSkipped() + rejected_; }
     GeoJsonReader& reader() noexcept { return reader_; }
+    // The file's path, as the caller gave it (UTF-8).
+    const std::string& path() const noexcept { return path_; }
 
 private:
+    std::string path_;
     GeoJsonReader reader_;
     int64_t rejected_ = 0;
 };
+
+// "GeoJsonImporter::import: feature <index> of the file (<path>)", the lead of the
+// importer's lines about one feature.
+std::string featureText(int64_t index, const std::string& path) {
+    return detail::withPath(std::string(kImport) + ": feature " + std::to_string(index) + " of the file", path);
+}
 
 void report(ProgressObserver* observer, const std::string& stageName, int64_t done, int64_t total) {
     if (observer == nullptr) return;
@@ -147,13 +160,14 @@ public:
 
     // The label `classification` resolves to, through `labels` first. Under Permissive an
     // unresolved one is registered (counted in `registered`); under Strict it throws.
+    // `path` is the file's, for the error.
     LabelId resolve(const char* classification, int64_t index, ImportPolicy policy,
-                    std::map<std::string, LabelId>& labels, int32_t& registered) {
+                    std::map<std::string, LabelId>& labels, int32_t& registered, const std::string& path) {
         const auto cached = labels.find(classification);
         if (cached != labels.end()) return cached->second;
         LabelId label;
         if (!store.vocabulary().find(classification, label)) {
-            if (policy == ImportPolicy::Strict) throwUnknownLabel(classification, index);
+            if (policy == ImportPolicy::Strict) throwUnknownLabel(classification, index, path);
             bool added = false;
             label = detail::registerImportedLabel(detail::storeImplOf(store), classification, added);
             if (added) ++registered;
@@ -162,9 +176,9 @@ public:
         return label;
     }
 
-    [[noreturn]] static void throwUnknownLabel(const char* classification, int64_t index) {
-        detail::throwInvalid(kImport, "feature " + std::to_string(index) + " of the file has the label '" +
-                                          classification +
+    [[noreturn]] static void throwUnknownLabel(const char* classification, int64_t index, const std::string& path) {
+        detail::throwInvalid(kImport, detail::withPath("feature " + std::to_string(index) + " of the file", path) +
+                                          " has the label '" + classification +
                                           "', which the vocabulary does not hold (import policy Strict)");
     }
 
@@ -177,7 +191,7 @@ public:
 GeoJsonImporter::GeoJsonImporter(Store& store, LayerId targetLayer, StageId assertingStage) {
     constexpr const char* kOperation = "GeoJsonImporter";
     if (store.isReadOnly()) {
-        const std::string message = std::string(kOperation) + ": the store is read-only";
+        const std::string message = detail::withPath(std::string(kOperation) + ": the store is read-only", store.path());
         throw IoError(message.c_str());
     }
     const LayerRegistry& layers = store.layers();
@@ -218,7 +232,7 @@ ImportResult GeoJsonImporter::import(const char* path, ProgressObserver* observe
         while (walk.next(token, nullptr)) {
             const char* classification = walk.reader().classification();
             if (out.policy == ImportPolicy::Strict && *classification != '\0') {
-                impl_->resolve(classification, walk.index(), out.policy, labels, out.labelsRegistered);
+                impl_->resolve(classification, walk.index(), out.policy, labels, out.labelsRegistered, walk.path());
             }
         }
         total = walk.processed();
@@ -249,7 +263,7 @@ ImportResult GeoJsonImporter::import(const char* path, ProgressObserver* observe
         record.setGeometry(reader.geometry());
         if (*reader.classification() != '\0') {
             record.setLabel(
-                impl_->resolve(reader.classification(), index, out.policy, labels, out.labelsRegistered));
+                impl_->resolve(reader.classification(), index, out.policy, labels, out.labelsRegistered, walk.path()));
         }
         const size_t prefixLength = std::strlen(kMeasurementPrefix);
         for (int32_t p = 0; p < reader.propertyCount(); ++p) {
@@ -258,12 +272,11 @@ ImportResult GeoJsonImporter::import(const char* path, ProgressObserver* observe
             const char* measurement = name + prefixLength;
             double value = 0;
             if (*measurement == '\0') {
-                logMessage(LogLevel::Warning, "%s: feature %lld of the file: a measurement has an empty name; skipped",
-                           kImport, static_cast<long long>(index));
+                logMessage(LogLevel::Warning, "%s: a measurement has an empty name; skipped",
+                           featureText(index, walk.path()).c_str());
             } else if (!parseFinite(number, reader.propertyValue(p), value)) {
-                logMessage(LogLevel::Warning,
-                           "%s: feature %lld of the file: measurement '%s' is not a finite number; skipped", kImport,
-                           static_cast<long long>(index), measurement);
+                logMessage(LogLevel::Warning, "%s: measurement '%s' is not a finite number; skipped",
+                           featureText(index, walk.path()).c_str(), measurement);
             } else {
                 record.measurements().set(measurement, value, MeasurementUnit::Dimensionless);
             }
@@ -288,7 +301,7 @@ Polygon importRoiPolygon(const char* path) {
     constexpr const char* kOperation = "importRoiPolygon";
     if (path == nullptr) detail::throwInvalid(kOperation, "path must not be null");
     GeoJsonReader reader(path);
-    if (!reader.next()) detail::throwInvalid(kOperation, "the file holds no polygon");
+    if (!reader.next()) detail::throwInvalid(kOperation, detail::withPath("the file holds no polygon", path));
     return reader.geometry();
 }
 

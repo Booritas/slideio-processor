@@ -1,13 +1,17 @@
 // Requirements: UR-EXE-5, UR-STG-9
-// No exception message, error cause or log line may contain a file path. Slide file names
-// often carry patient identifiers, and the bindings' errors and logs can reach a language
-// model. The slide, the workspace and every file below sit in directories whose names hold a
-// marker; every failure the library can be made to report is collected with its cause (what()
-// carries the cause), and so is every log line at Debug level. None may contain the marker.
+// Paths in diagnostics (the rule of 2026-11-23, which revoked "no paths in diagnostics"): an
+// exception message, error cause or log line about a specific file or directory names it by
+// its path, and third-party text (std::filesystem, SlideIO, libtiff, SQLite) reaches causes and
+// logs unaltered. The slide, the workspace and every file below sit in a directory whose name
+// holds a marker, and some file names hold it too. Each failure the library can be made to
+// report is recorded with its what() (which carries the cause); each log line expectation picks
+// the captured lines (every level) that contain a needle. Every row must contain the marker.
 #include "common/temp_path.hpp"
 #include "pipeline/test_support/synthetic_scene.hpp"
 #include "storage/raster_test_util.hpp"
 #include "workspace/support/test_slide.hpp"
+
+#include "core/detail/diagnostics.hpp"
 
 #include <slideio/processor/config/configuration.hpp>
 #include <slideio/processor/core/data_type.hpp>
@@ -42,6 +46,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace slideio::processor;
@@ -88,9 +93,25 @@ private:
     LogLevel previousLevel_;
 };
 
-// Every text the test has seen, labelled with how it arose.
+bool carriesMarker(const std::string& text) { return text.find(kMarker) != std::string::npos; }
+
+// One recorded diagnostic: an error's what() or a log line.
+struct Row {
+    std::string label;
+    std::string text;
+};
+
+// The log lines that contain `needle`, expected to name their file.
+struct LogExpectation {
+    std::string label;
+    std::string needle;
+    bool mustAppear;  // an expectation with no matching line fails when set
+};
+
+// Every diagnostic the test has seen.
 struct Collected {
-    std::vector<std::string> texts;
+    std::vector<Row> rows;
+    std::vector<LogExpectation> logExpectations;
     int expectedFailures = 0;
 
     // Runs `action`, which must throw; records what() (message and cause) of the error.
@@ -98,15 +119,18 @@ struct Collected {
         try {
             action();
         } catch (const std::exception& e) {
-            texts.push_back(std::string(label) + " -> " + e.what());
+            rows.push_back(Row{label, e.what()});
             ++expectedFailures;
             return;
         }
         ADD_FAILURE() << label << " did not throw";
     }
-};
 
-bool leaks(const std::string& text) { return text.find(kMarker) != std::string::npos; }
+    // Expects the log lines that contain `needle` to carry the marker.
+    void logLine(const std::string& label, const std::string& needle, bool mustAppear) {
+        logExpectations.push_back(LogExpectation{label, needle, mustAppear});
+    }
+};
 
 // The little-endian unsigned integer of `size` bytes at `at`.
 uint32_t readLe(const std::string& bytes, size_t at, size_t size) {
@@ -148,9 +172,74 @@ void pointTileOffsetsPastTheEnd(const fs::path& file) {
     writeFile(file, bytes);
 }
 
+// A scene that reports a slide file and whose reads fail with that path in SlideIO's text,
+// as some SlideIO drivers word their read errors.
+std::shared_ptr<slideio::Scene> sceneWhoseReadsNameItsFile(const std::string& reported) {
+    auto source = std::make_shared<testing_support::SyntheticSource>(
+        std::vector<testing_support::SyntheticLevel>{{128, 96, 64, 64}},
+        std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, [](int, int64_t, int64_t) { return 1.0; });
+    slideio::SceneMetadata metadata = source->metadata();
+    metadata.reportedFilePath = reported;
+    std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
+    source->failReadsWith("cannot read a tile of the file " + reported);
+    return scene;
+}
+
 }  // namespace
 
-TEST(Diagnostics, NoPathsInErrorsOrLogs) {
+TEST(Diagnostics, WithPathAppendsThePath) {
+    EXPECT_EQ(detail::withPath("cannot open the store file", "D:/x/s.db"), "cannot open the store file (D:/x/s.db)");
+}
+
+TEST(Diagnostics, FilesystemErrorKeepsItsPaths) {
+    const std::filesystem::filesystem_error error("cannot remove", fs::u8path("a/" + kMarker),
+                                                  std::make_error_code(std::errc::permission_denied));
+    const std::string text = detail::diagnosticText(error);
+    EXPECT_EQ(text, error.what());
+    EXPECT_NE(text.find(kMarker), std::string::npos) << text;
+}
+
+TEST(Diagnostics, SlideCauseIsNotRedacted) {
+    const Configuration config = Configuration::defaults();
+    TempDirectory root;
+    const fs::path dir = root.path() / kMarker;
+    fs::create_directories(dir);
+
+    // A missing slide: the message names the slide, and SlideIO's text, unaltered, is cause().
+    const std::string workspace = (dir / "ws").u8string();
+    const std::string missing = (dir / ("missing-" + kMarker + ".tif")).u8string();
+    try {
+        Workspace::create(workspace.c_str(), missing.c_str(), 0, config);
+        FAIL() << "Workspace::create succeeded with a missing slide";
+    } catch (const IoError& e) {
+        const std::string text = e.what();
+        const std::string cause = e.cause();
+        EXPECT_FALSE(cause.empty()) << text;
+        EXPECT_EQ(text, "Workspace::create: cannot open the slide (" + missing + "); cause: " + cause);
+        EXPECT_NE(cause, "<slide>") << text;
+        EXPECT_EQ(cause.find("<slide>"), std::string::npos) << text;
+        // SlideIO words its "no driver" error with the path it was given.
+        EXPECT_NE(cause.find(missing), std::string::npos) << text;
+    }
+
+    // A scene whose reads fail with its file's path in SlideIO's text: cause() is that text,
+    // unaltered.
+    const std::string reported = (dir / ("reported-" + kMarker + ".svs")).u8string();
+    std::shared_ptr<slideio::Scene> scene = sceneWhoseReadsNameItsFile(reported);
+    const std::string maskOut = (dir / "mask-out.ome.tif").u8string();
+    try {
+        MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken());
+        FAIL() << "MaskWriter succeeded over a scene whose reads fail";
+    } catch (const IoError& e) {
+        ASSERT_NE(e.cause(), nullptr) << e.what();
+        EXPECT_EQ(std::string(e.cause()), "cannot read a tile of the file " + reported) << e.what();
+        // The mask writer's own message names the slide the scene reports.
+        EXPECT_EQ(std::string(e.what()), "MaskWriter: SlideIO failed to read the scene (" + reported +
+                                             "); cause: cannot read a tile of the file " + reported);
+    }
+}
+
+TEST(Diagnostics, PathsInErrorsAndLogs) {
     CapturedLog log;
     Collected seen;
     const Configuration config = Configuration::defaults();
@@ -178,7 +267,8 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
         store->stageStateWriter().declare("imp", "");
         store->close();
         seen.failure("a closed store", [&] { store->layers().pixelLayer(); store->provenance(); });
-        seen.failure("a closed store's rasters", [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
+        seen.failure("a closed store's rasters",
+                     [&] { store->rasters().declare(RasterDeclaration("r", DataType::Byte, 1)); });
     }
     {
         StorePtr readOnly = Store::open(storeText.c_str(), OpenMode::ReadOnly, config);
@@ -241,16 +331,23 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
             RasterWriterPtr writer = store->rasters().writerForStage(stage, raster);
             writer->writeTile(makeView(0, Rect64{0, 0, 64, 64}, 64, 64, DataType::Int32, 1, 3.0)->view);
         }  // destroyed unflushed: logs a warning
+        seen.logLine("an unflushed raster writer", "RasterWriter:", true);
         const LayerId cells = store->layers().declareSemantic("cells", store->layers().pixelLayer());
         const StageId imp = store->stageStateWriter().declare("imp", "");
         const fs::path skipping = dir / "skipping.geojson";
         writeFile(skipping,
                   R"({"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}},)"
+                  R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[5,0],[0,0]]]}},)"
                   R"({"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]})");
         GeoJsonImporter(*store, cells, imp).import(u8(skipping).c_str());
+        seen.logLine("a feature the reader skips (GeoJsonReader's line)", "GeoJsonReader: skipping feature", true);
+        // The degenerate polygon: the reader rejects its geometry, and the importer logs the skip.
+        seen.logLine("a feature the importer skips for its geometry (GeoJsonImporter's line)",
+                     "GeoJsonImporter::import: skipping feature", true);
         const std::string reopened = u8(dir / "ws-reopened");
         Workspace::create(reopened.c_str(), slideText.c_str(), 0, config)->close();
         Workspace::open(reopened.c_str(), config)->close();
+        seen.logLine("a reopened workspace's sweep", "reclaimed", true);
     }
 
     // GeoJSON: a missing file, a file that is not GeoJSON, an unknown label, a file without a polygon.
@@ -323,31 +420,9 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
                      [&] { Workspace::openReadOnly(moved.c_str(), config); });
     }
 
-    // Closing a workspace whose directory was removed underneath it: the error, then the
-    // destructor's log line.
-    {
-        const std::string doomed = u8(dir / "ws-doomed");
-        WorkspacePtr ws = Workspace::create(doomed.c_str(), slideText.c_str(), 0, config);
-        std::error_code ec;
-        fs::remove_all(dir / "ws-doomed", ec);
-        try {
-            ws->close();
-        } catch (const std::exception& e) {
-            seen.texts.push_back(std::string("closing a workspace whose directory is gone -> ") + e.what());
-        }
-        ws.reset();
-    }
-    {
-        const std::string doomed = u8(dir / "ws-doomed2");
-        WorkspacePtr ws = Workspace::create(doomed.c_str(), slideText.c_str(), 0, config);
-        std::error_code ec;
-        fs::remove_all(dir / "ws-doomed2", ec);
-        ws.reset();  // the destructor logs a failed close, if there is one
-    }
 
     // MaskWriter over a file-backed scene of a corrupt slide (its tiles lie past the end of
-    // the file, so it opens but no tile reads): SlideIO's read error may word itself with the
-    // slide path.
+    // the file, so it opens but no tile reads).
     {
         const fs::path corrupt = writeTestSlide(dir / "corrupt-PATIENT-MARKER-42.tif", 300, 200);
         pointTileOffsetsPastTheEnd(corrupt);
@@ -358,31 +433,36 @@ TEST(Diagnostics, NoPathsInErrorsOrLogs) {
                      [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
     }
     // The same through a scene that reports a slide file and whose reads fail with the path
-    // in the text, as some SlideIO drivers word their read errors.
+    // in SlideIO's text: the text reaches the cause unaltered.
     {
-        const std::string reported = u8(dir / "reported-PATIENT-MARKER-42.svs");
-        auto source = std::make_shared<testing_support::SyntheticSource>(
-            std::vector<testing_support::SyntheticLevel>{{128, 96, 64, 64}},
-            std::vector<slideio::DataType>{slideio::DataType::DT_Byte}, [](int, int64_t, int64_t) { return 1.0; });
-        slideio::SceneMetadata metadata = source->metadata();
-        metadata.reportedFilePath = reported;
-        std::shared_ptr<slideio::Scene> scene = slideio::makeScene(source, metadata);
-        source->failReadsWith("cannot read a tile of the file " + reported);
+        std::shared_ptr<slideio::Scene> scene = sceneWhoseReadsNameItsFile(u8(dir / "reported-PATIENT-MARKER-42.svs"));
         const std::string maskOut = u8(dir / "mask-out-2.ome.tif");
         seen.failure("MaskWriter over a scene whose reads name its file",
                      [&] { MaskWriter(maskOut.c_str()).write(scene, nullptr, CancellationToken()); });
     }
 
     EXPECT_GE(seen.expectedFailures, 25);
-    EXPECT_GE(log.lines().size(), 3u) << "the log capture saw too little for the check to mean anything";
+    const std::vector<std::string> lines = log.lines();
+    EXPECT_GE(lines.size(), 3u) << "the log capture saw too little for the check to mean anything";
+
     std::vector<std::string> offenders;
-    for (const std::string& text : seen.texts) {
-        if (leaks(text)) offenders.push_back("ERROR: " + text);
+    const auto check = [&](const std::string& kind, const Row& row) {
+        if (!carriesMarker(row.text)) offenders.push_back(kind + row.label + " -> " + row.text);
+    };
+    for (const Row& row : seen.rows) check("ERROR: ", row);
+    for (const LogExpectation& expectation : seen.logExpectations) {
+        bool matched = false;
+        for (const std::string& line : lines) {
+            if (line.find(expectation.needle) == std::string::npos) continue;
+            matched = true;
+            check("LOG: ", Row{expectation.label, line});
+        }
+        if (!matched && expectation.mustAppear) {
+            offenders.push_back("LOG: " + expectation.label + " -> no line contains \"" + expectation.needle + "\"");
+        }
     }
-    for (const std::string& line : log.lines()) {
-        if (leaks(line)) offenders.push_back("LOG: " + line);
-    }
+
     std::string report;
     for (const std::string& offender : offenders) report += "\n  " + offender;
-    EXPECT_TRUE(offenders.empty()) << offenders.size() << " diagnostics carry a path:" << report;
+    EXPECT_TRUE(offenders.empty()) << offenders.size() << " diagnostics name no path:" << report;
 }
