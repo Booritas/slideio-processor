@@ -51,7 +51,7 @@ product.
   Slide names and metadata can carry patient identifiers. The library's
   existing message rules hold for everything the bindings add. Under HIPAA and
   GDPR, the MCP layer will need its own review of what it sends to a model.
-  Revoked for errors and logs on 2026-11-23 (paths-in-diagnostics design); exports unchanged.
+
 ## 2. Decisions
 
 ### D1. One Python package wraps both native libraries
