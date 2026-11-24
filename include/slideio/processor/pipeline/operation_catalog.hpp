@@ -163,7 +163,9 @@ public:
      * @brief Tells where the operation's code comes from, for provenance; empty for the library's own operations.
      *
      * Stage records list the non-empty origins of their operations (SDS 04).
-     * @return The origin text; empty by default; never null.
+     * @return The origin text; empty by default; never null. The pointer must stay valid, with
+     * unchanged text, for the life of the factory: the catalog and the stage-record writer keep it
+     * and do not copy the text.
      * @par Thread-safety
      * Must be safe to call concurrently.
      * @par Requirements

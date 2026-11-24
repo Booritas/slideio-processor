@@ -622,7 +622,9 @@ stage record lists such operations (SDS 04, 4.2).
 
 **Origin.** `OperationFactory::origin()` says where an operation's code comes
 from, for provenance. It is empty by default, which is what the library's own
-operations return, and is never null; an extension whose code lives elsewhere (the
+operations return, and is never null; the returned text must stay valid for the
+life of the factory, because the catalog and the stage-record writer keep the
+pointer rather than a copy; an extension whose code lives elsewhere (the
 Python bindings' stand-in factory, for example) overrides it. It must be safe to
 call concurrently. `OperationCatalog::origin(name)` answers for a registered name
 and throws `InvalidArgumentError` for a null or unknown one. The stage record
