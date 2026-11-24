@@ -8,6 +8,7 @@ add_executable(slideio_processor_run_tests
     ${PROJECT_SOURCE_DIR}/tests/workspace/support/test_slide.cpp
     test_pipeline_file.cpp
     test_slide_run.cpp
+    test_workspace_export.cpp
 )
 target_link_libraries(slideio_processor_run_tests PRIVATE
     slideio-processor-engine slideio_processor_algorithm_test_support TIFF::TIFF GTest::gtest_main)
@@ -53,6 +54,7 @@ add_library(run_headers_are_opencv_free OBJECT
     header_check/check_run.cpp
     header_check/check_slide_run.cpp
     header_check/check_slide_run_result.cpp
+    header_check/check_workspace_export.cpp
 )
 file(GLOB RUN_PUBLIC_HEADERS RELATIVE "${PROJECT_SOURCE_DIR}/include/slideio/processor/run"
     CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/slideio/processor/run/*.hpp")
