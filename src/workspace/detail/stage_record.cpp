@@ -246,6 +246,27 @@ std::string stageRecordJson(const StageDefinition& definition, const LayerRegist
         for (const char* operation : nondeterministic) w.String(operation);
         w.EndArray();
     }
+    // Where each registered operation's code comes from, in pipeline order, each name once; only
+    // non-empty origins, and the key only when there are some. Not part of the declaration.
+    std::vector<std::pair<const char*, const char*>> origins;
+    for (int32_t i = 0; i < d.pipeline().operationCount(); ++i) {
+        const char* operation = d.pipeline().operationName(i);
+        if (!catalog.isRegistered(operation)) continue;
+        const char* origin = catalog.origin(operation);
+        if (origin[0] == '\0') continue;
+        bool seen = false;
+        for (const auto& entry : origins) seen = seen || std::strcmp(entry.first, operation) == 0;
+        if (!seen) origins.emplace_back(operation, origin);
+    }
+    if (!origins.empty()) {
+        w.Key("operationOrigins");
+        w.StartObject();
+        for (const auto& entry : origins) {
+            w.Key(entry.first);
+            w.String(entry.second);
+        }
+        w.EndObject();
+    }
     w.EndObject();
     return std::string(sb.GetString(), sb.GetSize());
 }

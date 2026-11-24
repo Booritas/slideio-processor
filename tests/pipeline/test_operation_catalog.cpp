@@ -523,3 +523,29 @@ TEST(OperationCatalog, ReportsANondeterministicFactory) {
     registerOnce(std::make_shared<NondeterministicFactory>(specNamed("test.ReportsANondeterministicFactory.gpu")));
     EXPECT_FALSE(OperationCatalog::instance().isDeterministic("test.ReportsANondeterministicFactory.gpu"));
 }
+
+namespace {
+class OriginTextFactory : public OperationFactory {
+public:
+    OperationPtr create(const OperationParameters&) const override { return nullptr; }
+    const char* name() const override { return "test.OperationOrigin.catalog"; }
+    ChannelArity arity() const override { return ChannelArity::PerChannel; }
+    bool requiresUniformTypes() const override { return false; }
+    DataTypeSet supportedTypes() const override { return DataTypeSet(); }
+    Halo halo() const override { return Halo::none(); }
+    const char* correctnessReference() const override { return "x"; }
+    const char* complexityNote() const override { return ""; }
+    const char* origin() const override { return "lab.models:Seg 1.0"; }
+};
+} // namespace
+
+TEST(OperationOrigin, CatalogReportsOrigin) {
+    OperationCatalog& catalog = OperationCatalog::instance();
+    if (!catalog.isRegistered("test.OperationOrigin.catalog")) {
+        catalog.registerFactory(std::make_shared<OriginTextFactory>());
+    }
+    EXPECT_STREQ(catalog.origin("test.OperationOrigin.catalog"), "lab.models:Seg 1.0");
+    EXPECT_STREQ(catalog.origin("segment.contours"), "");
+    EXPECT_THROW(catalog.origin("test.OperationOrigin.unknown"), InvalidArgumentError);
+    EXPECT_THROW(catalog.origin(nullptr), InvalidArgumentError);
+}

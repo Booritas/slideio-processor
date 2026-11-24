@@ -183,6 +183,7 @@ public:
     virtual bool producesObjects() const;                             // false
     virtual int32_t outputPlaneCount(int32_t inputPlaneCount) const;  // inputPlaneCount
     virtual bool isDeterministic() const;                             // true
+    virtual const char* origin() const;                               // ""
     virtual int64_t workingSetBytesPerTile() const;                   // 0
     virtual int64_t accumulatedStateBytes(int32_t planeCount) const;  // 0
     virtual bool objectsAreEightConnected() const;                    // false
@@ -618,6 +619,14 @@ operation whose results may vary between runs (a GPU model) overrides it to
 return `false`. `OperationCatalog::isDeterministic(name)` answers for a
 registered name and throws `InvalidArgumentError` for a null or unknown one. The
 stage record lists such operations (SDS 04, 4.2).
+
+**Origin.** `OperationFactory::origin()` says where an operation's code comes
+from, for provenance. It is empty by default, which is what the library's own
+operations return, and is never null; an extension whose code lives elsewhere (the
+Python bindings' stand-in factory, for example) overrides it. It must be safe to
+call concurrently. `OperationCatalog::origin(name)` answers for a registered name
+and throws `InvalidArgumentError` for a null or unknown one. The stage record
+lists the non-empty origins (SDS 04, 4.2).
 
 **What `create` checks, and which declarations the factory only predicts.**
 `create` throws `InternalError` when the factory returns null, and also when the
