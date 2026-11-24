@@ -422,6 +422,16 @@ is registered, before it declares any stage (SDS 09, 9.3).
 `StageDefinition` gains a copy assignment beside its copy constructor, since a
 definition is a value a caller builds, stores and replaces.
 
+**Operation origins.** When `declare` builds the record, it also adds
+`"operationOrigins": {name: origin}` immediately after `nondeterministicOperations`
+(or after `pipeline` when that key is absent). It maps every operation of the
+stage's pipeline that is registered and whose factory's `origin()` is not empty
+to that origin, in pipeline order, each name once. The key is written only when
+the object is not empty, so records of built-in operations stay byte-identical.
+Like `nondeterministicOperations`, it is not part of `sameDeclaration` (a change
+of origin alone never makes a stage stale, and a no-op redeclaration does not
+refresh it), and the record parser ignores it.
+
 Derived dependencies are deliberately absent from the record. They are a
 function of the other stages present, so storing them would freeze a snapshot
 of a graph that changes as stages are declared — and a record replayed into a

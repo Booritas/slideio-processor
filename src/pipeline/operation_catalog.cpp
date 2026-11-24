@@ -55,6 +55,10 @@ bool OperationFactory::isDeterministic() const {
     return true;
 }
 
+const char* OperationFactory::origin() const {
+    return "";
+}
+
 int32_t OperationFactory::outputPlaneCount(int32_t inputPlaneCount) const {
     return inputPlaneCount;
 }
@@ -233,6 +237,10 @@ bool OperationCatalog::producesObjects(const char* name) const {
 
 bool OperationCatalog::isDeterministic(const char* name) const {
     return impl_->find(name, "OperationCatalog::isDeterministic")->isDeterministic();
+}
+
+const char* OperationCatalog::origin(const char* name) const {
+    return impl_->find(name, "OperationCatalog::origin")->origin();
 }
 
 int32_t OperationCatalog::outputPlaneCount(const char* name, int32_t inputPlaneCount) const {

@@ -1360,3 +1360,69 @@ TEST(StageRegistry, RecordsNondeterministicOperations) {
     EXPECT_FALSE(f.stages().isDeterministic(modelId));
     EXPECT_TRUE(f.stages().isDeterministic(plainId));
 }
+
+namespace {
+
+// A factory whose origin the test can change after registration.
+const char*& originText() {
+    static const char* text = "lab.models:Seg 1.0";
+    return text;
+}
+
+class OriginFactory : public NondeterministicFactory {
+public:
+    using NondeterministicFactory::NondeterministicFactory;
+    bool isDeterministic() const override { return true; }
+    const char* origin() const override { return originText(); }
+};
+
+const char* registerOrigin() {
+    static const char* const name = "test.OperationOrigin.seg";
+    if (!OperationCatalog::instance().isRegistered(name)) {
+        OperationCatalog::instance().registerFactory(std::make_shared<OriginFactory>(name));
+    }
+    return name;
+}
+
+} // namespace
+
+TEST(OperationOrigin, RecordNamesOrigin) {
+    const char* seg = registerOrigin();
+    originText() = "lab.models:Seg 1.0";
+    Fixture f;
+    StageDefinition model("model");
+    model.writesLayer(f.x);
+    PipelineSpec spec = blurSpec(1.0);
+    spec.operation(seg, OperationParameters());
+    spec.operation(seg, OperationParameters());
+    model.pipeline(spec);
+    const std::string record = f.stages().configuration(f.stages().declare(model));
+    EXPECT_NE(record.find(std::string("\"operationOrigins\":{\"") + seg + "\":\"lab.models:Seg 1.0\"}"),
+              std::string::npos)
+        << record;
+}
+
+TEST(OperationOrigin, BuiltInsWriteNoKey) {
+    Fixture f;
+    StageDefinition plain("plain");
+    plain.writesLayer(f.y);
+    plain.pipeline(blurSpec(1.0));
+    EXPECT_EQ(std::string(f.stages().configuration(f.stages().declare(plain))).find("operationOrigins"),
+              std::string::npos);
+}
+
+TEST(OperationOrigin, NotPartOfDeclaration) {
+    const char* seg = registerOrigin();
+    originText() = "lab.models:Seg 1.0";
+    Fixture f;
+    StageDefinition model("model");
+    model.writesLayer(f.x);
+    PipelineSpec spec = blurSpec(1.0);
+    spec.operation(seg, OperationParameters());
+    model.pipeline(spec);
+    const StageId id = f.stages().declare(model);
+    originText() = "lab.models:Seg 2.0";
+    EXPECT_EQ(f.stages().declare(model), id);
+    EXPECT_FALSE(f.stages().isStale(id));
+    originText() = "lab.models:Seg 1.0";
+}
