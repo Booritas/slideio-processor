@@ -196,8 +196,9 @@ and refuses only null or empty paths and a negative scene index.
    **`writeExport` — `run/workspace_export.hpp`.** Step 5's writing of one export
    is a free function, `ExportResult writeExport(Workspace&, const ExportSpec&,
    const char* path, const char* slideId, ProgressObserver*, const CancellationToken&)`
-   (ThreadConfined to the workspace's use), which `SlideRun` calls for each
-   export and the Python bindings call for a workspace export. It writes the
+   (concurrent readers of the workspace are allowed; one `writeExport` per
+   workspace at a time, and none during a stage run of it), which `SlideRun`
+   calls for each export and the Python bindings call for a workspace export. It writes the
    kind's file to `path`, the full path, through the writer of the table above,
    so a workspace export is byte-identical to the run's (CSV and GeoJSON provenance
    aside, which is the store's, not the call's). It reads the workspace only, so a

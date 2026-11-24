@@ -39,7 +39,10 @@ namespace slideio::processor {
  * a level the scene does not have.
  * @throws IoError As the export writers.
  * @par Thread-safety
- * ThreadConfined to the workspace's use: no other thread may use the workspace meanwhile.
+ * Reads the workspace through its ThreadSafe accessors only, so other threads may read
+ * the workspace (its accessors, store queries and cursors) meanwhile. One writeExport()
+ * per workspace at a time, and none while the workspace executes a stage (single-writer
+ * for execution, Assumption 6).
  * @par Requirements
  * UR-API-2, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
  */
