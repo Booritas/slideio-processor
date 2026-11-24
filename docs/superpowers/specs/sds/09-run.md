@@ -193,6 +193,23 @@ and refuses only null or empty paths and a negative scene index.
    workspace lacks, or a raster no stage has written, is an
    `InvalidArgumentError` naming it.
 
+   **`writeExport` — `run/workspace_export.hpp`.** Step 5's writing of one export
+   is a free function, `ExportResult writeExport(Workspace&, const ExportSpec&,
+   const char* path, const char* slideId, ProgressObserver*, const CancellationToken&)`
+   (ThreadConfined to the workspace's use), which `SlideRun` calls for each
+   export and the Python bindings call for a workspace export. It writes the
+   kind's file to `path`, the full path, through the writer of the table above,
+   so a workspace export is byte-identical to the run's (CSV and GeoJSON provenance
+   aside, which is the store's, not the call's). It reads the workspace only, so a
+   read-only workspace works; it makes no directory (the parent of `path` must
+   exist), and a null `slideId` is `""`. Refusals are `InvalidArgumentError`
+   starting `"writeExport: "`: a null or empty `path`, a layer or raster the
+   workspace does not hold, a raster no stage has written, each naming it. A
+   cancelled write returns the writer's `ExportResult` with `wasCancelled()`
+   true and leaves no file; `SlideRun` turns that into its `CancelledError`
+   and keeps its own directory creation and pre-export checks.
+   `WorkspaceExport.*` tests it.
+
 **Progress and cancellation.** The observer and token are forwarded to every
 `StageRunner` and every writer, and the token is also checked before each
 export. A cancelled run throws `CancelledError`. A writer removes its partial

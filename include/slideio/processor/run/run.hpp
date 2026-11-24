@@ -7,7 +7,8 @@
  *
  * The run module is part of the engine library: it describes a whole slide run as a
  * pipeline file (pipeline_file.hpp, export_spec.hpp) and runs it against one slide
- * (slide_run.hpp, slide_run_result.hpp). It depends on workspace, masks,
+ * (slide_run.hpp, slide_run_result.hpp), and writes one export of an open workspace
+ * (workspace_export.hpp). It depends on workspace, masks,
  * pipeline and the data library, never on algorithm.
  *
  * Thread-safety: not applicable (declarations only).
@@ -18,3 +19,4 @@
 #include <slideio/processor/run/pipeline_file.hpp>
 #include <slideio/processor/run/slide_run.hpp>
 #include <slideio/processor/run/slide_run_result.hpp>
+#include <slideio/processor/run/workspace_export.hpp>

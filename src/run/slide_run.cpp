@@ -1,23 +1,15 @@
 // Requirements: UR-API-2, UR-STG-1, UR-STG-4, UR-EXE-4, UR-QA-3, UR-RES-7, UR-RES-8, UR-RES-9, UR-RES-11
 #include <slideio/processor/run/slide_run.hpp>
+#include <slideio/processor/run/workspace_export.hpp>
 #include "core/detail/diagnostics.hpp"
 
-#include <pipeline/detail/level_table.hpp>
 #include <workspace/detail/stage_record.hpp>
 
 #include <slideio/processor/core/error.hpp>
-#include <slideio/processor/core/geometry.hpp>
-#include <slideio/processor/core/object_query.hpp>
 #include <slideio/processor/core/provenance.hpp>
-#include <slideio/processor/masks/label_scene.hpp>
-#include <slideio/processor/masks/mask_writer.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
-#include <slideio/processor/reporting/column_schema.hpp>
-#include <slideio/processor/reporting/csv_writer.hpp>
 #include <slideio/processor/reporting/export_result.hpp>
-#include <slideio/processor/reporting/geojson_exporter.hpp>
-#include <slideio/processor/reporting/raster_tiff_writer.hpp>
 #include <slideio/processor/storage/layer_registry.hpp>
 #include <slideio/processor/storage/raster_store.hpp>
 #include <slideio/processor/storage/store.hpp>
@@ -25,20 +17,15 @@
 #include <slideio/processor/workspace/stage_runner.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
-#include <slideio/slideio/scene.hpp>
-
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 
 #include <cstdint>
-#include <exception>
 #include <filesystem>
 #include <memory>
-#include <new>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -125,33 +112,6 @@ bool sameFile(const char* a, const char* b) {
     return !error && same;
 }
 
-// Translates what SlideIO throws while describing the scene of `slide`, which the message names;
-// SlideIO's text, unaltered (it may name the slide's path too), is the cause.
-template <typename F>
-auto fromScene(const std::string& slide, F&& call) -> decltype(call()) {
-    try {
-        return call();
-    } catch (const ProcessorError&) {
-        throw;
-    } catch (const std::bad_alloc&) {
-        throw;
-    } catch (const std::exception& e) {
-        const std::string cause = detail::diagnosticText(e);
-        ErrorContext context;
-        context.cause = cause.c_str();
-        throw InternalError(detail::withPath("SlideRun: SlideIO failed to describe the scene", slide).c_str(), context);
-    }
-}
-
-LayerId layerOf(Workspace& workspace, const ExportSpec& spec) {
-    LayerId layer;
-    if (!workspace.layers().find(spec.layer(), layer)) {
-        refuse(std::string("the ") + kindName(spec.kind()) + " export names the layer '" + spec.layer() +
-               "', which the workspace does not hold");
-    }
-    return layer;
-}
-
 } // namespace
 
 class SlideRun::Impl {
@@ -170,7 +130,6 @@ public:
     void declare(Workspace& workspace, std::vector<StageId>& stages) const;
     void runStages(Workspace& workspace, const std::vector<StageId>& stages, SlideRunResult& result) const;
     void writeExports(Workspace& workspace, SlideRunResult& result) const;
-    ExportResult writeExport(Workspace& workspace, const ExportSpec& spec, const std::string& path) const;
 };
 
 // Step 2: an existing workspace's binding is read from its store, opened read-only, before
@@ -300,68 +259,6 @@ void SlideRun::Impl::runStages(Workspace& workspace, const std::vector<StageId>&
     }
 }
 
-ExportResult SlideRun::Impl::writeExport(Workspace& workspace, const ExportSpec& spec, const std::string& path) const {
-    Store& store = *workspace.store();
-    switch (spec.kind()) {
-        case ExportKind::Csv: {
-            ColumnSchema schema = ColumnSchema::standard();
-            if (spec.measurementCount() == 0) {
-                schema.allMeasurements();
-            } else {
-                for (int32_t m = 0; m < spec.measurementCount(); ++m) schema.measurement(spec.measurementAt(m));
-            }
-            CsvWriter writer(path.c_str());
-            writer.schema(schema).slideId(slideId.c_str());
-            return writer.write(store, ObjectQuery().layer(layerOf(workspace, spec)), observer, token);
-        }
-        case ExportKind::GeoJson: {
-            GeoJsonExporter writer(path.c_str());
-            writer.slideId(slideId.c_str());
-            return writer.write(store, ObjectQuery().layer(layerOf(workspace, spec)), observer, token);
-        }
-        case ExportKind::LabelMask: {
-            const std::shared_ptr<slideio::Scene> scene = workspace.scene();
-            const std::tuple<int, int, int, int> rect = fromScene(slidePath, [&] { return scene->getRect(); });
-            const std::tuple<double, double> metres = fromScene(slidePath, [&] { return scene->getResolution(); });
-            const Rect64 region{0, 0, std::get<2>(rect), std::get<3>(rect)};
-            const std::shared_ptr<slideio::Scene> labels =
-                rasteriseLabels(store, ObjectQuery().layer(layerOf(workspace, spec)), region);
-            MaskWriter writer(path.c_str());
-            if (std::get<0>(metres) > 0.0) writer.resolution(std::get<0>(metres) * 1e6);
-            return writer.write(labels, observer, token);
-        }
-        case ExportKind::RasterTiff: {
-            RasterRegistry& rasters = store.rasters();
-            RasterId raster;
-            if (!rasters.find(spec.raster(), raster)) {
-                refuse(std::string("the rasterTiff export names the raster '") + spec.raster() +
-                       "', which the workspace does not hold");
-            }
-            if (!rasters.isPopulated(raster)) {
-                refuse(std::string("the rasterTiff export names the raster '") + spec.raster() +
-                       "', which no stage has written");
-            }
-            const int32_t level = rasters.writtenAtLevel(raster);
-            const std::shared_ptr<slideio::Scene> scene = workspace.scene();
-            const std::vector<detail::LevelDims> table = fromScene(slidePath, [&] { return detail::levelTable(*scene); });
-            if (level < 0 || static_cast<size_t>(level) >= table.size()) {
-                throw InternalError(("SlideRun: the raster '" + std::string(spec.raster()) +
-                                     "' was written at a level the scene does not have")
-                                        .c_str());
-            }
-            const double scale = detail::scaleOfLevel(table, level);
-            const std::tuple<double, double> metres = fromScene(slidePath, [&] { return scene->getResolution(); });
-            const TileRasterSourcePtr source = rasters.sourceFor(raster);
-            RasterTiffWriter writer(path.c_str());
-            writer.name(spec.raster());
-            if (std::get<0>(metres) > 0.0) writer.resolution(std::get<0>(metres) * 1e6 * scale);
-            const Rect64 region{0, 0, table.front().width, table.front().height};
-            return writer.write(*source, region, scale, observer, token);
-        }
-    }
-    throw InternalError("SlideRun: an export has an unknown kind");
-}
-
 // Step 5: each export through its writer, which writes "<file>.partial" and renames it.
 void SlideRun::Impl::writeExports(Workspace& workspace, SlideRunResult& result) const {
     const fs::path directory = fs::u8path(exportDirectory);
@@ -380,7 +277,7 @@ void SlideRun::Impl::writeExports(Workspace& workspace, SlideRunResult& result) 
             throw CancelledError("SlideRun: the run was cancelled before the exports were complete");
         }
         const std::string path = (directory / fs::u8path(spec.file())).u8string();
-        const ExportResult written = writeExport(workspace, spec, path);
+        const ExportResult written = writeExport(workspace, spec, path.c_str(), slideId.c_str(), observer, token);
         if (written.wasCancelled()) {
             throw CancelledError(
                 ("SlideRun: the " + std::string(kindName(spec.kind())) + " export was cancelled").c_str());
