@@ -138,9 +138,13 @@ echo "cmake:  $(command -v cmake) ($(cmake --version | head -n 1))"
 
 # --- 1. Submodules -------------------------------------------------------------
 
-step "Initialising submodules"
-git submodule update --init --recursive
-git submodule status --recursive
+if [[ "$data_only" == ON ]]; then
+    step "Skipping submodules (--data-only)"
+else
+    step "Initialising submodules"
+    git submodule update --init --recursive
+    git submodule status --recursive
+fi
 
 # --- 2. SlideIO ----------------------------------------------------------------
 

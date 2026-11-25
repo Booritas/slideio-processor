@@ -91,10 +91,14 @@ checked=0
 for name in slideio-processor-data slideio-processor-engine; do
     lib="$(find "$bin" \( -name "$name.dll" -o -name "lib$name.so*" -o -name "lib$name*.dylib" \) \
            -type f 2>/dev/null | head -n 1)" || true
-    # A data-only build (SLIDEIO_PROCESSOR_DATA_ONLY) has no engine library.
     if [[ -z "$lib" ]]; then
-        echo "check-no-test-seams.sh: library $name not found under $bin; skipped"
-        continue
+        # Only a data-only build (SLIDEIO_PROCESSOR_DATA_ONLY) lacks the engine library.
+        if [[ "$name" == slideio-processor-engine ]] &&
+           grep -q '^SLIDEIO_PROCESSOR_DATA_ONLY:BOOL=ON' "$1/CMakeCache.txt" 2>/dev/null; then
+            echo "check-no-test-seams.sh: data-only build; $name skipped"
+            continue
+        fi
+        die "library $name not found under $bin"
     fi
     checked=$((checked + 1))
     # Keep a failing listing from passing silently: capture it, then search it.

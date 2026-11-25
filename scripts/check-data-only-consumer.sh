@@ -4,6 +4,7 @@
 # finds neither SlideIO nor OpenCV (no prefix path to either).
 #
 # Usage: scripts/check-data-only-consumer.sh <conan output folder>   (build-data/conan)
+#        Release builds only: the folder must be a Release build's Conan output.
 # Exit:  0 the consumer built and ran; non-zero otherwise.
 
 set -euo pipefail
@@ -14,6 +15,9 @@ conan_dir="$(cd "$1" && pwd)"
 toolchain="$conan_dir/conan_toolchain.cmake"
 [[ -f "$toolchain" ]] || { echo "no $toolchain" >&2; exit 2; }
 build="$root/build-data-consumer"
+case "$conan_dir" in
+    *debug*) echo "$0: Release builds only; $conan_dir looks like a Debug build" >&2; exit 2 ;;
+esac
 
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) windows=1 ;; *) windows=0 ;; esac
 # CMake wants Windows-style paths on Windows.
@@ -21,33 +25,26 @@ native() { if [[ $windows == 1 ]]; then cygpath -m "$1"; else printf '%s\n' "$1"
 
 # A fresh tree: a stale cache could keep an old toolchain or a found SlideIO.
 rm -rf "$build"
+mkdir -p "$build"
+log="$build/configure.log"
 cmake -S "$(native "$root/tests/data_only_consumer")" -B "$(native "$build")" \
       -DCMAKE_TOOLCHAIN_FILE="$(native "$toolchain")" -DCMAKE_BUILD_TYPE=Release \
-      | tee "$build.configure.log"
-grep -q "data-only build (no SlideIO, no OpenCV)" "$build.configure.log" \
+      | tee "$log"
+grep -q "data-only build (no SlideIO, no OpenCV)" "$log" \
     || { echo "configure did not report a data-only build" >&2; exit 1; }
-rm -f "$build.configure.log"
 
 cmake --build "$(native "$build")" --config Release --parallel
 
-# The executable lands in the build root (Release/ under Visual Studio); the library in
-# bin/ (bin/Release/). Look in each, and put each existing one on the library path.
+# The executable lands in the build root (Release/ under Visual Studio). On Windows the
+# POST_BUILD step copies the DLLs beside it, and the run adds no library directory to
+# PATH, which proves the copy works. Elsewhere the build-tree RPATH finds the library, so
+# LD_LIBRARY_PATH/DYLD_LIBRARY_PATH are not set either.
 exe=""
-libdirs=""
-for d in "$build" "$build/Release" "$build/bin" "$build/bin/Release"; do
-    [[ -d "$d" ]] && libdirs="$libdirs:$d"
-    if [[ -z "$exe" ]]; then
-        for n in consumer consumer.exe; do
-            if [[ -f "$d/$n" ]]; then exe="$d/$n"; break; fi
-        done
-    fi
+for d in "$build" "$build/Release"; do
+    for n in consumer consumer.exe; do
+        if [[ -z "$exe" && -f "$d/$n" ]]; then exe="$d/$n"; fi
+    done
 done
 [[ -n "$exe" ]] || { echo "consumer executable not found under $build" >&2; exit 1; }
-libdirs="${libdirs#:}"
 
-if [[ $windows == 1 ]]; then
-    PATH="$libdirs:$PATH" "$exe"
-else
-    LD_LIBRARY_PATH="$libdirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-    DYLD_LIBRARY_PATH="$libdirs${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" "$exe"
-fi
+"$exe"

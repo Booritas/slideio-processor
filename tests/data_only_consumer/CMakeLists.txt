@@ -18,3 +18,12 @@ add_subdirectory(${PROCESSOR_ROOT} slideio-processor)
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE slideio-processor-data)
+
+# The library is built into ${CMAKE_BINARY_DIR}/bin; on Windows the DLL must sit next to
+# the executable to be found.
+if(WIN32)
+    add_custom_command(TARGET consumer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:consumer> $<TARGET_FILE_DIR:consumer>
+        COMMAND_EXPAND_LISTS)
+endif()

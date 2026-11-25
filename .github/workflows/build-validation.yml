@@ -109,8 +109,10 @@ jobs:
           scripts/check-no-test-seams.sh build-noseams
 
   # The data library alone, as slideio-view consumes it: no SlideIO, no OpenCV, so no
-  # submodule checkout, toolchain sync or SlideIO cache. Builds, runs the data tests and
-  # builds and runs a project that links only slideio-processor-data.
+  # submodule checkout (build.sh --data-only skips it, and a step fails the job if
+  # extern/slideio gets populated), toolchain sync or SlideIO cache. Builds, runs the
+  # data tests, checks a no-test-seams build and builds and runs a project that links
+  # only slideio-processor-data.
   build-data-only:
     name: Data only ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -155,9 +157,25 @@ jobs:
           PYTHON: python
         run: ./build.sh --data-only --warnings-as-errors
 
+      - name: Check that no submodule was checked out
+        shell: bash
+        run: |
+          if [ -n "$(ls -A extern/slideio 2>/dev/null)" ]; then
+            echo "extern/slideio is populated: a data-only build must not check out submodules"
+            exit 1
+          fi
+
       - name: Test
         shell: bash
         run: ./run-tests.sh --data-only
+
+      - name: Build without test seams and check the exports
+        shell: bash
+        env:
+          PYTHON: python
+        run: |
+          ./build.sh --data-only --no-test-seams --warnings-as-errors
+          scripts/check-no-test-seams.sh build-noseams-data
 
       - name: Build and run the data-only consumer
         shell: bash

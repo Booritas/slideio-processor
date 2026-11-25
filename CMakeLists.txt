@@ -50,6 +50,9 @@ if(SLIDEIO_PROCESSOR_DATA_ONLY)
         message(FATAL_ERROR
             "SLIDEIO_PROCESSOR_DATA_ONLY: no opencv/<x.y.z> requirement found in conanfile.py")
     endif()
+    if(OpenCV_VERSION VERSION_LESS 4)
+      message(FATAL_ERROR "OpenCV 4 or later is required; found ${OpenCV_VERSION}")
+    endif()
 else()
     # The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
     # SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
