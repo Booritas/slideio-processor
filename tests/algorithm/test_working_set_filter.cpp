@@ -68,20 +68,6 @@ int64_t medianShare(const Operation& op, DataType type, int64_t width, int64_t h
     return w * h + (k > 5 ? (w + k - 1) * h : 0);
 }
 
-// What cv::distanceTransform (DIST_L2, DIST_MASK_PRECISE, CV_32F) and the
-// operation take through cv::fastMalloc, which the meter does not see, with one
-// OpenCV thread, for one plane, from OpenCV 4.14.0, imgproc/src/distransform.cpp
-// as read (trueDistTrans, DTColumnInvoker::operator(), DTRowInvoker::operator()),
-// with m the halo'd height and n the halo'd width: the Byte mask and the Float32
-// destination, 5 m n; trueDistTrans's AutoBuffer, max(20 m + 4, 8 n); and, the
-// larger of the two invokers' buffers live with it, the column one's 4 m bytes
-// or the row one's 12 (n + 2). Counted exactly, with no allocator rounding.
-int64_t distanceShare(const Operation& op, DataType, int64_t width, int64_t height) {
-    const int64_t n = haloWidth(op, width);
-    const int64_t m = haloHeight(op, height);
-    return 5 * m * n + std::max(20 * m + 4, 8 * n) + std::max(4 * m, 12 * (n + 2));
-}
-
 // What cv::erode, cv::dilate and cv::morphologyEx take through cv::fastMalloc
 // for one integer plane, with one OpenCV thread (OpenCV 4.14,
 // imgproc/src/morph.dispatch.cpp): the destination, the size of the halo'd
@@ -330,22 +316,16 @@ TEST(WorkingSetFilter, BilateralLargeTileRefusedUnderTheCeiling) {
 }
 
 TEST(WorkingSetFilter, DistanceTransformDeclarationBoundsTheMeasuredPeak) {
-    // pixel.distance_transform: the default and the largest halo on a type
-    // read as integers and one read as floats.
-    sequentialBeforeMetering("pixel.distance_transform");
+    // pixel.distance_transform computes in the module's own memory, all of it
+    // metered, so no unmetered share: the default and the extreme halos, on a
+    // type read as integers and one read as floats.
     for (DataType type : {DataType::Byte, DataType::Float32}) {
         expectApplyBounded("distance_transform default",
                            [] { return createOperation("pixel.distance_transform", OperationParameters()); },
-                           {type}, distanceShare);
-        expectApplyBounded("distance_transform 64", [] { return makeDistanceTransform(64); }, {type},
-                           distanceShare);
-        expectApplyBounded("distance_transform 1", [] { return makeDistanceTransform(1); }, {type},
-                           distanceShare);
+                           {type});
+        expectApplyBounded("distance_transform 64", [] { return makeDistanceTransform(64); }, {type});
+        expectApplyBounded("distance_transform 1", [] { return makeDistanceTransform(1); }, {type});
     }
-}
-
-TEST(WorkingSetFilter, OpenCvIsSequentialOnceDistanceTransformApplies) {
-    expectSequentialAfterApply("pixel.distance_transform", DataType::Byte);
 }
 
 TEST(WorkingSetFilter, FillHolesDeclarationBoundsTheMeasuredPeak) {

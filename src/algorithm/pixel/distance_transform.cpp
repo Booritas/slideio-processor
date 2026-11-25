@@ -6,17 +6,17 @@
 #include "detail/bag.hpp"
 #include "detail/builtin_factory.hpp"
 #include "detail/builtin_operations.hpp"
-#include "detail/cv_plane.hpp"
 #include "detail/sample_codec.hpp"
 #include "detail/working_set.hpp"
 
-#include <opencv2/imgproc.hpp>
-
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace slideio::processor {
 
@@ -55,34 +55,21 @@ public:
     Halo halo() const override { return Halo::uniform(maximum_); }
     DataType outputType(DataType) const override { return DataType::Float32; }
     const OperationParameters& parameters() const override { return parameters_; }
-    // Per pixel of the halo'd rect: the Byte mask (1) and OpenCV's Float32
-    // destination (4), both through cv::fastMalloc; and the buffers of OpenCV's
-    // exact path, read from OpenCV 4.14.0, imgproc/src/distransform.cpp
-    // (cv::distanceTransform with DIST_MASK_PRECISE calls trueDistTrans, which
-    // is single threaded here), with m the rect's height and n its width:
-    //  - trueDistTrans's AutoBuffer, live throughout:
-    //    max(m * 2 * 4 + (3 m + 1) * 4, n * 2 * 4) = max(20 m + 4, 8 n) bytes,
-    //    plus up to 3 bytes of int alignment;
-    //  - while it is live, DTColumnInvoker's AutoBuffer<int>(m), 4 m bytes, and
-    //    afterwards, with the column one freed, DTRowInvoker's
-    //    AutoBuffer<uchar>((n + 2) * 2 * 4 + (n + 2) * 4) = 12 (n + 2) bytes.
-    // The peak is max(20 m + 4, 8 n) + max(4 m, 12 n + 24) + 3, at most
-    // 32 L + 31 for L = max(m, n). Both sides are at least s = 2 * maximum + 1,
-    // so L / (m * n) <= 1 / s and 31 / (m * n) <= 31 / s, and that is at most
-    // 63 / s bytes per pixel, taken rounded up.
+    // The module computes in its own memory, all through operator new, one plane
+    // at a time. With n the halo'd rect's width, m its height and h <= m the
+    // tile's height: the column distances of the tile's rows, uint16, 2 h n <=
+    // 2 m n; and two rows of n, the running column distances (uint16) and the
+    // envelope's columns (int64), 10 n = 10 m n / m. The rect's height is at
+    // least 2 * maximum + 1, so that is at most 10 / (2 * maximum + 1) bytes per
+    // pixel, taken rounded up.
     int64_t workingSetBytesPerLevelPixel() const override {
         const int64_t side = 2 * static_cast<int64_t>(maximum_) + 1;
-        return 5 + (63 + side - 1) / side;
+        return 2 + (10 + side - 1) / side;
     }
-    // The Mats' bookkeeping (mask, destination), and cv::fastMalloc's alignment
-    // of its five blocks (mask, destination and the three AutoBuffers): up to 63
-    // bytes of rounding and the original pointer's 8 on each, 128 bounds that.
-    int64_t workingSetBytesPerTile() const override {
-        return 2 * detail::kCvMatBookkeeping + 5 * 128;
-    }
+    // The three vectors' allocator blocks.
+    int64_t workingSetBytesPerTile() const override { return 3 * detail::kAllocatorBlockOverhead; }
 
     void apply(OperationContext& context) override {
-        detail::useSequentialOpenCv(kName);
         const BlockView& in = context.input();
         BlockView& out = context.output();
         const Rect64 tile = context.tileRectAtLevel();
@@ -119,6 +106,19 @@ public:
     }
 
 private:
+    // The exact squared Euclidean distance transform of Felzenszwalb and
+    // Huttenlocher (Theory of Computing 8:415-428, 2012) in two passes, every
+    // step in integers:
+    //  1. per column, g = the distance to the nearest background pixel of the
+    //     column, for each of the tile's rows, capped at H + 1 (a column whose
+    //     background is further than H gives no distance of at most H, so the cap
+    //     changes no output);
+    //  2. per tile row, the lower envelope of the parabolas (x - p)^2 + g(p)^2
+    //     over the columns p with g(p) <= H, its breakpoints compared exactly by
+    //     cross-multiplication in int64, never divided or rounded.
+    // The output is the square root of the least integer squared distance, in
+    // double, then as float; or H when that is at least H^2. That is
+    // min(true distance, H) at every pixel, whatever the tiling.
     void transformPlane(const BlockView& in, BlockView& out, int32_t plane, int64_t originX, int64_t originY,
                         int64_t width, int64_t height) const {
         const DataType type = in.planeType(plane);
@@ -126,41 +126,131 @@ private:
         const int64_t inHeight = in.height();
         const auto* inBase = static_cast<const unsigned char*>(in.planeData(plane));
         const int64_t inStride = in.planeRowStrideBytes(plane);
-        const float cap = static_cast<float>(maximum_);
+        const int cap = maximum_ + 1;
+        const size_t columns = static_cast<size_t>(inWidth);
+        // Moves the running column distances one row on, to @p row.
+        auto step = [&](std::vector<uint16_t>& running, const unsigned char* row) {
+            for (int64_t x = 0; x < inWidth; ++x) {
+                uint16_t& r = running[static_cast<size_t>(x)];
+                const bool background = !foreground(detail::sampleAsDouble(detail::readSample(row, x, type)));
+                r = background ? uint16_t{0} : static_cast<uint16_t>(std::min<int>(r + 1, cap));
+            }
+        };
 
-        // The mask of the whole halo'd input: 255 where foreground.
-        bool anyBackground = false;
-        cv::Mat distance;
-        try {
-            cv::Mat mask(static_cast<int>(inHeight), static_cast<int>(inWidth), CV_8U);
-            for (int64_t y = 0; y < inHeight; ++y) {
-                const unsigned char* row = inBase + y * inStride;
-                unsigned char* maskRow = mask.ptr<unsigned char>(static_cast<int>(y));
-                for (int64_t x = 0; x < inWidth; ++x) {
-                    const bool isForeground = foreground(detail::sampleAsDouble(detail::readSample(row, x, type)));
-                    maskRow[x] = isForeground ? 255 : 0;
-                    anyBackground = anyBackground || !isForeground;
-                }
+        // Pass 1 from below: the distance down to background, for the tile's rows.
+        std::vector<uint16_t> column(static_cast<size_t>(height) * columns);
+        std::vector<uint16_t> running(columns, static_cast<uint16_t>(cap));
+        for (int64_t y = inHeight - 1; y >= originY; --y) {
+            step(running, inBase + y * inStride);
+            if (y < originY + height) {
+                std::copy(running.begin(), running.end(),
+                          column.begin() + static_cast<std::ptrdiff_t>((y - originY) * inWidth));
             }
-            if (anyBackground) {
-                cv::distanceTransform(mask, distance, cv::DIST_L2, cv::DIST_MASK_PRECISE, CV_32F);
-            }
-        } catch (const cv::Exception&) {
-            detail::translateCv(kName);
         }
 
+        // Pass 1 from above, and pass 2 on each of the tile's rows as it is reached.
+        std::fill(running.begin(), running.end(), static_cast<uint16_t>(cap));
+        std::vector<int64_t> envelope(columns);
         auto* outBase = static_cast<unsigned char*>(out.planeData(plane));
         const int64_t outStride = out.planeRowStrideBytes(plane);
-        for (int64_t y = 0; y < height; ++y) {
-            auto* outRow = outBase + y * outStride;
-            // With no background in the context every pixel is further than the
-            // maximum, so the cap is the answer and no OpenCV call is needed.
-            const float* distanceRow =
-                anyBackground ? distance.ptr<float>(static_cast<int>(originY + y)) + originX : nullptr;
-            for (int64_t x = 0; x < width; ++x) {
-                const float value = distanceRow != nullptr ? std::min(distanceRow[x], cap) : cap;
-                std::memcpy(outRow + x * static_cast<int64_t>(sizeof(float)), &value, sizeof(float));
+        for (int64_t y = 0; y < originY + height; ++y) {
+            step(running, inBase + y * inStride);
+            if (y < originY) {
+                continue;
             }
+            uint16_t* g = column.data() + (y - originY) * inWidth;
+            for (size_t x = 0; x < columns; ++x) {
+                g[x] = std::min(g[x], running[x]);
+            }
+            transformRow(g, inWidth, envelope.data(), originX, width, outBase + (y - originY) * outStride);
+        }
+    }
+
+    // Pass 2 on one row: @p g the capped column distances of the context's
+    // @p inWidth columns; writes the tile's @p width outputs from column @p originX.
+    void transformRow(const uint16_t* g, int64_t inWidth, int64_t* v, int64_t originX, int64_t width,
+                      unsigned char* outRow) const {
+        const int64_t h = maximum_;
+        const float capValue = static_cast<float>(maximum_);
+        for (int64_t x = 0; x < width; ++x) {
+            std::memcpy(outRow + x * static_cast<int64_t>(sizeof(float)), &capValue, sizeof(float));
+        }
+        auto f = [g](int64_t p) {
+            const int64_t d = g[p];
+            return d * d;
+        };
+        // The columns that can give a distance of at most H, in runs whose
+        // neighbours are at most 2 H + 1 apart. No pixel is within H of columns
+        // further apart than that, and a pixel within H of a later run is further
+        // than H from every column of an earlier one, so each run is an envelope
+        // of its own, answering the pixels within H of it.
+        int64_t p = 0;
+        while (p < inWidth) {
+            if (g[p] > h) {
+                ++p;
+                continue;
+            }
+            // The envelope of one run. Every column dropped between two
+            // consecutive members a < b lies within H of a or of b (the envelope
+            // there is at most its g <= H, and is a's or b's or further from it),
+            // and the run has no gap above 2 H + 1, so b - a <= 4 H + 1; the next
+            // column is within 2 H + 1 of the last member. Every product below is
+            // then far inside int64 (about 3e12 at most, at H = 4096).
+            const int64_t first = p;
+            int64_t last = p;
+            int64_t k = 0;
+            v[0] = p;
+            for (int64_t q = p + 1; q < inWidth && q - last <= 2 * h + 1; ++q) {
+                if (g[q] > h) {
+                    continue;
+                }
+                last = q;
+                // Drop the top b = v[k] while its breakpoint with its predecessor a
+                // is not left of its breakpoint with q:
+                //   s(a, b) - b = (f(b) - f(a) - alpha^2) / (2 alpha), alpha = b - a,
+                //   s(b, q) - b = (f(q) - f(b) + gamma^2) / (2 gamma), gamma = q - b.
+                while (k > 0) {
+                    const int64_t a = v[k - 1];
+                    const int64_t b = v[k];
+                    const int64_t alpha = b - a;
+                    const int64_t gamma = q - b;
+                    if (alpha > 4 * h + 1) {
+                        throwInternal("an envelope gap exceeds its bound");
+                    }
+                    if ((f(b) - f(a) - alpha * alpha) * gamma < (f(q) - f(b) + gamma * gamma) * alpha) {
+                        break;
+                    }
+                    --k;
+                }
+                v[++k] = q;
+            }
+            // The tile's pixels within H of the run, walking the envelope: on from
+            // a = v[j] to b = v[j + 1] while s(a, b) <= x, that is while
+            // f(b) - f(a) <= (b - a) (2 x - a - b).
+            const int64_t from = std::max(first - h, originX);
+            const int64_t to = std::min(last + h, originX + width - 1);
+            int64_t j = 0;
+            for (int64_t x = from; x <= to; ++x) {
+                while (j < k) {
+                    const int64_t a = v[j];
+                    const int64_t b = v[j + 1];
+                    if (f(b) - f(a) > (b - a) * (2 * x - a - b)) {
+                        break;
+                    }
+                    ++j;
+                }
+                const int64_t dx = x - v[j];
+                if (dx > h || dx < -h) {
+                    continue;
+                }
+                const int64_t squared = dx * dx + f(v[j]);
+                if (squared < h * h) {
+                    const float value = static_cast<float>(std::sqrt(static_cast<double>(squared)));
+                    std::memcpy(outRow + (x - originX) * static_cast<int64_t>(sizeof(float)), &value,
+                                sizeof(float));
+                }
+            }
+            p = last + 1;
         }
     }
 

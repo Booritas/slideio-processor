@@ -1,10 +1,12 @@
 // Requirements: UR-PIX-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/pixel/filter.hpp>
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
 #include <algorithm/support/harness.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/parameters_json.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 
@@ -326,5 +328,142 @@ TEST(DistanceTransform, TiledEqualsSingleTileAtALargeMaximum) {
         for (int64_t x = 0; x < m.width; x += 5) {
             ASSERT_EQ(static_cast<float>(reference.at(0, x, y)), bruteForce(m, x, y, 600)) << x << "," << y;
         }
+    }
+}
+
+namespace {
+
+// A background pixel, in the coordinates of the picture it lies in.
+struct Point {
+    int64_t x;
+    int64_t y;
+};
+
+// min(H, the distance from (x, y) to the nearest of @p points), and, when
+// @p width and @p height are positive, to the nearest pixel centre outside a
+// width x height level. As the operation states it: the square root of the
+// integer squared distance, in double, then as float.
+float bruteForcePoints(const std::vector<Point>& points, int64_t x, int64_t y, int32_t maximum, int64_t width = 0,
+                       int64_t height = 0) {
+    int64_t best = static_cast<int64_t>(maximum) * maximum;
+    if (width > 0 && height > 0) {
+        const int64_t edge = std::min({x + 1, y + 1, width - x, height - y});
+        best = std::min(best, edge * edge);
+    }
+    for (const Point& p : points) {
+        const int64_t dx = x - p.x;
+        const int64_t dy = y - p.y;
+        best = std::min(best, dx * dx + dy * dy);
+    }
+    return static_cast<float>(std::sqrt(static_cast<double>(best)));
+}
+
+// Applies @p op to the tile @p tile of a context of width x height Byte pixels,
+// every one foreground but @p background: the context is the tile grown by the
+// operation's halo, inside the level, as the framework gives it away from the
+// level's edge. Returns the tile's Float32 output.
+std::vector<float> applyInContext(Operation& op, int64_t width, int64_t height, const std::vector<Point>& background,
+                                  const Rect64& tile) {
+    std::vector<uint8_t> context(static_cast<size_t>(width * height), uint8_t{255});
+    for (const Point& p : background) {
+        context[static_cast<size_t>(p.y * width + p.x)] = 0;
+    }
+    std::vector<float> out(static_cast<size_t>(tile.width * tile.height), -1.0f);
+    const BlockPlane inPlane{context.data(), DataType::Byte, width, 0};
+    const BlockPlane outPlane{out.data(), DataType::Float32, tile.width * static_cast<int64_t>(sizeof(float)), 0};
+    const BlockView input(width, height, Rect64{0, 0, width, height}, 0, &inPlane, 1);
+    BlockView output(tile.width, tile.height, tile, 0, &outPlane, 1);
+    detail::OperationContextState state;
+    state.input = &input;
+    state.output = &output;
+    state.level = 0;
+    state.tileRectAtLevel = state.tileRect = tile;
+    state.haloRectAtLevel = state.haloRect = Rect64{0, 0, width, height};
+    state.levelScale = 1.0;
+    state.tileIndex = 0;
+    op.apply(*detail::OperationContextAccess::make(std::move(state)));
+    return out;
+}
+
+} // namespace
+
+TEST(DistanceTransform, ExactAtLongDistancesInAWideContext) {
+    // The final review's case: a parabola breakpoint computed in float32 (as
+    // OpenCV 4.14.0's precise mode does) falls on the wrong side of an integer
+    // at x = 5289 of an 8192-wide context, choosing the background pixel at
+    // column 4481 (squared distance 949889) over the one at column 6081
+    // (949888). The breakpoint depends on the absolute column, so the error
+    // depends on the tiling.
+    constexpr int32_t kMaximum = 2048;
+    constexpr int64_t kWidth = 4096 + 2 * kMaximum;
+    constexpr int64_t kHeight = 1 + 2 * kMaximum;
+    const Rect64 tile{kMaximum, kMaximum, 4096, 1};
+    const std::vector<Point> background{{4481, kMaximum - 545}, {6081, kMaximum - 568}};
+    const OperationPtr op = makeDistanceTransform(kMaximum);
+    const std::vector<float> out = applyInContext(*op, kWidth, kHeight, background, tile);
+    EXPECT_EQ(out[static_cast<size_t>(5289 - kMaximum)], static_cast<float>(std::sqrt(949888.0)));
+    for (int64_t x = 0; x < tile.width; ++x) {
+        ASSERT_EQ(out[static_cast<size_t>(x)], bruteForcePoints(background, tile.x + x, tile.y, kMaximum))
+            << "x " << tile.x + x;
+    }
+
+    // Sparse background in wide contexts at the largest maximums: every
+    // distance of the tile row is exact.
+    for (int32_t maximum : {2048, 4096}) {
+        const int64_t width = 4096 + 2 * static_cast<int64_t>(maximum);
+        const int64_t height = 1 + 2 * static_cast<int64_t>(maximum);
+        std::mt19937 rng(static_cast<uint32_t>(maximum) * 7919u);
+        std::vector<Point> points;
+        for (int i = 0; i < 60; ++i) {
+            points.push_back(Point{static_cast<int64_t>(rng() % static_cast<uint32_t>(width)),
+                                   static_cast<int64_t>(rng() % static_cast<uint32_t>(height))});
+        }
+        const Rect64 row{maximum, maximum, 4096, 1};
+        const OperationPtr wide = makeDistanceTransform(maximum);
+        const std::vector<float> distances = applyInContext(*wide, width, height, points, row);
+        for (int64_t x = 0; x < row.width; ++x) {
+            ASSERT_EQ(distances[static_cast<size_t>(x)], bruteForcePoints(points, row.x + x, row.y, maximum))
+                << "maximum " << maximum << " x " << row.x + x;
+        }
+    }
+}
+
+TEST(DistanceTransform, TiledEqualsSingleTileAtLongDistances) {
+    // A mostly foreground level thousands of pixels across, so the true
+    // distances run to the maximum and the contexts are thousands wide; tiles
+    // of different sizes put every pixel at different context columns.
+    constexpr int64_t kWidth = 3000;
+    constexpr int64_t kHeight = 2600;
+    constexpr int32_t kMaximum = 1100;
+    std::mt19937 rng(20261125u);
+    std::vector<Point> points;
+    for (int i = 0; i < 12; ++i) {
+        points.push_back(Point{static_cast<int64_t>(rng() % static_cast<uint32_t>(kWidth)),
+                               static_cast<int64_t>(rng() % static_cast<uint32_t>(kHeight))});
+    }
+    std::vector<uint8_t> mask(static_cast<size_t>(kWidth * kHeight), uint8_t{1});
+    for (const Point& p : points) {
+        mask[static_cast<size_t>(p.y * kWidth + p.x)] = 0;
+    }
+    auto scene = ts::makeSyntheticScene({{kWidth, kHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        [&mask](int, int64_t x, int64_t y) {
+                                            return mask[static_cast<size_t>(y * kWidth + x)] != 0 ? 255.0 : 0.0;
+                                        });
+    PipelineSpec spec;
+    spec.then(makeDistanceTransform(kMaximum));
+    const ts::Image reference = ts::runEager(scene, spec, 4096, 1);
+    ASSERT_EQ(reference.width, kWidth);
+    ASSERT_EQ(reference.height, kHeight);
+    ASSERT_EQ(reference.types, std::vector<DataType>{DataType::Float32});
+    for (int64_t y = 0; y < kHeight; y += 23) {
+        for (int64_t x = 0; x < kWidth; x += 19) {
+            ASSERT_EQ(static_cast<float>(reference.at(0, x, y)),
+                      bruteForcePoints(points, x, y, kMaximum, kWidth, kHeight))
+                << x << "," << y;
+        }
+    }
+    for (int32_t tile : {1000, 1536}) {
+        const ts::Image tiled = ts::runEager(scene, spec, tile, 4);
+        EXPECT_TRUE(tiled.planes == reference.planes) << "tile " << tile;
     }
 }

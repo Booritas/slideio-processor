@@ -226,7 +226,7 @@ beside it saying which buffers it counts:
 | `pixel.threshold_otsu` | `accumulate()` packs the tile's admitted samples into one row, at most 8 bytes per pixel; `apply()` allocates nothing | one channel's histogram and its local copy (16 bytes per bin; without a range, the largest per-value histogram of 65,536 bins) and its bookkeeping, whatever the number of channels |
 | `pixel.gaussian_blur`, `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | the tile's values as doubles (and one more pass's for a derivative that sums two) and the separable filter's row of samples and ring of row sums, one pass at a time | the allocator's overhead on those buffers |
 | `pixel.median_blur` | one sort key per pixel on the module's own path; the backend's destination and bordered copy on the `Byte` path | the larger of the window's copy (grows with the kernel's area) and the backend's per-column histograms on the `Byte` path |
-| `pixel.distance_transform` | the `Byte` mask and the backend's `Float32` destination, 5 bytes, and the buffers of the backend's exact path (OpenCV 4.14.0, `distransform.cpp`, `trueDistTrans`: a table of `max(20 m + 4, 8 n)` bytes and the larger of the column pass's `4 m` and the row pass's `12 (n + 2)`, for an `m` by `n` rect), at most 63 / (2 · `maximumDistancePx` + 1) bytes per pixel | the Mats' bookkeeping and `fastMalloc`'s alignment of its five blocks |
+| `pixel.distance_transform` | the module's own two passes, all metered: the column distances of the tile's rows as `uint16`, at most 2 bytes per pixel of the halo'd rect, and two rows of the rect's width (the running column distances, `uint16`, and the envelope's columns, `int64`), at most 10 / (2 · `maximumDistancePx` + 1) bytes per pixel; no backend buffer | the three vectors' allocator blocks |
 | `pixel.fill_holes` | the module's own labelling, all metered: per pixel of the halo'd rect the `Byte` state mask (1) and the queue of one component's pixel indices as `int32` (4), 5 bytes; no backend buffer | the two vectors' allocator blocks |
 | `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
 | `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
@@ -666,12 +666,29 @@ alike.
 nearest background pixel within Chebyshev distance *H*, so inside the halo'd
 context, and the context gives *d*. If *d* > *H*, every background pixel in the
 context is further than *H* and the output is *H*; a context with no background
-at all gives *H* as well. So the output is min(*d*, *H*) at every tile size. It is
-computed by OpenCV's `distanceTransform` (`DIST_L2`, `DIST_MASK_PRECISE`, the
-exact algorithm of Felzenszwalb and Huttenlocher) on a `Byte` mask of the halo'd
-context; the value is the square root of an integer, computed the same way in
-every context, so tiled output is bitwise equal. It runs under
-`useSequentialOpenCv` like the other OpenCV operations.
+at all gives *H* as well. So the output is min(*d*, *H*) at every tile size.
+
+**How it is computed.** The module's own two-pass squared distance transform of
+Felzenszwalb and Huttenlocher, in integers throughout. Pass 1 gives, per column
+of the halo'd context and for each of the tile's rows, the distance to the
+nearest background pixel of that column, capped at *H* + 1 (a column whose
+background is further than *H* cannot give a distance of at most *H*, so the cap
+changes no output). Pass 2 takes, per tile row, the lower envelope of the
+parabolas (*x* − *p*)² + *g*(*p*)² over the columns with *g*(*p*) ≤ *H*; it compares
+the parabolas' breakpoints by cross-multiplication in `int64`, with no division
+and no floating point. Columns more than 2 *H* + 1 apart share no pixel within
+*H*, so each run of columns without such a gap is an envelope of its own; that
+bounds the gap between two members of an envelope by 4 *H* + 1 and keeps every
+product below about 3 · 10¹², far inside `int64`. The output is the square root,
+in double, of the least integer squared distance, rounded to float, or *H* when
+that squared distance is at least *H*², compared as integers. Nothing depends on a
+pixel's position in its context, so tiled output is bitwise equal.
+OpenCV's `distanceTransform` (`DIST_MASK_PRECISE`) was the first
+implementation; the final review of the branch found that OpenCV 4.14.0 computes
+the breakpoints in `float`, which picks the wrong parabola for long distances in
+contexts thousands of pixels wide (an error of one to three in the squared
+distance, depending on the context column, so on the tiling, from a maximum of
+about 1024 up), and the module took the computation over.
 
 ### Hole filling
 
@@ -1231,11 +1248,10 @@ the parameter `auxiliaryName`, never the binding's name, since messages carry
 no parameter values. `minimumMarkerDistancePx` must not exceed
 `maximumMarkerSpacingPx`.
 
-With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is not a
-marker. It still takes part in the comparison, so it keeps suppressing its
-neighbours, and it floods and stays foreground; the halo and the working set
-are unchanged. A region it leaves with no marker within the spacing fails the
-reach check. The floor is refused with `AuxiliaryRaster` by an
+With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is simply
+not a marker; it still floods and counts as foreground. The halo and the
+working set are unchanged. A region it leaves with no marker within the
+spacing fails the reach check. The floor is refused with `AuxiliaryRaster` by an
 `InvalidArgumentError` naming `minimumMarkerValue`, and a non-finite value is
 refused likewise.
 
@@ -1489,7 +1505,7 @@ The operations that exist state their reference through
 | `pixel.gaussian_blur` | Analytic: a normalised Gaussian kernel's response to constant, linear and impulse images | A constant image unchanged exactly and a linear ramp reproduced within 10⁻⁹, away from the level's edge; an impulse gives the outer product of the 1-D kernel within 10⁻¹⁵; random `Float64` equal bit for bit to a direct per-pixel computation in the stated order; size 1 the identity; tiled output bitwise equal to one tile on `Float32` and `UInt16` |
 | `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | Analytic: responses to polynomial images; the coefficients of OpenCV's `getDerivKernels` (Scharr [3 10 3] × [−1 0 1]) | Exact: Sobel 8 on x, y and x², Sobel of size 1 2 on x, Scharr 32 on x, Laplacian of size 1 4 on x² + y² and of size 3 8 on x²; the impulse response equals the coefficients' outer product, which equals OpenCV's `Sobel`, `Scharr` and `Laplacian` exactly, for every order and size; tiled output bitwise equal to one tile |
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
-| `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; at maximums 300 and 1000 on sparse masks (float arithmetic in the backend over long distances); tiled output bitwise equal to one tile on `Byte` and `Float32`, and at maximum 600 on a sparse mask |
+| `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; at maximums 300 and 1000 on sparse masks; over the 4096-pixel row of a context 8192 pixels wide, at maximum 2048 the final review's case (background 545 and 568 rows away at columns 4481 and 6081, where a `float` breakpoint gives √949889 for √949888) and sparse background at maximums 2048 and 4096; tiled output bitwise equal to one tile on `Byte` and `Float32`, at maximum 600 on a sparse mask, and at maximum 1100 on a sparse 3000 by 2600 level whose distances run to the maximum, at tiles 1000 and 1536, the single tile equal to the brute force on a lattice |
 | `pixel.fill_holes` | Published definition: background components enclosed within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% foreground) at sizes 2, 4 and 8 with the area absent and 6; a hole of 5 by 5 filled and one of 6 by 6 not at size 5; an area of 16 filled and of 15 not; a U open to the level edge unfilled; a ring closed only diagonally filled; nested rings; NaN background; output `Byte` 255 for `UInt16` and `Float32`; tiled output bitwise equal to one tile at tiles 64, 100 and 257 on `Byte` and `Float32`, with holes across the seams |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |

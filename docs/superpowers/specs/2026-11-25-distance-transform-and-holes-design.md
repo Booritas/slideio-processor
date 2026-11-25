@@ -87,12 +87,19 @@ twenty-three operations. The traceability matrix gains the new tests.
   then clamp and copy the tile. The value is √(integer), computed the same way
   in every context, so tiled output is bitwise equal. Runs under
   `useSequentialOpenCv` as the other OpenCV operations do.
+  *Amended at the final review (2026-11-25):* OpenCV 4.14.0 computes the
+  parabola breakpoints in `float32`, so for long distances in contexts
+  thousands of pixels wide it can pick the wrong parabola, off by 1 to 3 in the
+  squared distance and depending on the tiling. The module now runs its own
+  Felzenszwalb–Huttenlocher passes with the breakpoints compared exactly in
+  `int64`, and OpenCV is not called (SDS 06 §6.4).
 - **Reference (6.9):** brute force over all background pixels on small random
   and synthetic masks (disc: centre value = radius to within one pixel's
   discretisation, exactly the brute force). Exact.
 - **Working set:** the `Byte` mask and the backend's `Float32` destination and
   its integer workspace, per pixel of the halo'd context. The figure is bounded
-  from OpenCV's source, as for the other OpenCV paths.
+  from OpenCV's source, as for the other OpenCV paths. *(Amended at the final
+  review: now the module's own buffers, all metered.)*
 
 ## 2. `pixel.fill_holes`
 

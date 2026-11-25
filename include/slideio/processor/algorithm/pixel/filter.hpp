@@ -127,8 +127,11 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeMedianBlur(int32_t kernelSize)
  * distance, in pixels, to the centre of the nearest background pixel, clamped
  * at @p maximumDistancePx. Pixels beyond the level are zero, so they are
  * background: an object at the level edge gets its distance to that edge. The
- * distance is exact, and the halo is the clamp, so the result does not depend
- * on the tiling. Its natural use is the input of `segment.watershed`.
+ * distance is exact: the module's own Felzenszwalb–Huttenlocher transform
+ * finds the integer squared distance in integer arithmetic alone, and the
+ * output is its square root as float. The halo is the clamp, so the result is
+ * bitwise the same at every tile size. Its natural use is the input of
+ * `segment.watershed`.
  *
  * Its parameter is `maximumDistancePx` (an integer; 32 when created by name
  * without it), and Operation::parameters() always holds it. Creating it by
