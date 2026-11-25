@@ -400,5 +400,22 @@ TEST(FillHoles, TiledEqualsSingleTile) {
             const ts::Image tiled = ts::runEager(scene, spec, tile, 4);
             EXPECT_TRUE(tiled.planes == reference.planes) << "tile " << tile;
         }
+        // With an area limit as well.
+        PipelineSpec areaSpec;
+        areaSpec.then(makeFillHoles(10, 20));
+        const ts::Image areaReference = ts::runEager(scene, areaSpec, 4096, 1);
+        const std::vector<uint8_t> areaExpected = bruteForce(m, 10, 20);
+        for (int64_t y = 0; y < kHeight; ++y) {
+            for (int64_t x = 0; x < kWidth; ++x) {
+                ASSERT_EQ(areaReference.at(0, x, y),
+                          static_cast<double>(areaExpected[static_cast<size_t>(y * kWidth + x)]))
+                    << "area " << x << "," << y;
+            }
+        }
+        EXPECT_FALSE(areaReference.planes == reference.planes); // the limit changes the result
+        for (int32_t tile : {64, 100, 257}) {
+            const ts::Image tiled = ts::runEager(scene, areaSpec, tile, 4);
+            EXPECT_TRUE(tiled.planes == areaReference.planes) << "area tile " << tile;
+        }
     }
 }
