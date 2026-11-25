@@ -1,11 +1,12 @@
-// Requirements: UR-PIX-3, UR-PIX-4, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6, UR-ALG-8
+// Requirements: UR-PIX-3, UR-PIX-4, UR-PIX-7, UR-PIX-8, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6, UR-ALG-8
 #pragma once
 
 /**
  * @file filter.hpp
  * @brief Neighbourhood filters and morphology: BorderMode, the Gaussian,
- * median, Sobel, Scharr, Laplacian, Canny and bilateral filters,
- * StructuringShape, StructuringElement, and erode, dilate, open and close.
+ * median, Sobel, Scharr, Laplacian, Canny and bilateral filters, the distance
+ * transform, hole filling, StructuringShape, StructuringElement, and erode, dilate, open and
+ * close.
  *
  * Every operation here is PerChannel with a halo derived from its
  * parameters. The framework supplies exactly that border context, reading
@@ -115,6 +116,83 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeGaussianBlur(double sigma, int
  * UR-PIX-3, UR-QA-2, UR-IMG-11, UR-ALG-6
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeMedianBlur(int32_t kernelSize);
+
+/**
+ * @brief Creates `pixel.distance_transform`: PerChannel, halo
+ * @p maximumDistancePx on every side, every input type, output `Float32`.
+ *
+ * A pixel is foreground when its sample is neither 0 nor NaN (a negative
+ * sample is foreground), the rule `segment.watershed` uses. Each output sample
+ * is 0 for a background pixel, and for a foreground pixel the Euclidean
+ * distance, in pixels, to the centre of the nearest background pixel, clamped
+ * at @p maximumDistancePx. Pixels beyond the level are zero, so they are
+ * background: an object at the level edge gets its distance to that edge. The
+ * distance is exact: the module's own Felzenszwalb–Huttenlocher transform
+ * finds the integer squared distance in integer arithmetic alone, and the
+ * output is its square root as float. The halo is the clamp, so the result is
+ * bitwise the same at every tile size. Its natural use is the input of
+ * `segment.watershed`.
+ *
+ * Its parameter is `maximumDistancePx` (an integer; 32 when created by name
+ * without it), and Operation::parameters() always holds it. Creating it by
+ * name with the same value gives equal parameters. By name, an unknown key, a
+ * value of the wrong type or a value out of range throws InvalidArgumentError
+ * naming the key, never the value.
+ * @param maximumDistancePx The clamp and the halo, in pixels; from 1 to 4096.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p maximumDistancePx is outside 1 to 4096;
+ * the message names the operation and the parameter, never the value.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() may run concurrently on
+ * different contexts.
+ * @par Requirements
+ * UR-PIX-7, UR-QA-2, UR-ALG-6
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDistanceTransform(int32_t maximumDistancePx);
+
+/**
+ * @brief Creates `pixel.fill_holes`: PerChannel, halo @p maximumHoleSizePx on
+ * every side, every input type, output `Byte`.
+ *
+ * A pixel is foreground when its sample is neither 0 nor NaN, the rule
+ * `segment.watershed` uses. The output is 255 for a foreground pixel and for a
+ * pixel of a hole, 0 elsewhere. A hole is a 4-connected component of
+ * background (the usual pair with an 8-connected foreground) that does not
+ * reach the level edge, whose bounding box is at most @p maximumHoleSizePx on
+ * each side, and, when @p maximumHoleAreaPx is given, whose area is at most
+ * that. Pixels beyond the level are zero, so a region open to the level edge
+ * is not a hole. A hole within the size lies whole inside the halo'd context,
+ * and one that does not is seen touching the context's border or too large, so
+ * the result does not depend on the tiling.
+ *
+ * Its parameters are `maximumHoleSizePx` (an integer; 32 when created by name
+ * without it) and `maximumHoleAreaPx` (an integer of at least 1, absent by
+ * default: no area limit). Operation::parameters() always holds the size and
+ * holds the area only when one is set. Creating it by name with the same
+ * values gives equal parameters. By name, an unknown key, a value of the wrong
+ * type or a value out of range throws InvalidArgumentError naming the key,
+ * never the value.
+ * @param maximumHoleSizePx The size bound and the halo, in pixels; from 1 to
+ * 4096.
+ * @param maximumHoleAreaPx The area bound in pixels, at least 1; 0 means no
+ * area limit and leaves the key absent.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p maximumHoleSizePx is outside 1 to 4096
+ * or @p maximumHoleAreaPx is negative; the message names the operation and the
+ * parameter, never the value. A tile throws it, failing the run, when the tile
+ * grown by its halo on every side has more than 2147483647 pixels, which it
+ * cannot label; the message gives that count and asks for a smaller tile size.
+ * The run's planning does not see this, as for `segment.watershed` and the
+ * other labelling operations, so tiles may already have been processed.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() may run concurrently on
+ * different contexts.
+ * @par Requirements
+ * UR-PIX-8, UR-QA-2, UR-ALG-6
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeFillHoles(int32_t maximumHoleSizePx, int64_t maximumHoleAreaPx = 0);
 
 /**
  * @brief Creates `pixel.sobel`: PerChannel, halo max(1, kernelSize / 2) on

@@ -2055,7 +2055,7 @@ library.
 parameters classes, in `segment/segment.hpp`, and `MeasurementSelection`,
 `MeasurementKind` and `calibration`, in `measure/measure.hpp`, are built too;
 `registerSegmentationOperations()` registers the four `segment.*` operations,
-and the catalog closes at twenty-one (`06-algorithm.md` 6.10). There is no
+and the catalog closes at twenty-three (`06-algorithm.md` 6.10). There is no
 measurement factory: the segmenters that see intensity take a
 `MeasurementSelection` and measure their own objects as each is finished, so
 `registerMeasurementOperations()` registers nothing (`06-algorithm.md` 6.8).

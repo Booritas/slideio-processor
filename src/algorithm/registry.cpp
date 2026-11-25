@@ -74,6 +74,8 @@ void registerPixelOperations() {
     registerOne("pixel.morph_dilate", &detail::makeDilateFactory);
     registerOne("pixel.morph_open", &detail::makeOpenFactory);
     registerOne("pixel.morph_close", &detail::makeCloseFactory);
+    registerOne("pixel.distance_transform", &detail::makeDistanceTransformFactory);
+    registerOne("pixel.fill_holes", &detail::makeFillHolesFactory);
     registerOne("pixel.bilateral_filter", &detail::makeBilateralFilterFactory);
     registerOne("pixel.canny", &detail::makeCannyFactory);
 }

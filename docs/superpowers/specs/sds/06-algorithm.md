@@ -134,6 +134,9 @@ the operation and the parameter.
 | `pixel.gaussian_blur` | `sigma` | double | 1.0 | finite, at least 10⁻⁶; with `kernelSize` 0, small enough that the derived size 2·⌈3·`sigma`⌉ + 1 is at most 1025 |
 | | `kernelSize` | int | 0 | odd, 1 to 1025, or 0 to derive it from `sigma` |
 | `pixel.median_blur` | `kernelSize` | int | 3 | odd, 3 to 255 |
+| `pixel.distance_transform` | `maximumDistancePx` | int | 32 | 1 to 4096 |
+| `pixel.fill_holes` | `maximumHoleSizePx` | int | 32 | 1 to 4096 |
+| | `maximumHoleAreaPx` | int | absent (no area limit) | at least 1 when given |
 | `pixel.sobel` | `dx` | int | 1 | 0, 1 or 2; `dx` + `dy` at least 1 |
 | | `dy` | int | 0 | 0, 1 or 2 |
 | | `kernelSize` | int | 3 | 1, 3, 5 or 7 |
@@ -164,6 +167,7 @@ the operation and the parameter.
 | | `minimumAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `measurements` | string | every `MeasurementKind` | as `segment.connected_components` |
 | | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
+| | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `"LocalMaxima"`; absent rather than a default so that existing recorded configurations are unchanged |
 | `segment.tissue_detect` | `saturationThreshold` | double | 0.07 | 0 to 1 |
 | | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
@@ -222,6 +226,8 @@ beside it saying which buffers it counts:
 | `pixel.threshold_otsu` | `accumulate()` packs the tile's admitted samples into one row, at most 8 bytes per pixel; `apply()` allocates nothing | one channel's histogram and its local copy (16 bytes per bin; without a range, the largest per-value histogram of 65,536 bins) and its bookkeeping, whatever the number of channels |
 | `pixel.gaussian_blur`, `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | the tile's values as doubles (and one more pass's for a derivative that sums two) and the separable filter's row of samples and ring of row sums, one pass at a time | the allocator's overhead on those buffers |
 | `pixel.median_blur` | one sort key per pixel on the module's own path; the backend's destination and bordered copy on the `Byte` path | the larger of the window's copy (grows with the kernel's area) and the backend's per-column histograms on the `Byte` path |
+| `pixel.distance_transform` | the module's own two passes, all metered: the column distances of the tile's rows as `uint16`, at most 2 bytes per pixel of the halo'd rect, and two rows of the rect's width (the running column distances, `uint16`, and the envelope's columns, `int64`), at most 10 / (2 · `maximumDistancePx` + 1) bytes per pixel; no backend buffer | the three vectors' allocator blocks |
+| `pixel.fill_holes` | the module's own labelling, all metered: per pixel of the halo'd rect the `Byte` state mask (1) and the queue of one component's pixel indices as `int32` (4), 5 bytes; no backend buffer | the two vectors' allocator blocks |
 | `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
 | `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | the larger of the float path's two copies of the plane and the integer path's ring buffer, rows and the backend's destination | the larger of the float path's element offsets and the integer path's filter engine (grows with the element's size) |
@@ -418,6 +424,9 @@ enum class BorderMode : int32_t { Reflect, Replicate, Constant };
 /// All PerChannel. Halo derives from kernel size.
 OperationPtr makeGaussianBlur(double sigma, int32_t kernelSize);
 OperationPtr makeMedianBlur(int32_t kernelSize);
+OperationPtr makeDistanceTransform(int32_t maximumDistancePx);
+OperationPtr makeFillHoles(int32_t maximumHoleSizePx,
+                           int64_t maximumHoleAreaPx = 0); // 0: no area limit
 OperationPtr makeSobel(int32_t dx, int32_t dy, int32_t kernelSize);
 OperationPtr makeScharr(int32_t dx, int32_t dy);
 OperationPtr makeLaplacian(int32_t kernelSize);
@@ -637,10 +646,83 @@ open question 15 in `requirements.md` and needs a requirements amendment
 rather than a silent reinterpretation here.
 
 Everything else in 6.4 and 6.5 is genuinely local. Gaussian, median, Sobel,
-Scharr, Laplacian, bilateral and all four morphology operations depend on a
+Scharr, Laplacian, bilateral, the distance transform, hole filling and all four morphology operations depend on a
 bounded neighbourhood, so the declared halo makes them exact, and Otsu is
 global by construction rather than by accident (6.5).
 
+
+### Distance transform
+
+`pixel.distance_transform` is the input `segment.watershed` needs (6.7): a
+`Float32` surface that peaks at the centre of each object. A pixel is foreground
+when its sample is neither 0 nor NaN, the rule the watershed uses; the output is
+0 on background and, on foreground, the Euclidean distance to the centre of the
+nearest background pixel, clamped at `maximumDistancePx`. Pixels beyond the level
+are zero (05 §5.5) and so are background, in a tiled run and a whole-level run
+alike.
+
+**Why it is exact at any tile size.** The halo is the clamp, *H* =
+`maximumDistancePx`. A tile pixel whose true distance *d* is at most *H* has its
+nearest background pixel within Chebyshev distance *H*, so inside the halo'd
+context, and the context gives *d*. If *d* > *H*, every background pixel in the
+context is further than *H* and the output is *H*; a context with no background
+at all gives *H* as well. So the output is min(*d*, *H*) at every tile size.
+
+**How it is computed.** The module's own two-pass squared distance transform of
+Felzenszwalb and Huttenlocher, in integers throughout. Pass 1 gives, per column
+of the halo'd context and for each of the tile's rows, the distance to the
+nearest background pixel of that column, capped at *H* + 1 (a column whose
+background is further than *H* cannot give a distance of at most *H*, so the cap
+changes no output). Pass 2 takes, per tile row, the lower envelope of the
+parabolas (*x* − *p*)² + *g*(*p*)² over the columns with *g*(*p*) ≤ *H*; it compares
+the parabolas' breakpoints by cross-multiplication in `int64`, with no division
+and no floating point. Columns more than 2 *H* + 1 apart share no pixel within
+*H*, so each run of columns without such a gap is an envelope of its own; that
+bounds the gap between two members of an envelope by 4 *H* + 1 and keeps every
+product below about 3 · 10¹², far inside `int64`. The output is the square root,
+in double, of the least integer squared distance, rounded to float, or *H* when
+that squared distance is at least *H*², compared as integers. Nothing depends on a
+pixel's position in its context, so tiled output is bitwise equal.
+OpenCV's `distanceTransform` (`DIST_MASK_PRECISE`) was the first
+implementation; the final review of the branch found that OpenCV 4.14.0 computes
+the breakpoints in `float`, which picks the wrong parabola for long distances in
+contexts thousands of pixels wide (an error of one to three in the squared
+distance, depending on the context column, so on the tiling, from a maximum of
+about 1024 up), and the module took the computation over.
+
+### Hole filling
+
+`pixel.fill_holes` closes the holes of a binary mask, the usual cleaning step
+before the distance transform and the watershed. A pixel is foreground when its
+sample is neither 0 nor NaN; the output is `Byte`, 255 for foreground and for
+filled holes and 0 elsewhere, the convention of the thresholds. A **hole** is a
+4-connected component of background (the complement of an 8-connected
+foreground, the usual pair) that does not reach the level edge, whose bounding
+box is at most `maximumHoleSizePx` on each side, and whose area is at most
+`maximumHoleAreaPx` when that is given. A diagonal gap in a ring therefore does
+not let the inside out.
+
+**Why it is exact at any tile size.** The halo is the size bound, *S* =
+`maximumHoleSizePx`. In the halo'd context, a background component that does not
+touch the context's border is a whole component of the level, because it cannot
+connect beyond the context without crossing that border. A component that does
+touch the border is either larger than the bound or not decided here. For a tile
+pixel in a hole of bounding box at most *S*, every pixel of the hole lies within
+Chebyshev distance *S* - 1, so the hole lies inside the context clear of its
+border and is found whole. A tile pixel in a larger background component sees it
+touching the border or with a bounding box above *S*, and is not filled in
+either case. Background beyond the level is zero (05 §5.5), so a region open to
+the level edge joins the strip outside the level and touches the context's
+border, which matches the whole-level pass. The rule is therefore exact.
+
+**Implementation.** The module's own labelling, not OpenCV's: a breadth-first
+search of each 4-connected background component of the halo'd context, over a
+`Byte` state mask with one queue of `int32` indices for the component in hand,
+recording its bounding box and area. A component that is enclosed and within the
+bounds is marked as a hole, and the tile's rect is written from the mask. Every
+buffer comes from `operator new`, so the working-set check measures all of it
+(the table of 6.2): 5 bytes per pixel of the halo'd rect. The result is a set of
+whole components and does not depend on the order of the search.
 ## 6.5 Thresholding — `algorithm/pixel/threshold.hpp`
 
 ```cpp
@@ -826,6 +908,7 @@ public:
     WatershedParameters& markers(WatershedMarkers);                  // LocalMaxima
     WatershedParameters& auxiliaryName(const char*);                 // for AuxiliaryRaster
     WatershedParameters& minimumMarkerDistancePx(int32_t);           // 5
+    WatershedParameters& minimumMarkerValue(double);                 // absent
 
     /// The bound that makes this operation tileable, and a hard one: every
     /// foreground pixel must lie within this distance of the marker pixel its
@@ -1165,6 +1248,38 @@ the parameter `auxiliaryName`, never the binding's name, since messages carry
 no parameter values. `minimumMarkerDistancePx` must not exceed
 `maximumMarkerSpacingPx`.
 
+With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is simply
+not a marker; it still floods and counts as foreground. The halo and the
+working set are unchanged. A region it leaves with no marker within the
+spacing fails the reach check. The floor is refused with `AuxiliaryRaster` by an
+`InvalidArgumentError` naming `minimumMarkerValue`; a non-finite value is
+refused by the typed setter, and `OperationParameters` cannot hold one.
+
+**Settings that keep the reach on a distance transform.** One object with no
+marker fails the whole run, so a debris speck below the floor would stop a
+slide. Flooding `pixel.distance_transform` of a mask, two settings rule every
+such failure out, and the operation's documentation states them:
+
+- *Open the mask first* with `pixel.morph_open` and an `Ellipse` element of
+  side 2k + 1, k ≥ `minimumMarkerValue` and k ≥ `minimumMarkerDistancePx` + 1.
+  Every object the opening keeps contains a whole element, and every pixel
+  outside OpenCV's drawn ellipse of radius k lies further than k from its
+  centre, so the object's peak exceeds k and the floor keeps it. A pixel p of
+  one object and a pixel q of another, of values v and w, satisfy
+  v + w ≤ |p − q| + 2, or a 4-connected path along the segment between them
+  would join the objects. For q to outrank p, the first object's peak, it
+  needs w ≥ v > k within Chebyshev d = `minimumMarkerDistancePx`, so at most
+  √2·d away, which needs 2k < √2·d + 2: false for k ≥ d + 1. Specks, lines and spurs narrower than
+  the element are removed. `NucleiChain.OpeningClearsDebrisBelowTheMarkerFloor`
+  runs the chain over debris with and without the opening.
+- *Set the spacing to the largest object*: at least the largest width or height
+  of an object. An elongated object of even width has a flat ridge, which
+  gives one marker, and that marker has to reach the whole object.
+
+Dropping an object with no marker instead of failing was considered and not
+taken: a tile cannot tell an object with no marker from one whose marker lies
+beyond its halo, so the result would depend on the tiling.
+
 **Halo, 2 · `maximumMarkerSpacingPx` + 1.** A tile pixel's basin depends on the
 markers within the spacing, and their detection on pixels a further
 `minimumMarkerDistancePx` away, at most the spacing; the one more keeps the
@@ -1179,12 +1294,25 @@ is measured to **the seed pixel its flood path started from** — each flooded
 pixel carries its seed's position — not to its basin's marker region as a
 whole: an auxiliary marker region may be large, and a distance to its corner
 would refuse inputs that flood correctly. A pixel no marker reached, or
-reached from a seed further away, fails the tile with `InvalidArgumentError`
-"segment.watershed: a region lies further than maximumMarkerSpacingPx from
-every marker", and the run with it; nothing is ever segmented partially in
-its place. UR-SEG-8 asks the diagnostic to name the operation and the
-distance: it names the distance by its parameter, not its value, because no
-message carries a parameter value. The executor wraps the failure of a tile as
+reached from a seed further away, fails the tile with `InvalidArgumentError`,
+and the run with it; nothing is ever segmented partially in its place. The
+message names the first such pixel of the tile, in row order, in level
+coordinates, and what to change. A pixel reached from too far gives
+"segment.watershed: the foreground at level pixel (x, y) lies further than
+maximumMarkerSpacingPx from its marker; set maximumMarkerSpacingPx to at least
+the largest width or height of an object". A pixel no marker reached gives
+"segment.watershed: no marker within maximumMarkerSpacingPx reaches the
+foreground at level pixel (x, y): its object has no marker, because its peak is
+below minimumMarkerValue or a higher object lies within
+minimumMarkerDistancePx, or it is wider or higher than maximumMarkerSpacingPx;
+on a distance transform, open the mask first with an Ellipse element of radius
+at least minimumMarkerValue and minimumMarkerDistancePx + 1, and set
+maximumMarkerSpacingPx to at least the largest width or height of an object",
+with the floor's clauses only when it is set. The tile cannot tell those causes
+apart: its object's marker may lie beyond the halo. UR-SEG-8 asks the
+diagnostic to name the operation and the distance: it names the distance by
+its parameter, not its value, because no message carries a parameter value; a
+pixel position is not a parameter. The executor wraps the failure of a tile as
 it wraps any `apply()` failure (5.9); the inner message is the one above.
 
 **Objects.** Within the tile rect, a basin's pixels are labelled into
@@ -1201,9 +1329,9 @@ reaches the rest of a flat region from them, so a flat or binary input — a
 thresholded mask flooded as it is — gives few markers far apart and usually
 fails the reach check rather than separating anything. The input to flood is a
 distance transform of the mask, whose maxima sit at the objects' centres (the
-test of 6.9 floods exactly that), or a smoothed intensity; v1's catalog has no
-distance transform, so it comes from the caller's own operation or an earlier
-stage.
+test of 6.9 floods exactly that), or a smoothed intensity. The distance
+transform is `pixel.distance_transform` (6.4), which clamps at its parameter
+`maximumDistancePx`, so that should be at least the objects' radius for a peak to survive.
 
 ### Coarse-to-fine, as a supported pattern
 
@@ -1415,6 +1543,8 @@ The operations that exist state their reference through
 | `pixel.gaussian_blur` | Analytic: a normalised Gaussian kernel's response to constant, linear and impulse images | A constant image unchanged exactly and a linear ramp reproduced within 10⁻⁹, away from the level's edge; an impulse gives the outer product of the 1-D kernel within 10⁻¹⁵; random `Float64` equal bit for bit to a direct per-pixel computation in the stated order; size 1 the identity; tiled output bitwise equal to one tile on `Float32` and `UInt16` |
 | `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | Analytic: responses to polynomial images; the coefficients of OpenCV's `getDerivKernels` (Scharr [3 10 3] × [−1 0 1]) | Exact: Sobel 8 on x, y and x², Sobel of size 1 2 on x, Scharr 32 on x, Laplacian of size 1 4 on x² + y² and of size 3 8 on x²; the impulse response equals the coefficients' outer product, which equals OpenCV's `Sobel`, `Scharr` and `Laplacian` exactly, for every order and size; tiled output bitwise equal to one tile |
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
+| `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; at maximums 300 and 1000 on sparse masks; over the 4096-pixel row of a context 8192 pixels wide, at maximum 2048 the final review's case (background 545 and 568 rows away at columns 4481 and 6081, where a `float` breakpoint gives √949889 for √949888) and sparse background at maximums 2048 and 4096; tiled output bitwise equal to one tile on `Byte` and `Float32`, at maximum 600 on a sparse mask, and at maximum 1100 on a sparse 3000 by 2600 level whose distances run to the maximum, at tiles 1000 and 1536, the single tile equal to the brute force on a lattice |
+| `pixel.fill_holes` | Published definition: background components enclosed within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% foreground) at sizes 2, 4 and 8 with the area absent and 6; a hole of 5 by 5 filled and one of 6 by 6 not at size 5; an area of 16 filled and of 15 not; a U open to the level edge unfilled; a ring closed only diagonally filled; nested rings; NaN background; output `Byte` 255 for `UInt16` and `Float32`; tiled output bitwise equal to one tile at tiles 64, 100 and 257 on `Byte` and `Float32`, with holes across the seams |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
@@ -1441,11 +1571,13 @@ open item; until it is done UR-SEG-1 is covered only analytically.
 
 ## 6.10 Scope of v1 — the catalog, closed
 
-**The v1 catalog is twenty-one operations.** This resolves open question 7 in
+**The v1 catalog is twenty-three operations.** This resolves open question 7 in
 `requirements.md`, which the requirements call the choice that decides the size
 of v1 more than any other. It was closed at twenty-two; the twenty-second,
 `measure.object_measurements`, left it when the segmentation operations took
-over measuring (below).
+over measuring (below), which made it twenty-one. Requirements 0.14 then added
+`pixel.distance_transform` (UR-PIX-7), for the watershed's input, and
+`pixel.fill_holes` (UR-PIX-8), for cleaning masks, which makes it twenty-three.
 
 | Name | Section | Arity | Halo |
 |---|---|---|---|
@@ -1462,6 +1594,8 @@ over measuring (below).
 | `pixel.morph_dilate` | 6.4 | PerChannel | as `pixel.morph_erode` |
 | `pixel.morph_open` | 6.4 | PerChannel | twice `pixel.morph_erode`'s |
 | `pixel.morph_close` | 6.4 | PerChannel | twice `pixel.morph_erode`'s |
+| `pixel.distance_transform` | 6.4 | PerChannel | `maximumDistancePx` |
+| `pixel.fill_holes` | 6.4 | PerChannel | `maximumHoleSizePx` |
 | `pixel.threshold_fixed` | 6.5 | PerChannel | none |
 | `pixel.threshold_otsu` | 6.5 | PerChannel, global context | none |
 | `pixel.threshold_adaptive` | 6.5 | PerChannel | blockSize/2 |
@@ -1503,6 +1637,8 @@ a framework mechanism, and nothing here exists without such a mandate:
 | UR-PIX-4 erode, dilate, open, close, configurable element | the four `morph_` entries |
 | UR-PIX-5 fixed, Otsu, adaptive thresholding | the three `threshold_` entries |
 | UR-PIX-6 composition | `pipeline`, not an operation |
+| UR-PIX-7 distance transform for the watershed's input | `pixel.distance_transform` |
+| UR-PIX-8 filling of holes in a binary mask | `pixel.fill_holes` |
 | UR-IMG-13 explicit type conversion | `pixel.convert_type` |
 | UR-SEG-1 tissue versus background | `segment.tissue_detect` |
 | UR-SEG-2 connected components | `segment.connected_components` |
@@ -1521,9 +1657,10 @@ already implemented every one.
 
 **One row no longer holds, and it is the last one.** UR-SEG-9 was added to
 `requirements.md` in version 0.11, after this section was written and after
-question 7 was closed. The catalog did not grow for it — it is twenty-one
-operations, after `measure.object_measurements` left — so the mapping is now
-sixteen requirements against twenty-one entries with one requirement
+question 7 was closed. The catalog did not grow for it — it was twenty-one
+operations, after `measure.object_measurements` left, until UR-PIX-7 and
+UR-PIX-8 added two more — so the mapping is now
+eighteen requirements against twenty-three entries with one requirement
 unanswered. The closure of question 7 survives as a *decision*
 rather than as a derivation from the requirements, which is a weaker thing and
 is recorded here as such.
@@ -1579,7 +1716,7 @@ UR-QA-3, and the relationship between seed scale and scale parameter is
 unresolved and is the main thing blocking an API.
 
 Three ways out, and the choice belongs to whoever sets v1's scope: ship
-`segment.multiresolution` and make the catalog twenty-two; downgrade UR-SEG-9
+`segment.multiresolution` and make the catalog twenty-three; downgrade UR-SEG-9
 to a *May*; or leave it a *Should* against a later release and say so in the
 release notes. Leaving it unstated is the only wrong answer, because a Should
 with nothing behind it reads as an oversight rather than a plan.

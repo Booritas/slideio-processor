@@ -19,6 +19,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <utility>
@@ -37,6 +38,7 @@ struct WatershedValues {
     int64_t minimumAreaPx = 0;
     MeasurementSelection measurements = MeasurementSelection::standard();
     std::string targetLayer; // empty: the run's only bound layer
+    std::optional<double> minimumMarkerValue; // absent: every local maximum is a marker
 };
 
 struct WatershedParametersAccess {
@@ -107,8 +109,28 @@ constexpr int64_t kBytesPerTile = 16384;
     throw InvalidArgumentError((std::string(kName) + ": " + problem).c_str());
 }
 
-[[noreturn]] void failReach() {
-    fail("a region lies further than maximumMarkerSpacingPx from every marker");
+// The reach failure at level pixel (x, y), the first failing pixel of the
+// tile in row order. A pixel some marker reached lies in an object longer
+// than the spacing. One no marker reached is ambiguous: its object may have no
+// marker at all, or one further than the halo'd context shows; the message
+// names both causes and the settings that rule them out. It names parameters,
+// never their values.
+[[noreturn]] void failReach(bool reached, int64_t x, int64_t y, bool floorSet) {
+    const std::string pixel = "level pixel (" + std::to_string(x) + ", " + std::to_string(y) + ")";
+    if (reached) {
+        fail("the foreground at " + pixel +
+             " lies further than maximumMarkerSpacingPx from its marker; set maximumMarkerSpacingPx to at least "
+             "the largest width or height of an object");
+    }
+    fail("no marker within maximumMarkerSpacingPx reaches the foreground at " + pixel +
+         ": its object has no marker, because " +
+         (floorSet ? "its peak is below minimumMarkerValue or " : "") +
+         "a higher object lies within minimumMarkerDistancePx, or it is wider or higher than "
+         "maximumMarkerSpacingPx; on a distance transform, open the mask first with an Ellipse element of "
+         "radius at least " +
+         (floorSet ? "minimumMarkerValue and " : "") +
+         "minimumMarkerDistancePx + 1, and set maximumMarkerSpacingPx to at least the largest width or height of "
+         "an object");
 }
 
 void checkNotMovedFrom(const void* impl) {
@@ -151,7 +173,9 @@ public:
     // foreground pixel within @p distance (Chebyshev), among those whose whole
     // window lies inside the context: a window reaching beyond it might hold a
     // pixel that comes first, so the pixel is not decided here.
-    void detectMaxima(int64_t distance) {
+    // A pixel below @p floor, when given, is simply not a marker; it still
+    // floods and counts as foreground.
+    void detectMaxima(int64_t distance, const std::optional<double>& floor) {
         if (width_ <= 2 * distance || height_ <= 2 * distance) {
             return;
         }
@@ -171,7 +195,7 @@ public:
                 height_, distance, window, [&](int64_t y) { return rowFirst[static_cast<size_t>(y * width_ + x)]; },
                 [&](int64_t y, int32_t first) {
                     const int64_t i = y * width_ + x;
-                    if (first == i) {
+                    if (first == i && (!floor || values_[static_cast<size_t>(i)] >= *floor)) {
                         seeds_[static_cast<size_t>(i)] = first;
                     }
                 });
@@ -276,6 +300,7 @@ public:
         : markers_(p.markers),
           auxiliaryName_(p.auxiliaryName),
           distance_(p.minimumMarkerDistancePx),
+          floor_(p.minimumMarkerValue),
           spacing_(p.maximumMarkerSpacingPx),
           plan_(p.measurements, static_cast<double>(p.minimumAreaPx), 0.0, true) {
         parameters_.setString("markers", kMarkerSpellings[static_cast<int32_t>(p.markers)])
@@ -284,6 +309,9 @@ public:
             .setInt("maximumMarkerSpacingPx", p.maximumMarkerSpacingPx)
             .setInt("minimumAreaPx", p.minimumAreaPx)
             .setString("measurements", detail::formatMeasurementSelection(p.measurements).c_str());
+        if (p.minimumMarkerValue) {
+            parameters_.setDouble("minimumMarkerValue", *p.minimumMarkerValue);
+        }
         if (!p.targetLayer.empty()) {
             parameters_.setString("targetLayer", p.targetLayer.c_str());
         }
@@ -357,7 +385,7 @@ public:
             const std::vector<double> values = readPlane0(in);
             Flood flood(values, seeds, width, height);
             if (anchors == nullptr) {
-                flood.detectMaxima(distance_);
+                flood.detectMaxima(distance_, floor_);
             } else {
                 for (int64_t y = 0; y < height; ++y) {
                     for (int64_t x = 0; x < width; ++x) {
@@ -380,7 +408,7 @@ public:
                     const int32_t seed = seeds[static_cast<size_t>(i)];
                     if (seed < 0 || std::max(std::abs(seed % width - (x + offsetX)),
                                              std::abs(seed / width - (y + offsetY))) > spacing_) {
-                        failReach();
+                        failReach(seed >= 0, tile.x + x, tile.y + y, floor_.has_value());
                     }
                 }
             }
@@ -449,6 +477,7 @@ private:
     WatershedMarkers markers_;
     std::string auxiliaryName_;
     int64_t distance_;
+    std::optional<double> floor_;
     int32_t spacing_;
     detail::MeasurementPlan plan_;
     OperationParameters parameters_;
@@ -477,6 +506,10 @@ OperationPtr watershedFromParameters(const OperationParameters& parameters) {
             bag.throwBadValue("measurements", "is not a comma-separated list of MeasurementKind spellings");
         }
         p.measurements(selection);
+    }
+    if (bag.contains("minimumMarkerValue")) {
+        // Finite already: OperationParameters refuses a non-finite double.
+        p.minimumMarkerValue(bag.getDouble("minimumMarkerValue", 0.0));
     }
     p.targetLayer(bag.getString("targetLayer", ""));
     bag.finish();
@@ -552,6 +585,15 @@ WatershedParameters& WatershedParameters::targetLayer(const char* layerName) {
     return *this;
 }
 
+WatershedParameters& WatershedParameters::minimumMarkerValue(double value) {
+    checkNotMovedFrom(impl_.get());
+    if (!std::isfinite(value)) {
+        throw InvalidArgumentError("WatershedParameters: parameter 'minimumMarkerValue' must be finite");
+    }
+    impl_->minimumMarkerValue = value;
+    return *this;
+}
+
 OperationPtr makeWatershed(const WatershedParameters& parameters) {
     const detail::WatershedValues* p = detail::WatershedParametersAccess::values(parameters);
     if (p == nullptr) {
@@ -562,6 +604,9 @@ OperationPtr makeWatershed(const WatershedParameters& parameters) {
     }
     if (p->markers == WatershedMarkers::AuxiliaryRaster && p->auxiliaryName.empty()) {
         fail("parameter 'auxiliaryName' must not be empty with AuxiliaryRaster markers");
+    }
+    if (p->minimumMarkerValue && p->markers != WatershedMarkers::LocalMaxima) {
+        fail("parameter 'minimumMarkerValue' applies only to LocalMaxima markers");
     }
     if (p->maximumMarkerSpacingPx < 1 || p->maximumMarkerSpacingPx > kMaximumSpacingPx) {
         fail("parameter 'maximumMarkerSpacingPx' must be from 1 to 1073741823");

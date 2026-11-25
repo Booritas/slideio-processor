@@ -4,9 +4,19 @@
 |---|---|
 | **Document** | User Requirements Specification |
 | **Project** | `slideio-processor` |
-| **Version** | 0.13 (draft) |
-| **Date** | 2026-11-19 |
+| **Version** | 0.14 (draft) |
+| **Date** | 2026-11-25 |
 | **Status** | For review |
+
+**Changes in 0.14** — **UR-PIX-7 and UR-PIX-8 added**: a Euclidean distance
+transform of a binary mask, clamped at a caller-declared maximum, to be the
+input of `segment.watershed`; and the filling of holes in a binary mask up to a
+caller-declared size (SDS `06-algorithm.md` §6.4, §6.10). The v1 catalog grew by
+the two operations, `pixel.distance_transform` and `pixel.fill_holes`, from
+twenty-one to twenty-three. `segment.watershed` gained an optional marker
+floor, `minimumMarkerValue`, under UR-SEG-8, and its reach failure now names
+the failing pixel and the settings that avoid it; no requirement changed for
+either. Nothing else was renumbered or changed.
 
 **Changes in 0.13** — **the question 7 resolution amended**: the v1 catalog is
 twenty-one operations, not twenty-two. `measure.object_measurements` is
@@ -433,6 +443,18 @@ carries its own correctness reference (UR-ALG-6) rather than inheriting one.
   itself usable as an input scene.
   *Acceptance:* a two-stage pipeline produces the same result as running the
   stages separately and materialising the intermediate.
+
+- **UR-PIX-7 (Should)** — The library shall provide the Euclidean distance
+  transform of a binary mask, up to a caller-declared maximum distance, as the
+  input `segment.watershed` needs to separate touching objects.
+  *Acceptance:* equals the brute-force distance on synthetic masks, clamped at
+  the maximum; identical at three tile sizes.
+
+- **UR-PIX-8 (Should)** — The library shall provide the filling of holes in a
+  binary mask, up to a caller-declared hole size.
+  *Acceptance:* fills synthetic holes up to the bound, leaves larger holes and
+  regions open to the level edge unfilled, and is identical at three tile
+  sizes.
 
 ## 8. Segmentation and object extraction
 
@@ -1285,7 +1307,7 @@ issued keeps its number here as a gap and appears in the table below — questio
 | Conditions on question 3's closure | The direction holds **only if** three things are done, and the closure should be reopened if any is refused. **(1)** The scene-source plan lands in SlideIO. **Delivered**: merged as SlideIO PR #86 on 2026-10-17. **(2)** `CVScene::initializeSceneBlock` is fixed upstream: it sizes a block from channel **0**'s type regardless of which channels were asked for, so a mixed-type scene silently returns a mis-sized block, and for a source-backed scene that is a buffer overrun rather than a wrong answer. **Partly met in the same PR**: a block is now typed by the first channel requested (`CVScene::blockDataType`), for every driver, so a same-type request on a channel other than 0 is correct. A request mixing types is rejected only by the computed-scene adapter; every other driver still returns a block typed by the first channel. **Open**: filed as SlideIO #90. **(3)** `makeTransformationCopy`'s undiagnosed downcast is fixed: a public abstract class whose misuse is silent undefined behaviour must either reject unknown subclasses or stop being public. **Open**: filed as SlideIO #89. **Amended in 0.12:** the closure stands while (2) and (3) are open, and is reopened only if either fix is refused. Neither gap reaches `slideio-processor`: computed scenes already reject mixed-type requests, and the library never subclasses `Transformation`. |
 | OME-TIFF and mixed channel types (was question 16) | **Not accepted.** One OME-XML `Pixels` element states one type for every channel it holds, so `convertScene` raises `slideio::RuntimeError` for an OME-TIFF channel range of mixed types (SlideIO PR #86; before it, such a file was written and its metadata contradicted its pixels). A computed scene with mixed output types exports to OME-TIFF one same-type channel range per file through `ConverterParameters::setChannelRange`. SVS is stricter: it checks every channel of the scene and ignores the channel range, so a mixed-type scene cannot be exported to SVS at all. UR-IMG-9 is unaffected: it constrains what the library carries, not what one file format can hold. |
 | Mixed channel types are read one channel per call | Not a loss, and worth recording because it looks like one. `cv::Mat` carries one depth for all its channels, so no single `readBlock` can deliver a block spanning `Byte` and `Float32` — a restriction of every SlideIO scene, not of computed ones. Each channel reads back losslessly on its own call, `SceneMetadata::channelDataTypes` declares the mix so a consumer can group its requests, and `core::BlockView` is planar with a `DataType` per plane for exactly this reason (SDS 01 §1.8, SDS 05). |
-| The v1 algorithm catalog (was question 7) | **Amended 2026-11-19 (0.13):** twenty-one operations; `measure.object_measurements` was withdrawn because the segmenters measure their own objects, and UR-SEG-5 now maps to their measurement selection; see SDS `06-algorithm.md` §6.10. As first resolved: closed at twenty-two operations, enumerated with arity and halo in SDS `06-algorithm.md` §6.10. The list is UR-PIX-1..6, UR-IMG-13 and UR-SEG-1..7 exhausted rather than a selection from them — every entry answers a Must or Should, and every Must and Should has an entry or a framework mechanism. Ten filter and morphology operations received catalog names for the first time, which is durable contract because a stage records the name and replays it (UR-STG-4). **Amended in 0.11:** UR-SEG-9 was added after this resolution was taken, and v1 ships no operation for it, so the two columns no longer exhaust each other. The catalog remains closed at twenty-two; what changed is that the closure is now a decision rather than a derivation, and SDS 06 §6.10 records it as such. |
+| The v1 algorithm catalog (was question 7) | **Amended 2026-11-25 (0.14):** twenty-three operations; UR-PIX-7 and UR-PIX-8 added `pixel.distance_transform` and `pixel.fill_holes`, which `segment.watershed` and the mask-cleaning pipelines need. The counts and the requirement ranges in the older entries below are as they stood then. **Amended 2026-11-19 (0.13):** twenty-one operations; `measure.object_measurements` was withdrawn because the segmenters measure their own objects, and UR-SEG-5 now maps to their measurement selection; see SDS `06-algorithm.md` §6.10. As first resolved: closed at twenty-two operations, enumerated with arity and halo in SDS `06-algorithm.md` §6.10. The list is UR-PIX-1..6, UR-IMG-13 and UR-SEG-1..7 exhausted rather than a selection from them — every entry answers a Must or Should, and every Must and Should has an entry or a framework mechanism. Ten filter and morphology operations received catalog names for the first time, which is durable contract because a stage records the name and replays it (UR-STG-4). **Amended in 0.11:** UR-SEG-9 was added after this resolution was taken, and v1 ships no operation for it, so the two columns no longer exhaust each other. The catalog remains closed at twenty-two; what changed is that the closure is now a decision rather than a derivation, and SDS 06 §6.10 records it as such. |
 | Watershed in v1 (was question 7) | **Marker-controlled watershed is in v1**; unseeded watershed is not. The earlier exclusion rested on basin reach being unbounded, which is true only of the unseeded variant. With markers, a basin grows until it meets a neighbour, so reach is bounded by marker spacing (~28 px for nuclei at 0.25 µm/px) rather than by component size — a clump inside a fifty-tile sheet is still a local decision. `maximumMarkerSpacingPx` derives the halo and is enforced: a pixel further than that from any marker in context throws, which keeps UR-QA-2 exact rather than letting the result depend on tile position. Unseeded watershed stays out, and not as a deferral — it needs a post-merge pass the design does not have. |
 | Multi-resolution coarse-to-fine (arising from question 7) | A supported pattern, not a user-assembled workaround. A coarse stage runs at a level where the whole slide fits (10⁸ px at level 3–4) and writes regions; a fine stage binds those regions as an auxiliary **raster** — pixels, not a go/no-go mask — and segments detail the coarse level could not resolve. New `core::TileRasterSource` and `makeLayerRasterSource`, `Pipeline::auxiliaryRaster`, `OperationContext::auxiliary`, `StageDefinition::readsLayerAsRaster`. Per-tile and lazy, like the restriction mask it sits beside. The two halves are correct for different reasons — the coarse because the slide fits, the fine because marker flooding is local — and neither inherits the other's argument. Topology is fixed by the coarse pass: refinement moves boundaries, never adds or removes them. |
 | Persisted rasters have no parent requirement | Open action. UR-RES-7 requires label and probability maps be *obtainable* as a multi-resolution raster — a lazy scene or a pyramidal TIFF — and the design satisfies it. It does not require them to be **stored as stage products**, with attribution, discard-on-re-run and derived staleness, which is what SDS §3.8 adds. The capability exists because products without a contour — a distance transform, a probability surface, a background estimate — cannot be expressed as objects and so had no way to cross a stage boundary at all. Two consequences need requirement-level decisions rather than design ones: **UR-STG-9's archivable unit changes** from one `.store` file to the workspace directory, and **there is no disk budget anywhere** to bound what rasters may consume, against UR-EXE-2's memory ceiling. |

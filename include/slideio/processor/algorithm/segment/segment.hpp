@@ -484,6 +484,7 @@ enum class WatershedMarkers : int32_t {
  * | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823 |
  * | `minimumAreaPx` | int | 0 | at least 0 |
  * | `measurements` | string | every MeasurementKind | MeasurementKind spellings separated by commas, without spaces |
+ * | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `LocalMaxima` |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
  *
  * A moved-from object may only be assigned to or destroyed.
@@ -651,6 +652,28 @@ public:
      * UR-SEG-5
      */
     WatershedParameters& measurements(const MeasurementSelection& selection);
+
+    /**
+     * @brief Sets the least value a local maximum may have to be a marker.
+     *
+     * With `LocalMaxima` markers, a pixel whose value is below @p value is
+     * simply not a marker; it still floods and counts as foreground, so a
+     * region left with no marker within
+     * `maximumMarkerSpacingPx` fails the reach check. Absent by default, so
+     * that the default configuration, and every recorded stage, is unchanged;
+     * the key is left out of the parameter bag until this is called. Refused
+     * with `AuxiliaryRaster` markers when the operation is made.
+     * @param value The floor, finite.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p value is NaN or infinite, or these
+     * parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& minimumMarkerValue(double value);
+
     /**
      * @brief Names the bound layer the objects go to.
      *
@@ -702,14 +725,39 @@ private:
  * `AuxiliaryRaster`, each foreground pixel whose value in the bound `Int64`
  * raster is not -1 is a marker, one basin per value; the raster covers the
  * same pixels as plane 0.
+ * With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is simply
+ * not a marker; it still floods and counts as foreground. A region it leaves
+ * without a marker within the spacing fails the reach check.
  *
  * **The reach is enforced.** A basin's boundary may depend only on markers
  * within `maximumMarkerSpacingPx`, which is what lets each tile decide it from
  * its own halo and keeps the result identical at every tile size (UR-SEG-3).
  * A foreground pixel no marker reaches, or reached from a marker pixel further
- * than the spacing, fails the tile, and so the run, with InvalidArgumentError
- * "segment.watershed: a region lies further than maximumMarkerSpacingPx from
- * every marker"; nothing is ever segmented partially in its place.
+ * than the spacing, fails the tile, and so the run, with InvalidArgumentError;
+ * nothing is ever segmented partially in its place. The message names the
+ * first such pixel of the tile, in row order, in level coordinates, and the
+ * parameters to change, never their values:
+ * - reached from too far: "segment.watershed: the foreground at level pixel
+ *   (x, y) lies further than maximumMarkerSpacingPx from its marker; …";
+ * - not reached: "segment.watershed: no marker within maximumMarkerSpacingPx
+ *   reaches the foreground at level pixel (x, y): …", naming as causes a peak
+ *   below `minimumMarkerValue` (when set), a higher object within
+ *   `minimumMarkerDistancePx`, and an object wider or higher than the spacing.
+ *   A tile cannot tell these apart, since a marker may lie beyond its halo.
+ *
+ * **Settings that never fail the reach on a distance transform.** Flooding
+ * `pixel.distance_transform` of a mask, the reach holds for every object when:
+ * - the mask is opened first (`pixel.morph_open`) with an `Ellipse` element of
+ *   width and height 2k + 1, with k at least `minimumMarkerValue` (when set)
+ *   and at least `minimumMarkerDistancePx` + 1. Every object the opening keeps
+ *   holds a whole disc of radius k, so its peak exceeds k and the floor keeps
+ *   it; and two separate objects whose peaks both exceed k lie too far apart
+ *   for one's pixels to outrank the other's peak within
+ *   `minimumMarkerDistancePx`. Specks, thin lines and spurs, which have no
+ *   such disc, are removed;
+ * - `maximumMarkerSpacingPx` is at least the largest width or height of an
+ *   object: a flat ridge, as in an elongated object of even width, gives one
+ *   marker, which then has to reach the whole object.
  *
  * Flood a surface that peaks inside each object, such as a distance transform
  * of a mask or a smoothed intensity. A plateau gives only its topmost-leftmost
@@ -757,7 +805,8 @@ private:
  * @throws InvalidArgumentError When @p parameters is moved-from, the markers
  * are not an enumerator, `auxiliaryName` is empty with `AuxiliaryRaster`, a
  * distance is out of its range (the minimum marker distance above the spacing
- * included) or `minimumAreaPx` is negative; the message names the operation
+ * included), `minimumAreaPx` is negative or `minimumMarkerValue` is set with
+ * `AuxiliaryRaster` markers; the message names the operation
  * and the parameter, never the value. A tile throws it when no raster is bound
  * under `auxiliaryName` or the bound one is not one `Int64` plane, naming the
  * parameter and never the binding, and when the reach is exceeded.

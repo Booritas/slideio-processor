@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -37,8 +38,11 @@ namespace ts = slideio::processor::testing_support;
 namespace {
 
 constexpr const char* kName = "segment.watershed";
-constexpr const char* kReachMessage =
-    "segment.watershed: a region lies further than maximumMarkerSpacingPx from every marker";
+// The two reach failures' openings: a pixel reached from a marker beyond the
+// spacing, or one no marker reached.
+constexpr const char* kTooFarPrefix = "segment.watershed: the foreground at level pixel (";
+constexpr const char* kUnreachedPrefix =
+    "segment.watershed: no marker within maximumMarkerSpacingPx reaches the foreground at level pixel (";
 constexpr double kPi = 3.14159265358979323846;
 
 double measurement(const ObjectRecord& record, const char* name) {
@@ -209,18 +213,59 @@ std::vector<ObjectRecord> runWithAnchors(const std::shared_ptr<slideio::Scene>& 
     return records;
 }
 
-// Expects @p run to fail with the reach error, as a run reports it: the
-// operation's own message is the failure's cause.
-void expectReachError(const std::function<void()>& run, const std::string& label) {
+enum class Reach { Either, TooFar, Unreached };
+
+struct ReachFailure {
+    Reach kind = Reach::Either;
+    int64_t x = -1;
+    int64_t y = -1;
+    std::string message;
+};
+
+// Expects @p run to fail with a reach error, as a run reports it: the
+// operation's own message is the failure's cause. Returns its kind and the
+// level pixel it names; @p want, unless Either, is the kind expected.
+ReachFailure expectReachError(const std::function<void()>& run, const std::string& label,
+                              Reach want = Reach::Either) {
+    ReachFailure failure;
     try {
         run();
         ADD_FAILURE() << label << ": nothing thrown";
     } catch (const ProcessorError& e) {
-        const std::string message = e.cause() != nullptr && e.cause()[0] != '\0' ? e.cause() : e.what();
-        EXPECT_NE(message.find(kName), std::string::npos) << label << ": " << message;
-        EXPECT_NE(message.find("maximumMarkerSpacingPx"), std::string::npos) << label << ": " << message;
-        EXPECT_EQ(message, kReachMessage) << label;
+        failure.message = e.cause() != nullptr && e.cause()[0] != '\0' ? e.cause() : e.what();
+        const std::string& message = failure.message;
+        size_t at = std::string::npos;
+        if (message.rfind(kTooFarPrefix, 0) == 0) {
+            failure.kind = Reach::TooFar;
+            at = std::strlen(kTooFarPrefix);
+            EXPECT_NE(message.find(") lies further than maximumMarkerSpacingPx from its marker"), std::string::npos)
+                << label << ": " << message;
+        } else if (message.rfind(kUnreachedPrefix, 0) == 0) {
+            failure.kind = Reach::Unreached;
+            at = std::strlen(kUnreachedPrefix);
+            EXPECT_NE(message.find("minimumMarkerDistancePx"), std::string::npos) << label << ": " << message;
+        }
+        if (at == std::string::npos) {
+            ADD_FAILURE() << label << ": not a reach error: " << message;
+            return failure;
+        }
+        if (want != Reach::Either) {
+            EXPECT_EQ(failure.kind, want) << label << ": " << message;
+        }
+        // "<x>, <y>)" follows the prefix.
+        char* end = nullptr;
+        failure.x = std::strtoll(message.c_str() + at, &end, 10);
+        EXPECT_EQ(std::string(end, 2), ", ") << label << ": " << message;
+        failure.y = std::strtoll(end + 2, &end, 10);
+        EXPECT_EQ(*end, ')') << label << ": " << message;
+        // The advice names parameters, never their values.
+        const std::string advice = message.substr(message.find(')'));
+        // Only the 1 of "minimumMarkerDistancePx + 1" is a digit.
+        EXPECT_EQ(std::count_if(advice.begin(), advice.end(), [](char c) { return c >= '0' && c <= '9'; }),
+                  failure.kind == Reach::Unreached ? 1 : 0)
+            << label << ": " << message;
     }
+    return failure;
 }
 
 int64_t packedKey(int64_t x, int64_t y) { return (y << 31) | x; }
@@ -392,8 +437,14 @@ TEST(Watershed, SpacingExceededThrowsAtEveryTileSize) {
         expectReachError([&] { ts::runEagerObjects(scene, spec, tile, 4); }, std::to_string(tile) + "-pixel tiles");
     }
     const OperationPtr op = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(32));
-    expectReachError([&] { ts::applyDirectObjects(*op, {DataType::Float32}, {0}, kSide, kSide, pixel); },
-                     "one tile");
+    // In one tile the one marker reaches the whole disc: the message names the
+    // first rim pixel, in row order, beyond the spacing from the centre.
+    const ReachFailure one = expectReachError(
+        [&] { ts::applyDirectObjects(*op, {DataType::Float32}, {0}, kSide, kSide, pixel); }, "one tile",
+        Reach::TooFar);
+    EXPECT_GT(std::max(std::abs(one.x - 100), std::abs(one.y - 100)), 32) << one.message;
+    EXPECT_GT(pixel(0, one.x, one.y), 0.0) << one.message;
+    EXPECT_EQ(one.message.find("minimumMarkerValue"), std::string::npos) << one.message;
     // With a spacing that covers the disc, it is one object.
     const OperationPtr wide = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(64));
     const ts::DirectObjects result = ts::applyDirectObjects(*wide, {DataType::Float32}, {0}, kSide, kSide, pixel);
@@ -411,9 +462,18 @@ TEST(Watershed, StripLongerThanSpacingThrows) {
     };
     const WatershedParameters parameters = WatershedParameters().minimumMarkerDistancePx(2).maximumMarkerSpacingPx(8);
     const OperationPtr op = makeWatershed(parameters);
-    expectReachError([&] { ts::applyDirectObjects(*op, {DataType::Float32}, {0}, 150, 10, pixel); }, "one tile");
+    // In one tile the marker at (0, 4) reaches the whole strip; (9, 4) is the
+    // first pixel in row order beyond the spacing of 8.
+    const ReachFailure one = expectReachError(
+        [&] { ts::applyDirectObjects(*op, {DataType::Float32}, {0}, 150, 10, pixel); }, "one tile", Reach::TooFar);
+    EXPECT_EQ(one.x, 9) << one.message;
+    EXPECT_EQ(one.y, 4) << one.message;
     const auto scene = sceneOf(150, 10, {slideio::DataType::DT_Float32}, pixel);
-    expectReachError([&] { ts::runEagerObjects(scene, specOf(parameters), 16, 4); }, "16-pixel tiles");
+    // With no floor set, the advice does not mention one.
+    const ReachFailure tiled =
+        expectReachError([&] { ts::runEagerObjects(scene, specOf(parameters), 16, 4); }, "16-pixel tiles");
+    EXPECT_EQ(tiled.message.find("minimumMarkerValue"), std::string::npos) << tiled.message;
+    EXPECT_GT(pixel(0, tiled.x, tiled.y), 0.0) << tiled.message;
 }
 
 TEST(Watershed, AuxiliaryMarkers) {
@@ -611,6 +671,156 @@ TEST(Watershed, TypedAndNamedBagsAreEqual) {
     EXPECT_TRUE(defaults->parameters().getInt("maximumMarkerSpacingPx", value) && value == 32);
     EXPECT_TRUE(defaults->parameters().getInt("minimumAreaPx", value) && value == 0);
     EXPECT_STREQ(defaults->parameters().getString("targetLayer", "absent"), "absent");
+}
+
+TEST(Watershed, MarkerFloorAbsentByDefault) {
+    const OperationPtr typed = makeWatershed(WatershedParameters());
+    double value = 0.0;
+    EXPECT_FALSE(typed->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(typed->parameters().count(), 6);
+    const OperationPtr named = OperationCatalog::instance().create(kName, OperationParameters());
+    EXPECT_FALSE(named->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+}
+
+TEST(Watershed, MarkerFloorRoundTrips) {
+    const OperationPtr typed = makeWatershed(WatershedParameters().minimumMarkerValue(2.5));
+    OperationParameters bag;
+    bag.setDouble("minimumMarkerValue", 2.5);
+    const OperationPtr named = OperationCatalog::instance().create(kName, bag);
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+    EXPECT_EQ(typed->parameters().count(), 7);
+    double value = 0.0;
+    ASSERT_TRUE(named->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(value, 2.5);
+
+    OperationParameters integerBag;
+    integerBag.setInt("minimumMarkerValue", 3);
+    const OperationPtr fromInteger = OperationCatalog::instance().create(kName, integerBag);
+    value = 0.0;
+    ASSERT_TRUE(fromInteger->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(value, 3.0);
+    EXPECT_EQ(jsonOf(fromInteger->parameters()),
+              jsonOf(makeWatershed(WatershedParameters().minimumMarkerValue(3.0))->parameters()));
+}
+
+TEST(Watershed, MarkerFloorRejected) {
+    const auto expectNamed = [](const std::function<void()>& make, const std::string& what) {
+        try {
+            make();
+            ADD_FAILURE() << what << ": nothing thrown";
+        } catch (const InvalidArgumentError& e) {
+            const std::string message = e.what();
+            EXPECT_NE(message.find("minimumMarkerValue"), std::string::npos) << what << ": " << message;
+        }
+    };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const double bad : {nan, inf, -inf}) {
+        expectNamed([bad] { WatershedParameters().minimumMarkerValue(bad); }, "typed non-finite");
+        expectNamed(
+            [bad] {
+                OperationParameters bag;
+                bag.setDouble("minimumMarkerValue", bad);
+                OperationCatalog::instance().create(kName, bag);
+            },
+            "named non-finite");
+    }
+    // A wrong type by name.
+    expectNamed(
+        [] {
+            OperationParameters bag;
+            bag.setString("minimumMarkerValue", "2");
+            OperationCatalog::instance().create(kName, bag);
+        },
+        "string");
+    // With anchor markers the floor has nothing to apply to; the message
+    // names the key and never the value.
+    try {
+        makeWatershed(WatershedParameters()
+                          .markers(WatershedMarkers::AuxiliaryRaster)
+                          .auxiliaryName("anchors")
+                          .minimumMarkerValue(7.3125));
+        ADD_FAILURE() << "nothing thrown";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find(kName), std::string::npos) << message;
+        EXPECT_NE(message.find("minimumMarkerValue"), std::string::npos) << message;
+        EXPECT_EQ(std::count_if(message.begin(), message.end(), [](char c) { return c >= '0' && c <= '9'; }), 0)
+            << message;
+    }
+    OperationParameters bag;
+    bag.setString("markers", "AuxiliaryRaster")
+        .setString("auxiliaryName", "anchors")
+        .setDouble("minimumMarkerValue", 1.5);
+    EXPECT_THROW(OperationCatalog::instance().create(kName, bag), InvalidArgumentError);
+}
+
+TEST(Watershed, MarkerFloorDropsShallowSeed) {
+    // The discs of TouchingDiscsSeparated plus a third of radius 3 far away,
+    // whose deepest value is about 3.2.
+    constexpr int64_t kWidth = 64;
+    constexpr int64_t kHeight = 48;
+    const std::vector<Disc> discs = {{24, 24, 10}, {40, 24, 10}, {58, 8, 3}};
+    const std::vector<double> dt = distanceTransform(kWidth, kHeight, discs, 12);
+    const auto pixel = [&](int32_t, int64_t x, int64_t y) { return dt[static_cast<size_t>(y * kWidth + x)]; };
+    const OperationPtr open = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12));
+    const ts::DirectObjects without = ts::applyDirectObjects(*open, {DataType::Float32}, {0}, kWidth, kHeight, pixel);
+    EXPECT_EQ(without.objects.size(), 3u);
+    // A floor below every centre changes nothing.
+    const OperationPtr low = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12).minimumMarkerValue(3.0));
+    EXPECT_EQ(ts::applyDirectObjects(*low, {DataType::Float32}, {0}, kWidth, kHeight, pixel).objects.size(), 3u);
+    // At 4 the small disc has no marker; its pixels stay foreground and lie
+    // beyond every seed.
+    const OperationPtr floored =
+        makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12).minimumMarkerValue(4.0));
+    // The message names a pixel of the small disc, and the floor among the causes.
+    const ReachFailure failure = expectReachError(
+        [&] { ts::applyDirectObjects(*floored, {DataType::Float32}, {0}, kWidth, kHeight, pixel); }, "floored",
+        Reach::Unreached);
+    EXPECT_LE((failure.x - 58) * (failure.x - 58) + (failure.y - 8) * (failure.y - 8), 9) << failure.message;
+    EXPECT_NE(failure.message.find("its peak is below minimumMarkerValue"), std::string::npos) << failure.message;
+}
+
+TEST(Watershed, MarkerFloorKeepsTiling) {
+    // The grid of disc pairs of TilingInvariantAtThreeSizes: every centre is
+    // at least 8 deep, so a floor of 4 drops no marker.
+    constexpr int64_t kCellWidth = 66;
+    constexpr int64_t kCellHeight = 58;
+    constexpr int64_t kWidth = 6 * kCellWidth;
+    constexpr int64_t kHeight = 5 * kCellHeight;
+    std::vector<Disc> discs;
+    for (int64_t row = 0; row < 5; ++row) {
+        for (int64_t column = 0; column < 6; ++column) {
+            const int64_t i = row * 6 + column;
+            const int64_t r = 8 + i % 4;
+            const double separation = static_cast<double>(r) * (1.3 + 0.1 * static_cast<double>(i % 5));
+            const int64_t cx = column * kCellWidth + kCellWidth / 2 + (i % 7) - 3;
+            const int64_t cy = row * kCellHeight + kCellHeight / 2 + (i % 5) - 2;
+            int64_t dx = 0;
+            int64_t dy = 0;
+            switch (i % 3) {
+            case 0: dx = std::llround(separation / 2.0); break;
+            case 1: dy = std::llround(separation / 2.0); break;
+            default:
+                dx = std::llround(separation / 2.0 / std::sqrt(2.0));
+                dy = dx;
+                break;
+            }
+            discs.push_back({cx - dx, cy - dy, r});
+            discs.push_back({cx + dx, cy + dy, r});
+        }
+    }
+    auto dt = std::make_shared<std::vector<double>>(distanceTransform(kWidth, kHeight, discs, 14));
+    const auto scene = sceneOf(kWidth, kHeight, {slideio::DataType::DT_Float32},
+                               [dt](int, int64_t x, int64_t y) { return (*dt)[static_cast<size_t>(y * kWidth + x)]; });
+    const std::vector<ObjectRecord> reference = ts::runEagerObjects(scene, specOf(WatershedParameters()), 512, 4);
+    ASSERT_EQ(reference.size(), discs.size());
+    const PipelineSpec floored = specOf(WatershedParameters().minimumMarkerValue(4.0));
+    for (const int32_t tile : {64, 100, 257}) {
+        expectSameObjects(reference, ts::runEagerObjects(scene, floored, tile, 4),
+                          std::to_string(tile) + "-pixel tiles");
+    }
 }
 
 TEST(Watershed, MeasuresTheScenesSamplesAfterEarlierOperations) {

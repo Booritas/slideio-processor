@@ -19,6 +19,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -312,4 +313,29 @@ TEST(WorkingSetFilter, BilateralLargeTileRefusedUnderTheCeiling) {
     EXPECT_NE(message.find("pixel.bilateral_filter"), std::string::npos) << message;
     EXPECT_NE(message.find("above the memory ceiling"), std::string::npos) << message;
     EXPECT_EQ(source->readCount(), 0);
+}
+
+TEST(WorkingSetFilter, DistanceTransformDeclarationBoundsTheMeasuredPeak) {
+    // pixel.distance_transform computes in the module's own memory, all of it
+    // metered, so no unmetered share: the default and the extreme halos, on a
+    // type read as integers and one read as floats.
+    for (DataType type : {DataType::Byte, DataType::Float32}) {
+        expectApplyBounded("distance_transform default",
+                           [] { return createOperation("pixel.distance_transform", OperationParameters()); },
+                           {type});
+        expectApplyBounded("distance_transform 64", [] { return makeDistanceTransform(64); }, {type});
+        expectApplyBounded("distance_transform 1", [] { return makeDistanceTransform(1); }, {type});
+    }
+}
+
+TEST(WorkingSetFilter, FillHolesDeclarationBoundsTheMeasuredPeak) {
+    // pixel.fill_holes labels in the module's own memory, all of it metered, so no
+    // unmetered share: the default and the extreme halos, on a type read as integers
+    // and one read as floats.
+    for (DataType type : {DataType::Byte, DataType::Float32}) {
+        expectApplyBounded("fill_holes default",
+                           [] { return createOperation("pixel.fill_holes", OperationParameters()); }, {type});
+        expectApplyBounded("fill_holes 64 area", [] { return makeFillHoles(64, 100); }, {type});
+        expectApplyBounded("fill_holes 1", [] { return makeFillHoles(1); }, {type});
+    }
 }

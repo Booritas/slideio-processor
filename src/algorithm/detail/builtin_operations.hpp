@@ -32,6 +32,12 @@ OperationFactoryPtr makeGaussianBlurFactory();
 /// pixel.median_blur
 OperationFactoryPtr makeMedianBlurFactory();
 
+/// pixel.distance_transform
+OperationFactoryPtr makeDistanceTransformFactory();
+
+/// pixel.fill_holes
+OperationFactoryPtr makeFillHolesFactory();
+
 /// pixel.sobel
 OperationFactoryPtr makeSobelFactory();
 
