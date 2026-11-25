@@ -56,22 +56,29 @@ public:
     DataType outputType(DataType) const override { return DataType::Float32; }
     const OperationParameters& parameters() const override { return parameters_; }
     // Per pixel of the halo'd rect: the Byte mask (1) and OpenCV's Float32
-    // destination (4); and the buffers of OpenCV's exact path (OpenCV 4.14,
-    // imgproc/src/distransform.cpp, cv::distanceTransform, trueDistTrans; its
-    // source is not part of this build, so the figure is bounded from the
-    // algorithm): a table of m floats and one of at most 3 m ints for the
-    // columns, and (n + 1) entries of 12 bytes for a row, with m the rect's
-    // height and n its width, so at most 28 bytes per entry of the longer
-    // side. As both sides are at least 2 * maximum + 1, that is at most
-    // 28 / (2 * maximum + 1) bytes per pixel, taken rounded up.
+    // destination (4), both through cv::fastMalloc; and the buffers of OpenCV's
+    // exact path, read from OpenCV 4.14.0, imgproc/src/distransform.cpp
+    // (cv::distanceTransform with DIST_MASK_PRECISE calls trueDistTrans, which
+    // is single threaded here), with m the rect's height and n its width:
+    //  - trueDistTrans's AutoBuffer, live throughout:
+    //    max(m * 2 * 4 + (3 m + 1) * 4, n * 2 * 4) = max(20 m + 4, 8 n) bytes,
+    //    plus up to 3 bytes of int alignment;
+    //  - while it is live, DTColumnInvoker's AutoBuffer<int>(m), 4 m bytes, and
+    //    afterwards, with the column one freed, DTRowInvoker's
+    //    AutoBuffer<uchar>((n + 2) * 2 * 4 + (n + 2) * 4) = 12 (n + 2) bytes.
+    // The peak is max(20 m + 4, 8 n) + max(4 m, 12 n + 24) + 3, at most
+    // 32 L + 31 for L = max(m, n). Both sides are at least s = 2 * maximum + 1,
+    // so L / (m * n) <= 1 / s and 31 / (m * n) <= 31 / s, and that is at most
+    // 63 / s bytes per pixel, taken rounded up.
     int64_t workingSetBytesPerLevelPixel() const override {
         const int64_t side = 2 * static_cast<int64_t>(maximum_) + 1;
-        return 5 + (28 + side - 1) / side;
+        return 5 + (63 + side - 1) / side;
     }
-    // The Mats' bookkeeping, mask and destination, and the allocator's
-    // rounding of the two column buffers and the row buffer.
+    // The Mats' bookkeeping (mask, destination), and cv::fastMalloc's alignment
+    // of its five blocks (mask, destination and the three AutoBuffers): up to 63
+    // bytes of rounding and the original pointer's 8 on each, 128 bounds that.
     int64_t workingSetBytesPerTile() const override {
-        return 2 * detail::kCvMatBookkeeping + 3 * detail::kAllocatorBlockOverhead;
+        return 2 * detail::kCvMatBookkeeping + 5 * 128;
     }
 
     void apply(OperationContext& context) override {

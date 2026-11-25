@@ -283,3 +283,48 @@ TEST(DistanceTransform, TiledEqualsSingleTile) {
         }
     }
 }
+
+namespace {
+
+// A mostly foreground mask with a few background pixels, so that the distances
+// are long and the context is far larger than the image.
+Mask sparseMask(int64_t width, int64_t height, int count, uint32_t seed) {
+    Mask m{width, height, std::vector<uint8_t>(static_cast<size_t>(width * height), 1)};
+    std::mt19937 rng(seed);
+    for (int i = 0; i < count; ++i) {
+        const int64_t x = static_cast<int64_t>(rng() % static_cast<uint32_t>(width));
+        const int64_t y = static_cast<int64_t>(rng() % static_cast<uint32_t>(height));
+        m.v[static_cast<size_t>(y * width + x)] = 0;
+    }
+    return m;
+}
+
+} // namespace
+
+TEST(DistanceTransform, MatchesBruteForceAtALargeMaximum) {
+    // OpenCV's exact path intersects parabolas in float: long distances in a
+    // context of thousands of pixels must still be the exact square roots.
+    for (int32_t maximum : {300, 1000}) {
+        expectMatchesBruteForce(sparseMask(220, 170, 6, 20261125u + static_cast<uint32_t>(maximum)), maximum);
+    }
+}
+
+TEST(DistanceTransform, TiledEqualsSingleTileAtALargeMaximum) {
+    const Mask m = sparseMask(300, 260, 8, 77u);
+    auto scene = ts::makeSyntheticScene({{m.width, m.height, 0, 0}}, {slideio::DataType::DT_Byte},
+                                        [&m](int, int64_t x, int64_t y) { return m.at(x, y) ? 255.0 : 0.0; });
+    PipelineSpec spec;
+    spec.then(makeDistanceTransform(600));
+    const ts::Image reference = ts::runEager(scene, spec, 4096, 1);
+    ASSERT_EQ(reference.types, std::vector<DataType>{DataType::Float32});
+    for (int32_t tile : {64, 100, 257}) {
+        const ts::Image tiled = ts::runEager(scene, spec, tile, 4);
+        EXPECT_TRUE(tiled.planes == reference.planes) << "tile " << tile;
+    }
+    // And the single tile is the brute force.
+    for (int64_t y = 0; y < m.height; y += 7) {
+        for (int64_t x = 0; x < m.width; x += 5) {
+            ASSERT_EQ(static_cast<float>(reference.at(0, x, y)), bruteForce(m, x, y, 600)) << x << "," << y;
+        }
+    }
+}
