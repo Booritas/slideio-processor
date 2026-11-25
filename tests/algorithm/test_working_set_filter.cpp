@@ -347,3 +347,15 @@ TEST(WorkingSetFilter, DistanceTransformDeclarationBoundsTheMeasuredPeak) {
 TEST(WorkingSetFilter, OpenCvIsSequentialOnceDistanceTransformApplies) {
     expectSequentialAfterApply("pixel.distance_transform", DataType::Byte);
 }
+
+TEST(WorkingSetFilter, FillHolesDeclarationBoundsTheMeasuredPeak) {
+    // pixel.fill_holes labels in the module's own memory, all of it metered, so no
+    // unmetered share: the default and the extreme halos, on a type read as integers
+    // and one read as floats.
+    for (DataType type : {DataType::Byte, DataType::Float32}) {
+        expectApplyBounded("fill_holes default",
+                           [] { return createOperation("pixel.fill_holes", OperationParameters()); }, {type});
+        expectApplyBounded("fill_holes 64 area", [] { return makeFillHoles(64, 100); }, {type});
+        expectApplyBounded("fill_holes 1", [] { return makeFillHoles(1); }, {type});
+    }
+}

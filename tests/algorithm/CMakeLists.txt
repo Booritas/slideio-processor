@@ -26,6 +26,7 @@ add_executable(slideio_processor_algorithm_tests
     test_derivatives.cpp
     test_median_blur.cpp
     test_distance_transform.cpp
+    test_fill_holes.cpp
     test_morphology.cpp
     test_bilateral_filter.cpp
     test_canny.cpp
