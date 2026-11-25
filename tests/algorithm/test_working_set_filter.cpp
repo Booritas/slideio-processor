@@ -19,6 +19,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -65,6 +66,19 @@ int64_t medianShare(const Operation& op, DataType type, int64_t width, int64_t h
     const int64_t w = haloWidth(op, width);
     const int64_t h = haloHeight(op, height);
     return w * h + (k > 5 ? (w + k - 1) * h : 0);
+}
+
+// What cv::distanceTransform (DIST_L2, DIST_MASK_PRECISE, CV_32F) and the operation take through
+// cv::fastMalloc, which the meter does not see, with one OpenCV thread, for one plane: the Byte
+// mask and the Float32 destination, one per pixel of the halo'd plane, and the buffers of
+// OpenCV's exact path (OpenCV 4.14, imgproc/src/distransform.cpp, trueDistTrans, bounded
+// analytically as OpenCV's source is not part of the build): a table of m floats and one of up
+// to 3 m ints for the columns, and (n + 1) 12-byte entries for a row, with m, n the halo'd
+// height and width; 28 bytes per entry of the longer side bounds their sum.
+int64_t distanceShare(const Operation& op, DataType, int64_t width, int64_t height) {
+    const int64_t w = haloWidth(op, width);
+    const int64_t h = haloHeight(op, height);
+    return 5 * w * h + 28 * std::max(w, h);
 }
 
 // What cv::erode, cv::dilate and cv::morphologyEx take through cv::fastMalloc
@@ -312,4 +326,23 @@ TEST(WorkingSetFilter, BilateralLargeTileRefusedUnderTheCeiling) {
     EXPECT_NE(message.find("pixel.bilateral_filter"), std::string::npos) << message;
     EXPECT_NE(message.find("above the memory ceiling"), std::string::npos) << message;
     EXPECT_EQ(source->readCount(), 0);
+}
+
+TEST(WorkingSetFilter, DistanceTransformDeclarationBoundsTheMeasuredPeak) {
+    // pixel.distance_transform: the default and the largest halo on a type
+    // read as integers and one read as floats.
+    sequentialBeforeMetering("pixel.distance_transform");
+    for (DataType type : {DataType::Byte, DataType::Float32}) {
+        expectApplyBounded("distance_transform default",
+                           [] { return createOperation("pixel.distance_transform", OperationParameters()); },
+                           {type}, distanceShare);
+        expectApplyBounded("distance_transform 64", [] { return makeDistanceTransform(64); }, {type},
+                           distanceShare);
+        expectApplyBounded("distance_transform 1", [] { return makeDistanceTransform(1); }, {type},
+                           distanceShare);
+    }
+}
+
+TEST(WorkingSetFilter, OpenCvIsSequentialOnceDistanceTransformApplies) {
+    expectSequentialAfterApply("pixel.distance_transform", DataType::Byte);
 }

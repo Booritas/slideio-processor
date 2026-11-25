@@ -4,8 +4,9 @@
 /**
  * @file filter.hpp
  * @brief Neighbourhood filters and morphology: BorderMode, the Gaussian,
- * median, Sobel, Scharr, Laplacian, Canny and bilateral filters,
- * StructuringShape, StructuringElement, and erode, dilate, open and close.
+ * median, Sobel, Scharr, Laplacian, Canny and bilateral filters, the distance
+ * transform, StructuringShape, StructuringElement, and erode, dilate, open and
+ * close.
  *
  * Every operation here is PerChannel with a halo derived from its
  * parameters. The framework supplies exactly that border context, reading
@@ -115,6 +116,37 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeGaussianBlur(double sigma, int
  * UR-PIX-3, UR-QA-2, UR-IMG-11, UR-ALG-6
  */
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeMedianBlur(int32_t kernelSize);
+
+/**
+ * @brief Creates `pixel.distance_transform`: PerChannel, halo
+ * @p maximumDistancePx on every side, every input type, output `Float32`.
+ *
+ * A pixel is foreground when its sample is neither 0 nor NaN (a negative
+ * sample is foreground), the rule `segment.watershed` uses. Each output sample
+ * is 0 for a background pixel, and for a foreground pixel the Euclidean
+ * distance, in pixels, to the centre of the nearest background pixel, clamped
+ * at @p maximumDistancePx. Pixels beyond the level are zero, so they are
+ * background: an object at the level edge gets its distance to that edge. The
+ * distance is exact, and the halo is the clamp, so the result does not depend
+ * on the tiling. Its natural use is the input of `segment.watershed`.
+ *
+ * Its parameter is `maximumDistancePx` (an integer; 32 when created by name
+ * without it), and Operation::parameters() always holds it. Creating it by
+ * name with the same value gives equal parameters. By name, an unknown key, a
+ * value of the wrong type or a value out of range throws InvalidArgumentError
+ * naming the key, never the value.
+ * @param maximumDistancePx The clamp and the halo, in pixels; from 1 to 4096.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p maximumDistancePx is outside 1 to 4096;
+ * the message names the operation and the parameter, never the value.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() may run concurrently on
+ * different contexts.
+ * @par Requirements
+ * UR-PIX-7, UR-QA-2, UR-ALG-6
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDistanceTransform(int32_t maximumDistancePx);
 
 /**
  * @brief Creates `pixel.sobel`: PerChannel, halo max(1, kernelSize / 2) on

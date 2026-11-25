@@ -4,9 +4,14 @@
 |---|---|
 | **Document** | User Requirements Specification |
 | **Project** | `slideio-processor` |
-| **Version** | 0.13 (draft) |
-| **Date** | 2026-11-19 |
+| **Version** | 0.14 (draft) |
+| **Date** | 2026-11-25 |
 | **Status** | For review |
+
+**Changes in 0.14** — **UR-PIX-7 added**: a Euclidean distance transform of a
+binary mask, clamped at a caller-declared maximum, to be the input of
+`segment.watershed` (SDS `06-algorithm.md` §6.4, §6.10). The v1 catalog is
+twenty-two operations with it. Nothing else was renumbered or changed.
 
 **Changes in 0.13** — **the question 7 resolution amended**: the v1 catalog is
 twenty-one operations, not twenty-two. `measure.object_measurements` is
@@ -433,6 +438,12 @@ carries its own correctness reference (UR-ALG-6) rather than inheriting one.
   itself usable as an input scene.
   *Acceptance:* a two-stage pipeline produces the same result as running the
   stages separately and materialising the intermediate.
+
+- **UR-PIX-7 (Should)** — The library shall provide the Euclidean distance
+  transform of a binary mask, up to a caller-declared maximum distance, as the
+  input `segment.watershed` needs to separate touching objects.
+  *Acceptance:* equals the brute-force distance on synthetic masks, clamped at
+  the maximum; identical at three tile sizes.
 
 ## 8. Segmentation and object extraction
 

@@ -134,6 +134,7 @@ the operation and the parameter.
 | `pixel.gaussian_blur` | `sigma` | double | 1.0 | finite, at least 10⁻⁶; with `kernelSize` 0, small enough that the derived size 2·⌈3·`sigma`⌉ + 1 is at most 1025 |
 | | `kernelSize` | int | 0 | odd, 1 to 1025, or 0 to derive it from `sigma` |
 | `pixel.median_blur` | `kernelSize` | int | 3 | odd, 3 to 255 |
+| `pixel.distance_transform` | `maximumDistancePx` | int | 32 | 1 to 4096 |
 | `pixel.sobel` | `dx` | int | 1 | 0, 1 or 2; `dx` + `dy` at least 1 |
 | | `dy` | int | 0 | 0, 1 or 2 |
 | | `kernelSize` | int | 3 | 1, 3, 5 or 7 |
@@ -222,6 +223,7 @@ beside it saying which buffers it counts:
 | `pixel.threshold_otsu` | `accumulate()` packs the tile's admitted samples into one row, at most 8 bytes per pixel; `apply()` allocates nothing | one channel's histogram and its local copy (16 bytes per bin; without a range, the largest per-value histogram of 65,536 bins) and its bookkeeping, whatever the number of channels |
 | `pixel.gaussian_blur`, `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | the tile's values as doubles (and one more pass's for a derivative that sums two) and the separable filter's row of samples and ring of row sums, one pass at a time | the allocator's overhead on those buffers |
 | `pixel.median_blur` | one sort key per pixel on the module's own path; the backend's destination and bordered copy on the `Byte` path | the larger of the window's copy (grows with the kernel's area) and the backend's per-column histograms on the `Byte` path |
+| `pixel.distance_transform` | the `Byte` mask and the backend's `Float32` destination, 5 bytes, and the backend's exact-path tables, at most 28 bytes per entry of the halo'd rect's longer side (bounded from the algorithm; the source is not part of the build) | the Mats' bookkeeping and the allocator's rounding of the backend's buffers |
 | `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
 | `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | the larger of the float path's two copies of the plane and the integer path's ring buffer, rows and the backend's destination | the larger of the float path's element offsets and the integer path's filter engine (grows with the element's size) |
@@ -418,6 +420,7 @@ enum class BorderMode : int32_t { Reflect, Replicate, Constant };
 /// All PerChannel. Halo derives from kernel size.
 OperationPtr makeGaussianBlur(double sigma, int32_t kernelSize);
 OperationPtr makeMedianBlur(int32_t kernelSize);
+OperationPtr makeDistanceTransform(int32_t maximumDistancePx);
 OperationPtr makeSobel(int32_t dx, int32_t dy, int32_t kernelSize);
 OperationPtr makeScharr(int32_t dx, int32_t dy);
 OperationPtr makeLaplacian(int32_t kernelSize);
@@ -637,10 +640,32 @@ open question 15 in `requirements.md` and needs a requirements amendment
 rather than a silent reinterpretation here.
 
 Everything else in 6.4 and 6.5 is genuinely local. Gaussian, median, Sobel,
-Scharr, Laplacian, bilateral and all four morphology operations depend on a
+Scharr, Laplacian, bilateral, the distance transform and all four morphology operations depend on a
 bounded neighbourhood, so the declared halo makes them exact, and Otsu is
 global by construction rather than by accident (6.5).
 
+
+### Distance transform
+
+`pixel.distance_transform` is the input `segment.watershed` needs (6.7): a
+`Float32` surface that peaks at the centre of each object. A pixel is foreground
+when its sample is neither 0 nor NaN, the rule the watershed uses; the output is
+0 on background and, on foreground, the Euclidean distance to the centre of the
+nearest background pixel, clamped at `maximumDistancePx`. Pixels beyond the level
+are zero (05 §5.5) and so are background, in a tiled run and a whole-level run
+alike.
+
+**Why it is exact at any tile size.** The halo is the clamp, *H* =
+`maximumDistancePx`. A tile pixel whose true distance *d* is at most *H* has its
+nearest background pixel within Chebyshev distance *H*, so inside the halo'd
+context, and the context gives *d*. If *d* > *H*, every background pixel in the
+context is further than *H* and the output is *H*; a context with no background
+at all gives *H* as well. So the output is min(*d*, *H*) at every tile size. It is
+computed by OpenCV's `distanceTransform` (`DIST_L2`, `DIST_MASK_PRECISE`, the
+exact algorithm of Felzenszwalb and Huttenlocher) on a `Byte` mask of the halo'd
+context; the value is the square root of an integer, computed the same way in
+every context, so tiled output is bitwise equal. It runs under
+`useSequentialOpenCv` like the other OpenCV operations.
 ## 6.5 Thresholding — `algorithm/pixel/threshold.hpp`
 
 ```cpp
@@ -1201,9 +1226,9 @@ reaches the rest of a flat region from them, so a flat or binary input — a
 thresholded mask flooded as it is — gives few markers far apart and usually
 fails the reach check rather than separating anything. The input to flood is a
 distance transform of the mask, whose maxima sit at the objects' centres (the
-test of 6.9 floods exactly that), or a smoothed intensity; v1's catalog has no
-distance transform, so it comes from the caller's own operation or an earlier
-stage.
+test of 6.9 floods exactly that), or a smoothed intensity. The distance
+transform is `pixel.distance_transform` (6.4), which clamps at its parameter
+`maximumDistancePx`, so that should be at least the objects' radius for a peak to survive.
 
 ### Coarse-to-fine, as a supported pattern
 
@@ -1415,6 +1440,7 @@ The operations that exist state their reference through
 | `pixel.gaussian_blur` | Analytic: a normalised Gaussian kernel's response to constant, linear and impulse images | A constant image unchanged exactly and a linear ramp reproduced within 10⁻⁹, away from the level's edge; an impulse gives the outer product of the 1-D kernel within 10⁻¹⁵; random `Float64` equal bit for bit to a direct per-pixel computation in the stated order; size 1 the identity; tiled output bitwise equal to one tile on `Float32` and `UInt16` |
 | `pixel.sobel`, `pixel.scharr`, `pixel.laplacian` | Analytic: responses to polynomial images; the coefficients of OpenCV's `getDerivKernels` (Scharr [3 10 3] × [−1 0 1]) | Exact: Sobel 8 on x, y and x², Sobel of size 1 2 on x, Scharr 32 on x, Laplacian of size 1 4 on x² + y² and of size 3 8 on x²; the impulse response equals the coefficients' outer product, which equals OpenCV's `Sobel`, `Scharr` and `Laplacian` exactly, for every order and size; tiled output bitwise equal to one tile |
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
+| `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; tiled output bitwise equal to one tile on `Byte` and `Float32` |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
@@ -1441,11 +1467,12 @@ open item; until it is done UR-SEG-1 is covered only analytically.
 
 ## 6.10 Scope of v1 — the catalog, closed
 
-**The v1 catalog is twenty-one operations.** This resolves open question 7 in
+**The v1 catalog is twenty-two operations.** This resolves open question 7 in
 `requirements.md`, which the requirements call the choice that decides the size
 of v1 more than any other. It was closed at twenty-two; the twenty-second,
 `measure.object_measurements`, left it when the segmentation operations took
-over measuring (below).
+over measuring (below). UR-PIX-7 (requirements 0.14) then added
+`pixel.distance_transform`, for the watershed's input, which makes it twenty-two again.
 
 | Name | Section | Arity | Halo |
 |---|---|---|---|
@@ -1462,6 +1489,7 @@ over measuring (below).
 | `pixel.morph_dilate` | 6.4 | PerChannel | as `pixel.morph_erode` |
 | `pixel.morph_open` | 6.4 | PerChannel | twice `pixel.morph_erode`'s |
 | `pixel.morph_close` | 6.4 | PerChannel | twice `pixel.morph_erode`'s |
+| `pixel.distance_transform` | 6.4 | PerChannel | `maximumDistancePx` |
 | `pixel.threshold_fixed` | 6.5 | PerChannel | none |
 | `pixel.threshold_otsu` | 6.5 | PerChannel, global context | none |
 | `pixel.threshold_adaptive` | 6.5 | PerChannel | blockSize/2 |
@@ -1503,6 +1531,7 @@ a framework mechanism, and nothing here exists without such a mandate:
 | UR-PIX-4 erode, dilate, open, close, configurable element | the four `morph_` entries |
 | UR-PIX-5 fixed, Otsu, adaptive thresholding | the three `threshold_` entries |
 | UR-PIX-6 composition | `pipeline`, not an operation |
+| UR-PIX-7 distance transform for the watershed's input | `pixel.distance_transform` |
 | UR-IMG-13 explicit type conversion | `pixel.convert_type` |
 | UR-SEG-1 tissue versus background | `segment.tissue_detect` |
 | UR-SEG-2 connected components | `segment.connected_components` |
@@ -1521,9 +1550,10 @@ already implemented every one.
 
 **One row no longer holds, and it is the last one.** UR-SEG-9 was added to
 `requirements.md` in version 0.11, after this section was written and after
-question 7 was closed. The catalog did not grow for it — it is twenty-one
-operations, after `measure.object_measurements` left — so the mapping is now
-sixteen requirements against twenty-one entries with one requirement
+question 7 was closed. The catalog did not grow for it — it was twenty-one
+operations, after `measure.object_measurements` left, until UR-PIX-7 added a
+twenty-second — so the mapping is now
+seventeen requirements against twenty-two entries with one requirement
 unanswered. The closure of question 7 survives as a *decision*
 rather than as a derivation from the requirements, which is a weaker thing and
 is recorded here as such.
@@ -1579,7 +1609,7 @@ UR-QA-3, and the relationship between seed scale and scale parameter is
 unresolved and is the main thing blocking an API.
 
 Three ways out, and the choice belongs to whoever sets v1's scope: ship
-`segment.multiresolution` and make the catalog twenty-two; downgrade UR-SEG-9
+`segment.multiresolution` and make the catalog twenty-three; downgrade UR-SEG-9
 to a *May*; or leave it a *Should* against a later release and say so in the
 release notes. Leaving it unstated is the only wrong answer, because a Should
 with nothing behind it reads as an oversight rather than a plan.
