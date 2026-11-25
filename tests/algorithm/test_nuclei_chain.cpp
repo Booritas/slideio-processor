@@ -96,7 +96,7 @@ std::vector<Centre> discCentres() {
     for (int64_t row = 0; row < 2; ++row) {
         for (int64_t column = 0; column < 3; ++column) {
             const int64_t i = row * 3 + column;
-            const int64_t cx = 60 + 105 * column + (i * 3) % 7 - 3;
+            const int64_t cx = 60 + 105 * column - 15 * (column / 2) + (i * 3) % 7 - 3;
             const int64_t cy = 70 + 130 * row + (i * 5) % 7 - 3;
             if (i % 2 == 0) {
                 centres.push_back({cx - 7, cy});
@@ -110,16 +110,27 @@ std::vector<Centre> discCentres() {
     return centres;
 }
 
-// 200 inside a disc, except 0 in the 3 x 3 pale centre; 0 elsewhere.
+bool inDisc(const Centre& c, int64_t x, int64_t y) {
+    const int64_t dx = x - c.x;
+    const int64_t dy = y - c.y;
+    return dx * dx + dy * dy <= kRadius * kRadius;
+}
+
+bool inPaleCentre(const Centre& c, int64_t x, int64_t y) {
+    return std::abs(x - c.x) <= 1 && std::abs(y - c.y) <= 1;
+}
+
+bool inAnyDisc(const std::vector<Centre>& centres, int64_t x, int64_t y) {
+    return std::any_of(centres.begin(), centres.end(), [x, y](const Centre& c) { return inDisc(c, x, y); });
+}
+
+// 0 in any disc's 3 x 3 pale centre (tested first, so all 12 discs have one,
+// even where a neighbour covers it), else 200 inside a disc, else 0.
 double ringNucleus(const std::vector<Centre>& centres, int64_t x, int64_t y) {
-    for (const Centre& c : centres) {
-        const int64_t dx = x - c.x;
-        const int64_t dy = y - c.y;
-        if (dx * dx + dy * dy <= kRadius * kRadius) {
-            return std::abs(dx) <= 1 && std::abs(dy) <= 1 ? 0.0 : 200.0;
-        }
+    if (std::any_of(centres.begin(), centres.end(), [x, y](const Centre& c) { return inPaleCentre(c, x, y); })) {
+        return 0.0;
     }
-    return 0.0;
+    return inAnyDisc(centres, x, y) ? 200.0 : 0.0;
 }
 
 } // namespace
@@ -163,7 +174,27 @@ TEST(NucleiChain, TouchingRingNucleiSeparatedAtThreeTileSizes) {
     }
     EXPECT_TRUE(std::all_of(claimed.begin(), claimed.end(), [](bool b) { return b; }));
 
+    // fill_holes matters: every object is a single ring (no hole ring), and the
+    // areas add up to exactly the pixels of the union of the 12 filled discs.
+    int64_t unionPixels = 0;
+    for (int64_t y = 0; y < kHeight; ++y) {
+        for (int64_t x = 0; x < kWidth; ++x) {
+            unionPixels += inAnyDisc(centres, x, y) ? 1 : 0;
+        }
+    }
+    double totalArea = 0.0;
+    for (const ObjectRecord& object : reference) {
+        EXPECT_EQ(object.geometry().ringCount(), 1);
+        totalArea += measurement(object, "area");
+    }
+    EXPECT_EQ(totalArea, static_cast<double>(unionPixels));
+
     for (const int32_t tile : {64, 100, 257}) {
+        const auto cut = std::count_if(reference.begin(), reference.end(), [tile](const ObjectRecord& r) {
+            const Rect64 b = r.boundingBox();
+            return b.x / tile != (b.x + b.width - 1) / tile || b.y / tile != (b.y + b.height - 1) / tile;
+        });
+        ASSERT_GE(cut, 1) << tile << "-pixel seams should cut an object";
         expectSameObjects(reference, ts::runEagerObjects(scene, spec, tile, 4), std::to_string(tile) + "-pixel tiles");
     }
 }
