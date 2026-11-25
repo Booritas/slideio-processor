@@ -108,6 +108,61 @@ jobs:
           ./build.sh --skip-slideio --no-test-seams --warnings-as-errors
           scripts/check-no-test-seams.sh build-noseams
 
+  # The data library alone, as slideio-view consumes it: no SlideIO, no OpenCV, so no
+  # submodule checkout, toolchain sync or SlideIO cache. Builds, runs the data tests and
+  # builds and runs a project that links only slideio-processor-data.
+  build-data-only:
+    name: Data only ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-2022
+          - name: Debian x86_64
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install conan distro
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan-data-only-${{ matrix.os }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: |
+            conan-data-only-${{ matrix.os }}-
+
+      - name: Build
+        shell: bash
+        env:
+          PYTHON: python
+        run: ./build.sh --data-only --warnings-as-errors
+
+      - name: Test
+        shell: bash
+        run: ./run-tests.sh --data-only
+
+      - name: Build and run the data-only consumer
+        shell: bash
+        run: scripts/check-data-only-consumer.sh build-data/conan
+
   build-manylinux:
     name: manylinux_2_28 x86_64
     runs-on: ubuntu-latest

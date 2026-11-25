@@ -22,5 +22,6 @@ build-noseams-debug/
 # Data-only builds (build.sh --data-only)
 build-data/
 build-data-debug/
+build-data-consumer/
 build-noseams-data/
 build-noseams-data-debug/
