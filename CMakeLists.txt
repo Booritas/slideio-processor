@@ -31,16 +31,37 @@ if(SLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS)
     endif()
 endif()
 
-# The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
-# SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
-find_package(slideio 2.11 REQUIRED)
-# The data library uses OpenCV for its version only; the engine links it statically
-# and privately (see src/CMakeLists.txt).
-# No version in find_package: the Conan-generated OpenCVConfigVersion.cmake accepts
-# only an exact major match, which would reject OpenCV 5 (UR-BLD-4).
-find_package(OpenCV REQUIRED)
-if(OpenCV_VERSION VERSION_LESS 4)
-  message(FATAL_ERROR "OpenCV 4 or later is required; found ${OpenCV_VERSION}")
+# Data-only: configure only core, config, storage, reporting and slideio-processor-data
+# (and their tests), with no SlideIO and no OpenCV, for a consumer that links the data
+# library alone. Declared here, beside the find_package calls it removes; with it off the
+# build is the full one.
+option(SLIDEIO_PROCESSOR_DATA_ONLY
+       "Build only the data library and its tests, without SlideIO or OpenCV" OFF)
+
+if(SLIDEIO_PROCESSOR_DATA_ONLY)
+    message(STATUS "slideio-processor: data-only build (no SlideIO, no OpenCV)")
+    # The data library uses OpenCV for its version only (BackendCapabilities). Without
+    # find_package, that version is the conanfile pin, read as tests/config reads it.
+    file(STRINGS ${PROJECT_SOURCE_DIR}/conanfile.py OPENCV_REQUIREMENT
+        REGEX "requires\\(\"opencv/[0-9.]+\"\\)")
+    string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" OpenCV_VERSION "${OPENCV_REQUIREMENT}")
+    string(REGEX MATCH "^[0-9]+" OpenCV_VERSION_MAJOR "${OpenCV_VERSION}")
+    if(NOT OpenCV_VERSION_MAJOR)
+        message(FATAL_ERROR
+            "SLIDEIO_PROCESSOR_DATA_ONLY: no opencv/<x.y.z> requirement found in conanfile.py")
+    endif()
+else()
+    # The engine links SlideIO, whose API carries STL types, so an MSVC build must use a
+    # SlideIO installed in the same configuration (checked in src/CMakeLists.txt).
+    find_package(slideio 2.11 REQUIRED)
+    # The data library uses OpenCV for its version only; the engine links it statically
+    # and privately (see src/CMakeLists.txt).
+    # No version in find_package: the Conan-generated OpenCVConfigVersion.cmake accepts
+    # only an exact major match, which would reject OpenCV 5 (UR-BLD-4).
+    find_package(OpenCV REQUIRED)
+    if(OpenCV_VERSION VERSION_LESS 4)
+      message(FATAL_ERROR "OpenCV 4 or later is required; found ${OpenCV_VERSION}")
+    endif()
 endif()
 find_package(RapidJSON REQUIRED)
 find_package(SQLite3 REQUIRED)

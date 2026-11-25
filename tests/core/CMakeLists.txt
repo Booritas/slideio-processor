@@ -4,7 +4,6 @@ add_executable(slideio_processor_core_tests
     test_block_view.cpp
     test_channel_selection.cpp
     test_control.cpp
-    test_data_type.cpp
     test_error.cpp
     test_flow.cpp
     test_geojson_reader.cpp
@@ -22,6 +21,11 @@ add_executable(slideio_processor_core_tests
     test_umbrella.cpp
     test_version.cpp
 )
+# test_data_type.cpp maps slideio enums, so it needs SlideIO's headers, which a data-only
+# build (SLIDEIO_PROCESSOR_DATA_ONLY) does not have.
+if(NOT SLIDEIO_PROCESSOR_DATA_ONLY)
+    target_sources(slideio_processor_core_tests PRIVATE test_data_type.cpp)
+endif()
 target_link_libraries(slideio_processor_core_tests PRIVATE
     slideio-processor-data GTest::gtest_main)
 # A hung waiter fails after 60 s instead of blocking the run.
@@ -49,8 +53,10 @@ add_test(NAME public_headers_abi
             -P ${PROJECT_SOURCE_DIR}/cmake/check_public_headers.cmake)
 
 # Header-only use of slideio enums (mapping test): include directories, never link.
-target_include_directories(slideio_processor_core_tests PRIVATE
-    $<TARGET_PROPERTY:slideio::core,INTERFACE_INCLUDE_DIRECTORIES>)
+if(NOT SLIDEIO_PROCESSOR_DATA_ONLY)
+    target_include_directories(slideio_processor_core_tests PRIVATE
+        $<TARGET_PROPERTY:slideio::core,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
 
 # Shared test helpers (tests/common).
 target_include_directories(slideio_processor_core_tests PRIVATE
