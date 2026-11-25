@@ -1,10 +1,12 @@
 // Requirements: UR-PIX-8, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/pixel/filter.hpp>
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
 
 #include <algorithm/support/harness.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 #include <pipeline/detail/parameters_json.hpp>
 #include <pipeline/test_support/synthetic_scene.hpp>
 
@@ -418,4 +420,36 @@ TEST(FillHoles, TiledEqualsSingleTile) {
             EXPECT_TRUE(tiled.planes == areaReference.planes) << "area tile " << tile;
         }
     }
+}
+
+TEST(FillHoles, RefusesAContextTooLargeToLabel) {
+#ifndef NDEBUG
+    GTEST_SKIP() << "a debug BlockView reads the last byte of the view, which this test does not allocate";
+#else
+    // A context of 2^31 pixels: the check comes before any pixel is read, so
+    // one byte backs the view (a release BlockView reads nothing).
+    constexpr int64_t kWidth = int64_t(1) << 31;
+    uint8_t sample = 255;
+    uint8_t result = 0;
+    const BlockPlane inPlane{&sample, DataType::Byte, kWidth, 0};
+    const BlockPlane outPlane{&result, DataType::Byte, 1, 0};
+    const BlockView input(kWidth, 1, Rect64{0, 0, kWidth, 1}, 0, &inPlane, 1);
+    BlockView output(1, 1, Rect64{0, 0, 1, 1}, 0, &outPlane, 1);
+    detail::OperationContextState state;
+    state.input = &input;
+    state.output = &output;
+    state.tileRectAtLevel = state.tileRect = Rect64{0, 0, 1, 1};
+    state.haloRectAtLevel = state.haloRect = Rect64{0, 0, kWidth, 1};
+    state.tileIndex = 0;
+    const OperationPtr op = makeFillHoles(1);
+    std::string message;
+    try {
+        op->apply(*detail::OperationContextAccess::make(std::move(state)));
+    } catch (const InvalidArgumentError& e) {
+        message = e.what();
+    }
+    EXPECT_NE(message.find("pixel.fill_holes"), std::string::npos) << message;
+    EXPECT_NE(message.find("2147483648 pixels"), std::string::npos) << message;
+    EXPECT_NE(message.find("smaller tile size"), std::string::npos) << message;
+#endif
 }

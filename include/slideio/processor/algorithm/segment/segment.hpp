@@ -656,9 +656,9 @@ public:
     /**
      * @brief Sets the least value a local maximum may have to be a marker.
      *
-     * With `LocalMaxima` markers, a pixel whose value is below @p value is no
-     * marker: it still competes with its neighbours, floods and stays
-     * foreground, so a region left with no marker within
+     * With `LocalMaxima` markers, a pixel whose value is below @p value is
+     * simply not a marker; it still floods and counts as foreground, so a
+     * region left with no marker within
      * `maximumMarkerSpacingPx` fails the reach check. Absent by default, so
      * that the default configuration, and every recorded stage, is unchanged;
      * the key is left out of the parameter bag until this is called. Refused
@@ -725,9 +725,9 @@ private:
  * `AuxiliaryRaster`, each foreground pixel whose value in the bound `Int64`
  * raster is not -1 is a marker, one basin per value; the raster covers the
  * same pixels as plane 0.
- * With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is not a
- * marker, though it still competes and floods; a region it leaves without a
- * marker within the spacing fails the reach check.
+ * With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is simply
+ * not a marker; it still floods and counts as foreground. A region it leaves
+ * without a marker within the spacing fails the reach check.
  *
  * **The reach is enforced.** A basin's boundary may depend only on markers
  * within `maximumMarkerSpacingPx`, which is what lets each tile decide it from

@@ -90,8 +90,14 @@ public:
             originX + tile.width > in.width() || originY + tile.height > in.height()) {
             throwInternal("the input does not cover the tile");
         }
+        // Labels index pixels as int32. The memory ceiling does not keep a larger
+        // context out (it is configurable, and 5 bytes a pixel of 2^31 pixels fits
+        // a large one), so this is the configuration's to fix: a smaller tile.
         if (in.width() * in.height() > std::numeric_limits<int32_t>::max()) {
-            throwInternal("the tile is too large to label");
+            throw InvalidArgumentError((std::string(kName) + ": the tile grown by its halo has " +
+                                        std::to_string(in.width() * in.height()) +
+                                        " pixels, more than the 2147483647 it can label; use a smaller tile size")
+                                           .c_str());
         }
         for (int32_t plane = 0; plane < in.planeCount(); ++plane) {
             const DataType type = in.planeType(plane);

@@ -153,8 +153,8 @@ public:
     // foreground pixel within @p distance (Chebyshev), among those whose whole
     // window lies inside the context: a window reaching beyond it might hold a
     // pixel that comes first, so the pixel is not decided here.
-    // A marker below @p floor, when given, is dropped; it still competes, so
-    // it keeps suppressing its neighbours, and it floods like any foreground.
+    // A pixel below @p floor, when given, is simply not a marker; it still
+    // floods and counts as foreground.
     void detectMaxima(int64_t distance, const std::optional<double>& floor) {
         if (width_ <= 2 * distance || height_ <= 2 * distance) {
             return;
