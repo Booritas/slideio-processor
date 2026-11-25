@@ -18,6 +18,12 @@
 #       --no-test-seams           Build without the test-only seams, as for a release
 #                                 package; tests are not built. Writes build-noseams
 #                                 (build-noseams-debug for debug).
+#       --data-only               Build only the data library (core, config, storage,
+#                                 reporting) and its tests, without SlideIO or OpenCV
+#                                 (SLIDEIO_PROCESSOR_DATA_ONLY). SlideIO is not built,
+#                                 and debug is allowed on Windows. Writes build-data
+#                                 (build-data-debug for debug; build-noseams-data with
+#                                 --no-test-seams). Test it with ./run-tests.sh --data-only.
 #       --warnings-as-errors      Fail the build on any compiler warning in this
 #                                 project's sources.
 #   -h, --help                    Show this help.
@@ -30,7 +36,7 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "build.sh: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
@@ -39,12 +45,14 @@ rebuild_slideio=0
 skip_slideio=0
 test_seams=ON
 warnings_as_errors=OFF
+data_only=OFF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--config) [[ $# -ge 2 ]] || die "$1 needs a value"; config="$2"; shift 2 ;;
         --rebuild-slideio) rebuild_slideio=1; shift ;;
         --skip-slideio) skip_slideio=1; shift ;;
         --no-test-seams) test_seams=OFF; shift ;;
+        --data-only) data_only=ON; shift ;;
         --warnings-as-errors) warnings_as_errors=ON; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option '$1' (see --help)" ;;
@@ -55,7 +63,9 @@ case "$config" in
     debug) build_type=Debug; build_dir=build-debug ;;
     *) die "--config must be release or debug, not '$config'" ;;
 esac
-# A build without the seams has its own tree, so it never replaces the build the tests use.
+# A data-only build has its own tree (build-data, build-data-debug), as has a build without
+# the seams, so neither replaces the build the tests use.
+if [[ "$data_only" == ON ]]; then build_dir="build-data${build_dir#build}"; fi
 if [[ "$test_seams" == OFF ]]; then build_dir="build-noseams${build_dir#build}"; fi
 # SlideIO's API passes std::string, std::vector and std::shared_ptr across its DLL
 # boundary. MSVC lays those out differently in Debug and Release and nothing detects
@@ -63,7 +73,8 @@ if [[ "$test_seams" == OFF ]]; then build_dir="build-noseams${build_dir#build}";
 # be undefined behaviour. SlideIO's install.py can build Debug, but that is a second
 # full SlideIO build plus every Conan dependency rebuilt in Debug, so it is not
 # offered here; CMake refuses the same mismatch (cmake/check_slideio_configuration.cmake).
-if [[ "$config" == debug ]]; then
+# A data-only build links no SlideIO, so it has no such boundary.
+if [[ "$config" == debug && "$data_only" == OFF ]]; then
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             die "--config debug is not supported on Windows: the Debug engine would link the Release"                 "SlideIO across an STL-bearing API, whose layout differs between MSVC Debug and Release."                 "Build release (the default), or install SlideIO in Debug yourself and configure against it." ;;
@@ -127,9 +138,13 @@ echo "cmake:  $(command -v cmake) ($(cmake --version | head -n 1))"
 
 # --- 1. Submodules -------------------------------------------------------------
 
-step "Initialising submodules"
-git submodule update --init --recursive
-git submodule status --recursive
+if [[ "$data_only" == ON ]]; then
+    step "Skipping submodules (--data-only)"
+else
+    step "Initialising submodules"
+    git submodule update --init --recursive
+    git submodule status --recursive
+fi
 
 # --- 2. SlideIO ----------------------------------------------------------------
 
@@ -137,7 +152,9 @@ slideio_src="$root/extern/slideio"
 slideio_prefix="$root/build/slideio-install"
 slideio_stamp="$slideio_prefix/.slideio-commit"
 
-if [[ $skip_slideio -eq 1 ]]; then
+if [[ "$data_only" == ON ]]; then
+    step "Skipping SlideIO (--data-only)"
+elif [[ $skip_slideio -eq 1 ]]; then
     step "Skipping SlideIO (--skip-slideio)"
 else
     commit="$(git -C "$slideio_src" rev-parse HEAD)"
@@ -175,15 +192,22 @@ if [[ "$(uname -s)" == Darwin ]]; then
         x86_64) arch_setting=(-s arch=x86_64) ;;
     esac
 fi
+# A data-only build needs no OpenCV package ("&:" scopes the option to this conanfile).
+data_only_option=()
+if [[ "$data_only" == ON ]]; then data_only_option=(-o "&:data_only=True"); fi
 # ${a[@]+...} because macOS's bash 3.2 treats an empty array as unbound under set -u.
 "$conan" install . -of "$build_dir/conan" -s build_type="$build_type" -s compiler.cppstd=17 \
-    ${arch_setting[@]+"${arch_setting[@]}"} --build=missing
+    ${arch_setting[@]+"${arch_setting[@]}"} ${data_only_option[@]+"${data_only_option[@]}"} --build=missing
 
 step "Configuring ($build_type)"
+# A data-only build must not find SlideIO, so it gets no prefix to the SlideIO install.
+prefix_path=()
+if [[ "$data_only" == OFF ]]; then prefix_path=(-DCMAKE_PREFIX_PATH="$(native "$slideio_prefix/release")"); fi
 cmake -S . -B "$build_dir" \
       -DCMAKE_TOOLCHAIN_FILE="$(native "$root/$build_dir/conan/conan_toolchain.cmake")" \
-      -DCMAKE_PREFIX_PATH="$(native "$slideio_prefix/release")" \
+      ${prefix_path[@]+"${prefix_path[@]}"} \
       -DCMAKE_BUILD_TYPE="$build_type" \
+      -DSLIDEIO_PROCESSOR_DATA_ONLY="$data_only" \
       -DSLIDEIO_PROCESSOR_TEST_SEAMS="$test_seams" \
       -DSLIDEIO_PROCESSOR_WARNINGS_AS_ERRORS="$warnings_as_errors"
 
@@ -192,6 +216,8 @@ cmake --build "$build_dir" --config "$build_type" --parallel
 
 if [[ "$test_seams" == OFF ]]; then
     step "Done: $build_dir ($build_type), no test seams. Check it with scripts/check-no-test-seams.sh $build_dir"
+elif [[ "$data_only" == ON ]]; then
+    step "Done: $build_dir ($build_type), data only. Run the tests with ./run-tests.sh --data-only -c $config"
 else
     step "Done: $build_dir ($build_type). Run the tests with ./run-tests.sh -c $config"
 fi

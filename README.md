@@ -132,6 +132,39 @@ The project builds two shared libraries:
 A consumer of the pipeline links `slideio-processor-engine` and gets the data
 library and SlideIO with it.
 
+## Data library only
+
+Setting `SLIDEIO_PROCESSOR_DATA_ONLY=ON` configures only `slideio-processor-data`
+(`core`, `config`, `storage`) and `reporting`, with their tests. It needs neither
+SlideIO nor OpenCV, and `./build.sh --data-only` builds it into `build-data` without
+building SlideIO (test it with `./run-tests.sh --data-only`). A project that embeds
+the library, such as a viewer, adds it with `add_subdirectory`:
+
+```cmake
+set(SLIDEIO_PROCESSOR_DATA_ONLY ON CACHE BOOL "" FORCE)
+set(SLIDEIO_PROCESSOR_TEST_SEAMS OFF CACHE BOOL "" FORCE)
+add_subdirectory(path/to/slideio-processor)
+target_link_libraries(<target> PRIVATE slideio-processor-data)
+```
+
+The consuming project must make sqlite3 (with R-tree enabled), rapidjson, libtiff
+and zlib available to `find_package`, together with Threads. The parent's
+directory-scoped compile options and definitions, and `CMAKE_MSVC_RUNTIME_LIBRARY`,
+apply to the processor's sources. The library lands in `${CMAKE_BINARY_DIR}/bin` (plus
+`/<Config>` under multi-config generators) of the parent build, not next to the
+parent's executable, so on Windows copy it beside the executable:
+
+```cmake
+add_custom_command(TARGET <t> POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:<t>> $<TARGET_FILE_DIR:<t>>
+    COMMAND_EXPAND_LISTS)
+```
+
+`tests/data_only_consumer` is such a project;
+`scripts/check-data-only-consumer.sh build-data/conan` builds and runs it, and CI does
+the same.
+
 ## Documentation
 
 `include/slideio/processor/core/core.hpp` includes the whole `core` module, and

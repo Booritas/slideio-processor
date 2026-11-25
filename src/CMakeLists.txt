@@ -2,11 +2,15 @@ add_subdirectory(core)
 add_subdirectory(config)
 add_subdirectory(storage)
 add_subdirectory(reporting)
-add_subdirectory(pipeline)
-add_subdirectory(algorithm)
-add_subdirectory(workspace)
-add_subdirectory(masks)
-add_subdirectory(run)
+# A data-only build (SLIDEIO_PROCESSOR_DATA_ONLY) stops at the data library: the engine
+# modules below need SlideIO and OpenCV.
+if(NOT SLIDEIO_PROCESSOR_DATA_ONLY)
+    add_subdirectory(pipeline)
+    add_subdirectory(algorithm)
+    add_subdirectory(workspace)
+    add_subdirectory(masks)
+    add_subdirectory(run)
+endif()
 
 # Linking the object library (rather than $<TARGET_OBJECTS:...>) puts its
 # objects into the DLL and lets its usage requirements propagate.
@@ -45,6 +49,11 @@ foreach(target slideio-processor-config slideio-processor-storage slideio-proces
         endif()
     endforeach()
 endforeach()
+
+# A data-only build has no masks, run or engine targets.
+if(SLIDEIO_PROCESSOR_DATA_ONLY)
+    return()
+endif()
 
 # The masks module links the data library and SlideIO only (design 5.1, reporting plan C
 # decision 4): never OpenCV, algorithm or workspace. Fail the configure if any other

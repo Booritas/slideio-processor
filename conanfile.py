@@ -4,6 +4,10 @@ from conan import ConanFile
 class SlideioProcessorConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"
+    # data_only matches SLIDEIO_PROCESSOR_DATA_ONLY (build.sh --data-only): the data
+    # library alone, which needs no OpenCV package (its version is the pin below).
+    options = {"data_only": [True, False]}
+    default_options = {"data_only": False}
 
     def requirements(self):
         self.requires("gtest/1.17.0")
@@ -20,8 +24,10 @@ class SlideioProcessorConan(ConanFile):
         # a direct requirement: through libtiff alone its headers would not be visible.
         # The version libtiff/4.7.1 resolves.
         self.requires("zlib/1.3.2")
-        # Used for its version only: nothing links OpenCV.
-        self.requires("opencv/4.14.0")
+        # Used for its version only: nothing links OpenCV. A data-only build skips the
+        # package, but CMake reads this line for the version, so keep it textually as is.
+        if not self.options.data_only:
+            self.requires("opencv/4.14.0")
 
     def configure(self):
         # The storage module's spatial index is an R*Tree virtual table. It is
@@ -34,6 +40,8 @@ class SlideioProcessorConan(ConanFile):
         self.options["libtiff"].jpeg = False
         for name in ["jbig", "lzma", "zstd", "webp", "libdeflate", "cxx"]:
             setattr(self.options["libtiff"], name, False)
+        if self.options.data_only:
+            return
         # The options SlideIO's profiles set, so the OpenCV binary SlideIO
         # already built in the same Conan cache is reused.
         disabled = [

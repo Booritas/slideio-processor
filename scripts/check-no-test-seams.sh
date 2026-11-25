@@ -8,8 +8,9 @@
 # The three SeamMergerAccess functions are matched by their owner, the others by name.
 #
 # Usage: scripts/check-no-test-seams.sh <build dir>
-# Exit:  0 no test seams exported; 1 a seam is exported; 2 a library or a symbol tool
-#        is missing.
+# Exit:  0 no test seams exported; 1 a seam is exported; 2 both libraries or a symbol
+#        tool are missing. A library absent from the build (the engine library of a
+#        data-only build) is skipped, and the output says so.
 #
 # Lists exports with nm -D (Linux), nm -gU (macOS). On Windows: dumpbin -exports (Visual
 # Studio; found through vswhere when not on PATH), else llvm-readobj --coff-exports (LLVM;
@@ -86,10 +87,20 @@ pattern="Testing"
 for name in "${test_only[@]}"; do pattern+="|$name"; done
 
 failed=0
+checked=0
 for name in slideio-processor-data slideio-processor-engine; do
     lib="$(find "$bin" \( -name "$name.dll" -o -name "lib$name.so*" -o -name "lib$name*.dylib" \) \
            -type f 2>/dev/null | head -n 1)" || true
-    [[ -n "$lib" ]] || die "library $name not found under $bin"
+    if [[ -z "$lib" ]]; then
+        # Only a data-only build (SLIDEIO_PROCESSOR_DATA_ONLY) lacks the engine library.
+        if [[ "$name" == slideio-processor-engine ]] &&
+           grep -q '^SLIDEIO_PROCESSOR_DATA_ONLY:BOOL=ON' "$1/CMakeCache.txt" 2>/dev/null; then
+            echo "check-no-test-seams.sh: data-only build; $name skipped"
+            continue
+        fi
+        die "library $name not found under $bin"
+    fi
+    checked=$((checked + 1))
     # Keep a failing listing from passing silently: capture it, then search it.
     listing="$(exports "$lib")" || die "could not list the exports of $lib"
     [[ -n "$listing" ]] || die "empty export listing for $lib"
@@ -98,6 +109,7 @@ for name in slideio-processor-data slideio-processor-engine; do
         failed=1
     done < <(grep -E "$pattern" <<<"$listing" || true)
 done
+[[ $checked -gt 0 ]] || die "neither slideio-processor-data nor slideio-processor-engine found under $bin"
 
 if [[ $failed -ne 0 ]]; then
     echo "check-no-test-seams.sh: test seams are exported" >&2
