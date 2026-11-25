@@ -109,8 +109,28 @@ constexpr int64_t kBytesPerTile = 16384;
     throw InvalidArgumentError((std::string(kName) + ": " + problem).c_str());
 }
 
-[[noreturn]] void failReach() {
-    fail("a region lies further than maximumMarkerSpacingPx from every marker");
+// The reach failure at level pixel (x, y), the first failing pixel of the
+// tile in row order. A pixel some marker reached lies in an object longer
+// than the spacing. One no marker reached is ambiguous: its object may have no
+// marker at all, or one further than the halo'd context shows; the message
+// names both causes and the settings that rule them out. It names parameters,
+// never their values.
+[[noreturn]] void failReach(bool reached, int64_t x, int64_t y, bool floorSet) {
+    const std::string pixel = "level pixel (" + std::to_string(x) + ", " + std::to_string(y) + ")";
+    if (reached) {
+        fail("the foreground at " + pixel +
+             " lies further than maximumMarkerSpacingPx from its marker; set maximumMarkerSpacingPx to at least "
+             "the largest width or height of an object");
+    }
+    fail("no marker within maximumMarkerSpacingPx reaches the foreground at " + pixel +
+         ": its object has no marker, because " +
+         (floorSet ? "its peak is below minimumMarkerValue or " : "") +
+         "a higher object lies within minimumMarkerDistancePx, or it is wider or higher than "
+         "maximumMarkerSpacingPx; on a distance transform, open the mask first with an Ellipse element of "
+         "radius at least " +
+         (floorSet ? "minimumMarkerValue and " : "") +
+         "minimumMarkerDistancePx + 1, and set maximumMarkerSpacingPx to at least the largest width or height of "
+         "an object");
 }
 
 void checkNotMovedFrom(const void* impl) {
@@ -388,7 +408,7 @@ public:
                     const int32_t seed = seeds[static_cast<size_t>(i)];
                     if (seed < 0 || std::max(std::abs(seed % width - (x + offsetX)),
                                              std::abs(seed / width - (y + offsetY))) > spacing_) {
-                        failReach();
+                        failReach(seed >= 0, tile.x + x, tile.y + y, floor_.has_value());
                     }
                 }
             }
@@ -488,6 +508,7 @@ OperationPtr watershedFromParameters(const OperationParameters& parameters) {
         p.measurements(selection);
     }
     if (bag.contains("minimumMarkerValue")) {
+        // Finite already: OperationParameters refuses a non-finite double.
         p.minimumMarkerValue(bag.getDouble("minimumMarkerValue", 0.0));
     }
     p.targetLayer(bag.getString("targetLayer", ""));

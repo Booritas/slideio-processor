@@ -2,6 +2,7 @@
 #include <slideio/processor/algorithm/pixel/filter.hpp>
 #include <slideio/processor/algorithm/pixel/threshold.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>
+#include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/measurement.hpp>
 #include <slideio/processor/core/object_record.hpp>
 #include <slideio/processor/pipeline/pipeline_spec.hpp>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <vector>
@@ -133,6 +135,34 @@ double ringNucleus(const std::vector<Centre>& centres, int64_t x, int64_t y) {
     return inAnyDisc(centres, x, y) ? 200.0 : 0.0;
 }
 
+// Debris no nucleus touches, every piece's distance peak below 3: three 3 x 3
+// specks, a line one pixel high, and a 4 x 4 spot two pixels right of the
+// first pair of discs.
+bool inDebris(int64_t x, int64_t y) {
+    const auto square = [x, y](int64_t left, int64_t top, int64_t side) {
+        return x >= left && x < left + side && y >= top && y < top + side;
+    };
+    return square(20, 20, 3) || square(300, 20, 3) || square(160, 140, 3) || (y == 250 && x >= 10 && x < 60) ||
+           square(76, 65, 4);
+}
+
+// The chain of TouchingRingNucleiSeparatedAtThreeTileSizes; with @p open, the
+// mask is opened first with an Ellipse of radius 6, the
+// max(minimumMarkerValue, minimumMarkerDistancePx + 1) segment.hpp asks for.
+PipelineSpec nucleiChain(bool open) {
+    PipelineSpec spec;
+    spec.then(makeFixedThreshold(100.0, ThresholdDirection::Above)).then(makeFillHoles(8));
+    if (open) {
+        spec.then(makeOpen(StructuringElement(StructuringShape::Ellipse, 13, 13), 1));
+    }
+    spec.then(makeDistanceTransform(12))
+        .then(makeWatershed(WatershedParameters()
+                                .minimumMarkerDistancePx(5)
+                                .maximumMarkerSpacingPx(16)
+                                .minimumMarkerValue(3.0)));
+    return spec;
+}
+
 } // namespace
 
 TEST(NucleiChain, TouchingRingNucleiSeparatedAtThreeTileSizes) {
@@ -196,5 +226,52 @@ TEST(NucleiChain, TouchingRingNucleiSeparatedAtThreeTileSizes) {
         });
         ASSERT_GE(cut, 1) << tile << "-pixel seams should cut an object";
         expectSameObjects(reference, ts::runEagerObjects(scene, spec, tile, 4), std::to_string(tile) + "-pixel tiles");
+    }
+}
+
+TEST(NucleiChain, OpeningClearsDebrisBelowTheMarkerFloor) {
+    const std::vector<Centre> centres = discCentres();
+    for (int64_t y = 0; y < kHeight; ++y) {
+        for (int64_t x = 0; x < kWidth; ++x) {
+            ASSERT_FALSE(inDebris(x, y) && inAnyDisc(centres, x, y)) << x << ", " << y;
+        }
+    }
+    const auto clean = ts::makeSyntheticScene(
+        {{kWidth, kHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+        [centres](int, int64_t x, int64_t y) { return ringNucleus(centres, x, y); });
+    const auto dirty = ts::makeSyntheticScene(
+        {{kWidth, kHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+        [centres](int, int64_t x, int64_t y) { return inDebris(x, y) ? 200.0 : ringNucleus(centres, x, y); });
+
+    // Without the opening, the debris has no marker and fails the run; the
+    // message names a debris pixel and the opening that would remove it.
+    try {
+        ts::runEagerObjects(dirty, nucleiChain(false), 4096, 4);
+        ADD_FAILURE() << "nothing thrown";
+    } catch (const ProcessorError& e) {
+        const std::string message = e.cause() != nullptr && e.cause()[0] != '\0' ? e.cause() : e.what();
+        const std::string prefix =
+            "segment.watershed: no marker within maximumMarkerSpacingPx reaches the foreground at level pixel (";
+        ASSERT_EQ(message.rfind(prefix, 0), 0u) << message;
+        // "<x>, <y>)" follows the prefix.
+        char* end = nullptr;
+        const int64_t x = std::strtoll(message.c_str() + prefix.size(), &end, 10);
+        ASSERT_EQ(std::string(end, 2), ", ") << message;
+        const int64_t y = std::strtoll(end + 2, &end, 10);
+        ASSERT_EQ(*end, ')') << message;
+        EXPECT_TRUE(inDebris(x, y)) << message;
+        EXPECT_NE(message.find("its peak is below minimumMarkerValue"), std::string::npos) << message;
+        EXPECT_NE(message.find("open the mask first with an Ellipse element"), std::string::npos) << message;
+    }
+
+    // With it, the debris is gone and the nuclei are exactly those of the
+    // clean mask, at every tile size.
+    const PipelineSpec opened = nucleiChain(true);
+    const std::vector<ObjectRecord> reference = ts::runEagerObjects(clean, opened, 4096, 4);
+    ASSERT_EQ(reference.size(), 12u);
+    expectSameObjects(reference, ts::runEagerObjects(dirty, opened, 4096, 4), "one tile");
+    for (const int32_t tile : {64, 100, 257}) {
+        expectSameObjects(reference, ts::runEagerObjects(dirty, opened, tile, 4),
+                          std::to_string(tile) + "-pixel tiles");
     }
 }

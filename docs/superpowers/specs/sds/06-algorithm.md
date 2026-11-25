@@ -1252,8 +1252,33 @@ With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is simply
 not a marker; it still floods and counts as foreground. The halo and the
 working set are unchanged. A region it leaves with no marker within the
 spacing fails the reach check. The floor is refused with `AuxiliaryRaster` by an
-`InvalidArgumentError` naming `minimumMarkerValue`, and a non-finite value is
-refused likewise.
+`InvalidArgumentError` naming `minimumMarkerValue`; a non-finite value is
+refused by the typed setter, and `OperationParameters` cannot hold one.
+
+**Settings that keep the reach on a distance transform.** One object with no
+marker fails the whole run, so a debris speck below the floor would stop a
+slide. Flooding `pixel.distance_transform` of a mask, two settings rule every
+such failure out, and the operation's documentation states them:
+
+- *Open the mask first* with `pixel.morph_open` and an `Ellipse` element of
+  side 2k + 1, k ≥ `minimumMarkerValue` and k ≥ `minimumMarkerDistancePx` + 1.
+  Every object the opening keeps contains a whole element, and every pixel
+  outside OpenCV's drawn ellipse of radius k lies further than k from its
+  centre, so the object's peak exceeds k and the floor keeps it. A pixel p of
+  one object and a pixel q of another, of values v and w, satisfy
+  v + w ≤ |p − q| + 2, or a 4-connected path along the segment between them
+  would join the objects. For q to outrank p, the first object's peak, it
+  needs w ≥ v > k within Chebyshev d = `minimumMarkerDistancePx`, so at most
+  √2·d away, which needs 2k < √2·d + 2: false for k ≥ d + 1. Specks, lines and spurs narrower than
+  the element are removed. `NucleiChain.OpeningClearsDebrisBelowTheMarkerFloor`
+  runs the chain over debris with and without the opening.
+- *Set the spacing to the largest object*: at least the largest width or height
+  of an object. An elongated object of even width has a flat ridge, which
+  gives one marker, and that marker has to reach the whole object.
+
+Dropping an object with no marker instead of failing was considered and not
+taken: a tile cannot tell an object with no marker from one whose marker lies
+beyond its halo, so the result would depend on the tiling.
 
 **Halo, 2 · `maximumMarkerSpacingPx` + 1.** A tile pixel's basin depends on the
 markers within the spacing, and their detection on pixels a further
@@ -1269,12 +1294,25 @@ is measured to **the seed pixel its flood path started from** — each flooded
 pixel carries its seed's position — not to its basin's marker region as a
 whole: an auxiliary marker region may be large, and a distance to its corner
 would refuse inputs that flood correctly. A pixel no marker reached, or
-reached from a seed further away, fails the tile with `InvalidArgumentError`
-"segment.watershed: a region lies further than maximumMarkerSpacingPx from
-every marker", and the run with it; nothing is ever segmented partially in
-its place. UR-SEG-8 asks the diagnostic to name the operation and the
-distance: it names the distance by its parameter, not its value, because no
-message carries a parameter value. The executor wraps the failure of a tile as
+reached from a seed further away, fails the tile with `InvalidArgumentError`,
+and the run with it; nothing is ever segmented partially in its place. The
+message names the first such pixel of the tile, in row order, in level
+coordinates, and what to change. A pixel reached from too far gives
+"segment.watershed: the foreground at level pixel (x, y) lies further than
+maximumMarkerSpacingPx from its marker; set maximumMarkerSpacingPx to at least
+the largest width or height of an object". A pixel no marker reached gives
+"segment.watershed: no marker within maximumMarkerSpacingPx reaches the
+foreground at level pixel (x, y): its object has no marker, because its peak is
+below minimumMarkerValue or a higher object lies within
+minimumMarkerDistancePx, or it is wider or higher than maximumMarkerSpacingPx;
+on a distance transform, open the mask first with an Ellipse element of radius
+at least minimumMarkerValue and minimumMarkerDistancePx + 1, and set
+maximumMarkerSpacingPx to at least the largest width or height of an object",
+with the floor's clauses only when it is set. The tile cannot tell those causes
+apart: its object's marker may lie beyond the halo. UR-SEG-8 asks the
+diagnostic to name the operation and the distance: it names the distance by
+its parameter, not its value, because no message carries a parameter value; a
+pixel position is not a parameter. The executor wraps the failure of a tile as
 it wraps any `apply()` failure (5.9); the inner message is the one above.
 
 **Objects.** Within the tile rect, a basin's pixels are labelled into

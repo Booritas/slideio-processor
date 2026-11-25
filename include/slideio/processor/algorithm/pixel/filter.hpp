@@ -180,7 +180,11 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDistanceTransform(int32_t maxi
  * @return The operation, never null.
  * @throws InvalidArgumentError When @p maximumHoleSizePx is outside 1 to 4096
  * or @p maximumHoleAreaPx is negative; the message names the operation and the
- * parameter, never the value.
+ * parameter, never the value. A tile throws it, failing the run, when the tile
+ * grown by its halo on every side has more than 2147483647 pixels, which it
+ * cannot label; the message gives that count and asks for a smaller tile size.
+ * The run's planning does not see this, as for `segment.watershed` and the
+ * other labelling operations, so tiles may already have been processed.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
  * Safe to call concurrently. The operation's apply() may run concurrently on

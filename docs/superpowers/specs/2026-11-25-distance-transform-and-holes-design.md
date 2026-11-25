@@ -151,6 +151,13 @@ twenty-three operations. The traceability matrix gains the new tests.
   `minimumMarkerDistancePx` window, and the reach check still applies. A floor
   that leaves a region with no marker fails that check, as any too-sparse
   marker set does. That is the declared behaviour.
+  *Amended at PR review (2026-11-25):* one debris speck below the floor would
+  fail a whole slide, so the documentation now states settings under which no
+  object lacks a marker: open the mask first with an `Ellipse` of radius
+  k ≥ max(`minimumMarkerValue`, `minimumMarkerDistancePx` + 1), and set the
+  spacing to at least the largest object (SDS 06 §6.7). The reach failure names
+  the failing pixel and these settings. Dropping unmarked objects was rejected:
+  a tile cannot tell them from objects whose marker lies beyond its halo.
 - **Reference:** the 6.9 touching-discs test with a floor that removes an
   edge seed, plus a case where the floor removes every seed and the reach check
   fires.
