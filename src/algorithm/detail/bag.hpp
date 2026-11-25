@@ -20,6 +20,11 @@ class BagReader {
 public:
     BagReader(const char* operationName, const OperationParameters& parameters);
 
+    /// Whether the bag holds @p key, without reading it: for a key that is
+    /// absent by default, whose value no fallback can stand for. A getter must
+    /// still read it.
+    bool contains(const char* key) const;
+
     /// A double key. An integer value of magnitude at most 2^53, which a double
     /// holds exactly, is accepted as that double; a larger one throws as a
     /// value of the wrong type does.

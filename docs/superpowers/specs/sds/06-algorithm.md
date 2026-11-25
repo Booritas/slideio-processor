@@ -165,6 +165,7 @@ the operation and the parameter.
 | | `minimumAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `measurements` | string | every `MeasurementKind` | as `segment.connected_components` |
 | | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
+| | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `"LocalMaxima"`; absent rather than a default so that existing recorded configurations are unchanged |
 | `segment.tissue_detect` | `saturationThreshold` | double | 0.07 | 0 to 1 |
 | | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
@@ -851,6 +852,7 @@ public:
     WatershedParameters& markers(WatershedMarkers);                  // LocalMaxima
     WatershedParameters& auxiliaryName(const char*);                 // for AuxiliaryRaster
     WatershedParameters& minimumMarkerDistancePx(int32_t);           // 5
+    WatershedParameters& minimumMarkerValue(double);                 // absent
 
     /// The bound that makes this operation tileable, and a hard one: every
     /// foreground pixel must lie within this distance of the marker pixel its
@@ -1189,6 +1191,14 @@ one that is not a single `Int64` plane, throws `InvalidArgumentError` naming
 the parameter `auxiliaryName`, never the binding's name, since messages carry
 no parameter values. `minimumMarkerDistancePx` must not exceed
 `maximumMarkerSpacingPx`.
+
+With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is not a
+marker. It still takes part in the comparison, so it keeps suppressing its
+neighbours, and it floods and stays foreground; the halo and the working set
+are unchanged. A region it leaves with no marker within the spacing fails the
+reach check. The floor is refused with `AuxiliaryRaster` by an
+`InvalidArgumentError` naming `minimumMarkerValue`, and a non-finite value is
+refused likewise.
 
 **Halo, 2 · `maximumMarkerSpacingPx` + 1.** A tile pixel's basin depends on the
 markers within the spacing, and their detection on pixels a further

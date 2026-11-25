@@ -3,6 +3,8 @@
 
 #include <slideio/processor/core/error.hpp>
 
+#include <algorithm>
+
 namespace slideio::processor::detail {
 
 BagReader::BagReader(const char* operationName, const OperationParameters& parameters)
@@ -13,6 +15,10 @@ BagReader::BagReader(const char* operationName, const OperationParameters& param
         keys_.emplace_back(parameters.keyAt(i));
     }
     read_.assign(keys_.size(), false);
+}
+
+bool BagReader::contains(const char* key) const {
+    return std::find(keys_.begin(), keys_.end(), key) != keys_.end();
 }
 
 bool BagReader::markRead(const char* key) {

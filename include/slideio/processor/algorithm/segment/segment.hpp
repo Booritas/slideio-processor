@@ -484,6 +484,7 @@ enum class WatershedMarkers : int32_t {
  * | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823 |
  * | `minimumAreaPx` | int | 0 | at least 0 |
  * | `measurements` | string | every MeasurementKind | MeasurementKind spellings separated by commas, without spaces |
+ * | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `LocalMaxima` |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
  *
  * A moved-from object may only be assigned to or destroyed.
@@ -651,6 +652,28 @@ public:
      * UR-SEG-5
      */
     WatershedParameters& measurements(const MeasurementSelection& selection);
+
+    /**
+     * @brief Sets the least value a local maximum may have to be a marker.
+     *
+     * With `LocalMaxima` markers, a pixel whose value is below @p value is no
+     * marker: it still competes with its neighbours, floods and stays
+     * foreground, so a region left with no marker within
+     * `maximumMarkerSpacingPx` fails the reach check. Absent by default, so
+     * that the default configuration, and every recorded stage, is unchanged;
+     * the key is left out of the parameter bag until this is called. Refused
+     * with `AuxiliaryRaster` markers when the operation is made.
+     * @param value The floor, finite.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When @p value is NaN or infinite, or these
+     * parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-8
+     */
+    WatershedParameters& minimumMarkerValue(double value);
+
     /**
      * @brief Names the bound layer the objects go to.
      *
@@ -702,6 +725,9 @@ private:
  * `AuxiliaryRaster`, each foreground pixel whose value in the bound `Int64`
  * raster is not -1 is a marker, one basin per value; the raster covers the
  * same pixels as plane 0.
+ * With `minimumMarkerValue` set, a `LocalMaxima` candidate below it is not a
+ * marker, though it still competes and floods; a region it leaves without a
+ * marker within the spacing fails the reach check.
  *
  * **The reach is enforced.** A basin's boundary may depend only on markers
  * within `maximumMarkerSpacingPx`, which is what lets each tile decide it from

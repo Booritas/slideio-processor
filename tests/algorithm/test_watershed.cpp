@@ -613,6 +613,152 @@ TEST(Watershed, TypedAndNamedBagsAreEqual) {
     EXPECT_STREQ(defaults->parameters().getString("targetLayer", "absent"), "absent");
 }
 
+TEST(Watershed, MarkerFloorAbsentByDefault) {
+    const OperationPtr typed = makeWatershed(WatershedParameters());
+    double value = 0.0;
+    EXPECT_FALSE(typed->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(typed->parameters().count(), 6);
+    const OperationPtr named = OperationCatalog::instance().create(kName, OperationParameters());
+    EXPECT_FALSE(named->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+}
+
+TEST(Watershed, MarkerFloorRoundTrips) {
+    const OperationPtr typed = makeWatershed(WatershedParameters().minimumMarkerValue(2.5));
+    OperationParameters bag;
+    bag.setDouble("minimumMarkerValue", 2.5);
+    const OperationPtr named = OperationCatalog::instance().create(kName, bag);
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+    EXPECT_EQ(typed->parameters().count(), 7);
+    double value = 0.0;
+    ASSERT_TRUE(named->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(value, 2.5);
+
+    OperationParameters integerBag;
+    integerBag.setInt("minimumMarkerValue", 3);
+    const OperationPtr fromInteger = OperationCatalog::instance().create(kName, integerBag);
+    value = 0.0;
+    ASSERT_TRUE(fromInteger->parameters().getDouble("minimumMarkerValue", value));
+    EXPECT_EQ(value, 3.0);
+    EXPECT_EQ(jsonOf(fromInteger->parameters()),
+              jsonOf(makeWatershed(WatershedParameters().minimumMarkerValue(3.0))->parameters()));
+}
+
+TEST(Watershed, MarkerFloorRejected) {
+    const auto expectNamed = [](const std::function<void()>& make, const std::string& what) {
+        try {
+            make();
+            ADD_FAILURE() << what << ": nothing thrown";
+        } catch (const InvalidArgumentError& e) {
+            const std::string message = e.what();
+            EXPECT_NE(message.find("minimumMarkerValue"), std::string::npos) << what << ": " << message;
+        }
+    };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const double bad : {nan, inf, -inf}) {
+        expectNamed([bad] { WatershedParameters().minimumMarkerValue(bad); }, "typed non-finite");
+        expectNamed(
+            [bad] {
+                OperationParameters bag;
+                bag.setDouble("minimumMarkerValue", bad);
+                OperationCatalog::instance().create(kName, bag);
+            },
+            "named non-finite");
+    }
+    // A wrong type by name.
+    expectNamed(
+        [] {
+            OperationParameters bag;
+            bag.setString("minimumMarkerValue", "2");
+            OperationCatalog::instance().create(kName, bag);
+        },
+        "string");
+    // With anchor markers the floor has nothing to apply to; the message
+    // names the key and never the value.
+    try {
+        makeWatershed(WatershedParameters()
+                          .markers(WatershedMarkers::AuxiliaryRaster)
+                          .auxiliaryName("anchors")
+                          .minimumMarkerValue(7.3125));
+        ADD_FAILURE() << "nothing thrown";
+    } catch (const InvalidArgumentError& e) {
+        const std::string message = e.what();
+        EXPECT_NE(message.find(kName), std::string::npos) << message;
+        EXPECT_NE(message.find("minimumMarkerValue"), std::string::npos) << message;
+        EXPECT_EQ(std::count_if(message.begin(), message.end(), [](char c) { return c >= '0' && c <= '9'; }), 0)
+            << message;
+    }
+    OperationParameters bag;
+    bag.setString("markers", "AuxiliaryRaster")
+        .setString("auxiliaryName", "anchors")
+        .setDouble("minimumMarkerValue", 1.5);
+    EXPECT_THROW(OperationCatalog::instance().create(kName, bag), InvalidArgumentError);
+}
+
+TEST(Watershed, MarkerFloorDropsShallowSeed) {
+    // The discs of TouchingDiscsSeparated plus a third of radius 3 far away,
+    // whose deepest value is about 3.2.
+    constexpr int64_t kWidth = 64;
+    constexpr int64_t kHeight = 48;
+    const std::vector<Disc> discs = {{24, 24, 10}, {40, 24, 10}, {58, 8, 3}};
+    const std::vector<double> dt = distanceTransform(kWidth, kHeight, discs, 12);
+    const auto pixel = [&](int32_t, int64_t x, int64_t y) { return dt[static_cast<size_t>(y * kWidth + x)]; };
+    const OperationPtr open = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12));
+    const ts::DirectObjects without = ts::applyDirectObjects(*open, {DataType::Float32}, {0}, kWidth, kHeight, pixel);
+    EXPECT_EQ(without.objects.size(), 3u);
+    // A floor below every centre changes nothing.
+    const OperationPtr low = makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12).minimumMarkerValue(3.0));
+    EXPECT_EQ(ts::applyDirectObjects(*low, {DataType::Float32}, {0}, kWidth, kHeight, pixel).objects.size(), 3u);
+    // At 4 the small disc has no marker; its pixels stay foreground and lie
+    // beyond every seed.
+    const OperationPtr floored =
+        makeWatershed(WatershedParameters().maximumMarkerSpacingPx(12).minimumMarkerValue(4.0));
+    expectReachError([&] { ts::applyDirectObjects(*floored, {DataType::Float32}, {0}, kWidth, kHeight, pixel); },
+                     "floored");
+}
+
+TEST(Watershed, MarkerFloorKeepsTiling) {
+    // The grid of disc pairs of TilingInvariantAtThreeSizes: every centre is
+    // at least 8 deep, so a floor of 4 drops no marker.
+    constexpr int64_t kCellWidth = 66;
+    constexpr int64_t kCellHeight = 58;
+    constexpr int64_t kWidth = 6 * kCellWidth;
+    constexpr int64_t kHeight = 5 * kCellHeight;
+    std::vector<Disc> discs;
+    for (int64_t row = 0; row < 5; ++row) {
+        for (int64_t column = 0; column < 6; ++column) {
+            const int64_t i = row * 6 + column;
+            const int64_t r = 8 + i % 4;
+            const double separation = static_cast<double>(r) * (1.3 + 0.1 * static_cast<double>(i % 5));
+            const int64_t cx = column * kCellWidth + kCellWidth / 2 + (i % 7) - 3;
+            const int64_t cy = row * kCellHeight + kCellHeight / 2 + (i % 5) - 2;
+            int64_t dx = 0;
+            int64_t dy = 0;
+            switch (i % 3) {
+            case 0: dx = std::llround(separation / 2.0); break;
+            case 1: dy = std::llround(separation / 2.0); break;
+            default:
+                dx = std::llround(separation / 2.0 / std::sqrt(2.0));
+                dy = dx;
+                break;
+            }
+            discs.push_back({cx - dx, cy - dy, r});
+            discs.push_back({cx + dx, cy + dy, r});
+        }
+    }
+    auto dt = std::make_shared<std::vector<double>>(distanceTransform(kWidth, kHeight, discs, 14));
+    const auto scene = sceneOf(kWidth, kHeight, {slideio::DataType::DT_Float32},
+                               [dt](int, int64_t x, int64_t y) { return (*dt)[static_cast<size_t>(y * kWidth + x)]; });
+    const std::vector<ObjectRecord> reference = ts::runEagerObjects(scene, specOf(WatershedParameters()), 512, 4);
+    ASSERT_EQ(reference.size(), discs.size());
+    const PipelineSpec floored = specOf(WatershedParameters().minimumMarkerValue(4.0));
+    for (const int32_t tile : {64, 100, 257}) {
+        expectSameObjects(reference, ts::runEagerObjects(scene, floored, tile, 4),
+                          std::to_string(tile) + "-pixel tiles");
+    }
+}
+
 TEST(Watershed, MeasuresTheScenesSamplesAfterEarlierOperations) {
     // The touching discs, with (7 x + 13 y) mod 31 in plane 1; the chain blurs both
     // planes before flooding, so plane 1 reaches the operation smoothed. The
