@@ -410,6 +410,21 @@ TEST(TissueDetect, UInt16Accepted) {
                       "UInt16");
 }
 
+TEST(TissueDetect, BrightfieldFloat32) {
+    // The slide in Float32 at the same values: the same objects as Byte. A
+    // negative or zero maximum is background.
+    const PipelineSpec spec = specOf(TissueDetectParameters());
+    const std::vector<ObjectRecord> bytes =
+        ts::runEagerObjects(slideScene(true, slideio::DataType::DT_Byte, 1.0), spec, 100, 4);
+    ASSERT_GE(bytes.size(), 6u);
+    expectSameObjects(bytes, ts::runEagerObjects(slideScene(true, slideio::DataType::DT_Float32, 1.0), spec, 100, 4),
+                      "Float32");
+    const auto negative = ts::makeSyntheticScene(
+        {{64, 64, 0, 0}}, {slideio::DataType::DT_Float32, slideio::DataType::DT_Float32, slideio::DataType::DT_Float32},
+        [](int channel, int64_t x, int64_t y) { return (x >= 10 && x < 40 && y >= 10 && y < 40) ? -1.0 - channel : 0.0; });
+    EXPECT_TRUE(ts::runEagerObjects(negative, spec, 64, 1).empty());
+}
+
 TEST(TissueDetect, NonRgbRejected) {
     const Configuration config = ConfigurationBuilder().tileSize(16, 16).tileSizeFromSlide(false).workerCount(1).build();
     const PipelineSpec spec = specOf(TissueDetectParameters());
@@ -454,7 +469,8 @@ TEST(TissueDetect, Declarations) {
     const OperationPtr op = makeTissueDetect(TissueDetectParameters());
     EXPECT_EQ(op->arity(), ChannelArity::Joint);
     EXPECT_TRUE(op->requiresUniformTypes());
-    EXPECT_TRUE(op->supportedTypes() == DataTypeSet().add(DataType::Byte).add(DataType::UInt16));
+    EXPECT_TRUE(op->supportedTypes() ==
+                DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32));
     EXPECT_TRUE(op->producesObjects());
     EXPECT_FALSE(op->objectsAreEightConnected());
     EXPECT_EQ(op->halo().left, 5);
@@ -754,4 +770,5 @@ TEST(TissueDetect, FluorescenceZeroPlanesRefused) {
     EXPECT_EQ(op->outputPlaneCount(5), 1);
     EXPECT_TRUE(op->supportedTypes() ==
                 DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32));
+    EXPECT_TRUE(makeTissueDetect(TissueDetectParameters())->supportedTypes() == op->supportedTypes());
 }

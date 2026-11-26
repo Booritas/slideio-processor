@@ -174,8 +174,7 @@ public:
     ChannelArity arity() const override { return ChannelArity::Joint; }
     bool requiresUniformTypes() const override { return true; }
     DataTypeSet supportedTypes() const override {
-        DataTypeSet types = DataTypeSet().add(DataType::Byte).add(DataType::UInt16);
-        return mode_ == TissueMode::Fluorescence ? types.add(DataType::Float32) : types;
+        return DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32);
     }
     // A tile pixel's closed value depends on the dilated mask within the
     // radius, and each dilated value on the mask within the radius again; the
@@ -214,10 +213,7 @@ public:
         }
         if (!supportedTypes().contains(type) || !uniform) {
             throw UnsupportedDataTypeError(
-                (std::string(kName) + (mode_ == TissueMode::Fluorescence
-                                           ? ": the input planes are not all Byte, all UInt16 or all Float32"
-                                           : ": the input planes are not all Byte or all UInt16"))
-                    .c_str(),
+                (std::string(kName) + ": the input planes are not all Byte, all UInt16 or all Float32").c_str(),
                 type, supportedTypes());
         }
         close(in, out, tile.x - halo.x, tile.y - halo.y, type);
@@ -280,8 +276,10 @@ private:
             }
         } else if (type == DataType::Byte) {
             tissueMask<uint8_t>(in, mask.data());
-        } else {
+        } else if (type == DataType::UInt16) {
             tissueMask<uint16_t>(in, mask.data());
+        } else {
+            tissueMask<float>(in, mask.data());
         }
         auto* target = static_cast<uint8_t*>(out.planeData(0));
         const int64_t targetStride = out.planeRowStrideBytes(0);
@@ -332,7 +330,7 @@ private:
     // Writes 1 for each tissue pixel of @p in and 0 for the others into
     // @p mask, row-major over the context. A pixel is tissue when the spread of
     // its three samples over their maximum exceeds the threshold; one whose
-    // maximum is 0 is not.
+    // maximum is not above 0 (0, or negative or NaN in Float32) is not.
     template <typename T>
     void tissueMask(const BlockView& in, uint8_t* mask) const {
         const int64_t width = in.width();
@@ -348,7 +346,7 @@ private:
                 const T maximum = std::max({a, b, c});
                 const T minimum = std::min({a, b, c});
                 const double spread = static_cast<double>(maximum - minimum);
-                mask[y * width + x] = maximum != 0 && spread / static_cast<double>(maximum) > threshold_ ? 1 : 0;
+                mask[y * width + x] = maximum > 0 && spread / static_cast<double>(maximum) > threshold_ ? 1 : 0;
             }
         }
     }
