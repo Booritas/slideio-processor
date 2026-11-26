@@ -853,14 +853,17 @@ enum class TissueThresholdMethod : int32_t {
  * | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only |
  * | `thresholdMethod` | string | `Triangle` (fluorescence) | `Triangle` or `Fixed` |
  * | `intensityThreshold` | double | absent | finite; with `Fixed` only |
+ * | `ignoreZeros` | bool | true (with `Triangle`) | with `Triangle` only |
  * | `minimumRegionAreaPx` | int | 0 | at least 0 |
  * | `closingRadiusPx` | int | 2 | 0 to 127 |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
  *
- * `mode` is recorded only in fluorescence mode. `saturationThreshold` is
- * refused in fluorescence mode; `thresholdMethod` and `intensityThreshold` are
- * fluorescence only and refused in brightfield mode; `intensityThreshold` is
- * required with `Fixed` and refused with `Triangle`.
+ * `mode` is recorded only in fluorescence mode, and `ignoreZeros` only with
+ * fluorescence and `Triangle`, always, so a `Triangle` bag is complete.
+ * `saturationThreshold` is refused in fluorescence mode; `thresholdMethod`,
+ * `intensityThreshold` and `ignoreZeros` are fluorescence only and refused in
+ * brightfield mode; `intensityThreshold` is required with `Fixed` and refused
+ * with `Triangle`; `ignoreZeros` is refused with `Fixed`.
  *
  * A moved-from object may only be assigned to or destroyed.
  * @par Thread-safety
@@ -976,6 +979,24 @@ public:
      */
     TissueDetectParameters& intensityThreshold(double threshold);
     /**
+     * @brief Sets whether the `Triangle` threshold method leaves pixels whose
+     * signal is exactly 0 out of its histogram; true by default.
+     *
+     * Fluorescence with `Triangle` only: giving it in brightfield mode or with
+     * `Fixed` is refused by makeTissueDetect(). Zeros left out are background
+     * whatever the cut-off. Set it to false only for a slide whose glass is
+     * genuinely 0, so that the zeros are the background the cut-off must lie
+     * above.
+     * @param ignore Whether exact zeros are left out of the histogram.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& ignoreZeros(bool ignore);
+    /**
      * @brief Sets the saturation above which a pixel is tissue; 0.07 by
      * default. Brightfield only: giving it in fluorescence mode is refused by
      * makeTissueDetect().
@@ -1073,13 +1094,17 @@ private:
  * the 8-bit cut-off times g. When that cut-off is at or above the largest
  * counted value, as for just two values (0 and 1000, say), the triangle is
  * taken on the values undivided instead.
- * Zeros outside the scanned area are counted like any value: when they
- * outweigh the glass, the cut-off falls below the glass and the glass is found
- * as tissue. For such a slide use `Fixed`, or restrict the run to the scanned
- * area so the zeros are not counted. Triangle needs `Byte` or
- * `UInt16`; for `Float32` use `Fixed`, or validation throws
- * UnsupportedDataTypeError before any tile runs. In this mode pixels beyond the level, and pixels whose samples are
- * all NaN, are background whatever the cut-off.
+ * With `ignoreZeros`, true by default, pixels whose signal is exactly 0, such
+ * as those outside the scanned area, are not counted: they are background
+ * whatever the cut-off, which is then at least 0. Counted, zeros that are the
+ * histogram's peak pull the cut-off below the glass, and the glass is found as
+ * tissue. Set `ignoreZeros` to false only for a slide whose glass is
+ * genuinely 0, where the zeros are the background the cut-off must lie above.
+ * The step reduction and the floor apply to whatever was counted. Triangle
+ * needs `Byte` or `UInt16`; for `Float32` use `Fixed`, or validation throws
+ * UnsupportedDataTypeError before any tile runs. In this mode pixels beyond
+ * the level, and pixels whose samples are all NaN, are background whatever
+ * the cut-off.
  *
  * In both modes the tissue mask is then closed, dilated and then eroded,
  * with a disc of radius `closingRadiusPx` in pixels of the analysis level:
@@ -1118,9 +1143,10 @@ private:
  * out of its range (the threshold not from 0 to 1, a negative area bound, the
  * radius not from 0 to 127, the mode or threshold method not an enumerator, an
  * intensity threshold not finite), or a key does not fit the mode:
- * `saturationThreshold` in fluorescence mode, `thresholdMethod` or
- * `intensityThreshold` in brightfield mode, `intensityThreshold` missing with
- * `Fixed` or given with `Triangle`; the message names the operation and the
+ * `saturationThreshold` in fluorescence mode, `thresholdMethod`,
+ * `intensityThreshold` or `ignoreZeros` in brightfield mode,
+ * `intensityThreshold` missing with `Fixed` or given with `Triangle`,
+ * `ignoreZeros` given with `Fixed`; the message names the operation and the
  * parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety

@@ -564,9 +564,13 @@ TEST(TissueDetect, FluorescenceTypedAndNamedBagsAreEqual) {
     const OperationPtr named = OperationCatalog::instance().create(kName, bag);
     EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
     const OperationParameters& recorded = typed->parameters();
-    EXPECT_EQ(recorded.count(), 4);
+    EXPECT_EQ(recorded.count(), 5);
     EXPECT_STREQ(recorded.getString("mode", "absent"), "Fluorescence");
     EXPECT_STREQ(recorded.getString("thresholdMethod", "absent"), "Triangle");
+    // A Triangle bag is complete: ignoreZeros is recorded, true by default.
+    bool ignore = false;
+    ASSERT_TRUE(recorded.getBool("ignoreZeros", ignore));
+    EXPECT_TRUE(ignore);
     int64_t value = -1;
     EXPECT_TRUE(recorded.getInt("minimumRegionAreaPx", value));
     EXPECT_TRUE(recorded.getInt("closingRadiusPx", value));
@@ -587,6 +591,26 @@ TEST(TissueDetect, FluorescenceTypedAndNamedBagsAreEqual) {
     ASSERT_TRUE(fixed->parameters().getDouble("intensityThreshold", threshold));
     EXPECT_EQ(threshold, 5.5);
     EXPECT_STREQ(fixed->parameters().getString("thresholdMethod", "absent"), "Fixed");
+    bool unusedFlag = false;
+    EXPECT_FALSE(fixed->parameters().getBool("ignoreZeros", unusedFlag));
+
+    // ignoreZeros given, typed and by name, records the same bag.
+    const OperationPtr counting =
+        makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence).ignoreZeros(false));
+    OperationParameters countingBag;
+    countingBag.setString("mode", "Fluorescence").setBool("ignoreZeros", false);
+    EXPECT_EQ(jsonOf(counting->parameters()),
+              jsonOf(OperationCatalog::instance().create(kName, countingBag)->parameters()));
+    bool counted = true;
+    ASSERT_TRUE(counting->parameters().getBool("ignoreZeros", counted));
+    EXPECT_FALSE(counted);
+    EXPECT_EQ(counting->parameters().count(), 5);
+    const OperationPtr explicitDefault = makeTissueDetect(
+        TissueDetectParameters().mode(TissueMode::Fluorescence).closingRadiusPx(3).ignoreZeros(true));
+    EXPECT_EQ(jsonOf(explicitDefault->parameters()), jsonOf(typed->parameters()));
+
+    // Brightfield bags never hold it.
+    EXPECT_FALSE(makeTissueDetect(TissueDetectParameters())->parameters().getBool("ignoreZeros", unusedFlag));
 }
 
 TEST(TissueDetect, RejectsBadFluorescenceParameters) {
@@ -646,6 +670,30 @@ TEST(TissueDetect, RejectsBadFluorescenceParameters) {
                                  .intensityThreshold(std::numeric_limits<double>::quiet_NaN()));
         },
         "intensityThreshold", "NaN intensity");
+    expectInvalid([] { makeTissueDetect(TissueDetectParameters().ignoreZeros(true)); }, "ignoreZeros",
+                  "ignoreZeros in brightfield");
+    expectInvalid(byName([](OperationParameters& b) { b.setBool("ignoreZeros", true); }), "ignoreZeros",
+                  "ignoreZeros in brightfield by name");
+    expectInvalid(
+        [=] {
+            makeTissueDetect(TissueDetectParameters()
+                                 .mode(fl)
+                                 .thresholdMethod(TissueThresholdMethod::Fixed)
+                                 .intensityThreshold(4.5)
+                                 .ignoreZeros(false));
+        },
+        "ignoreZeros", "ignoreZeros with Fixed");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence")
+                          .setString("thresholdMethod", "Fixed")
+                          .setDouble("intensityThreshold", 4.5)
+                          .setBool("ignoreZeros", true);
+                  }),
+                  "ignoreZeros", "ignoreZeros with Fixed by name");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence").setString("ignoreZeros", "false");
+                  }),
+                  "ignoreZeros", "ignoreZeros of the wrong type");
     expectInvalid(byName([](OperationParameters& b) { b.setString("mode", "Dark"); }), "mode", "unknown mode");
     expectInvalid(byName([](OperationParameters& b) {
                       b.setString("mode", "Fluorescence").setString("thresholdMethod", "Otsu");
@@ -885,6 +933,15 @@ static PipelineSpec triangleSpec(int32_t radius = 2) {
                       .closingRadiusPx(radius));
 }
 
+// Triangle with ignoreZeros false: exact zeros counted like any value.
+static PipelineSpec triangleCountingZerosSpec(int32_t radius = 2) {
+    return specOf(TissueDetectParameters()
+                      .mode(TissueMode::Fluorescence)
+                      .thresholdMethod(TissueThresholdMethod::Triangle)
+                      .ignoreZeros(false)
+                      .closingRadiusPx(radius));
+}
+
 // The fluorescence slide's maximum over its channels at gain 1.
 static cv::Mat fluorescenceMaximum() {
     cv::Mat image(static_cast<int>(kFluorescenceHeight), static_cast<int>(kFluorescenceWidth), CV_8UC1);
@@ -984,15 +1041,24 @@ TEST(TissueDetect, TriangleAllZeroIsMinusOne) {
 TEST(TissueDetect, TriangleWithSmallZeroBand) {
     // The zeros left of column 40, a band of 1 pixel in 15, do not pull the
     // cut-off below the background's maximum of 4, nor does the tail lift it
-    // into the blobs. Zeros that outweigh the glass do: see
-    // TriangleDominantZeroAreaLowersCutoff.
-    const int64_t bin = detail::triangleThresholdBin(histogramOf(fluorescenceMaximum()));
+    // into the blobs, whether they are counted or not. Zeros that outweigh the
+    // glass do when counted: see TriangleCountingZerosLowersCutoff.
+    const cv::Mat maximum = fluorescenceMaximum();
+    const int64_t bin = detail::triangleThresholdBin(histogramOf(maximum));
     EXPECT_GE(bin, 4);
     EXPECT_LE(bin, 29);
-    const std::vector<ObjectRecord> objects =
-        ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Byte, 1.0), triangleSpec(2), 100, 4);
+    const int64_t nonZero = detail::triangleThresholdBin(histogramOf(maximum, [&maximum](int64_t x, int64_t y) {
+        return maximum.at<uint8_t>(static_cast<int>(y), static_cast<int>(x)) != 0;
+    }));
+    EXPECT_GE(nonZero, 4);
+    EXPECT_LE(nonZero, 29);
+    const auto scene = fluorescenceScene(slideio::DataType::DT_Byte, 1.0);
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, triangleSpec(2), 100, 4);
     ASSERT_EQ(objects.size(), 2u);
     EXPECT_LE(std::fabs(areaOf(objects) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(objects);
+    const std::vector<ObjectRecord> counting = ts::runEagerObjects(scene, triangleCountingZerosSpec(2), 100, 4);
+    ASSERT_EQ(counting.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(counting) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(counting);
 }
 
 TEST(TissueDetect, TriangleUInt16) {
@@ -1069,10 +1135,16 @@ static double dominantZeroValue(int channel, int64_t x, int64_t y) {
     return x < kZeroShift ? 0.0 : fluorescenceValue(channel, x - kZeroShift, y);
 }
 
-TEST(TissueDetect, TriangleDominantZeroAreaLowersCutoff) {
-    // Pins today's behaviour, so changing it is deliberate: zeros at more than
-    // half the counted pixels make bin 0 the peak, the cut-off falls below the
-    // glass's maximum of 4, and the glass becomes tissue.
+static std::shared_ptr<slideio::Scene> dominantZeroScene() {
+    return ts::makeSyntheticScene(
+        {{kFluorescenceWidth + kZeroShift, kFluorescenceHeight, 0, 0}},
+        {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte, slideio::DataType::DT_Byte}, &dominantZeroValue);
+}
+
+TEST(TissueDetect, TriangleCountingZerosLowersCutoff) {
+    // With ignoreZeros false, zeros at more than half the counted pixels make
+    // bin 0 the peak, the cut-off falls below the glass's maximum of 4, and
+    // the glass becomes tissue. TriangleIgnoresZerosByDefault is the default.
     constexpr int64_t width = kFluorescenceWidth + kZeroShift;
     std::vector<int64_t> bins(256, 0);
     int64_t zeros = 0;
@@ -1090,10 +1162,8 @@ TEST(TissueDetect, TriangleDominantZeroAreaLowersCutoff) {
     const int64_t cutoff = detail::triangleThresholdBin(bins);
     EXPECT_LT(cutoff, 4);
 
-    const auto scene = ts::makeSyntheticScene(
-        {{width, kFluorescenceHeight, 0, 0}},
-        {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte, slideio::DataType::DT_Byte}, &dominantZeroValue);
-    const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, triangleSpec(2), 100, 4);
+    const auto scene = dominantZeroScene();
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, triangleCountingZerosSpec(2), 100, 4);
     // The scanned area, columns 640 on, is one object, glass and blobs alike
     // (with, at most, a stray pixel or two beside it).
     const double scanned = static_cast<double>((width - kZeroShift - 40) * kFluorescenceHeight);
@@ -1105,13 +1175,13 @@ TEST(TissueDetect, TriangleDominantZeroAreaLowersCutoff) {
     EXPECT_GE(largest, 0.95 * scanned) << largest;
     EXPECT_LE(areaOf(objects), scanned) << areaOf(objects);
 
-    // The workarounds find only the blobs: Triangle restricted to the scanned
-    // area, and Fixed.
+    // Counting zeros, the workarounds find only the blobs: Triangle
+    // restricted to the scanned area, and Fixed.
     const Point64 points[] = {{kZeroShift + 40, 0}, {width, 0}, {width, kFluorescenceHeight},
                               {kZeroShift + 40, kFluorescenceHeight}};
     Polygon polygon;
     polygon.addRing(points, 4, false);
-    PipelineSpec restricted = triangleSpec(2);
+    PipelineSpec restricted = triangleCountingZerosSpec(2);
     restricted.restrictToPolygon(polygon);
     const std::vector<ObjectRecord> blobs = ts::runEagerObjects(scene, restricted, 100, 4);
     ASSERT_EQ(blobs.size(), 2u);
@@ -1121,15 +1191,94 @@ TEST(TissueDetect, TriangleDominantZeroAreaLowersCutoff) {
     EXPECT_LE(std::fabs(areaOf(fixed) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(fixed);
 }
 
-TEST(TissueDetect, TriangleTilingAndWorkersInvariant) {
-    const auto scene = fluorescenceScene(slideio::DataType::DT_Byte, 1.0);
-    const PipelineSpec spec = triangleSpec(2);
-    const std::vector<ObjectRecord> reference = ts::runEagerObjects(scene, spec, 1000, 4);
-    ASSERT_EQ(reference.size(), 2u);
-    for (const int32_t tile : {64, 100, 257}) {
-        expectSameObjects(reference, ts::runEagerObjects(scene, spec, tile, 4), std::to_string(tile) + "-pixel tiles");
+TEST(TissueDetect, TriangleIgnoresZerosByDefault) {
+    // The dominant-zero slide of TriangleCountingZerosLowersCutoff with the
+    // defaults: the zeros are not counted, the glass's peak decides the
+    // cut-off, and only the blobs are found.
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(dominantZeroScene(), triangleSpec(2), 100, 4);
+    ASSERT_EQ(objects.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(objects) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(objects);
+}
+
+// A one-channel slide like the real one ignoreZeros was made for: a band of
+// exact zeros (the unscanned area, a fifth of the slide), glass broad over
+// 1 to 4 but rare at 1, and two ellipses at 30 to 49 covering two fifths.
+const Ellipse kBroadGlassA{210.0, 200.0, 90.0, 150.0};
+const Ellipse kBroadGlassB{400.0, 200.0, 80.0, 150.0};
+constexpr int64_t kBroadGlassWidth = 500;
+constexpr int64_t kBroadGlassHeight = 400;
+constexpr int64_t kBroadGlassZeroBand = 100;
+
+static double broadGlassValue(int, int64_t x, int64_t y) {
+    if (x < kBroadGlassZeroBand) {
+        return 0.0;
     }
-    expectSameObjects(reference, ts::runEagerObjects(scene, spec, 100, 1), "one worker");
+    const uint32_t h = hashOf(x, y);
+    if (kBroadGlassA.contains(x, y) || kBroadGlassB.contains(x, y)) {
+        return 30.0 + static_cast<double>(h % 20);
+    }
+    // Of the glass: 1 at 2.5%, 2 at 35%, 3 at 30%, 4 at 32.5%.
+    const uint32_t r = (h >> 8) % 40;
+    return r < 1 ? 1.0 : r < 15 ? 2.0 : r < 27 ? 3.0 : 4.0;
+}
+
+static std::shared_ptr<slideio::Scene> broadGlassScene() {
+    return ts::makeSyntheticScene({{kBroadGlassWidth, kBroadGlassHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+                                  &broadGlassValue);
+}
+
+static double broadGlassArea() { return kBroadGlassA.area() + kBroadGlassB.area(); }
+
+TEST(TissueDetect, TriangleZeroBandWithBroadGlass) {
+    // Counted, the zeros are the histogram's peak, and the glass's rare 1s
+    // put the cut-off at 2: the glass at 3 and 4 becomes tissue. Left out,
+    // the glass's peak at 2 decides, and the cut-off lies between the glass
+    // and the ellipses.
+    std::vector<int64_t> bins(256, 0);
+    for (int64_t y = 0; y < kBroadGlassHeight; ++y) {
+        for (int64_t x = 0; x < kBroadGlassWidth; ++x) {
+            ++bins[static_cast<size_t>(broadGlassValue(0, x, y))];
+        }
+    }
+    const auto total = static_cast<double>(kBroadGlassWidth * kBroadGlassHeight);
+    ASSERT_NEAR(static_cast<double>(bins[0]) / total, 0.2, 0.01);
+    ASSERT_GT(bins[0], bins[2]);
+    const int64_t counting = detail::triangleThresholdBin(bins);
+    bins[0] = 0;
+    const int64_t ignoring = detail::triangleThresholdBin(bins);
+    EXPECT_LT(counting, 4);
+    EXPECT_GE(ignoring, 4);
+    EXPECT_LT(ignoring, 30);
+
+    const auto scene = broadGlassScene();
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, triangleSpec(2), 100, 4);
+    ASSERT_EQ(objects.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(objects) - broadGlassArea()), 0.01 * broadGlassArea()) << areaOf(objects);
+    // Counting the zeros, most of the scanned area is tissue.
+    const std::vector<ObjectRecord> glass = ts::runEagerObjects(scene, triangleCountingZerosSpec(2), 100, 4);
+    const double scanned = static_cast<double>((kBroadGlassWidth - kBroadGlassZeroBand) * kBroadGlassHeight);
+    EXPECT_GE(areaOf(glass), 0.9 * scanned) << areaOf(glass);
+}
+
+TEST(TissueDetect, TriangleTilingAndWorkersInvariant) {
+    const struct {
+        const char* name;
+        std::shared_ptr<slideio::Scene> scene;
+    } cases[] = {
+        {"small zero band", fluorescenceScene(slideio::DataType::DT_Byte, 1.0)},
+        {"dominant zeros", dominantZeroScene()},
+        {"zero band with broad glass", broadGlassScene()},
+    };
+    const PipelineSpec spec = triangleSpec(2);
+    for (const auto& c : cases) {
+        const std::vector<ObjectRecord> reference = ts::runEagerObjects(c.scene, spec, 1000, 4);
+        ASSERT_EQ(reference.size(), 2u) << c.name;
+        for (const int32_t tile : {64, 100, 257}) {
+            expectSameObjects(reference, ts::runEagerObjects(c.scene, spec, tile, 4),
+                              std::string(c.name) + ", " + std::to_string(tile) + "-pixel tiles");
+        }
+        expectSameObjects(reference, ts::runEagerObjects(c.scene, spec, 100, 1), std::string(c.name) + ", one worker");
+    }
 }
 
 TEST(TissueDetect, TriangleRestrictedCountsOnlyAdmittedPixels) {
@@ -1182,16 +1331,27 @@ TEST(TissueDetect, TriangleRestrictedCountsOnlyAdmittedPixels) {
 }
 
 TEST(TissueDetect, EmptyHistogramFindsNothing) {
-    // A polygon inside the band of zeros: only bin 0 is counted, the cut-off
-    // is above it, and nothing is tissue.
+    // A polygon inside the band of zeros. By default the zeros are left out,
+    // nothing is counted, and there is no cut-off; counting them, only bin 0
+    // is counted and the cut-off is above it. Either way nothing is tissue.
     const Point64 points[] = {{5, 5}, {35, 5}, {35, 395}, {5, 395}};
     Polygon polygon;
     polygon.addRing(points, 4, false);
-    PipelineSpec spec = triangleSpec(2);
-    spec.restrictToPolygon(polygon);
-    std::vector<ObjectRecord> objects;
-    EXPECT_NO_THROW(objects = ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Byte, 1.0), spec, 100, 4));
-    EXPECT_TRUE(objects.empty());
+    for (const bool countZeros : {false, true}) {
+        PipelineSpec spec = countZeros ? triangleCountingZerosSpec(2) : triangleSpec(2);
+        spec.restrictToPolygon(polygon);
+        std::vector<ObjectRecord> objects;
+        EXPECT_NO_THROW(objects =
+                            ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Byte, 1.0), spec, 100, 4))
+            << countZeros;
+        EXPECT_TRUE(objects.empty()) << countZeros;
+    }
+
+    // All zeros, unrestricted: by default nothing is counted.
+    const auto zeros = ts::makeSyntheticScene({{200, 150, 0, 0}}, {slideio::DataType::DT_Byte},
+                                              [](int, int64_t, int64_t) { return 0.0; });
+    EXPECT_TRUE(ts::runEagerObjects(zeros, triangleSpec(2), 100, 4).empty());
+    EXPECT_TRUE(ts::runEagerObjects(zeros, triangleCountingZerosSpec(2), 100, 4).empty());
 
     // Nothing counted at all: no cut-off, no tissue, and no failure.
     const OperationPtr op = makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence));
@@ -1238,11 +1398,13 @@ TEST(TissueDetect, TriangleFloat32Refused) {
 }
 
 TEST(TissueDetect, TriangleUInt16TwoLevels) {
-    // Zeros, more than twice the signal, and the two ellipses at exactly
-    // 1000: the step reduction makes the histogram {0, 1}, whose triangle
-    // cut-off, 2, scaled back to 2000 would leave every value out; the
-    // unreduced histogram's cut-off lies between 0 and 1000. The objects are
-    // those of the Byte slide at 0 and 200, and of Fixed at 500.
+    // Zeros, counted (ignoreZeros false), more than twice the signal, and the
+    // two ellipses at exactly 1000: the step reduction makes the histogram
+    // {0, 1}, whose triangle cut-off, 2, scaled back to 2000 would leave every
+    // value out; the unreduced histogram's cut-off lies between 0 and 1000.
+    // The objects are those of the Byte slide at 0 and 200, and of Fixed at
+    // 500. By default the zeros are not counted, the single value 1000 gives
+    // the cut-off 999, and the objects are the same.
     const auto twoLevels = [](slideio::DataType type, double level) {
         return ts::makeSyntheticScene({{kFluorescenceWidth, kFluorescenceHeight, 0, 0}}, {type},
                                       [level](int, int64_t x, int64_t y) {
@@ -1254,13 +1416,14 @@ TEST(TissueDetect, TriangleUInt16TwoLevels) {
     ASSERT_GT(static_cast<double>(kFluorescenceWidth * kFluorescenceHeight) - fluorescenceArea(),
               2.0 * fluorescenceArea());
     const std::vector<ObjectRecord> bytes =
-        ts::runEagerObjects(twoLevels(slideio::DataType::DT_Byte, 200.0), triangleSpec(2), 100, 4);
+        ts::runEagerObjects(twoLevels(slideio::DataType::DT_Byte, 200.0), triangleCountingZerosSpec(2), 100, 4);
     ASSERT_EQ(bytes.size(), 2u);
     EXPECT_LE(std::fabs(areaOf(bytes) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(bytes);
     const auto words = twoLevels(slideio::DataType::DT_UInt16, 1000.0);
-    const std::vector<ObjectRecord> uint16 = ts::runEagerObjects(words, triangleSpec(2), 100, 4);
+    const std::vector<ObjectRecord> uint16 = ts::runEagerObjects(words, triangleCountingZerosSpec(2), 100, 4);
     expectSameObjects(bytes, uint16, "UInt16 at 1000");
     expectSameObjects(ts::runEagerObjects(words, fluorescenceSpec(500.0), 100, 4), uint16, "UInt16, Fixed at 500");
+    expectSameObjects(uint16, ts::runEagerObjects(words, triangleSpec(2), 100, 4), "UInt16 at 1000, zeros ignored");
 }
 
 TEST(TissueDetect, TriangleSingleValueRestricted) {

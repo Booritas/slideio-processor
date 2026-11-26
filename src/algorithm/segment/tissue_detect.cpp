@@ -37,6 +37,7 @@ struct TissueDetectValues {
     std::optional<double> saturationThreshold; // unset: 0.07; refused in fluorescence mode
     std::optional<TissueThresholdMethod> thresholdMethod; // unset: Triangle in fluorescence mode
     std::optional<double> intensityThreshold; // with Fixed only
+    std::optional<bool> ignoreZeros; // unset: true; with Triangle only
     int64_t minimumRegionAreaPx = 0;
     int32_t closingRadiusPx = 2;
     std::string targetLayer; // empty: the run's only bound layer
@@ -163,6 +164,7 @@ public:
           cutoffKnown_(p.mode == TissueMode::Fluorescence && p.thresholdMethod &&
                        *p.thresholdMethod == TissueThresholdMethod::Fixed),
           triangle_(p.mode == TissueMode::Fluorescence && !cutoffKnown_),
+          ignoreZeros_(triangle_ && p.ignoreZeros.value_or(true)),
           radius_(p.closingRadiusPx),
           plan_(MeasurementSelection().add(MeasurementKind::Area).add(MeasurementKind::Perimeter),
                 static_cast<double>(p.minimumRegionAreaPx), 0.0, true) {
@@ -181,6 +183,10 @@ public:
                 .setString("thresholdMethod", kMethodSpellings[static_cast<int32_t>(method)]);
             if (p.intensityThreshold) {
                 parameters_.setDouble("intensityThreshold", *p.intensityThreshold);
+            }
+            // Recorded with Triangle always, so its bag is complete.
+            if (triangle_) {
+                parameters_.setBool("ignoreZeros", ignoreZeros_);
             }
         } else {
             parameters_.setDouble("saturationThreshold", threshold_);
@@ -255,9 +261,10 @@ public:
     }
 
     // Counts the maximum over the planes of each pixel of the tile rect (not
-    // the halo) that the run's mask admits, one bin per value. The tile rect
-    // lies inside the level (the grid clips it), so no pixel beyond the level,
-    // read as zero, is counted.
+    // the halo) that the run's mask admits, one bin per value; with
+    // ignoreZeros, a maximum of exactly 0 is not counted. The tile rect lies
+    // inside the level (the grid clips it), so no pixel beyond the level, read
+    // as zero, is counted.
     void accumulate(const OperationContext& context) override {
         if (!triangle_) {
             return;
@@ -324,7 +331,9 @@ public:
     // rising straight to its peak from its first populated bin: every counted
     // value is above it, and raising it to the smallest counted value minus 1
     // keeps them so while leaving out values nothing counted, such as the
-    // zeros outside the run's restriction. A single counted value v thus gives
+    // zeros outside the run's restriction, or every zero with ignoreZeros: the
+    // smallest counted value is then at least 1, so the cut-off is at least 0
+    // and the zeros stay background. A single counted value v thus gives
     // v - 1. The histogram, and its reduced copy (at most 32768 bins, as
     // g >= 2), are freed here.
     void finalizeAccumulation() override {
@@ -586,7 +595,8 @@ private:
     }
 
     // Adds the maximum over the planes of each pixel of the tile rect that
-    // the run's mask admits to its bin.
+    // the run's mask admits to its bin, but for a maximum of exactly 0 with
+    // ignoreZeros.
     template <typename T>
     void countMaximum(const OperationContext& context) {
         const BlockView& in = context.input();
@@ -611,6 +621,9 @@ private:
                 for (int32_t p = 1; p < planes; ++p) {
                     maximum = std::max(maximum, load<T>(rows[static_cast<size_t>(p)], x));
                 }
+                if (ignoreZeros_ && maximum == T{0}) {
+                    continue;
+                }
                 ++bins_[static_cast<size_t>(maximum)];
             }
         }
@@ -624,6 +637,8 @@ private:
     // Fluorescence with Triangle: the cut-off comes from bins_, the whole
     // slide's histogram of the channel maximum, one bin per value.
     bool triangle_;
+    // Triangle: a channel maximum of exactly 0 is left out of bins_.
+    bool ignoreZeros_;
     std::vector<int64_t> bins_;
     int32_t radius_;
     std::vector<int32_t> halfWidth_;
@@ -646,6 +661,9 @@ OperationPtr tissueDetectFromParameters(const OperationParameters& parameters) {
     }
     if (bag.contains("intensityThreshold")) {
         p.intensityThreshold(bag.getDouble("intensityThreshold", 0.0));
+    }
+    if (bag.contains("ignoreZeros")) {
+        p.ignoreZeros(bag.getBool("ignoreZeros", true));
     }
     p.minimumRegionAreaPx(bag.getInt("minimumRegionAreaPx", 0));
     const int64_t radius = bag.getInt("closingRadiusPx", 2);
@@ -694,6 +712,12 @@ TissueDetectParameters& TissueDetectParameters::thresholdMethod(TissueThresholdM
 TissueDetectParameters& TissueDetectParameters::intensityThreshold(double threshold) {
     checkNotMovedFrom(impl_.get());
     impl_->intensityThreshold = threshold;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::ignoreZeros(bool ignore) {
+    checkNotMovedFrom(impl_.get());
+    impl_->ignoreZeros = ignore;
     return *this;
 }
 
@@ -750,9 +774,15 @@ OperationPtr makeTissueDetect(const TissueDetectParameters& parameters) {
         if (p->intensityThreshold && !std::isfinite(*p->intensityThreshold)) {
             fail("parameter 'intensityThreshold' must be finite");
         }
+        if (fixed && p->ignoreZeros) {
+            fail("parameter 'ignoreZeros' applies to the Triangle threshold method only");
+        }
     } else {
         if (p->thresholdMethod) {
             fail("parameter 'thresholdMethod' applies to fluorescence mode only");
+        }
+        if (p->ignoreZeros) {
+            fail("parameter 'ignoreZeros' applies to fluorescence mode only");
         }
         if (p->intensityThreshold) {
             fail("parameter 'intensityThreshold' applies to fluorescence mode only");
