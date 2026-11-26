@@ -6,7 +6,7 @@
  * @brief Segmentation operations: Connectivity, the connected-components
  * labelling with its per-object measurements, the contours of a label raster,
  * the marker-controlled watershed that separates touching objects, and tissue
- * detection on RGB.
+ * detection on brightfield RGB and on fluorescence.
  *
  * A segmentation operation writes objects to a layer of the run. Each object is
  * found on the tile it lies in; one cut by tile seams is emitted in fragments
@@ -820,6 +820,27 @@ private:
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParameters& parameters);
 
 /**
+ * @brief What `segment.tissue_detect` takes tissue to look like.
+ * @par Requirements
+ * UR-SEG-1
+ */
+enum class TissueMode : int32_t {
+    Brightfield, ///< Saturated colour on a light or grey background: three planes, red, green and blue.
+    Fluorescence ///< Signal above a dark background.
+};
+
+/**
+ * @brief How fluorescence mode of `segment.tissue_detect` chooses the intensity
+ * above which a pixel is tissue.
+ * @par Requirements
+ * UR-SEG-1
+ */
+enum class TissueThresholdMethod : int32_t {
+    Triangle, ///< The triangle method over the whole slide's intensities.
+    Fixed     ///< The value given as `intensityThreshold`.
+};
+
+/**
  * @brief The parameters of `segment.tissue_detect`, set one by one and passed
  * to makeTissueDetect().
  *
@@ -828,10 +849,21 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParam
  * operation from the same bag:
  * | Key | Type | Default | Range |
  * |---|---|---|---|
- * | `saturationThreshold` | double | 0.07 | 0 to 1 |
+ * | `mode` | string | `Brightfield` | `Brightfield` or `Fluorescence` |
+ * | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only |
+ * | `thresholdMethod` | string | `Triangle` (fluorescence) | `Triangle` or `Fixed` |
+ * | `intensityThreshold` | double | absent | finite; with `Fixed` only |
+ * | `ignoreZeros` | bool | true (with `Triangle`) | with `Triangle` only |
  * | `minimumRegionAreaPx` | int | 0 | at least 0 |
  * | `closingRadiusPx` | int | 2 | 0 to 127 |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
+ *
+ * `mode` is recorded only in fluorescence mode, and `ignoreZeros` only with
+ * fluorescence and `Triangle`, always, so a `Triangle` bag is complete.
+ * `saturationThreshold` is refused in fluorescence mode; `thresholdMethod`,
+ * `intensityThreshold` and `ignoreZeros` are fluorescence only and refused in
+ * brightfield mode; `intensityThreshold` is required with `Fixed` and refused
+ * with `Triangle`; `ignoreZeros` is refused with `Fixed`.
  *
  * A moved-from object may only be assigned to or destroyed.
  * @par Thread-safety
@@ -907,8 +939,67 @@ public:
     ~TissueDetectParameters();
 
     /**
+     * @brief Sets the mode: brightfield by default.
+     *
+     * Brightfield records no `mode` key in the parameter bag; fluorescence
+     * records it, with `thresholdMethod`.
+     * @param mode The mode; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& mode(TissueMode mode);
+    /**
+     * @brief Sets how fluorescence mode chooses its intensity threshold:
+     * triangle by default there.
+     *
+     * Giving it in brightfield mode is refused by makeTissueDetect().
+     * @param method The method; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& thresholdMethod(TissueThresholdMethod method);
+    /**
+     * @brief Sets the intensity above which a fluorescence pixel is tissue,
+     * for the `Fixed` threshold method; required with it and refused otherwise.
+     * @param threshold The threshold, finite; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& intensityThreshold(double threshold);
+    /**
+     * @brief Sets whether the `Triangle` threshold method leaves pixels whose
+     * signal is exactly 0 out of its histogram; true by default.
+     *
+     * Fluorescence with `Triangle` only: giving it in brightfield mode or with
+     * `Fixed` is refused by makeTissueDetect(). Zeros left out are background
+     * whatever the cut-off. Set it to false only for a slide whose glass is
+     * genuinely 0, so that the zeros are the background the cut-off must lie
+     * above.
+     * @param ignore Whether exact zeros are left out of the histogram.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& ignoreZeros(bool ignore);
+    /**
      * @brief Sets the saturation above which a pixel is tissue; 0.07 by
-     * default.
+     * default. Brightfield only: giving it in fluorescence mode is refused by
+     * makeTissueDetect().
      * @param threshold The threshold, from 0 to 1; checked by
      * makeTissueDetect().
      * @return These parameters, so calls can be chained.
@@ -971,22 +1062,58 @@ private:
 };
 
 /**
- * @brief Creates `segment.tissue_detect`: Joint over three planes of one type,
- * `Byte` or `UInt16`, halo 2 * `closingRadiusPx` + 1, one `Byte` output plane,
- * producing objects.
+ * @brief Creates `segment.tissue_detect`: Joint over planes of one type,
+ * `Byte`, `UInt16` or `Float32`, halo 2 * `closingRadiusPx` + 1, one `Byte`
+ * output plane, producing objects.
  *
- * The three planes are a pixel's red, green and blue samples, in any order. A
- * pixel is tissue when its saturation, (max - min) / max over its three
- * samples, exceeds `saturationThreshold`; a pixel whose samples are all 0,
- * as pixels beyond the level are, is background. The tissue mask is then
- * closed, dilated and then eroded, with a disc of radius `closingRadiusPx` in
- * pixels of the analysis level: the pixels within that Euclidean distance of
- * its centre. The closing bridges gaps and fills holes narrower than the
- * disc, and is exact under tiling: the halo holds every pixel a tile pixel's
- * closed value depends on. Each maximal 4-connected set of closed tissue
- * pixels is one object, its outline and holes traced along pixel edges in
- * level-0 coordinates (UR-SEG-4); an object cut by tile seams is merged from
- * its fragments.
+ * **Brightfield mode**, the default, takes exactly three planes: a pixel's
+ * red, green and blue samples, in any order. A pixel is tissue when its
+ * saturation, (max - min) / max over its three samples, exceeds
+ * `saturationThreshold`; a pixel whose samples are all 0, as pixels beyond the
+ * level are, is background; so is a `Float32` pixel whose maximum is not above
+ * 0, or with a NaN sample in any plane.
+ *
+ * **Fluorescence mode** (`mode` set to `Fluorescence`) takes one or more
+ * planes, for example the channels the pipeline selects. A pixel's signal is
+ * the maximum over its planes, NaN samples ignored; a pixel is tissue when its
+ * signal is strictly above a cut-off. With `thresholdMethod` `Fixed` the
+ * cut-off is `intensityThreshold`, in the input's units. With `Triangle`, the
+ * default, it comes from a whole-slide pass: the triangle method (Zack, Rogers
+ * and Latt, 1977; it equals OpenCV's `THRESH_TRIANGLE` on `Byte`) applied to
+ * the histogram of the signal over the analysis level, counting only the
+ * pixels the run's mask admits, so the cut-off does not depend on the tile
+ * size, the worker count or the tile order. A histogram with nothing counted
+ * has no cut-off, and then nothing is tissue. A single counted value v above
+ * 0 gives the cut-off v - 1 (all counted pixels are tissue), and a single
+ * value 0 finds nothing. The cut-off never falls below the smallest counted
+ * value minus 1, so pixels the mask does not admit, such as zeros outside a
+ * restriction, are not made tissue by a low cut-off. For `UInt16` whose
+ * counted values are all multiples of a step g (8-bit data scaled by 257,
+ * say), the triangle is taken on the values divided by g, the greatest common
+ * divisor of those counted, and its cut-off multiplied by g: such data gives
+ * the 8-bit cut-off times g. When that cut-off is at or above the largest
+ * counted value, as for just two values (0 and 1000, say), the triangle is
+ * taken on the values undivided instead.
+ * With `ignoreZeros`, true by default, pixels whose signal is exactly 0, such
+ * as those outside the scanned area, are not counted: they are background
+ * whatever the cut-off, which is then at least 0. Counted, zeros that are the
+ * histogram's peak pull the cut-off below the glass, and the glass is found as
+ * tissue. Set `ignoreZeros` to false only for a slide whose glass is
+ * genuinely 0, where the zeros are the background the cut-off must lie above.
+ * The step reduction and the floor apply to whatever was counted. Triangle
+ * needs `Byte` or `UInt16`; for `Float32` use `Fixed`, or validation throws
+ * UnsupportedDataTypeError before any tile runs. In this mode pixels beyond
+ * the level, and pixels whose samples are all NaN, are background whatever
+ * the cut-off.
+ *
+ * In both modes the tissue mask is then closed, dilated and then eroded,
+ * with a disc of radius `closingRadiusPx` in pixels of the analysis level:
+ * the pixels within that Euclidean distance of its centre. The closing
+ * bridges gaps and fills holes narrower than the disc, and is exact under
+ * tiling: the halo holds every pixel a tile pixel's closed value depends on.
+ * Each maximal 4-connected set of closed tissue pixels is one object, its
+ * outline and holes traced along pixel edges in level-0 coordinates
+ * (UR-SEG-4); an object cut by tile seams is merged from its fragments.
  *
  * Nothing is measured but the geometry: each object has `area` and
  * `perimeter` in level-0 pixels, also as `area.um2` and `perimeter.um` when
@@ -995,9 +1122,10 @@ private:
  * assembled (UR-SEG-7); the area is in level-0 pixels, so the bound means the
  * same at every analysis level.
  *
- * The run selects exactly three channels: validating a run that gives the
- * operation another number fails with ChannelArityError, and so does its
- * outputPlaneCount() asked for another number.
+ * Brightfield mode needs exactly three channels, fluorescence mode at least
+ * one: validating a run that gives the operation another number fails with
+ * ChannelArityError, and so does its outputPlaneCount() asked for another
+ * number.
  *
  * The output plane holds 255 for each closed tissue pixel of the tile and 0
  * elsewhere.
@@ -1013,7 +1141,12 @@ private:
  * @return The operation, never null.
  * @throws InvalidArgumentError When @p parameters is moved-from or a value is
  * out of its range (the threshold not from 0 to 1, a negative area bound, the
- * radius not from 0 to 127); the message names the operation and the
+ * radius not from 0 to 127, the mode or threshold method not an enumerator, an
+ * intensity threshold not finite), or a key does not fit the mode:
+ * `saturationThreshold` in fluorescence mode, `thresholdMethod`,
+ * `intensityThreshold` or `ignoreZeros` in brightfield mode,
+ * `intensityThreshold` missing with `Fixed` or given with `Triangle`,
+ * `ignoreZeros` given with `Fixed`; the message names the operation and the
  * parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety

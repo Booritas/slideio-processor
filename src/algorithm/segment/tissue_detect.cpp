@@ -3,6 +3,7 @@
 
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
+#include <slideio/processor/core/raster_mask.hpp>
 
 #include "detail/bag.hpp"
 #include "detail/builtin_factory.hpp"
@@ -11,12 +12,19 @@
 #include "detail/region_emit.hpp"
 #include "detail/region_label.hpp"
 #include "detail/region_trace.hpp"
+#include "detail/triangle_threshold.hpp"
+#include "detail/working_set.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
+#include <iterator>
 #include <memory>
+#include <numeric>
+#include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace slideio::processor {
@@ -25,7 +33,11 @@ namespace detail {
 
 // The values TissueDetectParameters holds.
 struct TissueDetectValues {
-    double saturationThreshold = 0.07;
+    TissueMode mode = TissueMode::Brightfield;
+    std::optional<double> saturationThreshold; // unset: 0.07; refused in fluorescence mode
+    std::optional<TissueThresholdMethod> thresholdMethod; // unset: Triangle in fluorescence mode
+    std::optional<double> intensityThreshold; // with Fixed only
+    std::optional<bool> ignoreZeros; // unset: true; with Triangle only
     int64_t minimumRegionAreaPx = 0;
     int32_t closingRadiusPx = 2;
     std::string targetLayer; // empty: the run's only bound layer
@@ -51,11 +63,20 @@ const TissueDetectValues* TissueDetectParametersAccess::values(const TissueDetec
 namespace {
 
 constexpr const char* kName = "segment.tissue_detect";
-constexpr const char* kPlaneCountMessage = "segment.tissue_detect: needs exactly three channels, red, green and blue";
+constexpr const char* kPlaneCountMessage =
+    "segment.tissue_detect: needs exactly three channels, red, green and blue; for fluorescence, set mode to "
+    "Fluorescence";
+constexpr const char* kFluorescencePlaneCountMessage = "segment.tissue_detect: needs at least one channel";
 // The largest closing radius: a disc 255 pixels across, the largest element
 // pixel.morph_close takes. Distances along a row are capped at radius + 1, so
 // they fit a byte.
 constexpr int32_t kMaximumRadiusPx = 127;
+constexpr double kDefaultSaturationThreshold = 0.07;
+// Spelled as the enumerators, in their order.
+constexpr const char* kModeSpellings[] = {"Brightfield", "Fluorescence"};
+constexpr const char* kMethodSpellings[] = {"Triangle", "Fixed"};
+constexpr auto kModeCount = static_cast<int32_t>(std::size(kModeSpellings));
+constexpr auto kMethodCount = static_cast<int32_t>(std::size(kMethodSpellings));
 
 // What one apply() call allocates beyond the input and output blocks, per
 // pixel of the halo'd tile, objects emitted included: the run's tile filter
@@ -85,6 +106,18 @@ constexpr int64_t kBytesPerPixel = 200;
 // `perimeter` and both in micrometres), plus the small arrays of a tile with
 // few objects. The meter measures 1.2 KiB for one small object.
 constexpr int64_t kBytesPerTile = 4096;
+// The triangle method's histogram: one bin per value of the widest type it
+// counts, UInt16.
+constexpr int64_t kMaxTriangleBins = 65536;
+// What a Triangle instance holds besides its object and its histogram: the
+// parameter bag's entries, the disc's half-widths and the control block it is
+// made in, with the allocator's overhead on each: the meter measures 2.6 KiB
+// beyond the histogram and the object at radius 2 under MSVC; the disc's
+// half-widths grow by 4 bytes a radius, up to 127.
+constexpr int64_t kStateBookkeepingBytes =
+    4096 + (kMaximumRadiusPx + 1) * static_cast<int64_t>(sizeof(int32_t)) + detail::kAllocatorBlockOverhead;
+constexpr const char* kTriangleTypeMessage =
+    "segment.tissue_detect: Triangle needs Byte or UInt16 input; for Float32 set thresholdMethod to Fixed";
 
 [[noreturn]] void fail(const std::string& problem) {
     throw InvalidArgumentError((std::string(kName) + ": " + problem).c_str());
@@ -124,7 +157,14 @@ void distancesAlongRows(uint8_t* buffer, int64_t width, int64_t height, uint8_t 
 class TissueDetectOperation : public Operation {
 public:
     explicit TissueDetectOperation(const detail::TissueDetectValues& p)
-        : threshold_(p.saturationThreshold),
+        : mode_(p.mode),
+          threshold_(p.saturationThreshold.value_or(kDefaultSaturationThreshold)),
+          cutoff_(p.intensityThreshold.value_or(0.0)),
+          // Fixed knows its cut-off now; Triangle learns it from the whole slide.
+          cutoffKnown_(p.mode == TissueMode::Fluorescence && p.thresholdMethod &&
+                       *p.thresholdMethod == TissueThresholdMethod::Fixed),
+          triangle_(p.mode == TissueMode::Fluorescence && !cutoffKnown_),
+          ignoreZeros_(triangle_ && p.ignoreZeros.value_or(true)),
           radius_(p.closingRadiusPx),
           plan_(MeasurementSelection().add(MeasurementKind::Area).add(MeasurementKind::Perimeter),
                 static_cast<double>(p.minimumRegionAreaPx), 0.0, true) {
@@ -137,9 +177,21 @@ public:
             }
             halfWidth_.push_back(w);
         }
-        parameters_.setDouble("saturationThreshold", p.saturationThreshold)
-            .setInt("minimumRegionAreaPx", p.minimumRegionAreaPx)
-            .setInt("closingRadiusPx", p.closingRadiusPx);
+        if (p.mode == TissueMode::Fluorescence) {
+            const TissueThresholdMethod method = p.thresholdMethod.value_or(TissueThresholdMethod::Triangle);
+            parameters_.setString("mode", kModeSpellings[static_cast<int32_t>(p.mode)])
+                .setString("thresholdMethod", kMethodSpellings[static_cast<int32_t>(method)]);
+            if (p.intensityThreshold) {
+                parameters_.setDouble("intensityThreshold", *p.intensityThreshold);
+            }
+            // Recorded with Triangle always, so its bag is complete.
+            if (triangle_) {
+                parameters_.setBool("ignoreZeros", ignoreZeros_);
+            }
+        } else {
+            parameters_.setDouble("saturationThreshold", threshold_);
+        }
+        parameters_.setInt("minimumRegionAreaPx", p.minimumRegionAreaPx).setInt("closingRadiusPx", p.closingRadiusPx);
         if (!p.targetLayer.empty()) {
             parameters_.setString("targetLayer", p.targetLayer.c_str());
         }
@@ -148,13 +200,28 @@ public:
     const char* name() const override { return kName; }
     ChannelArity arity() const override { return ChannelArity::Joint; }
     bool requiresUniformTypes() const override { return true; }
-    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte).add(DataType::UInt16); }
+    DataTypeSet supportedTypes() const override {
+        return DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32);
+    }
     // A tile pixel's closed value depends on the dilated mask within the
     // radius, and each dilated value on the mask within the radius again; the
     // one more keeps the pixels just beyond in view.
     Halo halo() const override { return Halo::uniform(2 * radius_ + 1); }
-    DataType outputType(DataType) const override { return DataType::Byte; }
-    // The three planes are a pixel's colour; validation calls this.
+    // Validation calls this with the input type, before any tile is read: a
+    // Float32 input with Triangle, which has no histogram of its values, is
+    // refused there. supportedTypes() cannot refuse it, as it does not depend
+    // on the mode; accumulate() refuses it again.
+    DataType outputType(DataType type) const override {
+        if (triangle_ && type != DataType::Byte && type != DataType::UInt16) {
+            ErrorContext context;
+            context.operationName = kName;
+            throw UnsupportedDataTypeError(kTriangleTypeMessage, type,
+                                           DataTypeSet().add(DataType::Byte).add(DataType::UInt16), context);
+        }
+        return DataType::Byte;
+    }
+    // In brightfield mode the three planes are a pixel's colour; in fluorescence
+    // mode each is a stain's intensity. Validation calls this.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override {
         checkPlaneCount(inputPlaneCount);
         return 1;
@@ -166,7 +233,146 @@ public:
         return plan_.finish(record, context);
     }
     int64_t workingSetBytesPerLevelPixel() const override { return kBytesPerPixel; }
-    int64_t workingSetBytesPerTile() const override { return kBytesPerTile; }
+    // Triangle: the first accumulate() call creates the histogram, 8 bytes
+    // per bin, 65536 bins at most (UInt16's), and the allocator's overhead on
+    // it. accumulate() keeps no local copy and allocates nothing per pixel
+    // beyond its row pointers; the figure counts the histogram and its
+    // overhead twice all the same, a deliberate, conservative margin, which
+    // also covers finalizeAccumulation()'s reduced copy of the histogram (at
+    // most 32768 bins) beside the histogram itself.
+    int64_t workingSetBytesPerTile() const override {
+        return triangle_ ? kBytesPerTile + 2 * kMaxTriangleBins * 8 + 2 * detail::kAllocatorBlockOverhead
+                         : kBytesPerTile;
+    }
+
+    // Fluorescence with Triangle counts the whole slide's channel maximum
+    // first; brightfield and Fixed need nothing beyond the tile.
+    bool needsGlobalContext() const override { return triangle_; }
+
+    // What a Triangle instance holds between calls: its histogram, at most
+    // 65536 bins of 8 bytes whatever it has counted or combined, the
+    // allocator's overhead on it, the instance itself and its bookkeeping.
+    int64_t accumulatedStateBytes(int32_t) const override {
+        if (!triangle_) {
+            return 0;
+        }
+        return kMaxTriangleBins * 8 + detail::kAllocatorBlockOverhead +
+               static_cast<int64_t>(sizeof(TissueDetectOperation)) + kStateBookkeepingBytes;
+    }
+
+    // Counts the maximum over the planes of each pixel of the tile rect (not
+    // the halo) that the run's mask admits, one bin per value; with
+    // ignoreZeros, a maximum of exactly 0 is not counted. The tile rect lies
+    // inside the level (the grid clips it), so no pixel beyond the level, read
+    // as zero, is counted.
+    void accumulate(const OperationContext& context) override {
+        if (!triangle_) {
+            return;
+        }
+        const BlockView& in = context.input();
+        checkPlaneCount(in.planeCount());
+        const DataType type = checkInputTypes(in);
+        if (type != DataType::Byte && type != DataType::UInt16) {
+            throw UnsupportedDataTypeError(kTriangleTypeMessage, type,
+                                           DataTypeSet().add(DataType::Byte).add(DataType::UInt16));
+        }
+        const size_t binCount = type == DataType::Byte ? 256 : static_cast<size_t>(kMaxTriangleBins);
+        if (bins_.empty()) {
+            bins_.assign(binCount, 0);
+        } else if (bins_.size() != binCount) {
+            fail("the input type changed between tiles");
+        }
+        if (type == DataType::Byte) {
+            countMaximum<uint8_t>(context);
+        } else {
+            countMaximum<uint16_t>(context);
+        }
+    }
+
+    void combine(const Operation& other) override {
+        const auto* o = dynamic_cast<const TissueDetectOperation*>(&other);
+        if (o == nullptr) {
+            fail("cannot combine with an operation of another kind");
+        }
+        if (o->bins_.empty()) {
+            return;
+        }
+        if (bins_.empty()) {
+            bins_ = o->bins_;
+            return;
+        }
+        if (bins_.size() != o->bins_.size()) {
+            fail("cannot combine histograms of different sizes");
+        }
+        for (size_t i = 0; i < bins_.size(); ++i) {
+            bins_[i] += o->bins_[i];
+        }
+    }
+
+    // The cut-off is the triangle bin of the histogram; tissue is above it.
+    // Nothing counted, no cut-off: nothing is tissue.
+    //
+    // UInt16 data is often a narrower range scaled up, every value a multiple
+    // of a step g (257 for 8-bit data stretched to 16 bits): the empty bins
+    // between the populated ones would put the triangle's cut-off right next
+    // to the background's peak. So the values are divided by g, the GCD of
+    // the populated bins (0 fits every step), the triangle is taken on a
+    // reduced copy of the histogram, and its cut-off t is scaled back to
+    // t * g: a value v, a multiple of g, is above t * g exactly when v / g is
+    // above t. When t is at or beyond the largest reduced value, every counted
+    // value would be at or below t * g (two values, 0 and 1000, reduce to
+    // {0, 1}, whose cut-off is 2), so the reduction is dropped and the
+    // triangle is taken on the unreduced histogram instead. Byte is never
+    // reduced, so it still equals OpenCV.
+    //
+    // The cut-off never falls below the smallest counted value minus 1. The
+    // triangle bin is below that for a single counted value (OpenCV gives -1
+    // for a uniform 1, and a single UInt16 value reduces to 1) or a histogram
+    // rising straight to its peak from its first populated bin: every counted
+    // value is above it, and raising it to the smallest counted value minus 1
+    // keeps them so while leaving out values nothing counted, such as the
+    // zeros outside the run's restriction, or every zero with ignoreZeros: the
+    // smallest counted value is then at least 1, so the cut-off is at least 0
+    // and the zeros stay background. A single counted value v thus gives
+    // v - 1. The histogram, and its reduced copy (at most 32768 bins, as
+    // g >= 2), are freed here.
+    void finalizeAccumulation() override {
+        if (!triangle_) {
+            return;
+        }
+        const auto first = std::find_if(bins_.begin(), bins_.end(), [](int64_t c) { return c > 0; });
+        if (first != bins_.end()) {
+            const auto smallest = static_cast<int64_t>(std::distance(bins_.begin(), first));
+            int64_t largest = smallest;
+            int64_t g = 0;
+            for (size_t v = static_cast<size_t>(smallest); v < bins_.size(); ++v) {
+                if (bins_[v] > 0) {
+                    largest = static_cast<int64_t>(v);
+                    g = std::gcd(g, static_cast<int64_t>(v));
+                }
+            }
+            const int64_t step = bins_.size() == static_cast<size_t>(kMaxTriangleBins) && g > 1 ? g : 1;
+            int64_t bin = 0;
+            bool reducedHolds = false;
+            if (step > 1) {
+                // Bin v * step of the histogram is bin v of the copy; the
+                // bins between the multiples are empty.
+                std::vector<int64_t> reduced(static_cast<size_t>((kMaxTriangleBins - 1) / step + 1));
+                for (size_t v = 0; v < reduced.size(); ++v) {
+                    reduced[v] = bins_[v * static_cast<size_t>(step)];
+                }
+                const int64_t t = detail::triangleThresholdBin(reduced);
+                reducedHolds = t < largest / step;
+                bin = t * step;
+            }
+            if (!reducedHolds) {
+                bin = detail::triangleThresholdBin(bins_);
+            }
+            cutoff_ = static_cast<double>(std::max(bin, smallest - 1));
+            cutoffKnown_ = true;
+        }
+        bins_ = std::vector<int64_t>();
+    }
 
     void apply(OperationContext& context) override {
         const BlockView& in = context.input();
@@ -178,14 +384,8 @@ public:
             out.height() != tile.height) {
             throw InternalError((std::string(kName) + ": the output is not one Byte plane of the tile").c_str());
         }
-        const DataType type = in.planeType(0);
-        if ((type != DataType::Byte && type != DataType::UInt16) || in.planeType(1) != type ||
-            in.planeType(2) != type) {
-            throw UnsupportedDataTypeError(
-                (std::string(kName) + ": the input planes are not all Byte or all UInt16").c_str(), type,
-                supportedTypes());
-        }
-        close(in, out, tile.x - halo.x, tile.y - halo.y, type);
+        const DataType type = checkInputTypes(in);
+        close(in, out, tile.x - halo.x, tile.y - halo.y, type, context.levelRectAtLevel(), halo);
 
         // Label the closed tissue of the tile, as the output plane holds it.
         const auto* closed = static_cast<const uint8_t*>(out.planeData(0));
@@ -205,10 +405,29 @@ public:
     }
 
 private:
-    static void checkPlaneCount(int32_t planeCount) {
-        if (planeCount != 3) {
+    void checkPlaneCount(int32_t planeCount) const {
+        if (mode_ == TissueMode::Fluorescence) {
+            if (planeCount < 1) {
+                throw ChannelArityError(kFluorescencePlaneCountMessage, planeCount);
+            }
+        } else if (planeCount != 3) {
             throw ChannelArityError(kPlaneCountMessage, planeCount);
         }
+    }
+
+    // The planes' one type, when it is one supportedTypes() holds.
+    DataType checkInputTypes(const BlockView& in) const {
+        const DataType type = in.planeType(0);
+        bool uniform = true;
+        for (int32_t p = 1; p < in.planeCount(); ++p) {
+            uniform = uniform && in.planeType(p) == type;
+        }
+        if (!supportedTypes().contains(type) || !uniform) {
+            throw UnsupportedDataTypeError(
+                (std::string(kName) + ": the input planes are not all Byte, all UInt16 or all Float32").c_str(),
+                type, supportedTypes());
+        }
+        return type;
     }
 
     // Writes the closed tissue mask of the tile into @p out, 255 or 0: the
@@ -222,16 +441,44 @@ private:
     // edge, and each of those reads the mask within the radius again, still
     // inside the context. Rows and columns beyond the context, which the
     // dilation counts as background and the erosion as dilated, are thus
-    // never within reach of a tile pixel.
-    void close(const BlockView& in, BlockView& out, int64_t offsetX, int64_t offsetY, DataType type) const {
+    // never within reach of a tile pixel. In fluorescence mode, where a
+    // negative cut-off would make a zero tissue, the pixels of @p haloRect
+    // beyond @p levelRect are made background explicitly; an empty level rect
+    // (a context without a run) leaves the whole context as read.
+    void close(const BlockView& in, BlockView& out, int64_t offsetX, int64_t offsetY, DataType type,
+               const Rect64& levelRect, const Rect64& haloRect) const {
         const int64_t width = in.width();
         const int64_t height = in.height();
         const auto cap = static_cast<uint8_t>(radius_ + 1);
         std::vector<uint8_t> mask(static_cast<size_t>(width * height));
-        if (type == DataType::Byte) {
+        if (mode_ == TissueMode::Fluorescence) {
+            if (!cutoffKnown_) {
+                // No cut-off yet: nothing is tissue.
+                std::fill(mask.begin(), mask.end(), uint8_t{0});
+            } else {
+                // The context's rect inside the level, in context coordinates.
+                Rect64 inside{0, 0, width, height};
+                if (levelRect.width > 0 && levelRect.height > 0) {
+                    const int64_t x0 = std::max(levelRect.x, haloRect.x) - haloRect.x;
+                    const int64_t y0 = std::max(levelRect.y, haloRect.y) - haloRect.y;
+                    const int64_t x1 = std::min(levelRect.x + levelRect.width, haloRect.x + width) - haloRect.x;
+                    const int64_t y1 = std::min(levelRect.y + levelRect.height, haloRect.y + height) - haloRect.y;
+                    inside = Rect64{x0, y0, std::max<int64_t>(0, x1 - x0), std::max<int64_t>(0, y1 - y0)};
+                }
+                if (type == DataType::Byte) {
+                    maximumMask<uint8_t>(in, inside, mask.data());
+                } else if (type == DataType::UInt16) {
+                    maximumMask<uint16_t>(in, inside, mask.data());
+                } else {
+                    maximumMask<float>(in, inside, mask.data());
+                }
+            }
+        } else if (type == DataType::Byte) {
             tissueMask<uint8_t>(in, mask.data());
-        } else {
+        } else if (type == DataType::UInt16) {
             tissueMask<uint16_t>(in, mask.data());
+        } else {
+            tissueMask<float>(in, mask.data());
         }
         auto* target = static_cast<uint8_t*>(out.planeData(0));
         const int64_t targetStride = out.planeRowStrideBytes(0);
@@ -282,7 +529,8 @@ private:
     // Writes 1 for each tissue pixel of @p in and 0 for the others into
     // @p mask, row-major over the context. A pixel is tissue when the spread of
     // its three samples over their maximum exceeds the threshold; one whose
-    // maximum is 0 is not.
+    // maximum is not above 0 (0, or negative in Float32) is not, nor is a
+    // Float32 pixel with a NaN sample in any plane.
     template <typename T>
     void tissueMask(const BlockView& in, uint8_t* mask) const {
         const int64_t width = in.width();
@@ -295,15 +543,103 @@ private:
                 const T a = load<T>(rows[0], x);
                 const T b = load<T>(rows[1], x);
                 const T c = load<T>(rows[2], x);
+                if constexpr (std::is_floating_point_v<T>) {
+                    if (std::isnan(a) || std::isnan(b) || std::isnan(c)) {
+                        mask[y * width + x] = 0;
+                        continue;
+                    }
+                }
                 const T maximum = std::max({a, b, c});
                 const T minimum = std::min({a, b, c});
                 const double spread = static_cast<double>(maximum - minimum);
-                mask[y * width + x] = maximum != 0 && spread / static_cast<double>(maximum) > threshold_ ? 1 : 0;
+                mask[y * width + x] = maximum > 0 && spread / static_cast<double>(maximum) > threshold_ ? 1 : 0;
             }
         }
     }
 
+    // The maximum over the planes of pixel @p x of @p rows, NaN samples left
+    // out whatever their plane; false when every sample is NaN.
+    template <typename T>
+    static bool pixelMaximum(const std::vector<const uint8_t*>& rows, int64_t x, double& maximum) {
+        bool found = false;
+        for (const uint8_t* row : rows) {
+            const auto value = static_cast<double>(load<T>(row, x));
+            if (!std::isnan(value) && (!found || value > maximum)) {
+                maximum = value;
+                found = true;
+            }
+        }
+        return found;
+    }
+
+    // Writes 1 for each pixel of @p in inside @p inside (context coordinates)
+    // whose maximum over all its planes is above the cut-off and 0 for the
+    // others into @p mask, row-major over the context. NaN samples are left
+    // out of the maximum; a pixel with nothing but NaN is background.
+    template <typename T>
+    void maximumMask(const BlockView& in, const Rect64& inside, uint8_t* mask) const {
+        const int64_t width = in.width();
+        const int32_t planes = in.planeCount();
+        std::fill(mask, mask + width * in.height(), uint8_t{0});
+        std::vector<const uint8_t*> rows(static_cast<size_t>(planes));
+        for (int64_t y = inside.y; y < inside.y + inside.height; ++y) {
+            for (int32_t p = 0; p < planes; ++p) {
+                rows[static_cast<size_t>(p)] =
+                    static_cast<const uint8_t*>(in.planeData(p)) + y * in.planeRowStrideBytes(p);
+            }
+            for (int64_t x = inside.x; x < inside.x + inside.width; ++x) {
+                double maximum = 0.0;
+                mask[y * width + x] = pixelMaximum<T>(rows, x, maximum) && maximum > cutoff_ ? 1 : 0;
+            }
+        }
+    }
+
+    // Adds the maximum over the planes of each pixel of the tile rect that
+    // the run's mask admits to its bin, but for a maximum of exactly 0 with
+    // ignoreZeros.
+    template <typename T>
+    void countMaximum(const OperationContext& context) {
+        const BlockView& in = context.input();
+        const Rect64 tile = context.tileRectAtLevel();
+        const Rect64 haloRect = context.haloRectAtLevel();
+        const RasterMask* admitted = context.mask();
+        const int64_t offsetX = tile.x - haloRect.x;
+        const int64_t offsetY = tile.y - haloRect.y;
+        const int32_t planes = in.planeCount();
+        std::vector<const uint8_t*> rows(static_cast<size_t>(planes));
+        for (int64_t y = 0; y < tile.height; ++y) {
+            for (int32_t p = 0; p < planes; ++p) {
+                rows[static_cast<size_t>(p)] = static_cast<const uint8_t*>(in.planeData(p)) +
+                                               (y + offsetY) * in.planeRowStrideBytes(p) +
+                                               offsetX * static_cast<int64_t>(sizeof(T));
+            }
+            for (int64_t x = 0; x < tile.width; ++x) {
+                if (admitted != nullptr && !admitted->test(Point64{tile.x + x, tile.y + y})) {
+                    continue;
+                }
+                T maximum = load<T>(rows[0], x);
+                for (int32_t p = 1; p < planes; ++p) {
+                    maximum = std::max(maximum, load<T>(rows[static_cast<size_t>(p)], x));
+                }
+                if (ignoreZeros_ && maximum == T{0}) {
+                    continue;
+                }
+                ++bins_[static_cast<size_t>(maximum)];
+            }
+        }
+    }
+
+    TissueMode mode_;
     double threshold_;
+    // Fluorescence: tissue is above cutoff_ once cutoffKnown_.
+    double cutoff_;
+    bool cutoffKnown_;
+    // Fluorescence with Triangle: the cut-off comes from bins_, the whole
+    // slide's histogram of the channel maximum, one bin per value.
+    bool triangle_;
+    // Triangle: a channel maximum of exactly 0 is left out of bins_.
+    bool ignoreZeros_;
+    std::vector<int64_t> bins_;
     int32_t radius_;
     std::vector<int32_t> halfWidth_;
     detail::MeasurementPlan plan_;
@@ -313,7 +649,22 @@ private:
 OperationPtr tissueDetectFromParameters(const OperationParameters& parameters) {
     detail::BagReader bag(kName, parameters);
     TissueDetectParameters p;
-    p.saturationThreshold(bag.getDouble("saturationThreshold", 0.07));
+    p.mode(bag.getEnum("mode", TissueMode::Brightfield, kModeSpellings, kModeCount));
+    // Absent by default, and refused when it does not fit the mode, so a
+    // given key is kept apart from the default.
+    if (bag.contains("saturationThreshold")) {
+        p.saturationThreshold(bag.getDouble("saturationThreshold", kDefaultSaturationThreshold));
+    }
+    if (bag.contains("thresholdMethod")) {
+        p.thresholdMethod(
+            bag.getEnum("thresholdMethod", TissueThresholdMethod::Triangle, kMethodSpellings, kMethodCount));
+    }
+    if (bag.contains("intensityThreshold")) {
+        p.intensityThreshold(bag.getDouble("intensityThreshold", 0.0));
+    }
+    if (bag.contains("ignoreZeros")) {
+        p.ignoreZeros(bag.getBool("ignoreZeros", true));
+    }
     p.minimumRegionAreaPx(bag.getInt("minimumRegionAreaPx", 0));
     const int64_t radius = bag.getInt("closingRadiusPx", 2);
     if (radius < 0 || radius > kMaximumRadiusPx) {
@@ -345,6 +696,30 @@ TissueDetectParameters& TissueDetectParameters::operator=(const TissueDetectPara
 TissueDetectParameters& TissueDetectParameters::operator=(TissueDetectParameters&& other) noexcept = default;
 
 TissueDetectParameters::~TissueDetectParameters() = default;
+
+TissueDetectParameters& TissueDetectParameters::mode(TissueMode mode) {
+    checkNotMovedFrom(impl_.get());
+    impl_->mode = mode;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::thresholdMethod(TissueThresholdMethod method) {
+    checkNotMovedFrom(impl_.get());
+    impl_->thresholdMethod = method;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::intensityThreshold(double threshold) {
+    checkNotMovedFrom(impl_.get());
+    impl_->intensityThreshold = threshold;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::ignoreZeros(bool ignore) {
+    checkNotMovedFrom(impl_.get());
+    impl_->ignoreZeros = ignore;
+    return *this;
+}
 
 TissueDetectParameters& TissueDetectParameters::saturationThreshold(double threshold) {
     checkNotMovedFrom(impl_.get());
@@ -378,8 +753,44 @@ OperationPtr makeTissueDetect(const TissueDetectParameters& parameters) {
     if (p == nullptr) {
         fail("parameter 'parameters' was moved from");
     }
-    if (!(p->saturationThreshold >= 0.0 && p->saturationThreshold <= 1.0)) {
-        fail("parameter 'saturationThreshold' must be from 0 to 1");
+    if (p->mode != TissueMode::Brightfield && p->mode != TissueMode::Fluorescence) {
+        fail("parameter 'mode' is not an enumerator");
+    }
+    if (p->thresholdMethod && *p->thresholdMethod != TissueThresholdMethod::Triangle &&
+        *p->thresholdMethod != TissueThresholdMethod::Fixed) {
+        fail("parameter 'thresholdMethod' is not an enumerator");
+    }
+    if (p->mode == TissueMode::Fluorescence) {
+        if (p->saturationThreshold) {
+            fail("parameter 'saturationThreshold' applies to brightfield mode only");
+        }
+        const bool fixed = p->thresholdMethod && *p->thresholdMethod == TissueThresholdMethod::Fixed;
+        if (fixed && !p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' is required with the Fixed threshold method");
+        }
+        if (!fixed && p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' applies to the Fixed threshold method only");
+        }
+        if (p->intensityThreshold && !std::isfinite(*p->intensityThreshold)) {
+            fail("parameter 'intensityThreshold' must be finite");
+        }
+        if (fixed && p->ignoreZeros) {
+            fail("parameter 'ignoreZeros' applies to the Triangle threshold method only");
+        }
+    } else {
+        if (p->thresholdMethod) {
+            fail("parameter 'thresholdMethod' applies to fluorescence mode only");
+        }
+        if (p->ignoreZeros) {
+            fail("parameter 'ignoreZeros' applies to fluorescence mode only");
+        }
+        if (p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' applies to fluorescence mode only");
+        }
+        const double saturation = p->saturationThreshold.value_or(kDefaultSaturationThreshold);
+        if (!(saturation >= 0.0 && saturation <= 1.0)) {
+            fail("parameter 'saturationThreshold' must be from 0 to 1");
+        }
     }
     if (p->minimumRegionAreaPx < 0) {
         fail("parameter 'minimumRegionAreaPx' must not be negative");
@@ -398,11 +809,15 @@ OperationFactoryPtr makeTissueDetectFactory() {
         "Analytic: pink ellipses with one-pixel holes on grey-noise glass give the ellipses' area within 1% at "
         "level 0; a 2-pixel gap is closed at radius 2 and not at 0; at analysis level 2, areas are 16 level-0 "
         "pixels per level-2 pixel and within the staircase bound of the analytic area; objects identical to one "
-        "tile at tile sizes 64, 100 and 257, Byte and UInt16 alike. The labelled corpus of SDS 06 section 6.9 is "
+        "tile at tile sizes 64, 100 and 257, Byte and UInt16 alike; fluorescence: two blobs bright in different "
+        "channels over 0..4 glass noise and an exact-zero band give the blobs' area within 1% with a fixed and a "
+        "triangle cut-off, the triangle equal to OpenCV's on Byte, identical objects at tile sizes 64, 100 and 257 "
+        "and 1 or 4 workers. The labelled corpus of SDS 06 section 6.9 is "
         "outside the repository",
         "O(n * (2r + 1)) in the pixels of the halo'd tile for the saturation and the closing, r the closing "
         "radius; then labelling by union-find with path halving, nearly linear in the tile's pixels, and O(v) "
-        "in the vertices of the traced rings");
+        "in the vertices of the traced rings; fluorescence triangle: one O(n) counting pass over the tile rects "
+        "and O(b) in the histogram's bins");
 }
 
 } // namespace detail
