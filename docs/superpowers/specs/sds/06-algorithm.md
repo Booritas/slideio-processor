@@ -1222,17 +1222,20 @@ three coarsest levels, 780, 1560 and 3120 pixels wide:
 - The unscanned area, exactly 0, is about 21% of the pixels and the
   histogram's peak. Counted, it breaks the triangle at level 2 (6240 pixels
   wide): the cut-off collapses to 2 and the glass becomes tissue. Left out
-  (`ignoreZeros`), the cut-off is 7 to 8 at every level:
+  (`ignoreZeros`), the cut-off is 7 or 8 at every level. Measured with OpenCV's
+  triangle on the per-pixel channel maximum of the whole level; tissue is the
+  share of the level's pixels above the cut-off, before the closing:
 
 | Level | Width | Cut-off, zeros counted | Cut-off, zeros left out |
 |---|---|---|---|
-| 2 | 6240 | 2 (glass found as tissue: 68% of the pixels) | 7 to 8 |
-| 3 | 3120 | 7 | 7 to 8 |
-| 4 | 1560 | 7 | 7 to 8 |
-| 5 | 780 | 6 | 7 to 8 |
+| 1 | 12480 | not measured | 8 (40.1% tissue) |
+| 2 | 6240 | 2 (glass found as tissue: 68.3%) | 7 (40.9%) |
+| 3 | 3120 | 7 (41.3%) | 7 (41.3%) |
+| 4 | 1560 | 7 (42.2%) | 7 (42.2%) |
+| 5 | 780 | 6 (44.2%) | 7 (43.7%) |
 
-The slide is not in the repository, so its check (about 41–44% tissue at levels
-2 to 5 with zeros left out, the cut-off 7 or 8) is outside the test suite, as
+The slide is not in the repository, so its check (about 40–44% tissue at levels
+1 to 5 with zeros left out, the cut-off 7 or 8) is outside the test suite, as
 the labelled corpus of 6.9 is. `TriangleZeroBandWithBroadGlass` reproduces the
 level-2 failure on a synthetic slide: a fifth exact zeros, glass broad over 1
 to 4 but sparse at 1.
