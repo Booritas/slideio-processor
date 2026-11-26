@@ -1063,17 +1063,22 @@ private:
  * pixels the run's mask admits, so the cut-off does not depend on the tile
  * size, the worker count or the tile order. A histogram with nothing counted
  * has no cut-off, and then nothing is tissue. A single counted value v above
- * 0 gives the cut-off v - 1, so a uniform admitted region is all tissue; a
- * single bin at 0 finds nothing. For `UInt16` whose counted values are all
- * multiples of a step g (8-bit data scaled by 257, say), the triangle is taken
- * on the values divided by g, the greatest common divisor of those counted,
- * and its cut-off multiplied by g: such data gives the 8-bit cut-off times g.
+ * 0 gives the cut-off v - 1 (all counted pixels are tissue), and a single
+ * value 0 finds nothing. The cut-off never falls below the smallest counted
+ * value minus 1, so pixels the mask does not admit, such as zeros outside a
+ * restriction, are not made tissue by a low cut-off. For `UInt16` whose
+ * counted values are all multiples of a step g (8-bit data scaled by 257,
+ * say), the triangle is taken on the values divided by g, the greatest common
+ * divisor of those counted, and its cut-off multiplied by g: such data gives
+ * the 8-bit cut-off times g. When that cut-off is at or above the largest
+ * counted value, as for just two values (0 and 1000, say), the triangle is
+ * taken on the values undivided instead.
  * Zeros outside the scanned area are counted like any value: when they
  * outweigh the glass, the cut-off falls below the glass and the glass is found
  * as tissue. For such a slide use `Fixed`, or restrict the run to the scanned
  * area so the zeros are not counted. Triangle needs `Byte` or
- * `UInt16`; for `Float32` use `Fixed`, or UnsupportedDataTypeError is
- * thrown. In this mode pixels beyond the level, and pixels whose samples are
+ * `UInt16`; for `Float32` use `Fixed`, or validation throws
+ * UnsupportedDataTypeError before any tile runs. In this mode pixels beyond the level, and pixels whose samples are
  * all NaN, are background whatever the cut-off.
  *
  * In both modes the tissue mask is then closed, dilated and then eroded,

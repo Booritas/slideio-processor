@@ -237,7 +237,7 @@ beside it saying which buffers it counts:
 | `segment.connected_components` | 192: the union-find parents, the traced rings, the region table and the objects emitted inside the call (the tile filter's and the finisher's copies included), one intensity partial per object and measured plane for at most three measured planes | 16384: one object's record and its finished copy with every measurement, and the small arrays of a tile with few objects |
 | `segment.contours` | 264: as connected components, without partials, but regions of different values touch side by side, so the traced arrays and a join key per region can reach one per pixel | 4096 |
 | `segment.watershed` | 288 per pixel of the halo'd tile: plane 0 as doubles, each pixel's seed and the flood's queue, then the labelling, tracing and emission of contours with three measured planes | 16384 |
-| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions; fluorescence adds nothing, the mask being computed straight into the same buffer | 4096; with Triangle, 4096 + 2 · 65536 · 8 + 2 · 64 (the histogram's 65536 bins of 8 bytes and the allocator's overhead on them, counted twice: `accumulate()` keeps no local copy, so the second is a deliberate, conservative margin). A Triangle instance's accumulated state, whatever the input type, is 65536 · 8 + 64 bytes of histogram, the instance, and 4096 + 128 · 4 + 64 bytes of bookkeeping; brightfield and Fixed instances declare 0 accumulated state and need no global context |
+| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions; fluorescence adds nothing, the mask being computed straight into the same buffer | 4096; with Triangle, 4096 + 2 · 65536 · 8 + 2 · 64 (the histogram's 65536 bins of 8 bytes and the allocator's overhead on them, counted twice: `accumulate()` keeps no local copy, so the second is a deliberate, conservative margin, which also covers `finalizeAccumulation()`'s reduced copy of a stepped `UInt16` histogram, at most 32768 bins). A Triangle instance's accumulated state, whatever the input type, is 65536 · 8 + 64 bytes of histogram, the instance, and 4096 + 128 · 4 + 64 bytes of bookkeeping; brightfield and Fixed instances declare 0 accumulated state and need no global context |
 
 The catalog's parameter-free figures for `segment.tissue_detect` (`accumulatedStateBytes`, `workingSetBytesPerTile`, the supported types and the plane count) describe the default, brightfield operation; a run uses the figures of its own instance.
 
@@ -1143,8 +1143,10 @@ and tissue shows as brightness, not colour:
   `finalizeAccumulation()` takes the cut-off from the sum. The cut-off does
   not depend on the tile size, the worker count or the tile order.
   `Float32` with `"Triangle"` throws `UnsupportedDataTypeError` naming
-  `"Fixed"` as the way out: a triangle on `Float32` would need a histogram
-  range, and no slide needs it.
+  `"Fixed"` as the way out, from `outputType()` when validation plans the run,
+  before any tile is read (`supportedTypes()` does not depend on the mode, so
+  it cannot refuse it; `accumulate()` refuses it again): a triangle on
+  `Float32` would need a histogram range, and no slide needs it.
 - **The triangle** is that of Zack, Rogers and Latt (*J Histochem Cytochem*
   25:741–753, 1977), as OpenCV 4.14's `getThreshVal_Triangle_8u` implements
   it, generalised to 256 or 65536 bins of 64-bit counts and matched step for
@@ -1162,14 +1164,25 @@ and tissue shows as brightness, not colour:
   value v is counted as v / g over 65535 / g + 1 bins, the triangle gives t on
   them, and the cut-off is t · g. For a multiple of g, v > t · g exactly when
   v / g > t, so 8-bit data scaled by 257 gives the cut-off of the 8-bit data
-  times 257 and the same objects. Dense data (g = 1) is unchanged, and `Byte`
-  is never reduced, so it still equals OpenCV.
+  times 257 and the same objects. When t is at or above the largest reduced
+  value, every counted value would be at or below t · g: two values, 0 and
+  1000, reduce to bins 0 and 1, whose triangle gives 2, and 2000 would leave
+  the signal out. Then the reduction is dropped and the triangle is taken on
+  the unreduced 65536 bins, which gives a cut-off between the two values.
+  Dense data (g = 1) is unchanged, and `Byte` is never reduced, so it still
+  equals OpenCV.
 - **The empty histogram.** Only a histogram with nothing counted, the mask
-  admitting no pixel, has no cut-off, and then nothing is tissue. A non-empty
-  histogram that rises straight to its peak gives OpenCV's -1, which is a real
-  cut-off: every counted pixel is above it and is tissue. A single non-empty
-  bin is OpenCV's case too: a uniform admitted region at value v > 0 gives the
-  cut-off v − 1, so all of it is tissue, and a single bin at 0 finds nothing.
+  admitting no pixel, has no cut-off, and then nothing is tissue.
+- **The cut-off's floor.** The cut-off never falls below the smallest counted
+  value minus 1. The triangle can fall below it: OpenCV gives -1 for a
+  histogram that rises straight to its peak from bin 0 and for a uniform 1,
+  and a single `UInt16` value v reduces to 1, whose -1 scales back to −v. A
+  cut-off that low would make the pixels nothing counted tissue, such as the
+  zeros outside a polygon or mask restriction; raised to the floor, every
+  counted pixel keeps its side of the cut-off (still OpenCV's answer on the
+  counted pixels) and only uncounted values below the smallest counted one
+  change. So a single counted value v > 0 gives the cut-off v − 1 (all counted
+  pixels are tissue), and a single bin at 0 finds nothing.
 - **Exact zeros that outweigh the glass.** Pixels outside the scanned area are
   0 and are counted like any other. When they are a small band, as on the
   example slide, the cut-off stays above the glass; when exact zeros outweigh
@@ -1650,7 +1663,7 @@ The operations that exist state their reference through
 | `segment.connected_components` | Analytic: known rectangles, rings with holes and diagonal chains | Exact counts, rings, areas, perimeters, centroids, bounding boxes, calibrated twins and intensity statistics; diagonal neighbours one object 8-connected and two 4-connected; NaN and 0 background in every type; NaN intensity samples skipped, the mean, minimum and maximum exact and the standard deviation within 10⁻⁹ relative of a direct computation; objects identical to one tile at tile sizes 64, 100 and 257, both connectivities — geometry and integer intensities exact, `Float32` intensities within 10⁻¹² relative; an object across four tiles with a hole cut by both seams, and an 8-connected chain across a tile corner, each one object equal to one tile; an area bound applied to merged objects; a filtered run storing fewer objects |
 | `segment.contours` | Analytic: label rasters of touching regions, holes filled by other labels or by background, `Float32` labels one ulp apart | Exact counts, shared rings, areas and perimeters; `Float32` labels compared exactly, -0 and NaN background; fragments keyed by their value; objects identical to one tile at tile sizes 64, 100 and 257 with regions of different values touching across seams, and at 25, 50 and 64 on a checkerboard of two adjacent `Float32` labels |
 | `segment.watershed` | Analytic: two touching discs of radius 10, centres 16 apart, whose distance transform is flooded | Two objects, each with an area within 5% of the disc less half the shared lens and a centroid within 1 pixel of the analytic one, their areas summing exactly to the union; plateau markers at their topmost-leftmost pixel; anchor-raster markers; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 over thirty pairs of touching discs; a region beyond the spacing fails with the reach error at every tile size, never a partial segmentation |
-| `segment.tissue_detect` | Analytic: pink ellipses with one-pixel holes on grey-noise glass with dust | Detected area within 1% of the ellipses' analytic area at level 0, the holes closed; a 2-pixel gap bridged at radius 2 and left open at 0; at analysis level 2 areas in level-0 pixels (16 per level-2 pixel) within the staircase bound 16 · 4 · (a + b + 1) of the analytic area; calibrated area and perimeter exact; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 and closing radii 0, 2 and 5, across bars and gaps on seams at every phase; `UInt16` samples (the `Byte` slide × 257) giving the same objects as `Byte`; fluorescence: two blobs bright in different channels over 0 to 4 glass noise and an exact-zero band give the blobs' area within 1% with a fixed and a triangle cut-off, the triangle equal to OpenCV's on `Byte` (random and shaped histograms), identical objects at tile sizes 64, 100 and 257 and 1 or 4 workers, only admitted pixels counted, the empty histogram finding nothing, `Float32` accepted with `"Fixed"` and refused with `"Triangle"` |
+| `segment.tissue_detect` | Analytic: pink ellipses with one-pixel holes on grey-noise glass with dust | Detected area within 1% of the ellipses' analytic area at level 0, the holes closed; a 2-pixel gap bridged at radius 2 and left open at 0; at analysis level 2 areas in level-0 pixels (16 per level-2 pixel) within the staircase bound 16 · 4 · (a + b + 1) of the analytic area; calibrated area and perimeter exact; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 and closing radii 0, 2 and 5, across bars and gaps on seams at every phase; `UInt16` samples (the `Byte` slide × 257) giving the same objects as `Byte`; fluorescence: two blobs bright in different channels over 0 to 4 glass noise and an exact-zero band give the blobs' area within 1% with a fixed and a triangle cut-off, the triangle equal to OpenCV's on `Byte` (random and shaped histograms), identical objects at tile sizes 64, 100 and 257 and 1 or 4 workers, only admitted pixels counted, the empty histogram finding nothing, `UInt16` with just two values (0 and 1000) found as `Byte` with 0 and 200 is and as `"Fixed"` at 500, a single counted value under a polygon restriction giving exactly the restricted rectangle in `Byte` and `UInt16`, `Float32` accepted with `"Fixed"` and refused with `"Triangle"` by validation, before any tile runs |
 | Measurement finishing | Analytic: rectangles and rectangles with holes, finished directly | Exact: calibrated twins at 0.5 µm per pixel and none without a pixel size; centroid unrounded and holes weighing negatively; unselected names removed; area bounds inclusive and applied after holes are dropped; `sceneIsCalibrated` and `scenePixelSizeMicrons` following the run's rule, the mean of two agreeing resolutions within 10⁻¹² |
 
 Exact agreement is asserted wherever the computation is defined in a fixed
