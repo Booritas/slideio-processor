@@ -137,6 +137,7 @@ the operation and the parameter.
 | `pixel.distance_transform` | `maximumDistancePx` | int | 32 | 1 to 4096 |
 | `pixel.fill_holes` | `maximumHoleSizePx` | int | 32 | 1 to 4096 |
 | | `maximumHoleAreaPx` | int | absent (no area limit) | at least 1 when given |
+| `pixel.remove_large_objects` | `maximumObjectSizePx` | int | 32 | 1 to 4096 |
 | `pixel.sobel` | `dx` | int | 1 | 0, 1 or 2; `dx` + `dy` at least 1 |
 | | `dy` | int | 0 | 0, 1 or 2 |
 | | `kernelSize` | int | 3 | 1, 3, 5 or 7 |
@@ -232,6 +233,7 @@ beside it saying which buffers it counts:
 | `pixel.median_blur` | one sort key per pixel on the module's own path; the backend's destination and bordered copy on the `Byte` path | the larger of the window's copy (grows with the kernel's area) and the backend's per-column histograms on the `Byte` path |
 | `pixel.distance_transform` | the module's own two passes, all metered: the column distances of the tile's rows as `uint16`, at most 2 bytes per pixel of the halo'd rect, and two rows of the rect's width (the running column distances, `uint16`, and the envelope's columns, `int64`), at most 10 / (2 · `maximumDistancePx` + 1) bytes per pixel; no backend buffer | the three vectors' allocator blocks |
 | `pixel.fill_holes` | the module's own labelling, all metered: per pixel of the halo'd rect the `Byte` state mask (1) and the queue of one component's pixel indices as `int32` (4), 5 bytes; no backend buffer | the two vectors' allocator blocks |
+| `pixel.remove_large_objects` | the module's own labelling, all metered: per pixel of the halo'd rect the `Byte` state mask (1) and the queue of one component's pixel indices as `int32` (4), 5 bytes; no backend buffer | the two vectors' allocator blocks |
 | `pixel.bilateral_filter` | the plane as doubles and the tile's values | the allocator's overhead on those buffers |
 | `pixel.canny` | the edge and suppression maps, the derivatives of every row, the one stack of edge pixels and the backend's magnitude and Sobel rows, all from the backend's single stripe of rows | the kernel-sized parts of the magnitude rows and of Sobel's filter, the kernels and bookkeeping, whatever the tile |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | the larger of the float path's two copies of the plane and the integer path's ring buffer, rows and the backend's destination | the larger of the float path's element offsets and the integer path's filter engine (grows with the element's size) |
@@ -433,6 +435,7 @@ OperationPtr makeMedianBlur(int32_t kernelSize);
 OperationPtr makeDistanceTransform(int32_t maximumDistancePx);
 OperationPtr makeFillHoles(int32_t maximumHoleSizePx,
                            int64_t maximumHoleAreaPx = 0); // 0: no area limit
+OperationPtr makeRemoveLargeObjects(int32_t maximumObjectSizePx);
 OperationPtr makeSobel(int32_t dx, int32_t dy, int32_t kernelSize);
 OperationPtr makeScharr(int32_t dx, int32_t dy);
 OperationPtr makeLaplacian(int32_t kernelSize);
@@ -729,6 +732,40 @@ bounds is marked as a hole, and the tile's rect is written from the mask. Every
 buffer comes from `operator new`, so the working-set check measures all of it
 (the table of 6.2): 5 bytes per pixel of the halo'd rect. The result is a set of
 whole components and does not depend on the order of the search.
+
+### Removal of large objects
+
+`pixel.remove_large_objects` removes from a binary mask the objects wider or
+higher than a declared bound, the cleaning step for a stained area too large to
+be a nucleus before the distance transform and the watershed. A pixel is
+foreground when its sample is neither 0 nor NaN; the output is `Byte`, 255 for a
+foreground pixel whose object fits and 0 elsewhere. An **object** is an
+8-connected component of foreground, the pair of `pixel.fill_holes`' 4-connected
+background; it is removed when its bounding box is wider than
+`maximumObjectSizePx` or higher than it. Pixels beyond the level are zero (05
+§5.5), so an object cut by the level edge is measured by its pixels inside the
+level.
+
+**Why it is exact at any tile size.** The halo is the size bound, *S* =
+`maximumObjectSizePx`, as for hole filling. In the halo'd context, an object
+that does not touch the context's border is a whole object of the level. One
+that does touch it reaches at least the halo from a tile pixel, so its bounding
+box spans more than *S* in a direction and the whole-level pass removes it too.
+For a tile pixel in an object of bounding box at most *S*, every pixel of the
+object lies within Chebyshev distance *S* - 1, so the object lies inside the
+context clear of its border and is measured whole. The rule is therefore exact.
+
+**Implementation.** The labelling of the hole filler with the roles swapped: a
+breadth-first search of each 8-connected foreground component of the halo'd
+context, over a `Byte` state mask with one queue of `int32` indices, recording
+the bounding box and whether the component touches the border. Components that
+touch the border or exceed the bound are cleared, and the tile's rect is written
+from the mask. All of it comes from `operator new`, so the working-set check
+measures it (the table of 6.2): 5 bytes per pixel of the halo'd rect. A context
+of more than 2147483647 pixels cannot be labelled and fails the tile with
+`InvalidArgumentError`, giving the count and asking for a smaller tile size,
+as hole filling does.
+
 ## 6.5 Thresholding — `algorithm/pixel/threshold.hpp`
 
 ```cpp
@@ -1393,7 +1430,7 @@ refused by the typed setter, and `OperationParameters` cannot hold one.
 
 **Settings that keep the reach on a distance transform.** One object with no
 marker fails the whole run, so a debris speck below the floor would stop a
-slide. Flooding `pixel.distance_transform` of a mask, two settings rule every
+slide. Flooding `pixel.distance_transform` of a mask, three settings rule every
 such failure out, and the operation's documentation states them:
 
 - *Open the mask first* with `pixel.morph_open` and an `Ellipse` element of
@@ -1411,6 +1448,13 @@ such failure out, and the operation's documentation states them:
 - *Set the spacing to the largest object*: at least the largest width or height
   of an object. An elongated object of even width has a flat ridge, which
   gives one marker, and that marker has to reach the whole object.
+- *Or remove the large objects* with `pixel.remove_large_objects` after the
+  opening, with `maximumObjectSizePx` at most `maximumMarkerSpacingPx`: only
+  objects within the spacing are left, so the reach holds even when the
+  cut-off lets large stained areas through. Those areas are removed, not
+  segmented. `NucleiChain.LargeStainedAreaRemovedBeforeWatershed` runs the
+  chain over a band of 144 by 18 pixels at spacing 36, which fails the reach
+  without the step, and finds the 12 nuclei the band-free scene gives.
 
 Dropping an object with no marker instead of failing was considered and not
 taken: a tile cannot tell an object with no marker from one whose marker lies
@@ -1681,6 +1725,7 @@ The operations that exist state their reference through
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
 | `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; at maximums 300 and 1000 on sparse masks; over the 4096-pixel row of a context 8192 pixels wide, at maximum 2048 the final review's case (background 545 and 568 rows away at columns 4481 and 6081, where a `float` breakpoint gives √949889 for √949888) and sparse background at maximums 2048 and 4096; tiled output bitwise equal to one tile on `Byte` and `Float32`, at maximum 600 on a sparse mask, and at maximum 1100 on a sparse 3000 by 2600 level whose distances run to the maximum, at tiles 1000 and 1536, the single tile equal to the brute force on a lattice |
 | `pixel.fill_holes` | Published definition: background components enclosed within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% foreground) at sizes 2, 4 and 8 with the area absent and 6; a hole of 5 by 5 filled and one of 6 by 6 not at size 5; an area of 16 filled and of 15 not; a U open to the level edge unfilled; a ring closed only diagonally filled; nested rings; NaN background; output `Byte` 255 for `UInt16` and `Float32`; tiled output bitwise equal to one tile at tiles 64, 100 and 257 on `Byte` and `Float32`, with holes across the seams |
+| `pixel.remove_large_objects` | Published definition: 8-connected foreground components within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% and 30% foreground) at sizes 2, 4 and 8; at size 5 a 5 by 5 square and 1 by 5 bars kept and objects of 6 by 5, 5 by 6 and 1 by 6 removed; six pixels on a diagonal one object removed and, with a gap, two kept; a 3 by 3 object in either corner of the level kept and a 10 by 3 one along its top edge removed; NaN background, splitting two 4 by 4 squares that would form an 8 by 4 object; output `Byte` 255 for `UInt16` and `Float32`; at size 32 on a 300 by 260 mask of rectangles of 20 to 39 pixels a side, specks and one blob of 120 by 90, the single tile equal to the flood fill and tiled output bitwise equal to it at tiles 64, 100 and 257 on `Byte` and `Float32`; a context of 2³¹ pixels refused naming the count and a smaller tile size (release builds) |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
@@ -1707,13 +1752,15 @@ open item; until it is done UR-SEG-1 is covered only analytically.
 
 ## 6.10 Scope of v1 — the catalog, closed
 
-**The v1 catalog is twenty-three operations.** This resolves open question 7 in
+**The v1 catalog is twenty-four operations.** This resolves open question 7 in
 `requirements.md`, which the requirements call the choice that decides the size
 of v1 more than any other. It was closed at twenty-two; the twenty-second,
 `measure.object_measurements`, left it when the segmentation operations took
 over measuring (below), which made it twenty-one. Requirements 0.14 then added
 `pixel.distance_transform` (UR-PIX-7), for the watershed's input, and
 `pixel.fill_holes` (UR-PIX-8), for cleaning masks, which makes it twenty-three.
+Requirements 0.16 added `pixel.remove_large_objects` (UR-PIX-9), for removing
+stained areas too large to be nuclei, which makes it twenty-four.
 
 | Name | Section | Arity | Halo |
 |---|---|---|---|
@@ -1732,6 +1779,7 @@ over measuring (below), which made it twenty-one. Requirements 0.14 then added
 | `pixel.morph_close` | 6.4 | PerChannel | twice `pixel.morph_erode`'s |
 | `pixel.distance_transform` | 6.4 | PerChannel | `maximumDistancePx` |
 | `pixel.fill_holes` | 6.4 | PerChannel | `maximumHoleSizePx` |
+| `pixel.remove_large_objects` | 6.4 | PerChannel | `maximumObjectSizePx` |
 | `pixel.threshold_fixed` | 6.5 | PerChannel | none |
 | `pixel.threshold_otsu` | 6.5 | PerChannel, global context | none |
 | `pixel.threshold_adaptive` | 6.5 | PerChannel | blockSize/2 |
@@ -1775,6 +1823,7 @@ a framework mechanism, and nothing here exists without such a mandate:
 | UR-PIX-6 composition | `pipeline`, not an operation |
 | UR-PIX-7 distance transform for the watershed's input | `pixel.distance_transform` |
 | UR-PIX-8 filling of holes in a binary mask | `pixel.fill_holes` |
+| UR-PIX-9 removal of objects larger than a declared size from a binary mask | `pixel.remove_large_objects` |
 | UR-IMG-13 explicit type conversion | `pixel.convert_type` |
 | UR-SEG-1 tissue versus background | `segment.tissue_detect` |
 | UR-SEG-2 connected components | `segment.connected_components` |
@@ -1796,7 +1845,7 @@ already implemented every one.
 question 7 was closed. The catalog did not grow for it — it was twenty-one
 operations, after `measure.object_measurements` left, until UR-PIX-7 and
 UR-PIX-8 added two more — so the mapping is now
-eighteen requirements against twenty-three entries with one requirement
+eighteen requirements against twenty-four entries with one requirement
 unanswered. The closure of question 7 survives as a *decision*
 rather than as a derivation from the requirements, which is a weaker thing and
 is recorded here as such.

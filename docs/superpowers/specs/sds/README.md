@@ -84,7 +84,7 @@ the SDS rather than from `requirements.md`, so they carry no question number:
 Questions 3, 4, 7, 8, 9 and 10 were open when this document was written and are
 now resolved: 3 by the scene-source extension seam, 4 by the spike plus the
 physical-key change of 03 §3.12, 7 by the closed catalog of 06 §6.10, now
-twenty-three operations, 8 by the ten-label vocabulary of 02 §2.2, 9 as one slide
+twenty-four operations, 8 by the ten-label vocabulary of 02 §2.2, 9 as one slide
 per workspace, and 10 as UR-EXE-8's 30 minutes. Question 16 was raised later,
 when question 3 closed, and is resolved as no: OME-TIFF conversion rejects a
 channel range of mixed types (SlideIO PR #86), so a mixed-type scene exports to

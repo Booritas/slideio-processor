@@ -245,7 +245,7 @@ each take a `targetLayer` and emit unlabelled geometry. Read literally the rule
 yields the empty set, and the dependency on question 7 is weaker than it looks
 — none of the ten depends on which filters ship. Question 7 has since been
 resolved at twenty-one operations (`06-algorithm.md` 6.10; twenty-three since
-requirements 0.14), none of which emits
+requirements 0.14, twenty-four since 0.16), none of which emits
 a label, which confirms the reading rather than changing it. What the vocabulary is
 actually for is the other two paths: what imports cleanly under
 `ImportPolicy::Strict` (`03-storage.md` 3.11), and what a user's own

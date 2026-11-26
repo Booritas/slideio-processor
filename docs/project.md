@@ -147,7 +147,7 @@ test suite must demonstrate, and nothing in the design may treat them as bounds.
   corners and along seams, and joins fragments only within one join key, so
   regions touching across a seam stay apart. The segmenters measure at most
   three channels besides the one they segment. The catalog closes at
-  twenty-three operations (it grew by two in requirements 0.14: the distance
+  twenty-four operations (it grew by two in requirements 0.14: the distance
   transform and hole filling). Segmenters measure the scene's samples
   (`OperationContext::sourceInput()`), not planes earlier steps transformed.
   **Delivered** as PR #15 (merged 2026-11-19).
