@@ -1,4 +1,4 @@
-// Requirements: UR-SEG-8, UR-SEG-3, UR-PIX-7, UR-PIX-8
+// Requirements: UR-SEG-8, UR-SEG-3, UR-PIX-7, UR-PIX-8, UR-PIX-9
 #include <slideio/processor/algorithm/pixel/filter.hpp>
 #include <slideio/processor/algorithm/pixel/threshold.hpp>
 #include <slideio/processor/algorithm/segment/segment.hpp>

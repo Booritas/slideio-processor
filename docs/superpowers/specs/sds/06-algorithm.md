@@ -1901,7 +1901,7 @@ UR-QA-3, and the relationship between seed scale and scale parameter is
 unresolved and is the main thing blocking an API.
 
 Three ways out, and the choice belongs to whoever sets v1's scope: ship
-`segment.multiresolution` and make the catalog twenty-three; downgrade UR-SEG-9
+`segment.multiresolution` and make the catalog twenty-five; downgrade UR-SEG-9
 to a *May*; or leave it a *Should* against a later release and say so in the
 release notes. Leaving it unstated is the only wrong answer, because a Should
 with nothing behind it reads as an oversight rather than a plan.

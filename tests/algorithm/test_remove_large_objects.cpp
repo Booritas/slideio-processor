@@ -1,4 +1,4 @@
-// Requirements: UR-PIX-9, UR-QA-3
+// Requirements: UR-PIX-9, UR-QA-2, UR-QA-3, UR-ALG-6
 #include <slideio/processor/algorithm/pixel/filter.hpp>
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/error.hpp>
