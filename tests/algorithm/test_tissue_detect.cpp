@@ -1204,16 +1204,93 @@ TEST(TissueDetect, EmptyHistogramFindsNothing) {
 }
 
 TEST(TissueDetect, TriangleFloat32Refused) {
+    // Refused when the run is planned, before any tile is read or counted.
+    const Configuration config =
+        ConfigurationBuilder().tileSize(100, 100).tileSizeFromSlide(false).workerCount(1).build();
+    Pipeline pipeline(fluorescenceScene(slideio::DataType::DT_Float32, 1.0), config, triangleSpec(2));
+    pipeline.bindLayer("objects", ts::objectsLayer());
     try {
-        ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Float32, 1.0), triangleSpec(2), 100, 4);
-        FAIL() << "a Float32 run with Triangle succeeded";
-    } catch (const TileError& e) {
-        const std::string cause = e.cause();
-        EXPECT_NE(cause.find(kName), std::string::npos) << cause;
-        EXPECT_NE(cause.find("Fixed"), std::string::npos) << cause;
+        pipeline.validate();
+        FAIL() << "validate() accepted Float32 input with Triangle";
     } catch (const UnsupportedDataTypeError& e) {
         const std::string message = e.what();
         EXPECT_NE(message.find("Fixed"), std::string::npos) << message;
+        ASSERT_NE(e.operationName(), nullptr);
+        EXPECT_STREQ(e.operationName(), kName);
+        EXPECT_EQ(e.offendingType(), DataType::Float32);
+    }
+    // A run is refused the same way, not by a tile.
+    EXPECT_THROW(
+        ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Float32, 1.0), triangleSpec(2), 100, 4),
+        UnsupportedDataTypeError);
+    // Fixed accepts Float32, as brightfield does, and Triangle Byte and UInt16.
+    const OperationPtr triangle = makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence));
+    EXPECT_THROW(triangle->outputType(DataType::Float32), UnsupportedDataTypeError);
+    EXPECT_EQ(triangle->outputType(DataType::Byte), DataType::Byte);
+    EXPECT_EQ(triangle->outputType(DataType::UInt16), DataType::Byte);
+    EXPECT_EQ(makeTissueDetect(TissueDetectParameters()
+                                   .mode(TissueMode::Fluorescence)
+                                   .thresholdMethod(TissueThresholdMethod::Fixed)
+                                   .intensityThreshold(4.5))
+                  ->outputType(DataType::Float32),
+              DataType::Byte);
+    EXPECT_EQ(makeTissueDetect(TissueDetectParameters())->outputType(DataType::Float32), DataType::Byte);
+}
+
+TEST(TissueDetect, TriangleUInt16TwoLevels) {
+    // Zeros, more than twice the signal, and the two ellipses at exactly
+    // 1000: the step reduction makes the histogram {0, 1}, whose triangle
+    // cut-off, 2, scaled back to 2000 would leave every value out; the
+    // unreduced histogram's cut-off lies between 0 and 1000. The objects are
+    // those of the Byte slide at 0 and 200, and of Fixed at 500.
+    const auto twoLevels = [](slideio::DataType type, double level) {
+        return ts::makeSyntheticScene({{kFluorescenceWidth, kFluorescenceHeight, 0, 0}}, {type},
+                                      [level](int, int64_t x, int64_t y) {
+                                          return kFluorescenceA.contains(x, y) || kFluorescenceB.contains(x, y)
+                                                     ? level
+                                                     : 0.0;
+                                      });
+    };
+    ASSERT_GT(static_cast<double>(kFluorescenceWidth * kFluorescenceHeight) - fluorescenceArea(),
+              2.0 * fluorescenceArea());
+    const std::vector<ObjectRecord> bytes =
+        ts::runEagerObjects(twoLevels(slideio::DataType::DT_Byte, 200.0), triangleSpec(2), 100, 4);
+    ASSERT_EQ(bytes.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(bytes) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(bytes);
+    const auto words = twoLevels(slideio::DataType::DT_UInt16, 1000.0);
+    const std::vector<ObjectRecord> uint16 = ts::runEagerObjects(words, triangleSpec(2), 100, 4);
+    expectSameObjects(bytes, uint16, "UInt16 at 1000");
+    expectSameObjects(ts::runEagerObjects(words, fluorescenceSpec(500.0), 100, 4), uint16, "UInt16, Fixed at 500");
+}
+
+TEST(TissueDetect, TriangleSingleValueRestricted) {
+    // Zeros everywhere but a rectangle at one value, and a restriction that
+    // admits exactly the rectangle: one counted value v, so the cut-off is
+    // v - 1. The rectangle is tissue and the zeros outside the restriction,
+    // never counted, are not.
+    constexpr int64_t left = 100;
+    constexpr int64_t top = 100;
+    constexpr int64_t right = 300;
+    constexpr int64_t bottom = 250;
+    const Point64 points[] = {{left, top}, {right, top}, {right, bottom}, {left, bottom}};
+    Polygon polygon;
+    polygon.addRing(points, 4, false);
+    PipelineSpec spec = triangleSpec(2);
+    spec.restrictToPolygon(polygon);
+    const struct {
+        slideio::DataType type;
+        double value;
+    } cases[] = {{slideio::DataType::DT_Byte, 1.0}, {slideio::DataType::DT_UInt16, 1000.0}};
+    for (const auto& c : cases) {
+        const double value = c.value;
+        const auto scene = ts::makeSyntheticScene(
+            {{kFluorescenceWidth, kFluorescenceHeight, 0, 0}}, {c.type}, [value](int, int64_t x, int64_t y) {
+                return x >= left && x < right && y >= top && y < bottom ? value : 0.0;
+            });
+        const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, spec, 100, 4);
+        ASSERT_EQ(objects.size(), 1u) << value;
+        EXPECT_EQ(measurement(objects[0], "area"), static_cast<double>((right - left) * (bottom - top))) << value;
+        EXPECT_EQ(objects[0].geometry().ringCount(), 1) << value;
     }
 }
 

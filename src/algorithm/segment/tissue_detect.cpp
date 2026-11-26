@@ -201,7 +201,19 @@ public:
     // radius, and each dilated value on the mask within the radius again; the
     // one more keeps the pixels just beyond in view.
     Halo halo() const override { return Halo::uniform(2 * radius_ + 1); }
-    DataType outputType(DataType) const override { return DataType::Byte; }
+    // Validation calls this with the input type, before any tile is read: a
+    // Float32 input with Triangle, which has no histogram of its values, is
+    // refused there. supportedTypes() cannot refuse it, as it does not depend
+    // on the mode; accumulate() refuses it again.
+    DataType outputType(DataType type) const override {
+        if (triangle_ && type != DataType::Byte && type != DataType::UInt16) {
+            ErrorContext context;
+            context.operationName = kName;
+            throw UnsupportedDataTypeError(kTriangleTypeMessage, type,
+                                           DataTypeSet().add(DataType::Byte).add(DataType::UInt16), context);
+        }
+        return DataType::Byte;
+    }
     // In brightfield mode the three planes are a pixel's colour; in fluorescence
     // mode each is a stain's intensity. Validation calls this.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override {
@@ -219,7 +231,9 @@ public:
     // per bin, 65536 bins at most (UInt16's), and the allocator's overhead on
     // it. accumulate() keeps no local copy and allocates nothing per pixel
     // beyond its row pointers; the figure counts the histogram and its
-    // overhead twice all the same, a deliberate, conservative margin.
+    // overhead twice all the same, a deliberate, conservative margin, which
+    // also covers finalizeAccumulation()'s reduced copy of the histogram (at
+    // most 32768 bins) beside the histogram itself.
     int64_t workingSetBytesPerTile() const override {
         return triangle_ ? kBytesPerTile + 2 * kMaxTriangleBins * 8 + 2 * detail::kAllocatorBlockOverhead
                          : kBytesPerTile;
@@ -289,45 +303,63 @@ public:
     }
 
     // The cut-off is the triangle bin of the histogram; tissue is above it.
-    // Nothing counted, no cut-off: nothing is tissue. The bin may be -1 for a
-    // histogram rising straight to its peak from bin 0, as OpenCV's, and then
-    // every counted value is above it.
+    // Nothing counted, no cut-off: nothing is tissue.
     //
     // UInt16 data is often a narrower range scaled up, every value a multiple
     // of a step g (257 for 8-bit data stretched to 16 bits): the empty bins
     // between the populated ones would put the triangle's cut-off right next
     // to the background's peak. So the values are divided by g, the GCD of
-    // the populated bins (0 fits every step), the triangle is taken on the
-    // reduced histogram, and its cut-off t is scaled back to t * g: a value v,
-    // a multiple of g, is above t * g exactly when v / g is above t. Byte is
-    // never reduced, so it still equals OpenCV. The reduction is made in
-    // place, and the histogram, read once, is then freed.
+    // the populated bins (0 fits every step), the triangle is taken on a
+    // reduced copy of the histogram, and its cut-off t is scaled back to
+    // t * g: a value v, a multiple of g, is above t * g exactly when v / g is
+    // above t. When t is at or beyond the largest reduced value, every counted
+    // value would be at or below t * g (two values, 0 and 1000, reduce to
+    // {0, 1}, whose cut-off is 2), so the reduction is dropped and the
+    // triangle is taken on the unreduced histogram instead. Byte is never
+    // reduced, so it still equals OpenCV.
+    //
+    // The cut-off never falls below the smallest counted value minus 1. The
+    // triangle bin is below that for a single counted value (OpenCV gives -1
+    // for a uniform 1, and a single UInt16 value reduces to 1) or a histogram
+    // rising straight to its peak from its first populated bin: every counted
+    // value is above it, and raising it to the smallest counted value minus 1
+    // keeps them so while leaving out values nothing counted, such as the
+    // zeros outside the run's restriction. A single counted value v thus gives
+    // v - 1. The histogram, and its reduced copy (at most 32768 bins, as
+    // g >= 2), are freed here.
     void finalizeAccumulation() override {
         if (!triangle_) {
             return;
         }
-        const bool counted = std::any_of(bins_.begin(), bins_.end(), [](int64_t c) { return c > 0; });
-        if (counted) {
-            int64_t step = 1;
-            if (bins_.size() == static_cast<size_t>(kMaxTriangleBins)) {
-                int64_t g = 0;
-                for (size_t v = 0; v < bins_.size(); ++v) {
-                    if (bins_[v] > 0) {
-                        g = std::gcd(g, static_cast<int64_t>(v));
-                    }
+        const auto first = std::find_if(bins_.begin(), bins_.end(), [](int64_t c) { return c > 0; });
+        if (first != bins_.end()) {
+            const auto smallest = static_cast<int64_t>(std::distance(bins_.begin(), first));
+            int64_t largest = smallest;
+            int64_t g = 0;
+            for (size_t v = static_cast<size_t>(smallest); v < bins_.size(); ++v) {
+                if (bins_[v] > 0) {
+                    largest = static_cast<int64_t>(v);
+                    g = std::gcd(g, static_cast<int64_t>(v));
                 }
-                step = g > 1 ? g : 1;
             }
+            const int64_t step = bins_.size() == static_cast<size_t>(kMaxTriangleBins) && g > 1 ? g : 1;
+            int64_t bin = 0;
+            bool reducedHolds = false;
             if (step > 1) {
-                // Bin v * step moves to bin v: v <= v * step, and the bins
-                // between the multiples are empty.
-                const auto reduced = static_cast<size_t>((kMaxTriangleBins - 1) / step + 1);
-                for (size_t v = 1; v < reduced; ++v) {
-                    bins_[v] = bins_[v * static_cast<size_t>(step)];
+                // Bin v * step of the histogram is bin v of the copy; the
+                // bins between the multiples are empty.
+                std::vector<int64_t> reduced(static_cast<size_t>((kMaxTriangleBins - 1) / step + 1));
+                for (size_t v = 0; v < reduced.size(); ++v) {
+                    reduced[v] = bins_[v * static_cast<size_t>(step)];
                 }
-                bins_.resize(reduced);
+                const int64_t t = detail::triangleThresholdBin(reduced);
+                reducedHolds = t < largest / step;
+                bin = t * step;
             }
-            cutoff_ = static_cast<double>(detail::triangleThresholdBin(bins_) * step);
+            if (!reducedHolds) {
+                bin = detail::triangleThresholdBin(bins_);
+            }
+            cutoff_ = static_cast<double>(std::max(bin, smallest - 1));
             cutoffKnown_ = true;
         }
         bins_ = std::vector<int64_t>();
