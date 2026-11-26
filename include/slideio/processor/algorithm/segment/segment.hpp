@@ -849,13 +849,18 @@ enum class TissueThresholdMethod : int32_t {
  * operation from the same bag:
  * | Key | Type | Default | Range |
  * |---|---|---|---|
- * | `mode` | string | `Brightfield` | `Brightfield` or `Fluorescence`; recorded only in fluorescence mode |
- * | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only: refused in fluorescence mode |
- * | `thresholdMethod` | string | `Triangle` in fluorescence mode | `Triangle` or `Fixed`; fluorescence only: refused in brightfield mode |
- * | `intensityThreshold` | double | absent | finite; required with `Fixed`, refused otherwise |
+ * | `mode` | string | `Brightfield` | `Brightfield` or `Fluorescence` |
+ * | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only |
+ * | `thresholdMethod` | string | `Triangle` (fluorescence) | `Triangle` or `Fixed` |
+ * | `intensityThreshold` | double | absent | finite; with `Fixed` only |
  * | `minimumRegionAreaPx` | int | 0 | at least 0 |
  * | `closingRadiusPx` | int | 2 | 0 to 127 |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
+ *
+ * `mode` is recorded only in fluorescence mode. `saturationThreshold` is
+ * refused in fluorescence mode; `thresholdMethod` and `intensityThreshold` are
+ * fluorescence only and refused in brightfield mode; `intensityThreshold` is
+ * required with `Fixed` and refused with `Triangle`.
  *
  * A moved-from object may only be assigned to or destroyed.
  * @par Thread-safety
@@ -1041,10 +1046,11 @@ private:
  * output plane, producing objects.
  *
  * **Brightfield mode**, the default, takes exactly three planes: a pixel's
- * red, green and blue samples, in any order. A pixel is tissue when its saturation, (max - min) / max over its three
- * samples, exceeds `saturationThreshold`; a pixel whose samples are all 0,
- * as pixels beyond the level are, is background; so is a `Float32` pixel
- * whose maximum is not above 0, or is NaN.
+ * red, green and blue samples, in any order. A pixel is tissue when its
+ * saturation, (max - min) / max over its three samples, exceeds
+ * `saturationThreshold`; a pixel whose samples are all 0, as pixels beyond the
+ * level are, is background; so is a `Float32` pixel whose maximum is not above
+ * 0, or with a NaN sample in any plane.
  *
  * **Fluorescence mode** (`mode` set to `Fluorescence`) takes one or more
  * planes, for example the channels the pipeline selects. A pixel's signal is
@@ -1056,20 +1062,28 @@ private:
  * the histogram of the signal over the analysis level, counting only the
  * pixels the run's mask admits, so the cut-off does not depend on the tile
  * size, the worker count or the tile order. A histogram with nothing counted
- * has no cut-off, and then nothing is tissue. Triangle needs `Byte` or
+ * has no cut-off, and then nothing is tissue. A single counted value v above
+ * 0 gives the cut-off v - 1, so a uniform admitted region is all tissue; a
+ * single bin at 0 finds nothing. For `UInt16` whose counted values are all
+ * multiples of a step g (8-bit data scaled by 257, say), the triangle is taken
+ * on the values divided by g, the greatest common divisor of those counted,
+ * and its cut-off multiplied by g: such data gives the 8-bit cut-off times g.
+ * Zeros outside the scanned area are counted like any value: when they
+ * outweigh the glass, the cut-off falls below the glass and the glass is found
+ * as tissue. For such a slide use `Fixed`, or restrict the run to the scanned
+ * area so the zeros are not counted. Triangle needs `Byte` or
  * `UInt16`; for `Float32` use `Fixed`, or UnsupportedDataTypeError is
  * thrown. In this mode pixels beyond the level, and pixels whose samples are
  * all NaN, are background whatever the cut-off.
  *
- * In both modes the tissue mask is then
- * closed, dilated and then eroded, with a disc of radius `closingRadiusPx` in
- * pixels of the analysis level: the pixels within that Euclidean distance of
- * its centre. The closing bridges gaps and fills holes narrower than the
- * disc, and is exact under tiling: the halo holds every pixel a tile pixel's
- * closed value depends on. Each maximal 4-connected set of closed tissue
- * pixels is one object, its outline and holes traced along pixel edges in
- * level-0 coordinates (UR-SEG-4); an object cut by tile seams is merged from
- * its fragments.
+ * In both modes the tissue mask is then closed, dilated and then eroded,
+ * with a disc of radius `closingRadiusPx` in pixels of the analysis level:
+ * the pixels within that Euclidean distance of its centre. The closing
+ * bridges gaps and fills holes narrower than the disc, and is exact under
+ * tiling: the halo holds every pixel a tile pixel's closed value depends on.
+ * Each maximal 4-connected set of closed tissue pixels is one object, its
+ * outline and holes traced along pixel edges in level-0 coordinates
+ * (UR-SEG-4); an object cut by tile seams is merged from its fragments.
  *
  * Nothing is measured but the geometry: each object has `area` and
  * `perimeter` in level-0 pixels, also as `area.um2` and `perimeter.um` when

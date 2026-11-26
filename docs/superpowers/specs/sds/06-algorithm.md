@@ -237,7 +237,7 @@ beside it saying which buffers it counts:
 | `segment.connected_components` | 192: the union-find parents, the traced rings, the region table and the objects emitted inside the call (the tile filter's and the finisher's copies included), one intensity partial per object and measured plane for at most three measured planes | 16384: one object's record and its finished copy with every measurement, and the small arrays of a tile with few objects |
 | `segment.contours` | 264: as connected components, without partials, but regions of different values touch side by side, so the traced arrays and a join key per region can reach one per pixel | 4096 |
 | `segment.watershed` | 288 per pixel of the halo'd tile: plane 0 as doubles, each pixel's seed and the flood's queue, then the labelling, tracing and emission of contours with three measured planes | 16384 |
-| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions; fluorescence adds nothing, the mask being computed straight into the same buffer | 4096; with Triangle, 4096 + 2 · 65536 · 8 + 2 · 64 (the histogram's 65536 bins of 8 bytes counted twice, as Otsu's local copy is, and the allocator's overhead on each). Its accumulated state, whatever the input type, is 65536 · 8 + 64 bytes of histogram, the instance, and 4096 + 128 · 4 + 64 bytes of bookkeeping |
+| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions; fluorescence adds nothing, the mask being computed straight into the same buffer | 4096; with Triangle, 4096 + 2 · 65536 · 8 + 2 · 64 (the histogram's 65536 bins of 8 bytes and the allocator's overhead on them, counted twice: `accumulate()` keeps no local copy, so the second is a deliberate, conservative margin). A Triangle instance's accumulated state, whatever the input type, is 65536 · 8 + 64 bytes of histogram, the instance, and 4096 + 128 · 4 + 64 bytes of bookkeeping; brightfield and Fixed instances declare 0 accumulated state and need no global context |
 
 The catalog's parameter-free figures for `segment.tissue_detect` (`accumulatedStateBytes`, `workingSetBytesPerTile`, the supported types and the plane count) describe the default, brightfield operation; a run uses the figures of its own instance.
 
@@ -748,8 +748,10 @@ OperationPtr makeAdaptiveThreshold(AdaptiveMethod, int32_t blockSize,
 
 **Requirements:** UR-PIX-5, UR-EXE-1, UR-QA-2, UR-QA-3, UR-IMG-11.
 
-`makeOtsuThreshold` is the module's only global-context operation and the
-reason `pipeline::Reduction` exists. It returns `needsGlobalContext() == true`,
+`makeOtsuThreshold` is a global-context operation, the first and the
+reason `pipeline::Reduction` exists; the other is `segment.tissue_detect` in
+fluorescence mode with the Triangle method (6.7), which takes the same route.
+It returns `needsGlobalContext() == true`,
 accumulates a `Histogram64` per tile, combines order-independently because the
 bins are integers, and computes the threshold once before the apply pass.
 
@@ -1152,10 +1154,31 @@ and tissue shows as brightness, not colour:
   final decrement, and the flip undone. On `Byte` it equals `cv::threshold`
   with `THRESH_TRIANGLE` on the same pixels, which the test takes as its
   oracle.
+- **UInt16 in steps.** `UInt16` data is often a narrower range scaled up,
+  every value a multiple of a step g (257 for 8-bit data stretched to 16
+  bits); the empty bins between the populated ones would put the cut-off right
+  next to the glass's peak. So for `UInt16` the bins are first reduced by g,
+  the greatest common divisor of the populated values (0 fits every step):
+  value v is counted as v / g over 65535 / g + 1 bins, the triangle gives t on
+  them, and the cut-off is t · g. For a multiple of g, v > t · g exactly when
+  v / g > t, so 8-bit data scaled by 257 gives the cut-off of the 8-bit data
+  times 257 and the same objects. Dense data (g = 1) is unchanged, and `Byte`
+  is never reduced, so it still equals OpenCV.
 - **The empty histogram.** Only a histogram with nothing counted, the mask
   admitting no pixel, has no cut-off, and then nothing is tissue. A non-empty
   histogram that rises straight to its peak gives OpenCV's -1, which is a real
-  cut-off: every counted pixel is above it and is tissue.
+  cut-off: every counted pixel is above it and is tissue. A single non-empty
+  bin is OpenCV's case too: a uniform admitted region at value v > 0 gives the
+  cut-off v − 1, so all of it is tissue, and a single bin at 0 finds nothing.
+- **Exact zeros that outweigh the glass.** Pixels outside the scanned area are
+  0 and are counted like any other. When they are a small band, as on the
+  example slide, the cut-off stays above the glass; when exact zeros outweigh
+  the glass (in the test, more than half of the counted pixels), bin 0 becomes
+  the peak, the cut-off falls below the glass's maximum, and glass is found as
+  tissue. The behaviour is kept on purpose: on a slide whose glass is truly
+  black, counting the zeros is right. On a slide with a large unscanned border,
+  use `"Fixed"`, or restrict the run to the scanned area (a polygon or mask
+  restriction, 5.4), so the zeros are not counted.
 - **The bag.** The operation records `mode`, `thresholdMethod` and
   `intensityThreshold` only in fluorescence mode. A brightfield operation
   records exactly the keys it recorded before the mode existed, so existing
