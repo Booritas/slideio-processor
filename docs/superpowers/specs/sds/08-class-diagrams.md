@@ -2068,7 +2068,7 @@ library.
 `AdaptiveMethod`, and `convertFactories` with `RoundingMode` and
 `OverflowMode` are built, in `registry.hpp`, `pixel/colour.hpp`,
 `pixel/filter.hpp`, `pixel/threshold.hpp` and `pixel/convert.hpp`;
-`registerPixelOperations()` registers their seventeen operations.
+`registerPixelOperations()` registers their twenty operations.
 `segmentFactories` with `Connectivity`, `WatershedMarkers` and the four
 parameters classes, in `segment/segment.hpp`, and `MeasurementSelection`,
 `MeasurementKind` and `calibration`, in `measure/measure.hpp`, are built too;

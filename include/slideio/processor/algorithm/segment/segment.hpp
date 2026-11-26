@@ -762,7 +762,11 @@ private:
  *   `maximumObjectSizePx` at most `maximumMarkerSpacingPx`: only objects
  *   within the spacing are left, so the reach holds even when the cut-off
  *   lets large stained areas through. Those areas are removed, not
- *   segmented.
+ *   segmented. Removal takes the whole 8-connected object, so a nucleus
+ *   touching a large stained area, even diagonally, is removed with it; a
+ *   cut-off that merges nuclei into large regions loses them silently, so check
+ *   the threshold (for example compare object counts with and without the
+ *   step).
  *
  * Flood a surface that peaks inside each object, such as a distance transform
  * of a mask or a smoothed intensity. A plateau gives only its topmost-leftmost

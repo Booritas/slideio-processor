@@ -655,7 +655,7 @@ open question 15 in `requirements.md` and needs a requirements amendment
 rather than a silent reinterpretation here.
 
 Everything else in 6.4 and 6.5 is genuinely local. Gaussian, median, Sobel,
-Scharr, Laplacian, bilateral, the distance transform, hole filling and all four morphology operations depend on a
+Scharr, Laplacian, bilateral, the distance transform, hole filling, removal of large objects and all four morphology operations depend on a
 bounded neighbourhood, so the declared halo makes them exact, and Otsu is
 global by construction rather than by accident (6.5).
 
@@ -744,7 +744,10 @@ foreground pixel whose object fits and 0 elsewhere. An **object** is an
 background; it is removed when its bounding box is wider than
 `maximumObjectSizePx` or higher than it. Pixels beyond the level are zero (05
 §5.5), so an object cut by the level edge is measured by its pixels inside the
-level.
+level. Removal takes the whole object, so a nucleus touching a large stained
+area, even diagonally, is removed with it; a cut-off that merges nuclei into
+large regions loses them silently, so check the threshold (for example compare
+object counts with and without the step).
 
 **Why it is exact at any tile size.** The halo is the size bound, *S* =
 `maximumObjectSizePx`, as for hole filling. In the halo'd context, an object
@@ -764,7 +767,9 @@ from the mask. All of it comes from `operator new`, so the working-set check
 measures it (the table of 6.2): 5 bytes per pixel of the halo'd rect. A context
 of more than 2147483647 pixels cannot be labelled and fails the tile with
 `InvalidArgumentError`, giving the count and asking for a smaller tile size,
-as hole filling does.
+as hole filling does. The halo is the size bound, so choose a tile several times
+the bound: at *S* = 4096 a 512 tile's context is about 8700 pixels a side, as
+for hole filling.
 
 ## 6.5 Thresholding — `algorithm/pixel/threshold.hpp`
 
@@ -1725,7 +1730,7 @@ The operations that exist state their reference through
 | `pixel.median_blur` | Published definition: the middle value of the sorted window, against a direct sort | Exact: equal to the direct sort on random `Byte`, `UInt16`, `Float32` and full-range `Int64`; `Byte` through OpenCV equal to `UInt16` through the module's own selection; a constant sample kept bit for bit in all eleven types; NaN above every number; tiled output bitwise equal to one tile on `Byte` and `Float32` |
 | `pixel.distance_transform` | Published definition: exact Euclidean distance (Felzenszwalb and Huttenlocher, *Theory of Computing* 8:415–428 (2012)); brute force over all background pixels | Exact: equal to the brute-force distance, clamped at the maximum, on random 0/1 `Byte` masks at maximums 3, 8 and 32, the level's edge counting as background; the centre of a disc equal to the brute force; a NaN sample background and a negative one foreground; output `Float32` for every input type; at maximums 300 and 1000 on sparse masks; over the 4096-pixel row of a context 8192 pixels wide, at maximum 2048 the final review's case (background 545 and 568 rows away at columns 4481 and 6081, where a `float` breakpoint gives √949889 for √949888) and sparse background at maximums 2048 and 4096; tiled output bitwise equal to one tile on `Byte` and `Float32`, at maximum 600 on a sparse mask, and at maximum 1100 on a sparse 3000 by 2600 level whose distances run to the maximum, at tiles 1000 and 1536, the single tile equal to the brute force on a lattice |
 | `pixel.fill_holes` | Published definition: background components enclosed within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% foreground) at sizes 2, 4 and 8 with the area absent and 6; a hole of 5 by 5 filled and one of 6 by 6 not at size 5; an area of 16 filled and of 15 not; a U open to the level edge unfilled; a ring closed only diagonally filled; nested rings; NaN background; output `Byte` 255 for `UInt16` and `Float32`; tiled output bitwise equal to one tile at tiles 64, 100 and 257 on `Byte` and `Float32`, with holes across the seams |
-| `pixel.remove_large_objects` | Published definition: 8-connected foreground components within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% and 30% foreground) at sizes 2, 4 and 8; at size 5 a 5 by 5 square and 1 by 5 bars kept and objects of 6 by 5, 5 by 6 and 1 by 6 removed; six pixels on a diagonal one object removed and, with a gap, two kept; a 3 by 3 object in either corner of the level kept and a 10 by 3 one along its top edge removed; NaN background, splitting two 4 by 4 squares that would form an 8 by 4 object; output `Byte` 255 for `UInt16` and `Float32`; at size 32 on a 300 by 260 mask of rectangles of 20 to 39 pixels a side, specks and one blob of 120 by 90, the single tile equal to the flood fill and tiled output bitwise equal to it at tiles 64, 100 and 257 on `Byte` and `Float32`; a context of 2³¹ pixels refused naming the count and a smaller tile size (release builds) |
+| `pixel.remove_large_objects` | Published definition: 8-connected foreground components within the declared size; a brute-force flood fill | Exact: equal to the flood fill, over the whole image, on random masks (60 by 50, 55% and 30% foreground) at sizes 2, 4 and 8; at size 5 a 5 by 5 square and 1 by 5 bars kept and objects of 6 by 5, 5 by 6 and 1 by 6 removed; six pixels on a diagonal one object removed and, with a gap, two kept; a 3 by 3 object in either corner of the level kept and a 10 by 3 one along its top edge removed; NaN background, splitting a 4 by 4 and a 3 by 4 block that would form an 8 by 4 object; output `Byte` 255 for `UInt16` and `Float32`; at size 32 on a 300 by 260 mask of rectangles of 20 to 39 pixels a side, specks and one blob of 120 by 90, the single tile equal to the flood fill and tiled output bitwise equal to it at tiles 64, 100 and 257 on `Byte` and `Float32`; a context of 2³¹ pixels refused naming the count and a smaller tile size (release builds) |
 | `pixel.bilateral_filter` | Tomasi and Manduchi, *ICCV* 1998; a direct per-pixel computation | Exact: `Float64` equal bit for bit to the direct computation and `Float32` to its rounding, also with NaN neighbours left out of both sums; an infinite centre kept and its finite neighbours exact; a 0/200 step edge kept within 10⁻⁶ and the neighbours of a NaN within 10⁻¹² of a constant; tiled output bitwise equal to one tile on `Byte` and on `Float32` with NaNs, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.morph_erode`, `pixel.morph_dilate`, `pixel.morph_open`, `pixel.morph_close` | Analytic: erosion and dilation of synthetic binary shapes by known elements | Exact: squares eroded, dilated, opened and closed to their analytic shapes in all five types; on NaN-free input equal to OpenCV's `morphologyEx` on the zero-padded image in all five types; a NaN in the window gives NaN; the level's edge erodes inward; tiled output bitwise equal to one tile on `Float32` and `UInt16`, and on `Float32` with NaNs and signed zeros, and a column shift giving the same bits on `Float32` and `Float64` |
 | `pixel.canny` | Canny, *IEEE TPAMI* 8:679–698 (1986); OpenCV's `Canny` on one tile | Exact on one tile against `cv::Canny` of the zero-padded level, at apertures 3, 5 and 7; tiled output equal to one tile where every edge is strong; on a weak chain longer than the reach, the pixels tiling changes there are dropped ones, each further than 32 pixels from every strong one; thresholds beyond every reachable magnitude, up to 10¹², give no edges; the complexity note states the bound verbatim |
@@ -1844,8 +1849,8 @@ already implemented every one.
 `requirements.md` in version 0.11, after this section was written and after
 question 7 was closed. The catalog did not grow for it — it was twenty-one
 operations, after `measure.object_measurements` left, until UR-PIX-7 and
-UR-PIX-8 added two more — so the mapping is now
-eighteen requirements against twenty-four entries with one requirement
+UR-PIX-8 added two more and UR-PIX-9 one more — so the mapping is now
+nineteen requirements against twenty-four entries with one requirement
 unanswered. The closure of question 7 survives as a *decision*
 rather than as a derivation from the requirements, which is a weaker thing and
 is recorded here as such.

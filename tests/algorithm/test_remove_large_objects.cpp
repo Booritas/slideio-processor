@@ -202,7 +202,11 @@ TEST(RemoveLargeObjects, RejectsBadParameters) {
     const std::string wrongType = rejection(OperationParameters().setDouble("maximumObjectSizePx", 8.0));
     EXPECT_NE(wrongType.find("maximumObjectSizePx"), std::string::npos) << wrongType;
     EXPECT_NE(wrongType.find(kName), std::string::npos) << wrongType;
-    EXPECT_FALSE(rejection(OperationParameters().setString("maximumObjectSizePx", "8")).empty());
+    EXPECT_EQ(wrongType.find("8"), std::string::npos) << wrongType;
+    const std::string wrongString = rejection(OperationParameters().setString("maximumObjectSizePx", "8"));
+    EXPECT_FALSE(wrongString.empty());
+    EXPECT_NE(wrongString.find("maximumObjectSizePx"), std::string::npos) << wrongString;
+    EXPECT_EQ(wrongString.find("8"), std::string::npos) << wrongString;
     const std::string unknown = rejection(OperationParameters().setInt("maximumObject", 8));
     EXPECT_NE(unknown.find("maximumObject"), std::string::npos) << unknown;
 }
@@ -269,7 +273,8 @@ TEST(RemoveLargeObjects, SmallObjectAtLevelEdgeKept) {
 }
 
 TEST(RemoveLargeObjects, NaNIsBackground) {
-    // NaN separates two 4x4 squares that would otherwise form an 8x4 object.
+    // NaN (column x = 7) separates a 4x4 block (x 3..6) and a 3x4 block (x 8..10) that would otherwise form
+    // an 8x4 object.
     const OperationPtr op = makeRemoveLargeObjects(5);
     const ts::Image out = ts::applyDirect(*op, {DataType::Float32}, {0}, 16, 10, [](int32_t, int64_t x, int64_t y) {
         if (y < 3 || y > 6 || x < 3 || x > 10) {
@@ -317,22 +322,40 @@ TEST(RemoveLargeObjects, MatchesBruteForce) {
 
 TEST(RemoveLargeObjects, TiledEqualsSingleTile) {
     // Rectangles of 20 to 39 pixels a side on a grid whose period divides no tile size (some are within
-    // the bound, some above it), small specks, and one blob of 120x90.
-    constexpr int64_t kWidth = 300;
-    constexpr int64_t kHeight = 260;
+    // the bound, some above it), small specks, and one blob of 120x90. Beside and below that area, objects
+    // exactly at the bound (32x32 squares, 32x1 and 1x32 bars) straddle a seam of each tile size (64, 100,
+    // 257), clear of everything else by at least 2 pixels; the single-tile result must keep them.
+    constexpr int64_t kGridWidth = 300;
+    constexpr int64_t kGridHeight = 260;
+    constexpr int64_t kWidth = 360;
+    constexpr int64_t kHeight = 330;
     constexpr int32_t kSize = 32;
     Mask m(kWidth, kHeight);
     int64_t index = 0;
-    for (int64_t y = 4; y + 40 < kHeight; y += 47) {
-        for (int64_t x = 3; x + 40 < kWidth; x += 51) {
+    for (int64_t y = 4; y + 40 < kGridHeight; y += 47) {
+        for (int64_t x = 3; x + 40 < kGridWidth; x += 51) {
             ++index;
             m.fill(x, y, 20 + (index * 7) % 20, 20 + (index * 11) % 20, true);
         }
     }
-    for (int64_t x = 60; x < kWidth - 4; x += 63) {
+    for (int64_t x = 60; x < kGridWidth - 4; x += 63) {
         m.fill(x, 120, 3, 3, true);
     }
     m.fill(140, 100, 120, 90, true);
+    struct Box {
+        int64_t x;
+        int64_t y;
+        int64_t w;
+        int64_t h;
+    };
+    const std::vector<Box> atBound = {
+        {48, 275, 32, 32},  {84, 275, 32, 32},  {241, 275, 32, 32}, // squares across x seams 64, 100, 257
+        {48, 320, 32, 1},   {84, 320, 32, 1},   {241, 320, 32, 1},  // horizontal bars across the same seams
+        {305, 48, 1, 32},   {315, 84, 1, 32},   {325, 241, 1, 32},  // vertical bars across y seams 64, 100, 257
+    };
+    for (const Box& b : atBound) {
+        m.fill(b.x, b.y, b.w, b.h, true);
+    }
     const auto pattern = [&m](int, int64_t x, int64_t y) { return m.at(x, y) ? 200.0 : 0.0; };
     const std::vector<uint8_t> expected = bruteForce(m, kSize);
     const auto kept = std::count(expected.begin(), expected.end(), uint8_t{255});
@@ -348,6 +371,14 @@ TEST(RemoveLargeObjects, TiledEqualsSingleTile) {
         ASSERT_EQ(reference.width, kWidth);
         ASSERT_EQ(reference.height, kHeight);
         ASSERT_EQ(reference.types, std::vector<DataType>{DataType::Byte});
+        // The objects at the bound are kept by the single-tile run: they are really at the bound.
+        for (const Box& b : atBound) {
+            for (int64_t y = b.y; y < b.y + b.h; ++y) {
+                for (int64_t x = b.x; x < b.x + b.w; ++x) {
+                    ASSERT_EQ(reference.at(0, x, y), 255.0) << b.x << "," << b.y << " " << x << "," << y;
+                }
+            }
+        }
         // The single-tile run is the definition.
         for (int64_t y = 0; y < kHeight; ++y) {
             for (int64_t x = 0; x < kWidth; ++x) {

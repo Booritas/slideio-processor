@@ -1,11 +1,11 @@
-// Requirements: UR-PIX-3, UR-PIX-4, UR-PIX-7, UR-PIX-8, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6, UR-ALG-8
+// Requirements: UR-PIX-3, UR-PIX-4, UR-PIX-7, UR-PIX-8, UR-PIX-9, UR-EXT-3, UR-QA-2, UR-IMG-11, UR-ALG-6, UR-ALG-8
 #pragma once
 
 /**
  * @file filter.hpp
  * @brief Neighbourhood filters and morphology: BorderMode, the Gaussian,
  * median, Sobel, Scharr, Laplacian, Canny and bilateral filters, the distance
- * transform, hole filling, StructuringShape, StructuringElement, and erode, dilate, open and
+ * transform, hole filling, removal of large objects, StructuringShape, StructuringElement, and erode, dilate, open and
  * close.
  *
  * Every operation here is PerChannel with a halo derived from its
@@ -210,6 +210,11 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeFillHoles(int32_t maximumHoleS
  * than the bound and is removed; every other object lies whole inside the
  * context and is measured exactly. So the result does not depend on the
  * tiling.
+ *
+ * Removal takes the whole 8-connected object: a nucleus that touches a large
+ * stained area, even diagonally, is removed with it. A cut-off that merges
+ * nuclei into large regions loses them silently, so check the threshold, for
+ * example by comparing object counts with and without this step.
  *
  * Its one parameter is `maximumObjectSizePx` (an integer; 32 when created by
  * name without it). Operation::parameters() holds exactly that. Creating it by
