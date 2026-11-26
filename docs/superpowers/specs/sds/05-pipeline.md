@@ -2444,13 +2444,14 @@ umbrella cannot use the module name as `core.hpp`, `config.hpp` and
 test that includes nothing else touches one name from each header (UR-API-2).
 
 **Tests that load SlideIO.** The engine's tests load SlideIO's shared
-libraries, which live in SlideIO's install tree rather than beside the test.
-On Windows each test has that directory prepended to `PATH` through
-`ENVIRONMENT_MODIFICATION`, the directory taken from the imported
-`slideio::slideio` target's `IMPORTED_LOCATION_RELEASE`, falling back to
-`IMPORTED_LOCATION`. Tests are discovered with `DISCOVERY_MODE PRE_TEST`, so the
-build never runs the executable; but discovery at test time runs outside
-`ENVIRONMENT_MODIFICATION`, so the same prepend also goes through the target's
-`TEST_LAUNCHER` (`cmake -E env --modify PATH=path_list_prepend:<dir> --`),
-which wraps discovery and every run alike. `TEST_LAUNCHER` needs CMake 3.29 or
-later on Windows. On Linux and macOS the imported library's RPATH suffices.
+libraries, which live in SlideIO's install tree. On Windows every DLL of that
+directory, taken from the imported `slideio::slideio` target's
+`IMPORTED_LOCATION_RELEASE`, falling back to `IMPORTED_LOCATION`, is copied
+beside each engine test executable after it is built
+(`slideio_processor_copy_slideio_runtime` in `tests/CMakeLists.txt`), before
+`gtest_discover_tests` runs it at build time, so discovery and every test find
+them and ctest runs each test executable directly. On Linux and macOS the
+imported library's RPATH suffices. *Changed 2026-11-26:* the tests used to get
+the directory on `PATH` through a `cmake -E env` `TEST_LAUNCHER` with discovery
+at test time (`PRE_TEST`), which ran every test through two cmake.exe
+processes; two runs at once made cmake.exe fail to start (0xc0000142).
