@@ -1994,6 +1994,7 @@ classDiagram
         +mode(TissueMode) TissueDetectParameters
         +thresholdMethod(TissueThresholdMethod) TissueDetectParameters
         +intensityThreshold(double) TissueDetectParameters
+        +ignoreZeros(bool) TissueDetectParameters
         +saturationThreshold(double) TissueDetectParameters
         +minimumRegionAreaPx(int64_t) TissueDetectParameters
         +closingRadiusPx(int32_t) TissueDetectParameters

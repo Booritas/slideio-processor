@@ -172,6 +172,7 @@ the operation and the parameter.
 | | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only, refused in fluorescence mode |
 | | `thresholdMethod` | string | `"Triangle"` in fluorescence mode | `"Triangle"` or `"Fixed"`; fluorescence only, refused in brightfield mode |
 | | `intensityThreshold` | double | absent | finite; required with `"Fixed"`, refused with `"Triangle"` and in brightfield mode |
+| | `ignoreZeros` | bool | true with `"Triangle"` | recorded with fluorescence and `"Triangle"` only, always, so a Triangle bag is complete; refused with `"Fixed"` and in brightfield mode |
 | | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
 | | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
@@ -1139,7 +1140,8 @@ and tissue shows as brightness, not colour:
   by the route `pixel.threshold_otsu` takes: `needsGlobalContext()` is true
   only in this case, `accumulate()` counts the signal of the tile rect (not
   the halo) at the pixels the run's mask admits into 256 bins (`Byte`) or
-  65536 (`UInt16`) of exact 64-bit counts, `combine()` adds the bins and
+  65536 (`UInt16`) of exact 64-bit counts, leaving out a signal of exactly 0
+  when `ignoreZeros` is true (the default), `combine()` adds the bins and
   `finalizeAccumulation()` takes the cut-off from the sum. The cut-off does
   not depend on the tile size, the worker count or the tile order.
   `Float32` with `"Triangle"` throws `UnsupportedDataTypeError` naming
@@ -1172,7 +1174,8 @@ and tissue shows as brightness, not colour:
   Dense data (g = 1) is unchanged, and `Byte` is never reduced, so it still
   equals OpenCV.
 - **The empty histogram.** Only a histogram with nothing counted, the mask
-  admitting no pixel, has no cut-off, and then nothing is tissue.
+  admitting no pixel or, with `ignoreZeros`, no pixel above 0, has no cut-off,
+  and then nothing is tissue.
 - **The cut-off's floor.** The cut-off never falls below the smallest counted
   value minus 1. The triangle can fall below it: OpenCV gives -1 for a
   histogram that rises straight to its peak from bin 0 and for a uniform 1,
@@ -1183,21 +1186,26 @@ and tissue shows as brightness, not colour:
   counted pixels) and only uncounted values below the smallest counted one
   change. So a single counted value v > 0 gives the cut-off v − 1 (all counted
   pixels are tissue), and a single bin at 0 finds nothing.
-- **Exact zeros that outweigh the glass.** Pixels outside the scanned area are
-  0 and are counted like any other. When they are a small band, as on the
-  example slide, the cut-off stays above the glass; when exact zeros outweigh
-  the glass (in the test, more than half of the counted pixels), bin 0 becomes
-  the peak, the cut-off falls below the glass's maximum, and glass is found as
-  tissue. The behaviour is kept on purpose: on a slide whose glass is truly
-  black, counting the zeros is right. On a slide with a large unscanned border,
-  use `"Fixed"`, or restrict the run to the scanned area (a polygon or mask
-  restriction, 5.4), so the zeros are not counted.
+- **Exact zeros: `ignoreZeros`.** Pixels outside the scanned area are exactly
+  0. Counted, they can be the histogram's peak even as a fifth of the slide
+  (the example slide at level 2, below): the line from the peak at 0 then
+  makes the sparsest low glass bin the farthest, the cut-off falls into the
+  glass, and glass is found as tissue. So with `ignoreZeros` true, the
+  default, a pixel whose signal is exactly 0 is not counted. It stays
+  background: the cut-off is never below the smallest counted value minus 1,
+  which is at least 0. A histogram of nothing but zeros is then empty and
+  finds nothing, as before. The `UInt16` step reduction and the floor apply to
+  whatever was counted, unchanged. `ignoreZeros` false counts the zeros like
+  any value; it is for a slide whose glass is genuinely 0, where the zeros are
+  the background the cut-off must lie above.
 - **The bag.** The operation records `mode`, `thresholdMethod` and
-  `intensityThreshold` only in fluorescence mode. A brightfield operation
-  records exactly the keys it recorded before the mode existed, so existing
-  pipeline files and workspaces compare equal and do not turn stale.
-  `saturationThreshold` is refused in fluorescence mode, and the fluorescence
-  keys in brightfield mode.
+  `intensityThreshold` only in fluorescence mode, and `ignoreZeros` only with
+  fluorescence and `"Triangle"`, always with its value, so a Triangle bag is
+  complete. A brightfield operation records exactly the keys it recorded
+  before the mode existed, so existing pipeline files and workspaces compare
+  equal and do not turn stale. `saturationThreshold` is refused in
+  fluorescence mode, the fluorescence keys in brightfield mode, and
+  `ignoreZeros` with `"Fixed"`, whether given typed or by name.
 
 **Evidence from the example slide.** The design rests on measurements of one
 5-channel, 8-bit PerkinElmer scan (DAPI, FITC, CY3, Texas Red, CY5) at its
@@ -1211,10 +1219,23 @@ three coarsest levels, 780, 1560 and 3120 pixels wide:
   left open.
 - Otsu on the same histogram picks 22, which cuts holes through the tissue, so
   the automatic cut-off is the triangle, not Otsu.
+- The unscanned area, exactly 0, is about 21% of the pixels and the
+  histogram's peak. Counted, it breaks the triangle at level 2 (6240 pixels
+  wide): the cut-off collapses to 2 and the glass becomes tissue. Left out
+  (`ignoreZeros`), the cut-off is 7 to 8 at every level:
+
+| Level | Width | Cut-off, zeros counted | Cut-off, zeros left out |
+|---|---|---|---|
+| 2 | 6240 | 2 (glass found as tissue: 68% of the pixels) | 7 to 8 |
+| 3 | 3120 | 7 | 7 to 8 |
+| 4 | 1560 | 7 | 7 to 8 |
+| 5 | 780 | 6 | 7 to 8 |
 
 The slide is not in the repository, so its check (about 41–44% tissue at levels
-3 to 5, with a cut-off of 6 or 7) is outside the test suite, as the labelled
-corpus of 6.9 is.
+2 to 5 with zeros left out, the cut-off 7 or 8) is outside the test suite, as
+the labelled corpus of 6.9 is. `TriangleZeroBandWithBroadGlass` reproduces the
+level-2 failure on a synthetic slide: a fifth exact zeros, glass broad over 1
+to 4 but sparse at 1.
 
 **The analysis level is set on the run, not here.** Tissue detection does not
 need full resolution, and UR-IMG-4 requires reading from the coarsest adequate
