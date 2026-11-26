@@ -414,18 +414,36 @@ TEST(TissueDetect, UInt16Accepted) {
 }
 
 TEST(TissueDetect, BrightfieldFloat32) {
-    // The slide in Float32 at the same values: the same objects as Byte. A
-    // negative or zero maximum is background.
+    // The slide in Float32 at the same values: the same objects as Byte.
     const PipelineSpec spec = specOf(TissueDetectParameters());
     const std::vector<ObjectRecord> bytes =
         ts::runEagerObjects(slideScene(true, slideio::DataType::DT_Byte, 1.0), spec, 100, 4);
     ASSERT_GE(bytes.size(), 6u);
     expectSameObjects(bytes, ts::runEagerObjects(slideScene(true, slideio::DataType::DT_Float32, 1.0), spec, 100, 4),
                       "Float32");
-    const auto negative = ts::makeSyntheticScene(
-        {{64, 64, 0, 0}}, {slideio::DataType::DT_Float32, slideio::DataType::DT_Float32, slideio::DataType::DT_Float32},
-        [](int channel, int64_t x, int64_t y) { return (x >= 10 && x < 40 && y >= 10 && y < 40) ? -1.0 - channel : 0.0; });
-    EXPECT_TRUE(ts::runEagerObjects(negative, spec, 64, 1).empty());
+
+    // Pixel by pixel, without a closing: saturated pink is tissue; a NaN in any
+    // plane makes the pixel background, the other two pink whatever their
+    // order; so does a maximum of 0 over negative samples, whose spread over
+    // the maximum would divide by zero.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    struct Pixel {
+        double samples[3];
+        bool tissue;
+    };
+    const Pixel pixels[] = {
+        {{225.0, 150.0, 195.0}, true}, {{nan, 150.0, 195.0}, false}, {{225.0, nan, 195.0}, false},
+        {{225.0, 150.0, nan}, false},  {{nan, nan, nan}, false},     {{0.0, -1.0, -2.0}, false},
+    };
+    const OperationPtr op = makeTissueDetect(TissueDetectParameters().closingRadiusPx(0));
+    const int64_t count = static_cast<int64_t>(std::size(pixels));
+    const ts::Image out = ts::applyDirect(*op, {DataType::Float32, DataType::Float32, DataType::Float32}, {0, 1, 2},
+                                          3 * count, 3, [&](int32_t channel, int64_t x, int64_t y) {
+                                              return x % 3 == 1 && y == 1 ? pixels[x / 3].samples[channel] : 0.0;
+                                          });
+    for (int64_t i = 0; i < count; ++i) {
+        EXPECT_EQ(out.at(0, 3 * i + 1, 1), pixels[i].tissue ? 255.0 : 0.0) << "pixel " << i;
+    }
 }
 
 TEST(TissueDetect, NonRgbRejected) {
@@ -963,9 +981,11 @@ TEST(TissueDetect, TriangleAllZeroIsMinusOne) {
     EXPECT_EQ(detail::triangleThresholdBin(std::vector<int64_t>()), -1);
 }
 
-TEST(TissueDetect, TriangleIgnoresZeroPlateau) {
-    // The zeros left of column 40 do not pull the cut-off below the
-    // background's maximum of 4, nor does the tail lift it into the blobs.
+TEST(TissueDetect, TriangleWithSmallZeroBand) {
+    // The zeros left of column 40, a band of 1 pixel in 15, do not pull the
+    // cut-off below the background's maximum of 4, nor does the tail lift it
+    // into the blobs. Zeros that outweigh the glass do: see
+    // TriangleDominantZeroAreaLowersCutoff.
     const int64_t bin = detail::triangleThresholdBin(histogramOf(fluorescenceMaximum()));
     EXPECT_GE(bin, 4);
     EXPECT_LE(bin, 29);
@@ -980,6 +1000,125 @@ TEST(TissueDetect, TriangleUInt16) {
         ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_UInt16, 256.0), triangleSpec(2), 100, 4);
     ASSERT_EQ(objects.size(), 2u);
     EXPECT_LE(std::fabs(areaOf(objects) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(objects);
+}
+
+// A one-channel fluorescence slide whose glass, 1 to 8, peaks at 3, below its
+// maximum, with one ellipse of 30 to 69.
+const Ellipse kQuantisedBlob{200.0, 150.0, 100.0, 70.0};
+constexpr int64_t kQuantisedWidth = 400;
+constexpr int64_t kQuantisedHeight = 300;
+
+static int quantisedValue(int64_t x, int64_t y) {
+    const uint32_t h = hashOf(x, y);
+    if (kQuantisedBlob.contains(x, y)) {
+        return 30 + static_cast<int>(h % 40);
+    }
+    static const uint32_t upTo[] = {8, 22, 52, 70, 82, 90, 96, 100};
+    const uint32_t r = (h >> 8) % 100;
+    int value = 1;
+    while (r >= upTo[static_cast<size_t>(value - 1)]) {
+        ++value;
+    }
+    return value;
+}
+
+TEST(TissueDetect, TriangleUInt16StepQuantised) {
+    // The slide in Byte, and in UInt16 at gain 257, whose values are all
+    // multiples of 257: the UInt16 histogram, reduced by the step, is the
+    // Byte one, so its cut-off is the Byte cut-off times 257 and the objects
+    // are the same. Unreduced, its empty bins next to the glass's peak would
+    // put the cut-off at the peak and make most of the glass tissue.
+    std::vector<int64_t> bins(256, 0);
+    for (int64_t y = 0; y < kQuantisedHeight; ++y) {
+        for (int64_t x = 0; x < kQuantisedWidth; ++x) {
+            ++bins[static_cast<size_t>(quantisedValue(x, y))];
+        }
+    }
+    const int64_t cutoff = detail::triangleThresholdBin(bins);
+    ASSERT_GE(cutoff, 8);
+    ASSERT_LT(cutoff, 30);
+    const auto scene = [](slideio::DataType type, double gain) {
+        return ts::makeSyntheticScene({{kQuantisedWidth, kQuantisedHeight, 0, 0}}, {type},
+                                      [gain](int, int64_t x, int64_t y) { return gain * quantisedValue(x, y); });
+    };
+    const std::vector<ObjectRecord> bytes =
+        ts::runEagerObjects(scene(slideio::DataType::DT_Byte, 1.0), triangleSpec(2), 100, 4);
+    ASSERT_EQ(bytes.size(), 1u);
+    EXPECT_LE(std::fabs(areaOf(bytes) - kQuantisedBlob.area()), 0.01 * kQuantisedBlob.area()) << areaOf(bytes);
+    expectSameObjects(bytes,
+                      ts::runEagerObjects(scene(slideio::DataType::DT_Byte, 1.0),
+                                          fluorescenceSpec(static_cast<double>(cutoff)), 100, 4),
+                      "Byte, Fixed at the triangle cut-off");
+
+    const auto words = scene(slideio::DataType::DT_UInt16, 257.0);
+    const std::vector<ObjectRecord> uint16 = ts::runEagerObjects(words, triangleSpec(2), 100, 4);
+    expectSameObjects(bytes, uint16, "UInt16 at gain 257");
+    // Fixed at the Byte cut-off times 257 gives the same objects: the UInt16
+    // cut-off lies between it and the next multiple of 257, the same cut.
+    expectSameObjects(uint16,
+                      ts::runEagerObjects(words, fluorescenceSpec(static_cast<double>(cutoff) * 257.0), 100, 4),
+                      "UInt16, Fixed at the Byte cut-off times 257");
+}
+
+// The fluorescence slide shifted right by 600 pixels, so the zeros left of it
+// cover 640 of its 1200 columns: more than half the slide, outweighing the
+// glass.
+constexpr int64_t kZeroShift = 600;
+
+static double dominantZeroValue(int channel, int64_t x, int64_t y) {
+    return x < kZeroShift ? 0.0 : fluorescenceValue(channel, x - kZeroShift, y);
+}
+
+TEST(TissueDetect, TriangleDominantZeroAreaLowersCutoff) {
+    // Pins today's behaviour, so changing it is deliberate: zeros at more than
+    // half the counted pixels make bin 0 the peak, the cut-off falls below the
+    // glass's maximum of 4, and the glass becomes tissue.
+    constexpr int64_t width = kFluorescenceWidth + kZeroShift;
+    std::vector<int64_t> bins(256, 0);
+    int64_t zeros = 0;
+    for (int64_t y = 0; y < kFluorescenceHeight; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            double maximum = 0.0;
+            for (int channel = 0; channel < 3; ++channel) {
+                maximum = std::max(maximum, dominantZeroValue(channel, x, y));
+            }
+            ++bins[static_cast<size_t>(maximum)];
+            zeros += maximum == 0.0 ? 1 : 0;
+        }
+    }
+    ASSERT_GE(2 * zeros, width * kFluorescenceHeight);
+    const int64_t cutoff = detail::triangleThresholdBin(bins);
+    EXPECT_LT(cutoff, 4);
+
+    const auto scene = ts::makeSyntheticScene(
+        {{width, kFluorescenceHeight, 0, 0}},
+        {slideio::DataType::DT_Byte, slideio::DataType::DT_Byte, slideio::DataType::DT_Byte}, &dominantZeroValue);
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(scene, triangleSpec(2), 100, 4);
+    // The scanned area, columns 640 on, is one object, glass and blobs alike
+    // (with, at most, a stray pixel or two beside it).
+    const double scanned = static_cast<double>((width - kZeroShift - 40) * kFluorescenceHeight);
+    ASSERT_FALSE(objects.empty());
+    double largest = 0.0;
+    for (const ObjectRecord& r : objects) {
+        largest = std::max(largest, measurement(r, "area"));
+    }
+    EXPECT_GE(largest, 0.95 * scanned) << largest;
+    EXPECT_LE(areaOf(objects), scanned) << areaOf(objects);
+
+    // The workarounds find only the blobs: Triangle restricted to the scanned
+    // area, and Fixed.
+    const Point64 points[] = {{kZeroShift + 40, 0}, {width, 0}, {width, kFluorescenceHeight},
+                              {kZeroShift + 40, kFluorescenceHeight}};
+    Polygon polygon;
+    polygon.addRing(points, 4, false);
+    PipelineSpec restricted = triangleSpec(2);
+    restricted.restrictToPolygon(polygon);
+    const std::vector<ObjectRecord> blobs = ts::runEagerObjects(scene, restricted, 100, 4);
+    ASSERT_EQ(blobs.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(blobs) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(blobs);
+    const std::vector<ObjectRecord> fixed = ts::runEagerObjects(scene, fluorescenceSpec(4.5), 100, 4);
+    ASSERT_EQ(fixed.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(fixed) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(fixed);
 }
 
 TEST(TissueDetect, TriangleTilingAndWorkersInvariant) {

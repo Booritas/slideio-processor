@@ -19,9 +19,12 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace slideio::processor {
@@ -71,6 +74,8 @@ constexpr double kDefaultSaturationThreshold = 0.07;
 // Spelled as the enumerators, in their order.
 constexpr const char* kModeSpellings[] = {"Brightfield", "Fluorescence"};
 constexpr const char* kMethodSpellings[] = {"Triangle", "Fixed"};
+constexpr auto kModeCount = static_cast<int32_t>(std::size(kModeSpellings));
+constexpr auto kMethodCount = static_cast<int32_t>(std::size(kMethodSpellings));
 
 // What one apply() call allocates beyond the input and output blocks, per
 // pixel of the halo'd tile, objects emitted included: the run's tile filter
@@ -212,8 +217,9 @@ public:
     int64_t workingSetBytesPerLevelPixel() const override { return kBytesPerPixel; }
     // Triangle: the first accumulate() call creates the histogram, 8 bytes
     // per bin, 65536 bins at most (UInt16's), and the allocator's overhead on
-    // it; the figure counts twice as many, as Otsu's counts its local copy,
-    // and covers the overhead twice. accumulate() allocates nothing per pixel.
+    // it. accumulate() keeps no local copy and allocates nothing per pixel
+    // beyond its row pointers; the figure counts the histogram and its
+    // overhead twice all the same, a deliberate, conservative margin.
     int64_t workingSetBytesPerTile() const override {
         return triangle_ ? kBytesPerTile + 2 * kMaxTriangleBins * 8 + 2 * detail::kAllocatorBlockOverhead
                          : kBytesPerTile;
@@ -286,15 +292,45 @@ public:
     // Nothing counted, no cut-off: nothing is tissue. The bin may be -1 for a
     // histogram rising straight to its peak from bin 0, as OpenCV's, and then
     // every counted value is above it.
+    //
+    // UInt16 data is often a narrower range scaled up, every value a multiple
+    // of a step g (257 for 8-bit data stretched to 16 bits): the empty bins
+    // between the populated ones would put the triangle's cut-off right next
+    // to the background's peak. So the values are divided by g, the GCD of
+    // the populated bins (0 fits every step), the triangle is taken on the
+    // reduced histogram, and its cut-off t is scaled back to t * g: a value v,
+    // a multiple of g, is above t * g exactly when v / g is above t. Byte is
+    // never reduced, so it still equals OpenCV. The reduction is made in
+    // place, and the histogram, read once, is then freed.
     void finalizeAccumulation() override {
         if (!triangle_) {
             return;
         }
         const bool counted = std::any_of(bins_.begin(), bins_.end(), [](int64_t c) { return c > 0; });
         if (counted) {
-            cutoff_ = static_cast<double>(detail::triangleThresholdBin(bins_));
+            int64_t step = 1;
+            if (bins_.size() == static_cast<size_t>(kMaxTriangleBins)) {
+                int64_t g = 0;
+                for (size_t v = 0; v < bins_.size(); ++v) {
+                    if (bins_[v] > 0) {
+                        g = std::gcd(g, static_cast<int64_t>(v));
+                    }
+                }
+                step = g > 1 ? g : 1;
+            }
+            if (step > 1) {
+                // Bin v * step moves to bin v: v <= v * step, and the bins
+                // between the multiples are empty.
+                const auto reduced = static_cast<size_t>((kMaxTriangleBins - 1) / step + 1);
+                for (size_t v = 1; v < reduced; ++v) {
+                    bins_[v] = bins_[v * static_cast<size_t>(step)];
+                }
+                bins_.resize(reduced);
+            }
+            cutoff_ = static_cast<double>(detail::triangleThresholdBin(bins_) * step);
             cutoffKnown_ = true;
         }
+        bins_ = std::vector<int64_t>();
     }
 
     void apply(OperationContext& context) override {
@@ -452,7 +488,8 @@ private:
     // Writes 1 for each tissue pixel of @p in and 0 for the others into
     // @p mask, row-major over the context. A pixel is tissue when the spread of
     // its three samples over their maximum exceeds the threshold; one whose
-    // maximum is not above 0 (0, or negative or NaN in Float32) is not.
+    // maximum is not above 0 (0, or negative in Float32) is not, nor is a
+    // Float32 pixel with a NaN sample in any plane.
     template <typename T>
     void tissueMask(const BlockView& in, uint8_t* mask) const {
         const int64_t width = in.width();
@@ -465,6 +502,12 @@ private:
                 const T a = load<T>(rows[0], x);
                 const T b = load<T>(rows[1], x);
                 const T c = load<T>(rows[2], x);
+                if constexpr (std::is_floating_point_v<T>) {
+                    if (std::isnan(a) || std::isnan(b) || std::isnan(c)) {
+                        mask[y * width + x] = 0;
+                        continue;
+                    }
+                }
                 const T maximum = std::max({a, b, c});
                 const T minimum = std::min({a, b, c});
                 const double spread = static_cast<double>(maximum - minimum);
@@ -559,14 +602,15 @@ private:
 OperationPtr tissueDetectFromParameters(const OperationParameters& parameters) {
     detail::BagReader bag(kName, parameters);
     TissueDetectParameters p;
-    p.mode(bag.getEnum("mode", TissueMode::Brightfield, kModeSpellings, 2));
+    p.mode(bag.getEnum("mode", TissueMode::Brightfield, kModeSpellings, kModeCount));
     // Absent by default, and refused when it does not fit the mode, so a
     // given key is kept apart from the default.
     if (bag.contains("saturationThreshold")) {
         p.saturationThreshold(bag.getDouble("saturationThreshold", kDefaultSaturationThreshold));
     }
     if (bag.contains("thresholdMethod")) {
-        p.thresholdMethod(bag.getEnum("thresholdMethod", TissueThresholdMethod::Triangle, kMethodSpellings, 2));
+        p.thresholdMethod(
+            bag.getEnum("thresholdMethod", TissueThresholdMethod::Triangle, kMethodSpellings, kMethodCount));
     }
     if (bag.contains("intensityThreshold")) {
         p.intensityThreshold(bag.getDouble("intensityThreshold", 0.0));
@@ -710,8 +754,8 @@ OperationFactoryPtr makeTissueDetectFactory() {
         "outside the repository",
         "O(n * (2r + 1)) in the pixels of the halo'd tile for the saturation and the closing, r the closing "
         "radius; then labelling by union-find with path halving, nearly linear in the tile's pixels, and O(v) "
-        "in the vertices of the traced rings; fluorescence triangle: one O(n) counting pass over the tile rects and O(b) "
-        "in the histogram's bins");
+        "in the vertices of the traced rings; fluorescence triangle: one O(n) counting pass over the tile rects "
+        "and O(b) in the histogram's bins");
 }
 
 } // namespace detail
