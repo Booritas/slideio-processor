@@ -56,7 +56,10 @@ const TissueDetectValues* TissueDetectParametersAccess::values(const TissueDetec
 namespace {
 
 constexpr const char* kName = "segment.tissue_detect";
-constexpr const char* kPlaneCountMessage = "segment.tissue_detect: needs exactly three channels, red, green and blue";
+constexpr const char* kPlaneCountMessage =
+    "segment.tissue_detect: needs exactly three channels, red, green and blue; for fluorescence, set mode to "
+    "Fluorescence";
+constexpr const char* kFluorescencePlaneCountMessage = "segment.tissue_detect: needs at least one channel";
 // The largest closing radius: a disc 255 pixels across, the largest element
 // pixel.morph_close takes. Distances along a row are capped at radius + 1, so
 // they fit a byte.
@@ -135,6 +138,10 @@ public:
     explicit TissueDetectOperation(const detail::TissueDetectValues& p)
         : mode_(p.mode),
           threshold_(p.saturationThreshold.value_or(kDefaultSaturationThreshold)),
+          cutoff_(p.intensityThreshold.value_or(0.0)),
+          // Fixed knows its cut-off now; Triangle learns it from the whole slide.
+          cutoffKnown_(p.mode == TissueMode::Fluorescence && p.thresholdMethod &&
+                       *p.thresholdMethod == TissueThresholdMethod::Fixed),
           radius_(p.closingRadiusPx),
           plan_(MeasurementSelection().add(MeasurementKind::Area).add(MeasurementKind::Perimeter),
                 static_cast<double>(p.minimumRegionAreaPx), 0.0, true) {
@@ -166,13 +173,17 @@ public:
     const char* name() const override { return kName; }
     ChannelArity arity() const override { return ChannelArity::Joint; }
     bool requiresUniformTypes() const override { return true; }
-    DataTypeSet supportedTypes() const override { return DataTypeSet().add(DataType::Byte).add(DataType::UInt16); }
+    DataTypeSet supportedTypes() const override {
+        DataTypeSet types = DataTypeSet().add(DataType::Byte).add(DataType::UInt16);
+        return mode_ == TissueMode::Fluorescence ? types.add(DataType::Float32) : types;
+    }
     // A tile pixel's closed value depends on the dilated mask within the
     // radius, and each dilated value on the mask within the radius again; the
     // one more keeps the pixels just beyond in view.
     Halo halo() const override { return Halo::uniform(2 * radius_ + 1); }
     DataType outputType(DataType) const override { return DataType::Byte; }
-    // The three planes are a pixel's colour; validation calls this.
+    // In brightfield mode the three planes are a pixel's colour; in fluorescence
+    // mode each is a stain's intensity. Validation calls this.
     int32_t outputPlaneCount(int32_t inputPlaneCount) const override {
         checkPlaneCount(inputPlaneCount);
         return 1;
@@ -196,15 +207,18 @@ public:
             out.height() != tile.height) {
             throw InternalError((std::string(kName) + ": the output is not one Byte plane of the tile").c_str());
         }
-        if (mode_ == TissueMode::Fluorescence) {
-            throw InternalError((std::string(kName) + ": fluorescence mode is not yet implemented").c_str());
-        }
         const DataType type = in.planeType(0);
-        if ((type != DataType::Byte && type != DataType::UInt16) || in.planeType(1) != type ||
-            in.planeType(2) != type) {
+        bool uniform = true;
+        for (int32_t p = 1; p < in.planeCount(); ++p) {
+            uniform = uniform && in.planeType(p) == type;
+        }
+        if (!supportedTypes().contains(type) || !uniform) {
             throw UnsupportedDataTypeError(
-                (std::string(kName) + ": the input planes are not all Byte or all UInt16").c_str(), type,
-                supportedTypes());
+                (std::string(kName) + (mode_ == TissueMode::Fluorescence
+                                           ? ": the input planes are not all Byte, all UInt16 or all Float32"
+                                           : ": the input planes are not all Byte or all UInt16"))
+                    .c_str(),
+                type, supportedTypes());
         }
         close(in, out, tile.x - halo.x, tile.y - halo.y, type);
 
@@ -226,8 +240,12 @@ public:
     }
 
 private:
-    static void checkPlaneCount(int32_t planeCount) {
-        if (planeCount != 3) {
+    void checkPlaneCount(int32_t planeCount) const {
+        if (mode_ == TissueMode::Fluorescence) {
+            if (planeCount < 1) {
+                throw ChannelArityError(kFluorescencePlaneCountMessage, planeCount);
+            }
+        } else if (planeCount != 3) {
             throw ChannelArityError(kPlaneCountMessage, planeCount);
         }
     }
@@ -249,7 +267,18 @@ private:
         const int64_t height = in.height();
         const auto cap = static_cast<uint8_t>(radius_ + 1);
         std::vector<uint8_t> mask(static_cast<size_t>(width * height));
-        if (type == DataType::Byte) {
+        if (mode_ == TissueMode::Fluorescence) {
+            if (!cutoffKnown_) {
+                // No cut-off yet: nothing is tissue.
+                std::fill(mask.begin(), mask.end(), uint8_t{0});
+            } else if (type == DataType::Byte) {
+                maximumMask<uint8_t>(in, mask.data());
+            } else if (type == DataType::UInt16) {
+                maximumMask<uint16_t>(in, mask.data());
+            } else {
+                maximumMask<float>(in, mask.data());
+            }
+        } else if (type == DataType::Byte) {
             tissueMask<uint8_t>(in, mask.data());
         } else {
             tissueMask<uint16_t>(in, mask.data());
@@ -324,8 +353,34 @@ private:
         }
     }
 
+    // Writes 1 for each pixel of @p in whose maximum over all its planes is
+    // above the cut-off and 0 for the others into @p mask, row-major over the
+    // context.
+    template <typename T>
+    void maximumMask(const BlockView& in, uint8_t* mask) const {
+        const int64_t width = in.width();
+        const int32_t planes = in.planeCount();
+        std::vector<const uint8_t*> rows(static_cast<size_t>(planes));
+        for (int64_t y = 0; y < in.height(); ++y) {
+            for (int32_t p = 0; p < planes; ++p) {
+                rows[static_cast<size_t>(p)] =
+                    static_cast<const uint8_t*>(in.planeData(p)) + y * in.planeRowStrideBytes(p);
+            }
+            for (int64_t x = 0; x < width; ++x) {
+                T maximum = load<T>(rows[0], x);
+                for (int32_t p = 1; p < planes; ++p) {
+                    maximum = std::max(maximum, load<T>(rows[static_cast<size_t>(p)], x));
+                }
+                mask[y * width + x] = static_cast<double>(maximum) > cutoff_ ? 1 : 0;
+            }
+        }
+    }
+
     TissueMode mode_;
     double threshold_;
+    // Fluorescence: tissue is above cutoff_ once cutoffKnown_.
+    double cutoff_;
+    bool cutoffKnown_;
     int32_t radius_;
     std::vector<int32_t> halfWidth_;
     detail::MeasurementPlan plan_;

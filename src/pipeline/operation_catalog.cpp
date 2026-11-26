@@ -177,7 +177,10 @@ OperationPtr OperationCatalog::create(const char* name, const OperationParameter
     if (operation->requiresUniformTypes() != factory->requiresUniformTypes()) {
         throw mismatch("requiresUniformTypes");
     }
-    if (!(operation->supportedTypes() == factory->supportedTypes())) {
+    // The factory declares the operation made from default parameters; one whose
+    // accepted types depend on a parameter (segment.tissue_detect's mode) may
+    // differ when created from others.
+    if (parameters.count() == 0 && !(operation->supportedTypes() == factory->supportedTypes())) {
         throw mismatch("supportedTypes");
     }
     if (operation->producesObjects() != factory->producesObjects()) {

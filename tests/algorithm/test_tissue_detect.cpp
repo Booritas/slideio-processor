@@ -1,6 +1,7 @@
 // Requirements: UR-SEG-1, UR-SEG-3, UR-SEG-4, UR-SEG-6, UR-SEG-7, UR-QA-2, UR-ALG-6
 #include <slideio/processor/algorithm/segment/segment.hpp>
 #include <slideio/processor/config/configuration.hpp>
+#include <slideio/processor/core/channel_selection.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/measurement.hpp>
@@ -425,7 +426,9 @@ TEST(TissueDetect, NonRgbRejected) {
             validate(std::vector<slideio::DataType>(channels, slideio::DataType::DT_Byte));
             ADD_FAILURE() << channels << " channels validated";
         } catch (const ChannelArityError& e) {
-            EXPECT_STREQ(e.what(), "segment.tissue_detect: needs exactly three channels, red, green and blue")
+            EXPECT_STREQ(e.what(),
+                         "segment.tissue_detect: needs exactly three channels, red, green and blue; for fluorescence, "
+                         "set mode to Fluorescence")
                 << channels;
         }
     }
@@ -665,4 +668,90 @@ TEST(TissueDetect, RejectsBadParameters) {
                   "saturationThreshold", "threshold of the wrong type");
     expectInvalid(byName([](OperationParameters& b) { b.setInt("minimumAreaPx", 4); }), "minimumAreaPx",
                   "unknown key");
+}
+
+// A fluorescence slide: dark noise, nothing at all left of column 40 (outside
+// the scan), an ellipse bright in channel 0 only and one bright in channel 2
+// only; every sample times @p gain.
+const Ellipse kFluorescenceA{180.0, 200.0, 120.0, 90.0};
+const Ellipse kFluorescenceB{440.0, 200.0, 100.0, 120.0};
+
+static std::shared_ptr<slideio::Scene> fluorescenceScene(slideio::DataType type, double gain) {
+    return ts::makeSyntheticScene(
+        {{600, 400, 0, 0}}, {type, type, type}, [gain](int channel, int64_t x, int64_t y) {
+            if (x < 40) {
+                return 0.0;
+            }
+            double value = static_cast<double>(hashOf(x, y + 1000 * channel) % 5);
+            if ((channel == 0 && kFluorescenceA.contains(x, y)) || (channel == 2 && kFluorescenceB.contains(x, y))) {
+                value = 30.0 + static_cast<double>(hashOf(x, y) % 40);
+            }
+            return gain * value;
+        });
+}
+
+static PipelineSpec fluorescenceSpec(double cutoff, int32_t radius = 2) {
+    return specOf(TissueDetectParameters()
+                      .mode(TissueMode::Fluorescence)
+                      .thresholdMethod(TissueThresholdMethod::Fixed)
+                      .intensityThreshold(cutoff)
+                      .closingRadiusPx(radius));
+}
+
+static double fluorescenceArea() { return kFluorescenceA.area() + kFluorescenceB.area(); }
+
+TEST(TissueDetect, FluorescenceFixedFindsBothBlobs) {
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(
+        fluorescenceScene(slideio::DataType::DT_Byte, 1.0), fluorescenceSpec(4.5), 1000, 4);
+    ASSERT_EQ(objects.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(objects) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(objects);
+}
+
+TEST(TissueDetect, FluorescenceFloat32Fixed) {
+    const PipelineSpec spec = fluorescenceSpec(4.5);
+    const std::vector<ObjectRecord> bytes =
+        ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Byte, 1.0), spec, 100, 4);
+    ASSERT_EQ(bytes.size(), 2u);
+    expectSameObjects(bytes, ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Float32, 1.0), spec, 100, 4),
+                      "Float32");
+}
+
+TEST(TissueDetect, FluorescenceUInt16Fixed) {
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(
+        fluorescenceScene(slideio::DataType::DT_UInt16, 256.0), fluorescenceSpec(4.5 * 256.0), 100, 4);
+    ASSERT_EQ(objects.size(), 2u);
+    EXPECT_LE(std::fabs(areaOf(objects) - fluorescenceArea()), 0.01 * fluorescenceArea()) << areaOf(objects);
+}
+
+TEST(TissueDetect, FluorescenceTilingInvariant) {
+    const auto scene = fluorescenceScene(slideio::DataType::DT_Byte, 1.0);
+    for (const int32_t radius : {0, 2, 5}) {
+        const PipelineSpec spec = fluorescenceSpec(4.5, radius);
+        const std::vector<ObjectRecord> reference = ts::runEagerObjects(scene, spec, 1000, 4);
+        ASSERT_FALSE(reference.empty()) << radius;
+        for (const int32_t tile : {64, 100, 257}) {
+            expectSameObjects(reference, ts::runEagerObjects(scene, spec, tile, 4),
+                              "radius " + std::to_string(radius) + ", " + std::to_string(tile) + "-pixel tiles");
+        }
+        expectSameObjects(reference, ts::runEagerObjects(scene, spec, 100, 1),
+                          "radius " + std::to_string(radius) + ", one worker");
+    }
+}
+
+TEST(TissueDetect, SingleChannelSelection) {
+    PipelineSpec spec = fluorescenceSpec(4.5);
+    spec.channels(ChannelSelection::single(2));
+    const std::vector<ObjectRecord> objects =
+        ts::runEagerObjects(fluorescenceScene(slideio::DataType::DT_Byte, 1.0), spec, 100, 4);
+    ASSERT_EQ(objects.size(), 1u);
+    EXPECT_LE(std::fabs(areaOf(objects) - kFluorescenceB.area()), 0.01 * kFluorescenceB.area());
+}
+
+TEST(TissueDetect, FluorescenceZeroPlanesRefused) {
+    const OperationPtr op = makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence));
+    EXPECT_THROW(op->outputPlaneCount(0), ChannelArityError);
+    EXPECT_EQ(op->outputPlaneCount(1), 1);
+    EXPECT_EQ(op->outputPlaneCount(5), 1);
+    EXPECT_TRUE(op->supportedTypes() ==
+                DataTypeSet().add(DataType::Byte).add(DataType::UInt16).add(DataType::Float32));
 }
