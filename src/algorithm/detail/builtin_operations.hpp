@@ -38,6 +38,9 @@ OperationFactoryPtr makeDistanceTransformFactory();
 /// pixel.fill_holes
 OperationFactoryPtr makeFillHolesFactory();
 
+/// pixel.remove_large_objects
+OperationFactoryPtr makeRemoveLargeObjectsFactory();
+
 /// pixel.sobel
 OperationFactoryPtr makeSobelFactory();
 

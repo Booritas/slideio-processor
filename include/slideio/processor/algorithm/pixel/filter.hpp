@@ -195,6 +195,47 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeDistanceTransform(int32_t maxi
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeFillHoles(int32_t maximumHoleSizePx, int64_t maximumHoleAreaPx = 0);
 
 /**
+ * @brief Creates `pixel.remove_large_objects`: PerChannel, halo
+ * @p maximumObjectSizePx on every side, every input type, output `Byte`.
+ *
+ * A pixel is foreground when its sample is neither 0 nor NaN, the rule
+ * `segment.watershed` uses. An object is an 8-connected component of
+ * foreground (the usual pair with `pixel.fill_holes`' 4-connected background).
+ * The output is 255 for a foreground pixel whose object's bounding box is at
+ * most @p maximumObjectSizePx wide and at most @p maximumObjectSizePx high, 0
+ * elsewhere: an object wider or higher than the bound is removed. Pixels
+ * beyond the level are zero, so an object cut by the level edge is measured by
+ * its pixels inside the level. An object that touches the halo'd context's
+ * border reaches at least the halo from a tile pixel, so it is wider or higher
+ * than the bound and is removed; every other object lies whole inside the
+ * context and is measured exactly. So the result does not depend on the
+ * tiling.
+ *
+ * Its one parameter is `maximumObjectSizePx` (an integer; 32 when created by
+ * name without it). Operation::parameters() holds exactly that. Creating it by
+ * name with the same value gives equal parameters. By name, an unknown key, a
+ * value of the wrong type or a value out of range throws InvalidArgumentError
+ * naming the key, never the value.
+ * @param maximumObjectSizePx The size bound and the halo, in pixels; from 1 to
+ * 4096.
+ * @return The operation, never null.
+ * @throws InvalidArgumentError When @p maximumObjectSizePx is outside 1 to 4096;
+ * the message names the operation and the parameter, never the value. A tile
+ * throws it, failing the run, when the tile grown by its halo on every side has
+ * more than 2147483647 pixels, which it cannot label; the message gives that
+ * count and asks for a smaller tile size. The run's planning does not see this,
+ * as for `pixel.fill_holes` and the other labelling operations, so tiles may
+ * already have been processed.
+ * @throws std::bad_alloc When memory is exhausted.
+ * @par Thread-safety
+ * Safe to call concurrently. The operation's apply() may run concurrently on
+ * different contexts.
+ * @par Requirements
+ * UR-PIX-9, UR-QA-3, UR-ALG-6
+ */
+SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeRemoveLargeObjects(int32_t maximumObjectSizePx);
+
+/**
  * @brief Creates `pixel.sobel`: PerChannel, halo max(1, kernelSize / 2) on
  * every side, every input type except `Int64` and `UInt64`, output `Float32`,
  * or `Float64` for `Float64` input.

@@ -339,3 +339,16 @@ TEST(WorkingSetFilter, FillHolesDeclarationBoundsTheMeasuredPeak) {
         expectApplyBounded("fill_holes 1", [] { return makeFillHoles(1); }, {type});
     }
 }
+
+TEST(WorkingSetFilter, RemoveLargeObjectsDeclarationBoundsTheMeasuredPeak) {
+    // pixel.remove_large_objects labels in the module's own memory, all of it metered, so
+    // no unmetered share: the default and the extreme halos, on a type read as integers
+    // and one read as floats.
+    for (DataType type : {DataType::Byte, DataType::Float32}) {
+        expectApplyBounded("remove_large_objects default",
+                           [] { return createOperation("pixel.remove_large_objects", OperationParameters()); },
+                           {type});
+        expectApplyBounded("remove_large_objects 64", [] { return makeRemoveLargeObjects(64); }, {type});
+        expectApplyBounded("remove_large_objects 1", [] { return makeRemoveLargeObjects(1); }, {type});
+    }
+}

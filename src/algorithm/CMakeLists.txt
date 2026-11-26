@@ -18,6 +18,7 @@ add_library(slideio-processor-algorithm OBJECT
     pixel/derivatives.cpp
     pixel/distance_transform.cpp
     pixel/fill_holes.cpp
+    pixel/remove_large_objects.cpp
     pixel/gaussian_blur.cpp
     pixel/median_blur.cpp
     pixel/morphology.cpp
