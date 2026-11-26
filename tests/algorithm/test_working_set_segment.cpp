@@ -1,10 +1,13 @@
 // Requirements: UR-EXE-2, UR-ALG-8, UR-SEG-1, UR-SEG-2, UR-SEG-8
 #include <slideio/processor/algorithm/segment/segment.hpp>
+#include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/pipeline/operation_catalog.hpp>
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 
 #include <algorithm/detail/sample_codec.hpp>
+#include <algorithm/support/allocation_meter.hpp>
 #include <algorithm/support/working_set_check.hpp>
+#include <pipeline/detail/operation_context_state.hpp>
 
 #include <gtest/gtest.h>
 
@@ -515,4 +518,71 @@ TEST(WorkingSetSegment, TissueDetectPerCallCoversOneSmallObject) {
         ts::measureWorkingSetPeakOn(*op, {DataType::Byte, DataType::Byte, DataType::Byte},
                                     rgbPlanesOf(square, 8, 8, 0), 6, 6, ts::WorkingSetCall::Apply);
     EXPECT_LE(peak, op->workingSetBytesPerTile()) << "measured " << peak;
+}
+
+// Fluorescence mode takes the maximum over any number of planes before the
+// same closing and segmentation; Triangle adds one whole-slide histogram.
+TEST(WorkingSetSegment, TissueDetectFluorescenceBounded) {
+    const auto fixed = [] {
+        return makeTissueDetect(TissueDetectParameters()
+                                    .mode(TissueMode::Fluorescence)
+                                    .thresholdMethod(TissueThresholdMethod::Fixed)
+                                    .intensityThreshold(100.0));
+    };
+    for (const size_t planes : {size_t{1}, size_t{3}, size_t{5}}) {
+        expectApplyBounded("segment.tissue_detect fluorescence", fixed, std::vector<DataType>(planes, DataType::Byte));
+    }
+    expectApplyBounded("segment.tissue_detect fluorescence", fixed,
+                       {DataType::UInt16, DataType::UInt16, DataType::UInt16});
+
+    // The brightfield per-call figure plus the histogram and its local copy.
+    constexpr int64_t kBrightfieldBytesPerTile = 4096;
+    const auto triangle = [] { return makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence)); };
+    EXPECT_GE(triangle()->workingSetBytesPerTile(), kBrightfieldBytesPerTile + 2 * 65536 * 8);
+    EXPECT_EQ(fixed()->workingSetBytesPerTile(), kBrightfieldBytesPerTile);
+    EXPECT_GE(triangle()->accumulatedStateBytes(3), 65536 * 8);
+    ts::expectGlobalBounded("segment.tissue_detect triangle", triangle, {DataType::Byte, DataType::Byte});
+    ts::expectGlobalBounded("segment.tissue_detect triangle", triangle,
+                            {DataType::UInt16, DataType::UInt16, DataType::UInt16});
+}
+
+// What a Triangle instance holds between calls, after accumulate() on its
+// tiles and after combine() with the others, is within its declaration.
+TEST(WorkingSetSegment, TissueDetectTriangleStateBoundsTheMeasuredState) {
+    constexpr int64_t kSide = 64;
+    for (const DataType type : {DataType::Byte, DataType::UInt16}) {
+        const int64_t size = dataTypeSizeBytes(type);
+        std::vector<uint8_t> bytes(static_cast<size_t>(kSide * kSide * size));
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            bytes[i] = static_cast<uint8_t>(i * 37 % 251);
+        }
+        std::vector<BlockPlane> planes;
+        for (int32_t p = 0; p < 3; ++p) {
+            planes.push_back(BlockPlane{bytes.data(), type, kSide * size, p});
+        }
+        const auto make = [] { return makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence)); };
+        ts::AllocationMeter meter;
+        const OperationPtr run = make();
+        const int64_t declared = run->accumulatedStateBytes(3);
+        for (int32_t tile = 0; tile < 3; ++tile) {
+            const int64_t before = meter.liveBytes();
+            const OperationPtr tileInstance = make();
+            const BlockView input(kSide, kSide, Rect64{0, 0, kSide, kSide}, 0, planes.data(), 3);
+            detail::OperationContextState state;
+            state.input = &input;
+            state.output = nullptr;
+            state.level = 0;
+            state.tileRectAtLevel = state.tileRect = Rect64{0, 0, kSide, kSide};
+            state.haloRectAtLevel = state.haloRect = Rect64{0, 0, kSide, kSide};
+            state.levelScale = 1.0;
+            state.tileIndex = 0;
+            const auto context = detail::OperationContextAccess::make(std::move(state));
+            tileInstance->accumulate(*context);
+            EXPECT_LE(meter.liveBytes() - before, declared)
+                << dataTypeName(type) << ": a tile instance, after accumulate()";
+            run->combine(*tileInstance);
+        }
+        EXPECT_LE(meter.liveBytes(), declared) << dataTypeName(type) << ": the run instance, after combine()";
+        run->finalizeAccumulation();
+    }
 }
