@@ -229,6 +229,76 @@ TEST(NucleiChain, TouchingRingNucleiSeparatedAtThreeTileSizes) {
     }
 }
 
+// The marker spacing of the large-area chain: a touching pair of discs spans
+// 33 x 19 pixels, so the spacing (and the size bound) must be at least 33.
+constexpr int32_t kSpacing = 36;
+
+// A solid band four spacings long and half a spacing high: tall enough to
+// survive the opening by an Ellipse of radius 6.
+bool inBand(int64_t x, int64_t y) {
+    return x >= 90 && x < 90 + 4 * kSpacing && y >= 240 && y < 240 + kSpacing / 2;
+}
+
+// The chain of nucleiChain(true) with marker spacing kSpacing; with @p remove,
+// pixel.remove_large_objects follows the opening.
+PipelineSpec largeAreaChain(bool remove) {
+    PipelineSpec spec;
+    spec.then(makeFixedThreshold(100.0, ThresholdDirection::Above))
+        .then(makeFillHoles(8))
+        .then(makeOpen(StructuringElement(StructuringShape::Ellipse, 13, 13), 1));
+    if (remove) {
+        spec.then(makeRemoveLargeObjects(kSpacing));
+    }
+    spec.then(makeDistanceTransform(12))
+        .then(makeWatershed(WatershedParameters()
+                                .minimumMarkerDistancePx(5)
+                                .maximumMarkerSpacingPx(kSpacing)
+                                .minimumMarkerValue(3.0)));
+    return spec;
+}
+
+TEST(NucleiChain, LargeStainedAreaRemovedBeforeWatershed) {
+    const std::vector<Centre> centres = discCentres();
+    for (int64_t y = 0; y < kHeight; ++y) {
+        for (int64_t x = 0; x < kWidth; ++x) {
+            ASSERT_FALSE(inBand(x, y) && inAnyDisc(centres, x, y)) << x << ", " << y;
+        }
+    }
+    const auto small = ts::makeSyntheticScene(
+        {{kWidth, kHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+        [centres](int, int64_t x, int64_t y) { return ringNucleus(centres, x, y); });
+    const auto stained = ts::makeSyntheticScene(
+        {{kWidth, kHeight, 0, 0}}, {slideio::DataType::DT_Byte},
+        [centres](int, int64_t x, int64_t y) { return inBand(x, y) ? 200.0 : ringNucleus(centres, x, y); });
+
+    // (a) Today's refusal: the band is wider than maximumMarkerSpacingPx.
+    try {
+        ts::runEagerObjects(stained, largeAreaChain(false), 4096, 4);
+        ADD_FAILURE() << "nothing thrown";
+    } catch (const ProcessorError& e) {
+        const std::string message = e.cause() != nullptr && e.cause()[0] != '\0' ? e.cause() : e.what();
+        EXPECT_NE(message.find("maximumMarkerSpacingPx"), std::string::npos) << message;
+    }
+
+    // (b) With the step after the opening, the band is removed.
+    const PipelineSpec spec = largeAreaChain(true);
+    const std::vector<ObjectRecord> reference = ts::runEagerObjects(small, spec, 4096, 4);
+    ASSERT_EQ(reference.size(), 12u);
+    const std::vector<ObjectRecord> objects = ts::runEagerObjects(stained, spec, 4096, 4);
+    expectSameObjects(reference, objects, "one tile");
+    for (const ObjectRecord& object : objects) {
+        const Rect64 b = object.boundingBox();
+        EXPECT_LE(b.width, kSpacing);
+        EXPECT_LE(b.height, kSpacing);
+    }
+
+    // (c) The same at every tile size.
+    for (const int32_t tile : {64, 100, 257}) {
+        expectSameObjects(reference, ts::runEagerObjects(stained, spec, tile, 4),
+                          std::to_string(tile) + "-pixel tiles");
+    }
+}
+
 TEST(NucleiChain, OpeningClearsDebrisBelowTheMarkerFloor) {
     const std::vector<Centre> centres = discCentres();
     for (int64_t y = 0; y < kHeight; ++y) {

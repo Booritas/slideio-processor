@@ -757,7 +757,12 @@ private:
  *   such disc, are removed;
  * - `maximumMarkerSpacingPx` is at least the largest width or height of an
  *   object: a flat ridge, as in an elongated object of even width, gives one
- *   marker, which then has to reach the whole object.
+ *   marker, which then has to reach the whole object;
+ * - or `pixel.remove_large_objects` follows the opening, with
+ *   `maximumObjectSizePx` at most `maximumMarkerSpacingPx`: only objects
+ *   within the spacing are left, so the reach holds even when the cut-off
+ *   lets large stained areas through. Those areas are removed, not
+ *   segmented.
  *
  * Flood a surface that peaks inside each object, such as a distance transform
  * of a mask or a smoothed intensity. A plateau gives only its topmost-leftmost
