@@ -68,27 +68,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(slideio_processor_algorithm_tests PRIVATE -ffp-contract=off)
 endif()
 
-# SlideIO's DLLs live in its install tree; see tests/pipeline/CMakeLists.txt for
-# why PATH goes through both ENVIRONMENT_MODIFICATION and TEST_LAUNCHER.
-set(ALGORITHM_TEST_PROPERTIES TIMEOUT 120)
-if(WIN32)
-    get_target_property(SLIDEIO_RUNTIME slideio::slideio IMPORTED_LOCATION_RELEASE)
-    if(NOT SLIDEIO_RUNTIME)
-        get_target_property(SLIDEIO_RUNTIME slideio::slideio IMPORTED_LOCATION)
-    endif()
-    if(NOT SLIDEIO_RUNTIME)
-        message(FATAL_ERROR "tests/algorithm: slideio::slideio has no imported location")
-    endif()
-    get_filename_component(SLIDEIO_BIN_DIR "${SLIDEIO_RUNTIME}" DIRECTORY)
-    file(TO_NATIVE_PATH "${SLIDEIO_BIN_DIR}" SLIDEIO_BIN_DIR)
-    list(APPEND ALGORITHM_TEST_PROPERTIES
-        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}")
-    set_property(TARGET slideio_processor_algorithm_tests PROPERTY TEST_LAUNCHER
-        ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
-endif()
+# SlideIO's DLLs are found beside the executable (tests/CMakeLists.txt).
+slideio_processor_copy_slideio_runtime(slideio_processor_algorithm_tests)
 gtest_discover_tests(slideio_processor_algorithm_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES ${ALGORITHM_TEST_PROPERTIES})
+    PROPERTIES TIMEOUT 120)
 
 # Working-set tests measure what an operation allocates through operator new,
 # which this executable replaces with a counting pair (support/allocation_meter).
@@ -141,10 +124,6 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(slideio_processor_working_set_tests PRIVATE -Wl,--exclude-libs,ALL)
 endif()
-if(WIN32)
-    set_property(TARGET slideio_processor_working_set_tests PROPERTY TEST_LAUNCHER
-        ${CMAKE_COMMAND} -E env --modify "PATH=path_list_prepend:${SLIDEIO_BIN_DIR}" --)
-endif()
+slideio_processor_copy_slideio_runtime(slideio_processor_working_set_tests)
 gtest_discover_tests(slideio_processor_working_set_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm.ws."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES ${ALGORITHM_TEST_PROPERTIES})
+    PROPERTIES TIMEOUT 120)
