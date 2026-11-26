@@ -4,9 +4,13 @@
 |---|---|
 | **Document** | User Requirements Specification |
 | **Project** | `slideio-processor` |
-| **Version** | 0.14 (draft) |
+| **Version** | 0.15 (draft) |
 | **Date** | 2026-11-25 |
 | **Status** | For review |
+
+**Changes in 0.15** — `segment.tissue_detect` gains a fluorescence mode
+(channel maximum over a fixed or whole-slide triangle cut-off); UR-SEG-1's
+wording is unchanged.
 
 **Changes in 0.14** — **UR-PIX-7 and UR-PIX-8 added**: a Euclidean distance
 transform of a binary mask, clamped at a caller-declared maximum, to be the

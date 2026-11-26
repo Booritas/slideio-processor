@@ -18,8 +18,11 @@ namespace slideio::processor::detail {
 /// decrement, and the flip undone. On 256 bins it equals what cv::threshold
 /// returns with THRESH_TRIANGLE for the same pixels. The flip is read through
 /// the index, so nothing is allocated.
-/// @return The cut-off bin, or -1 for an empty or all-zero histogram, which
-/// has no cut-off.
+/// @return The cut-off bin. -1 has two meanings: an empty or all-zero
+/// histogram, which has no cut-off; and a non-empty histogram that rises
+/// straight to its peak, as OpenCV's does, where the cut-off is below bin 0 and
+/// every counted value is above it. A caller tells them apart by whether
+/// anything was counted.
 inline int64_t triangleThresholdBin(const std::vector<int64_t>& bins) {
     const auto n = static_cast<int64_t>(bins.size());
     bool counted = false;

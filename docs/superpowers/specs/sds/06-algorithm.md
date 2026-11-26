@@ -168,7 +168,10 @@ the operation and the parameter.
 | | `measurements` | string | every `MeasurementKind` | as `segment.connected_components` |
 | | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
 | | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `"LocalMaxima"`; absent rather than a default so that existing recorded configurations are unchanged |
-| `segment.tissue_detect` | `saturationThreshold` | double | 0.07 | 0 to 1 |
+| `segment.tissue_detect` | `mode` | string | `"Brightfield"` | `"Brightfield"` or `"Fluorescence"`; recorded only in fluorescence mode, so a brightfield operation's bag is what it was before the mode existed |
+| | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only, refused in fluorescence mode |
+| | `thresholdMethod` | string | `"Triangle"` in fluorescence mode | `"Triangle"` or `"Fixed"`; fluorescence only, refused in brightfield mode |
+| | `intensityThreshold` | double | absent | finite; required with `"Fixed"`, refused with `"Triangle"` and in brightfield mode |
 | | `minimumRegionAreaPx` | int | 0 | at least 0; square level-0 pixels |
 | | `closingRadiusPx` | int | 2 | 0 to 127; 0 for no closing |
 | | `targetLayer` | string | absent: valid only when exactly one layer is bound | the name of a bound layer |
@@ -234,7 +237,9 @@ beside it saying which buffers it counts:
 | `segment.connected_components` | 192: the union-find parents, the traced rings, the region table and the objects emitted inside the call (the tile filter's and the finisher's copies included), one intensity partial per object and measured plane for at most three measured planes | 16384: one object's record and its finished copy with every measurement, and the small arrays of a tile with few objects |
 | `segment.contours` | 264: as connected components, without partials, but regions of different values touch side by side, so the traced arrays and a join key per region can reach one per pixel | 4096 |
 | `segment.watershed` | 288 per pixel of the halo'd tile: plane 0 as doubles, each pixel's seed and the flood's queue, then the labelling, tracing and emission of contours with three measured planes | 16384 |
-| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions | 4096 |
+| `segment.tissue_detect` | 200 per pixel of the halo'd tile: the closing's two distance maps, then one label per tile pixel and the tracing and emission of the regions; fluorescence adds nothing, the mask being computed straight into the same buffer | 4096; with Triangle, 4096 + 2 · 65536 · 8 + 2 · 64 (the histogram's 65536 bins of 8 bytes counted twice, as Otsu's local copy is, and the allocator's overhead on each). Its accumulated state, whatever the input type, is 65536 · 8 + 64 bytes of histogram, the instance, and 4096 + 128 · 4 + 64 bytes of bookkeeping |
+
+The catalog's parameter-free figures for `segment.tissue_detect` (`accumulatedStateBytes`, `workingSetBytesPerTile`, the supported types and the plane count) describe the default, brightfield operation; a run uses the figures of its own instance.
 
 **The backend's share is bounded from its source.** OpenCV allocates part of
 its memory through its own allocator, which no test in this module can count.
@@ -922,12 +927,19 @@ public:
 };
 OperationPtr makeWatershed(const WatershedParameters&);
 
-/// segment.tissue_detect — Joint over three planes of one type, Byte or
-/// UInt16 (RGB), halo 2 * closingRadiusPx + 1, one Byte plane, writes objects.
+enum class TissueMode : int32_t { Brightfield, Fluorescence };
+enum class TissueThresholdMethod : int32_t { Triangle, Fixed };
+
+/// segment.tissue_detect — Joint over planes of one type, Byte, UInt16 or
+/// Float32; brightfield: exactly three (RGB); fluorescence: one or more.
+/// Halo 2 * closingRadiusPx + 1, one Byte plane, writes objects.
 class TissueDetectParameters {
 public:
     TissueDetectParameters();
-    TissueDetectParameters& saturationThreshold(double);             // 0.07
+    TissueDetectParameters& mode(TissueMode);                        // Brightfield
+    TissueDetectParameters& thresholdMethod(TissueThresholdMethod);  // Triangle, fluorescence only
+    TissueDetectParameters& intensityThreshold(double);              // required with Fixed
+    TissueDetectParameters& saturationThreshold(double);             // 0.07, brightfield only
     TissueDetectParameters& minimumRegionAreaPx(int64_t);            // 0
     TissueDetectParameters& closingRadiusPx(int32_t);                // 2, 0 = none
     TissueDetectParameters& targetLayer(const char*);
@@ -1057,9 +1069,11 @@ samples they then are.
 one channel, the label raster: per channel over several, every region would
 be stored once per channel under one id, so validation refuses a run giving
 it more than one plane (`05-pipeline.md` 5.5).
-`segment.tissue_detect` is **Joint** over exactly three planes of one type,
-`Byte` or `UInt16`; another count throws `ChannelArityError`, the error of the
-catalog's other RGB operations.
+`segment.tissue_detect` is **Joint** over planes of one type, `Byte`, `UInt16`
+or `Float32`. In brightfield mode it takes exactly three planes; in
+fluorescence mode one or more. Another count throws `ChannelArityError`, the
+error of the catalog's other RGB operations; the brightfield message points to
+fluorescence mode.
 
 **The raster output.** Every operation must write a raster, and for the
 segmenters it is a view for inspection: one `Int32` plane holding each region
@@ -1103,6 +1117,68 @@ traced as above; `minimumRegionAreaPx` filters in the finisher on level-0
 area. One tissue region may span the level, and the merger holds its
 fragments until it is complete (`05-pipeline.md` 5.7), so tissue detection
 should run at a coarse `analysisLevel`; its documentation says so.
+
+**Fluorescence mode.** The brightfield rule above is the default and is
+unchanged; in brightfield mode a `Float32` pixel follows the same saturation
+rule, and one whose maximum is not above 0, or is NaN, is background. With
+`mode` set to `"Fluorescence"` the operation takes one or more planes of one
+type (the pipeline's channel selection chooses them, for example DAPI alone),
+and tissue shows as brightness, not colour:
+
+- **The rule.** A pixel's signal is the maximum over its planes, NaN samples
+  ignored; the pixel is tissue when the signal is strictly above the cut-off.
+  Pixels beyond the level are background whatever the cut-off, so a negative
+  cut-off cannot turn them into tissue, and a pixel whose samples are all NaN
+  is background. The closing, the labelling, the area filter, the measurements
+  and the output plane are those of brightfield mode, by the same code.
+- **The cut-off.** With `thresholdMethod` `"Fixed"` it is
+  `intensityThreshold`, in the input's units; `Byte`, `UInt16` and `Float32`
+  are accepted. With `"Triangle"`, the default, it comes from the whole slide,
+  by the route `pixel.threshold_otsu` takes: `needsGlobalContext()` is true
+  only in this case, `accumulate()` counts the signal of the tile rect (not
+  the halo) at the pixels the run's mask admits into 256 bins (`Byte`) or
+  65536 (`UInt16`) of exact 64-bit counts, `combine()` adds the bins and
+  `finalizeAccumulation()` takes the cut-off from the sum. The cut-off does
+  not depend on the tile size, the worker count or the tile order.
+  `Float32` with `"Triangle"` throws `UnsupportedDataTypeError` naming
+  `"Fixed"` as the way out: a triangle on `Float32` would need a histogram
+  range, and no slide needs it.
+- **The triangle** is that of Zack, Rogers and Latt (*J Histochem Cytochem*
+  25:741–753, 1977), as OpenCV 4.14's `getThreshVal_Triangle_8u` implements
+  it, generalised to 256 or 65536 bins of 64-bit counts and matched step for
+  step: the bounds widened by one bin, the histogram flipped when the peak lies
+  nearer the left bound, the bin farthest from the line joining the bound to
+  the peak (the first maximum kept, not the lowest bin among ties), OpenCV's
+  final decrement, and the flip undone. On `Byte` it equals `cv::threshold`
+  with `THRESH_TRIANGLE` on the same pixels, which the test takes as its
+  oracle.
+- **The empty histogram.** Only a histogram with nothing counted, the mask
+  admitting no pixel, has no cut-off, and then nothing is tissue. A non-empty
+  histogram that rises straight to its peak gives OpenCV's -1, which is a real
+  cut-off: every counted pixel is above it and is tissue.
+- **The bag.** The operation records `mode`, `thresholdMethod` and
+  `intensityThreshold` only in fluorescence mode. A brightfield operation
+  records exactly the keys it recorded before the mode existed, so existing
+  pipeline files and workspaces compare equal and do not turn stale.
+  `saturationThreshold` is refused in fluorescence mode, and the fluorescence
+  keys in brightfield mode.
+
+**Evidence from the example slide.** The design rests on measurements of one
+5-channel, 8-bit PerkinElmer scan (DAPI, FITC, CY3, Texas Red, CY5) at its
+three coarsest levels, 780, 1560 and 3120 pixels wide:
+
+- Outside the scanned area the pixels are 0. Glass inside it is 1 to 4 in the
+  per-pixel channel maximum. Tissue starts at about 5.
+- The triangle cut-off on the histogram of the channel maximum is 6, 7 and 7;
+  on DAPI alone it is the same. A cut-off of about 5 to 7, followed by a
+  closing of radius 2, gives a clean tissue outline with the alveolar spaces
+  left open.
+- Otsu on the same histogram picks 22, which cuts holes through the tissue, so
+  the automatic cut-off is the triangle, not Otsu.
+
+The slide is not in the repository, so its check (about 41–44% tissue at levels
+3 to 5, with a cut-off of 6 or 7) is outside the test suite, as the labelled
+corpus of 6.9 is.
 
 **The analysis level is set on the run, not here.** Tissue detection does not
 need full resolution, and UR-IMG-4 requires reading from the coarsest adequate
@@ -1551,7 +1627,7 @@ The operations that exist state their reference through
 | `segment.connected_components` | Analytic: known rectangles, rings with holes and diagonal chains | Exact counts, rings, areas, perimeters, centroids, bounding boxes, calibrated twins and intensity statistics; diagonal neighbours one object 8-connected and two 4-connected; NaN and 0 background in every type; NaN intensity samples skipped, the mean, minimum and maximum exact and the standard deviation within 10⁻⁹ relative of a direct computation; objects identical to one tile at tile sizes 64, 100 and 257, both connectivities — geometry and integer intensities exact, `Float32` intensities within 10⁻¹² relative; an object across four tiles with a hole cut by both seams, and an 8-connected chain across a tile corner, each one object equal to one tile; an area bound applied to merged objects; a filtered run storing fewer objects |
 | `segment.contours` | Analytic: label rasters of touching regions, holes filled by other labels or by background, `Float32` labels one ulp apart | Exact counts, shared rings, areas and perimeters; `Float32` labels compared exactly, -0 and NaN background; fragments keyed by their value; objects identical to one tile at tile sizes 64, 100 and 257 with regions of different values touching across seams, and at 25, 50 and 64 on a checkerboard of two adjacent `Float32` labels |
 | `segment.watershed` | Analytic: two touching discs of radius 10, centres 16 apart, whose distance transform is flooded | Two objects, each with an area within 5% of the disc less half the shared lens and a centroid within 1 pixel of the analytic one, their areas summing exactly to the union; plateau markers at their topmost-leftmost pixel; anchor-raster markers; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 over thirty pairs of touching discs; a region beyond the spacing fails with the reach error at every tile size, never a partial segmentation |
-| `segment.tissue_detect` | Analytic: pink ellipses with one-pixel holes on grey-noise glass with dust | Detected area within 1% of the ellipses' analytic area at level 0, the holes closed; a 2-pixel gap bridged at radius 2 and left open at 0; at analysis level 2 areas in level-0 pixels (16 per level-2 pixel) within the staircase bound 16 · 4 · (a + b + 1) of the analytic area; calibrated area and perimeter exact; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 and closing radii 0, 2 and 5, across bars and gaps on seams at every phase; `UInt16` samples (the `Byte` slide × 257) giving the same objects as `Byte` |
+| `segment.tissue_detect` | Analytic: pink ellipses with one-pixel holes on grey-noise glass with dust | Detected area within 1% of the ellipses' analytic area at level 0, the holes closed; a 2-pixel gap bridged at radius 2 and left open at 0; at analysis level 2 areas in level-0 pixels (16 per level-2 pixel) within the staircase bound 16 · 4 · (a + b + 1) of the analytic area; calibrated area and perimeter exact; objects identical to one tile, exactly, at tile sizes 64, 100 and 257 and closing radii 0, 2 and 5, across bars and gaps on seams at every phase; `UInt16` samples (the `Byte` slide × 257) giving the same objects as `Byte`; fluorescence: two blobs bright in different channels over 0 to 4 glass noise and an exact-zero band give the blobs' area within 1% with a fixed and a triangle cut-off, the triangle equal to OpenCV's on `Byte` (random and shaped histograms), identical objects at tile sizes 64, 100 and 257 and 1 or 4 workers, only admitted pixels counted, the empty histogram finding nothing, `Float32` accepted with `"Fixed"` and refused with `"Triangle"` |
 | Measurement finishing | Analytic: rectangles and rectangles with holes, finished directly | Exact: calibrated twins at 0.5 µm per pixel and none without a pixel size; centroid unrounded and holes weighing negatively; unselected names removed; area bounds inclusive and applied after holes are dropped; `sceneIsCalibrated` and `scenePixelSizeMicrons` following the run's rule, the mean of two agreeing resolutions within 10⁻¹² |
 
 Exact agreement is asserted wherever the computation is defined in a fixed
@@ -1600,7 +1676,7 @@ over measuring (below), which made it twenty-one. Requirements 0.14 then added
 | `pixel.threshold_otsu` | 6.5 | PerChannel, global context | none |
 | `pixel.threshold_adaptive` | 6.5 | PerChannel | blockSize/2 |
 | `pixel.convert_type` | 6.6 | PerChannel | none |
-| `segment.tissue_detect` | 6.7 | Joint, three planes of one type (RGB) | 2 · `closingRadiusPx` + 1 |
+| `segment.tissue_detect` | 6.7 | Joint, planes of one type: three (RGB) in brightfield mode, one or more in fluorescence mode; global context with the triangle method | 2 · `closingRadiusPx` + 1 |
 | `segment.connected_components` | 6.7 | Joint: plane 0 segmented, up to three planes measured | 1 |
 | `segment.watershed` | 6.7 | Joint: plane 0 flooded, up to three planes measured | 2 · `maximumMarkerSpacingPx` + 1 |
 | `segment.contours` | 6.7 | PerChannel | 1 |

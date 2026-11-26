@@ -703,11 +703,15 @@ OperationFactoryPtr makeTissueDetectFactory() {
         "Analytic: pink ellipses with one-pixel holes on grey-noise glass give the ellipses' area within 1% at "
         "level 0; a 2-pixel gap is closed at radius 2 and not at 0; at analysis level 2, areas are 16 level-0 "
         "pixels per level-2 pixel and within the staircase bound of the analytic area; objects identical to one "
-        "tile at tile sizes 64, 100 and 257, Byte and UInt16 alike. The labelled corpus of SDS 06 section 6.9 is "
+        "tile at tile sizes 64, 100 and 257, Byte and UInt16 alike; fluorescence: two blobs bright in different "
+        "channels over 0..4 glass noise and an exact-zero band give the blobs' area within 1% with a fixed and a "
+        "triangle cut-off, the triangle equal to OpenCV's on Byte, identical objects at tile sizes 64, 100 and 257 "
+        "and 1 or 4 workers. The labelled corpus of SDS 06 section 6.9 is "
         "outside the repository",
         "O(n * (2r + 1)) in the pixels of the halo'd tile for the saturation and the closing, r the closing "
         "radius; then labelling by union-find with path halving, nearly linear in the tile's pixels, and O(v) "
-        "in the vertices of the traced rings");
+        "in the vertices of the traced rings; fluorescence triangle: one O(n) counting pass over the tile rects and O(b) "
+        "in the histogram's bins");
 }
 
 } // namespace detail

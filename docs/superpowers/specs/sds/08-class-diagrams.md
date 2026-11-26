@@ -1977,8 +1977,23 @@ classDiagram
         +targetLayer(cstr) WatershedParameters
     }
 
+    class TissueMode {
+        <<enumeration>>
+        Brightfield
+        Fluorescence
+    }
+
+    class TissueThresholdMethod {
+        <<enumeration>>
+        Triangle
+        Fixed
+    }
+
     class TissueDetectParameters {
         <<ThreadCompatible>>
+        +mode(TissueMode) TissueDetectParameters
+        +thresholdMethod(TissueThresholdMethod) TissueDetectParameters
+        +intensityThreshold(double) TissueDetectParameters
         +saturationThreshold(double) TissueDetectParameters
         +minimumRegionAreaPx(int64_t) TissueDetectParameters
         +closingRadiusPx(int32_t) TissueDetectParameters
@@ -2036,6 +2051,8 @@ classDiagram
     ConnectedComponentsParameters ..> MeasurementSelection : measured per object
     WatershedParameters ..> MeasurementSelection : measured per object
     MeasurementSelection ..> MeasurementKind
+    TissueDetectParameters ..> TissueMode
+    TissueDetectParameters ..> TissueThresholdMethod
     TissueDetectParameters ..> OperationParameters : targetLayer is setString
     ConnectedComponentsParameters ..> OperationParameters : measurements is a comma-separated string
 ```

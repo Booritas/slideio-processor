@@ -6,7 +6,7 @@
  * @brief Segmentation operations: Connectivity, the connected-components
  * labelling with its per-object measurements, the contours of a label raster,
  * the marker-controlled watershed that separates touching objects, and tissue
- * detection on RGB.
+ * detection on brightfield RGB and on fluorescence.
  *
  * A segmentation operation writes objects to a layer of the run. Each object is
  * found on the tile it lies in; one cut by tile seams is emitted in fragments
@@ -1036,14 +1036,32 @@ private:
 };
 
 /**
- * @brief Creates `segment.tissue_detect`: Joint over three planes of one type,
- * `Byte` or `UInt16`, halo 2 * `closingRadiusPx` + 1, one `Byte` output plane,
- * producing objects.
+ * @brief Creates `segment.tissue_detect`: Joint over planes of one type,
+ * `Byte`, `UInt16` or `Float32`, halo 2 * `closingRadiusPx` + 1, one `Byte`
+ * output plane, producing objects.
  *
- * The three planes are a pixel's red, green and blue samples, in any order. A
- * pixel is tissue when its saturation, (max - min) / max over its three
+ * **Brightfield mode**, the default, takes exactly three planes: a pixel's
+ * red, green and blue samples, in any order. A pixel is tissue when its saturation, (max - min) / max over its three
  * samples, exceeds `saturationThreshold`; a pixel whose samples are all 0,
- * as pixels beyond the level are, is background. The tissue mask is then
+ * as pixels beyond the level are, is background; so is a `Float32` pixel
+ * whose maximum is not above 0, or is NaN.
+ *
+ * **Fluorescence mode** (`mode` set to `Fluorescence`) takes one or more
+ * planes, for example the channels the pipeline selects. A pixel's signal is
+ * the maximum over its planes, NaN samples ignored; a pixel is tissue when its
+ * signal is strictly above a cut-off. With `thresholdMethod` `Fixed` the
+ * cut-off is `intensityThreshold`, in the input's units. With `Triangle`, the
+ * default, it comes from a whole-slide pass: the triangle method (Zack, Rogers
+ * and Latt, 1977; it equals OpenCV's `THRESH_TRIANGLE` on `Byte`) applied to
+ * the histogram of the signal over the analysis level, counting only the
+ * pixels the run's mask admits, so the cut-off does not depend on the tile
+ * size, the worker count or the tile order. A histogram with nothing counted
+ * has no cut-off, and then nothing is tissue. Triangle needs `Byte` or
+ * `UInt16`; for `Float32` use `Fixed`, or UnsupportedDataTypeError is
+ * thrown. In this mode pixels beyond the level, and pixels whose samples are
+ * all NaN, are background whatever the cut-off.
+ *
+ * In both modes the tissue mask is then
  * closed, dilated and then eroded, with a disc of radius `closingRadiusPx` in
  * pixels of the analysis level: the pixels within that Euclidean distance of
  * its centre. The closing bridges gaps and fills holes narrower than the
@@ -1060,9 +1078,10 @@ private:
  * assembled (UR-SEG-7); the area is in level-0 pixels, so the bound means the
  * same at every analysis level.
  *
- * The run selects exactly three channels: validating a run that gives the
- * operation another number fails with ChannelArityError, and so does its
- * outputPlaneCount() asked for another number.
+ * Brightfield mode needs exactly three channels, fluorescence mode at least
+ * one: validating a run that gives the operation another number fails with
+ * ChannelArityError, and so does its outputPlaneCount() asked for another
+ * number.
  *
  * The output plane holds 255 for each closed tissue pixel of the tile and 0
  * elsewhere.
