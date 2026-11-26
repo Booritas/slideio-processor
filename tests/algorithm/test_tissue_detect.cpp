@@ -509,6 +509,111 @@ TEST(TissueDetect, TypedAndNamedBagsAreEqual) {
     EXPECT_EQ(jsonOf(cleared->parameters()), jsonOf(defaults->parameters()));
 }
 
+TEST(TissueDetect, BrightfieldBagUnchanged) {
+    const char* expected = R"({"closingRadiusPx":2,"minimumRegionAreaPx":0,"saturationThreshold":0.07})";
+    EXPECT_EQ(jsonOf(makeTissueDetect(TissueDetectParameters())->parameters()), expected);
+    EXPECT_EQ(jsonOf(makeTissueDetect(TissueDetectParameters().mode(TissueMode::Brightfield))->parameters()),
+              expected);
+}
+
+TEST(TissueDetect, FluorescenceTypedAndNamedBagsAreEqual) {
+    const OperationPtr typed =
+        makeTissueDetect(TissueDetectParameters().mode(TissueMode::Fluorescence).closingRadiusPx(3));
+    OperationParameters bag;
+    bag.setString("mode", "Fluorescence").setInt("closingRadiusPx", 3);
+    const OperationPtr named = OperationCatalog::instance().create(kName, bag);
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+    const OperationParameters& recorded = typed->parameters();
+    EXPECT_EQ(recorded.count(), 4);
+    EXPECT_STREQ(recorded.getString("mode", "absent"), "Fluorescence");
+    EXPECT_STREQ(recorded.getString("thresholdMethod", "absent"), "Triangle");
+    int64_t value = -1;
+    EXPECT_TRUE(recorded.getInt("minimumRegionAreaPx", value));
+    EXPECT_TRUE(recorded.getInt("closingRadiusPx", value));
+    EXPECT_EQ(value, 3);
+    double unused = 0.0;
+    EXPECT_FALSE(recorded.getDouble("saturationThreshold", unused));
+    EXPECT_FALSE(recorded.getDouble("intensityThreshold", unused));
+
+    const OperationPtr fixed = makeTissueDetect(TissueDetectParameters()
+                                                    .mode(TissueMode::Fluorescence)
+                                                    .thresholdMethod(TissueThresholdMethod::Fixed)
+                                                    .intensityThreshold(5.5));
+    OperationParameters fixedBag;
+    fixedBag.setString("mode", "Fluorescence").setString("thresholdMethod", "Fixed").setDouble("intensityThreshold", 5.5);
+    EXPECT_EQ(jsonOf(fixed->parameters()), jsonOf(OperationCatalog::instance().create(kName, fixedBag)->parameters()));
+    EXPECT_EQ(fixed->parameters().count(), 5);
+    double threshold = -1.0;
+    ASSERT_TRUE(fixed->parameters().getDouble("intensityThreshold", threshold));
+    EXPECT_EQ(threshold, 5.5);
+    EXPECT_STREQ(fixed->parameters().getString("thresholdMethod", "absent"), "Fixed");
+}
+
+TEST(TissueDetect, RejectsBadFluorescenceParameters) {
+    const auto expectInvalid = [](const std::function<void()>& make, const char* key, const std::string& what) {
+        try {
+            make();
+            ADD_FAILURE() << what << ": nothing thrown";
+        } catch (const InvalidArgumentError& e) {
+            const std::string message = e.what();
+            EXPECT_NE(message.find(kName), std::string::npos) << what << ": " << message;
+            EXPECT_NE(message.find(key), std::string::npos) << what << ": " << message;
+        }
+    };
+    const auto byName = [](const std::function<void(OperationParameters&)>& fill) {
+        return [fill] {
+            OperationParameters bag;
+            fill(bag);
+            OperationCatalog::instance().create(kName, bag);
+        };
+    };
+    const TissueMode fl = TissueMode::Fluorescence;
+    expectInvalid([=] { makeTissueDetect(TissueDetectParameters().mode(fl).saturationThreshold(0.1)); },
+                  "saturationThreshold", "saturation in fluorescence");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence").setDouble("saturationThreshold", 0.07);
+                  }),
+                  "saturationThreshold", "saturation in fluorescence by name");
+    expectInvalid(
+        [] { makeTissueDetect(TissueDetectParameters().thresholdMethod(TissueThresholdMethod::Fixed)); },
+        "thresholdMethod", "method in brightfield");
+    expectInvalid(byName([](OperationParameters& b) { b.setString("thresholdMethod", "Triangle"); }),
+                  "thresholdMethod", "method in brightfield by name");
+    expectInvalid([] { makeTissueDetect(TissueDetectParameters().intensityThreshold(3.0)); }, "intensityThreshold",
+                  "intensity in brightfield");
+    expectInvalid(byName([](OperationParameters& b) { b.setDouble("intensityThreshold", 3.0); }),
+                  "intensityThreshold", "intensity in brightfield by name");
+    expectInvalid(
+        [=] {
+            makeTissueDetect(TissueDetectParameters().mode(fl).thresholdMethod(TissueThresholdMethod::Fixed));
+        },
+        "intensityThreshold", "Fixed without intensity");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence").setString("thresholdMethod", "Fixed");
+                  }),
+                  "intensityThreshold", "Fixed without intensity by name");
+    expectInvalid([=] { makeTissueDetect(TissueDetectParameters().mode(fl).intensityThreshold(3.0)); },
+                  "intensityThreshold", "Triangle with intensity");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence").setDouble("intensityThreshold", 3.0);
+                  }),
+                  "intensityThreshold", "Triangle with intensity by name");
+    expectInvalid(
+        [=] {
+            makeTissueDetect(TissueDetectParameters()
+                                 .mode(fl)
+                                 .thresholdMethod(TissueThresholdMethod::Fixed)
+                                 .intensityThreshold(std::numeric_limits<double>::quiet_NaN()));
+        },
+        "intensityThreshold", "NaN intensity");
+    expectInvalid(byName([](OperationParameters& b) { b.setString("mode", "Dark"); }), "mode", "unknown mode");
+    expectInvalid(byName([](OperationParameters& b) {
+                      b.setString("mode", "Fluorescence").setString("thresholdMethod", "Otsu");
+                  }),
+                  "thresholdMethod", "unknown method");
+    EXPECT_NO_THROW(makeTissueDetect(TissueDetectParameters().mode(fl).closingRadiusPx(0)));
+}
+
 TEST(TissueDetect, RejectsBadParameters) {
     const auto expectInvalid = [](const std::function<void()>& make, const char* key, const std::string& what) {
         try {

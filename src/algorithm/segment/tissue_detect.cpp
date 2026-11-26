@@ -13,9 +13,11 @@
 #include "detail/region_trace.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,7 +27,10 @@ namespace detail {
 
 // The values TissueDetectParameters holds.
 struct TissueDetectValues {
-    double saturationThreshold = 0.07;
+    TissueMode mode = TissueMode::Brightfield;
+    std::optional<double> saturationThreshold; // unset: 0.07; refused in fluorescence mode
+    std::optional<TissueThresholdMethod> thresholdMethod; // unset: Triangle in fluorescence mode
+    std::optional<double> intensityThreshold; // with Fixed only
     int64_t minimumRegionAreaPx = 0;
     int32_t closingRadiusPx = 2;
     std::string targetLayer; // empty: the run's only bound layer
@@ -56,6 +61,10 @@ constexpr const char* kPlaneCountMessage = "segment.tissue_detect: needs exactly
 // pixel.morph_close takes. Distances along a row are capped at radius + 1, so
 // they fit a byte.
 constexpr int32_t kMaximumRadiusPx = 127;
+constexpr double kDefaultSaturationThreshold = 0.07;
+// Spelled as the enumerators, in their order.
+constexpr const char* kModeSpellings[] = {"Brightfield", "Fluorescence"};
+constexpr const char* kMethodSpellings[] = {"Triangle", "Fixed"};
 
 // What one apply() call allocates beyond the input and output blocks, per
 // pixel of the halo'd tile, objects emitted included: the run's tile filter
@@ -124,7 +133,8 @@ void distancesAlongRows(uint8_t* buffer, int64_t width, int64_t height, uint8_t 
 class TissueDetectOperation : public Operation {
 public:
     explicit TissueDetectOperation(const detail::TissueDetectValues& p)
-        : threshold_(p.saturationThreshold),
+        : mode_(p.mode),
+          threshold_(p.saturationThreshold.value_or(kDefaultSaturationThreshold)),
           radius_(p.closingRadiusPx),
           plan_(MeasurementSelection().add(MeasurementKind::Area).add(MeasurementKind::Perimeter),
                 static_cast<double>(p.minimumRegionAreaPx), 0.0, true) {
@@ -137,9 +147,17 @@ public:
             }
             halfWidth_.push_back(w);
         }
-        parameters_.setDouble("saturationThreshold", p.saturationThreshold)
-            .setInt("minimumRegionAreaPx", p.minimumRegionAreaPx)
-            .setInt("closingRadiusPx", p.closingRadiusPx);
+        if (p.mode == TissueMode::Fluorescence) {
+            const TissueThresholdMethod method = p.thresholdMethod.value_or(TissueThresholdMethod::Triangle);
+            parameters_.setString("mode", kModeSpellings[static_cast<int32_t>(p.mode)])
+                .setString("thresholdMethod", kMethodSpellings[static_cast<int32_t>(method)]);
+            if (p.intensityThreshold) {
+                parameters_.setDouble("intensityThreshold", *p.intensityThreshold);
+            }
+        } else {
+            parameters_.setDouble("saturationThreshold", threshold_);
+        }
+        parameters_.setInt("minimumRegionAreaPx", p.minimumRegionAreaPx).setInt("closingRadiusPx", p.closingRadiusPx);
         if (!p.targetLayer.empty()) {
             parameters_.setString("targetLayer", p.targetLayer.c_str());
         }
@@ -177,6 +195,9 @@ public:
         if (out.planeCount() != 1 || out.planeType(0) != DataType::Byte || out.width() != tile.width ||
             out.height() != tile.height) {
             throw InternalError((std::string(kName) + ": the output is not one Byte plane of the tile").c_str());
+        }
+        if (mode_ == TissueMode::Fluorescence) {
+            throw InternalError((std::string(kName) + ": fluorescence mode is not yet implemented").c_str());
         }
         const DataType type = in.planeType(0);
         if ((type != DataType::Byte && type != DataType::UInt16) || in.planeType(1) != type ||
@@ -303,6 +324,7 @@ private:
         }
     }
 
+    TissueMode mode_;
     double threshold_;
     int32_t radius_;
     std::vector<int32_t> halfWidth_;
@@ -313,7 +335,18 @@ private:
 OperationPtr tissueDetectFromParameters(const OperationParameters& parameters) {
     detail::BagReader bag(kName, parameters);
     TissueDetectParameters p;
-    p.saturationThreshold(bag.getDouble("saturationThreshold", 0.07));
+    p.mode(bag.getEnum("mode", TissueMode::Brightfield, kModeSpellings, 2));
+    // Absent by default, and refused when it does not fit the mode, so a
+    // given key is kept apart from the default.
+    if (bag.contains("saturationThreshold")) {
+        p.saturationThreshold(bag.getDouble("saturationThreshold", kDefaultSaturationThreshold));
+    }
+    if (bag.contains("thresholdMethod")) {
+        p.thresholdMethod(bag.getEnum("thresholdMethod", TissueThresholdMethod::Triangle, kMethodSpellings, 2));
+    }
+    if (bag.contains("intensityThreshold")) {
+        p.intensityThreshold(bag.getDouble("intensityThreshold", 0.0));
+    }
     p.minimumRegionAreaPx(bag.getInt("minimumRegionAreaPx", 0));
     const int64_t radius = bag.getInt("closingRadiusPx", 2);
     if (radius < 0 || radius > kMaximumRadiusPx) {
@@ -345,6 +378,24 @@ TissueDetectParameters& TissueDetectParameters::operator=(const TissueDetectPara
 TissueDetectParameters& TissueDetectParameters::operator=(TissueDetectParameters&& other) noexcept = default;
 
 TissueDetectParameters::~TissueDetectParameters() = default;
+
+TissueDetectParameters& TissueDetectParameters::mode(TissueMode mode) {
+    checkNotMovedFrom(impl_.get());
+    impl_->mode = mode;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::thresholdMethod(TissueThresholdMethod method) {
+    checkNotMovedFrom(impl_.get());
+    impl_->thresholdMethod = method;
+    return *this;
+}
+
+TissueDetectParameters& TissueDetectParameters::intensityThreshold(double threshold) {
+    checkNotMovedFrom(impl_.get());
+    impl_->intensityThreshold = threshold;
+    return *this;
+}
 
 TissueDetectParameters& TissueDetectParameters::saturationThreshold(double threshold) {
     checkNotMovedFrom(impl_.get());
@@ -378,8 +429,38 @@ OperationPtr makeTissueDetect(const TissueDetectParameters& parameters) {
     if (p == nullptr) {
         fail("parameter 'parameters' was moved from");
     }
-    if (!(p->saturationThreshold >= 0.0 && p->saturationThreshold <= 1.0)) {
-        fail("parameter 'saturationThreshold' must be from 0 to 1");
+    if (p->mode != TissueMode::Brightfield && p->mode != TissueMode::Fluorescence) {
+        fail("parameter 'mode' is not an enumerator");
+    }
+    if (p->thresholdMethod && *p->thresholdMethod != TissueThresholdMethod::Triangle &&
+        *p->thresholdMethod != TissueThresholdMethod::Fixed) {
+        fail("parameter 'thresholdMethod' is not an enumerator");
+    }
+    if (p->mode == TissueMode::Fluorescence) {
+        if (p->saturationThreshold) {
+            fail("parameter 'saturationThreshold' applies to brightfield mode only");
+        }
+        const bool fixed = p->thresholdMethod && *p->thresholdMethod == TissueThresholdMethod::Fixed;
+        if (fixed && !p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' is required with the Fixed threshold method");
+        }
+        if (!fixed && p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' applies to the Fixed threshold method only");
+        }
+        if (p->intensityThreshold && !std::isfinite(*p->intensityThreshold)) {
+            fail("parameter 'intensityThreshold' must be finite");
+        }
+    } else {
+        if (p->thresholdMethod) {
+            fail("parameter 'thresholdMethod' applies to fluorescence mode only");
+        }
+        if (p->intensityThreshold) {
+            fail("parameter 'intensityThreshold' applies to fluorescence mode only");
+        }
+        const double saturation = p->saturationThreshold.value_or(kDefaultSaturationThreshold);
+        if (!(saturation >= 0.0 && saturation <= 1.0)) {
+            fail("parameter 'saturationThreshold' must be from 0 to 1");
+        }
     }
     if (p->minimumRegionAreaPx < 0) {
         fail("parameter 'minimumRegionAreaPx' must not be negative");

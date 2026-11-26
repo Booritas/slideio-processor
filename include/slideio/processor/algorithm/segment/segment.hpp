@@ -820,6 +820,27 @@ private:
 SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParameters& parameters);
 
 /**
+ * @brief What `segment.tissue_detect` takes tissue to look like.
+ * @par Requirements
+ * UR-SEG-1
+ */
+enum class TissueMode : int32_t {
+    Brightfield, ///< Saturated colour on a light or grey background: three planes, red, green and blue.
+    Fluorescence ///< Signal above a dark background.
+};
+
+/**
+ * @brief How fluorescence mode of `segment.tissue_detect` chooses the intensity
+ * above which a pixel is tissue.
+ * @par Requirements
+ * UR-SEG-1
+ */
+enum class TissueThresholdMethod : int32_t {
+    Triangle, ///< The triangle method over the whole slide's intensities.
+    Fixed     ///< The value given as `intensityThreshold`.
+};
+
+/**
  * @brief The parameters of `segment.tissue_detect`, set one by one and passed
  * to makeTissueDetect().
  *
@@ -828,7 +849,10 @@ SLIDEIO_PROCESSOR_ENGINE_EXPORTS OperationPtr makeWatershed(const WatershedParam
  * operation from the same bag:
  * | Key | Type | Default | Range |
  * |---|---|---|---|
- * | `saturationThreshold` | double | 0.07 | 0 to 1 |
+ * | `mode` | string | `Brightfield` | `Brightfield` or `Fluorescence`; recorded only in fluorescence mode |
+ * | `saturationThreshold` | double | 0.07 | 0 to 1; brightfield only: refused in fluorescence mode |
+ * | `thresholdMethod` | string | `Triangle` in fluorescence mode | `Triangle` or `Fixed`; fluorescence only: refused in brightfield mode |
+ * | `intensityThreshold` | double | absent | finite; required with `Fixed`, refused otherwise |
  * | `minimumRegionAreaPx` | int | 0 | at least 0 |
  * | `closingRadiusPx` | int | 2 | 0 to 127 |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
@@ -907,8 +931,49 @@ public:
     ~TissueDetectParameters();
 
     /**
+     * @brief Sets the mode: brightfield by default.
+     *
+     * Brightfield records no `mode` key in the parameter bag; fluorescence
+     * records it, with `thresholdMethod`.
+     * @param mode The mode; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& mode(TissueMode mode);
+    /**
+     * @brief Sets how fluorescence mode chooses its intensity threshold:
+     * triangle by default there.
+     *
+     * Giving it in brightfield mode is refused by makeTissueDetect().
+     * @param method The method; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& thresholdMethod(TissueThresholdMethod method);
+    /**
+     * @brief Sets the intensity above which a fluorescence pixel is tissue,
+     * for the `Fixed` threshold method; required with it and refused otherwise.
+     * @param threshold The threshold, finite; checked by makeTissueDetect().
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     * @par Requirements
+     * UR-SEG-1
+     */
+    TissueDetectParameters& intensityThreshold(double threshold);
+    /**
      * @brief Sets the saturation above which a pixel is tissue; 0.07 by
-     * default.
+     * default. Brightfield only: giving it in fluorescence mode is refused by
+     * makeTissueDetect().
      * @param threshold The threshold, from 0 to 1; checked by
      * makeTissueDetect().
      * @return These parameters, so calls can be chained.
@@ -1013,7 +1078,11 @@ private:
  * @return The operation, never null.
  * @throws InvalidArgumentError When @p parameters is moved-from or a value is
  * out of its range (the threshold not from 0 to 1, a negative area bound, the
- * radius not from 0 to 127); the message names the operation and the
+ * radius not from 0 to 127, the mode or threshold method not an enumerator, an
+ * intensity threshold not finite), or a key does not fit the mode:
+ * `saturationThreshold` in fluorescence mode, `thresholdMethod` or
+ * `intensityThreshold` in brightfield mode, `intensityThreshold` missing with
+ * `Fixed` or given with `Triangle`; the message names the operation and the
  * parameter, never the value.
  * @throws std::bad_alloc When memory is exhausted.
  * @par Thread-safety
