@@ -76,6 +76,31 @@ slideio_processor_copy_slideio_runtime(slideio_processor_algorithm_tests)
 gtest_discover_tests(slideio_processor_algorithm_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm."
     PROPERTIES TIMEOUT 120)
 
+# The tile invariance gate for segment.watershed's Drop mode (design
+# 2026-11-28-watershed-unreached-foreground): random inputs and generated shapes
+# run tiled, over one tile and through the reference model. An executable of its
+# own, labelled slow, so that it stays out of the default suite's time budget;
+# the harness and the model are compiled in, as above.
+add_executable(slideio_processor_watershed_model_tests
+    test_watershed_model.cpp
+    support/harness.cpp
+    support/flood_model.cpp
+    ${PROJECT_SOURCE_DIR}/src/algorithm/detail/sample_codec.cpp
+    ${PROJECT_SOURCE_DIR}/src/pipeline/detail/operation_context_state.cpp
+)
+target_link_libraries(slideio_processor_watershed_model_tests PRIVATE
+    slideio-processor-engine slideio_processor_pipeline_test_support GTest::gtest_main)
+target_include_directories(slideio_processor_watershed_model_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/algorithm
+    ${PROJECT_SOURCE_DIR}/tests)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(slideio_processor_watershed_model_tests PRIVATE -ffp-contract=off)
+endif()
+slideio_processor_copy_slideio_runtime(slideio_processor_watershed_model_tests)
+gtest_discover_tests(slideio_processor_watershed_model_tests DISCOVERY_TIMEOUT 60 TEST_PREFIX "algorithm.model."
+    PROPERTIES TIMEOUT 3600 LABELS slow)
+
 # Working-set tests measure what an operation allocates through operator new,
 # which this executable replaces with a counting pair (support/allocation_meter).
 # A shared library may allocate through its own operator new (under MSVC every

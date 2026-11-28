@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace slideio::processor::testing_support {
@@ -42,5 +43,16 @@ constexpr int64_t kModelDropped = -2;
 /// far keeps its key) and refused says whether the run would fail.
 ModelResult modelWatershed(const std::vector<double>& values, int64_t width, int64_t height,
                            const ModelParameters& p);
+
+struct Image; // harness.hpp
+
+/// The first difference between a model key map and an operation's label plane
+/// (plane 0 of @p labels, one Int32 label per pixel, 0 for background), as
+/// partitions of the level: label 0 exactly where the key is negative
+/// (kModelBackground or kModelDropped), each label one key, and two side
+/// neighbours with the same key under the same label. The operation labels each
+/// basin's 4-connected parts, so a basin in two parts has two labels. Empty when
+/// they agree.
+std::string partitionDifference(const std::vector<int64_t>& key, const Image& labels);
 
 } // namespace slideio::processor::testing_support

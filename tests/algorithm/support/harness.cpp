@@ -5,6 +5,7 @@
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/flow.hpp>
+#include <slideio/processor/core/measurement.hpp>
 #include <slideio/processor/pipeline/pipeline.hpp>
 #include <slideio/slideio/scene.hpp>
 
@@ -12,11 +13,14 @@
 #include <pipeline/detail/fragment_merge.hpp>
 #include <pipeline/detail/operation_context_state.hpp>
 
+#include <gtest/gtest.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -393,18 +397,146 @@ DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inp
     return result;
 }
 
-std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
-                                          int32_t tileSize, int32_t workers) {
+namespace {
+
+std::vector<ObjectRecord> runObjects(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
+                                     int32_t tileSize, int32_t workers, TileRasterSource* anchors,
+                                     AssemblingRasterSink* raster) {
     const Configuration config =
         ConfigurationBuilder().tileSize(tileSize, tileSize).tileSizeFromSlide(false).workerCount(workers).build();
     Pipeline pipeline(scene, config, spec);
     pipeline.bindLayer("objects", objectsLayer());
+    if (anchors != nullptr) {
+        pipeline.auxiliaryRaster("anchors", anchors);
+    }
+    if (raster != nullptr) {
+        pipeline.rasterSink(raster);
+    }
     CollectingSink sink;
     pipeline.runInto(sink, nullptr, CancellationToken());
     std::vector<ObjectRecord> records = sink.take();
     std::sort(records.begin(), records.end(),
               [](const ObjectRecord& a, const ObjectRecord& b) { return a.id() < b.id(); });
     return records;
+}
+
+std::vector<Point64> ringOf(const Polygon& polygon, int32_t ring) {
+    std::vector<Point64> points(static_cast<size_t>(polygon.ringPointCount(ring)));
+    polygon.ringPoints(ring, points.data(), static_cast<int64_t>(points.size()));
+    return points;
+}
+
+bool sameGeometry(const Polygon& a, const Polygon& b) {
+    if (a.ringCount() != b.ringCount()) {
+        return false;
+    }
+    for (int32_t r = 0; r < a.ringCount(); ++r) {
+        if (a.ringIsHole(r) != b.ringIsHole(r)) {
+            return false;
+        }
+        const std::vector<Point64> pa = ringOf(a, r);
+        const std::vector<Point64> pb = ringOf(b, r);
+        if (pa.size() != pb.size() || !std::equal(pa.begin(), pa.end(), pb.begin())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
+                                          int32_t tileSize, int32_t workers) {
+    return runObjects(scene, spec, tileSize, workers, nullptr, nullptr);
+}
+
+AnchorSource::AnchorSource(std::function<int64_t(int64_t, int64_t)> value, DataType type)
+    : value_(std::move(value)), type_(type) {}
+
+void AnchorSource::fillTile(BlockView& out) {
+    const Rect64 origin = out.slideRect();
+    const int64_t size = dataTypeSizeBytes(type_);
+    for (int64_t y = 0; y < out.height(); ++y) {
+        auto* row = static_cast<uint8_t*>(out.planeData(0)) + y * out.planeRowStrideBytes(0);
+        for (int64_t x = 0; x < out.width(); ++x) {
+            const int64_t v = value_(origin.x + x, origin.y + y);
+            if (type_ == DataType::Int64) {
+                std::memcpy(row + x * size, &v, sizeof v);
+            } else {
+                const auto narrow = static_cast<uint16_t>(v);
+                std::memcpy(row + x * size, &narrow, sizeof narrow);
+            }
+        }
+    }
+}
+
+DataType AnchorSource::planeType() const { return type_; }
+
+int32_t AnchorSource::planeCount() const { return 1; }
+
+EagerRun runEagerAll(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
+                     int32_t workers, TileRasterSource* anchors) {
+    // As runEager for a chain at analysis level 0, the only kind this serves:
+    // the level is the scene's size.
+    const int sceneWidth = std::get<2>(scene->getRect());
+    const int sceneHeight = std::get<3>(scene->getRect());
+    AssemblingRasterSink raster(sceneWidth, sceneHeight, 1.0);
+    EagerRun run;
+    run.objects = runObjects(scene, spec, tileSize, workers, anchors, &raster);
+    run.raster = raster.image();
+    return run;
+}
+
+std::vector<ObjectRecord> runWithAnchors(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
+                                         int32_t tileSize, TileRasterSource& anchors, int32_t workers) {
+    return runObjects(scene, spec, tileSize, workers, &anchors, nullptr);
+}
+
+std::string objectsDifference(const std::vector<ObjectRecord>& reference, const std::vector<ObjectRecord>& objects) {
+    std::ostringstream out;
+    out.precision(17);
+    if (objects.size() != reference.size()) {
+        out << objects.size() << " objects, " << reference.size() << " expected";
+        return out.str();
+    }
+    for (size_t i = 0; i < reference.size(); ++i) {
+        const ObjectRecord& want = reference[i];
+        const ObjectRecord& got = objects[i];
+        if (!(got.id() == want.id())) {
+            out << "object " << i << ": a different id";
+        } else if (got.layer() != want.layer()) {
+            out << "object " << i << ": a different layer";
+        } else if (!sameGeometry(got.geometry(), want.geometry())) {
+            out << "object " << i << ": a different geometry";
+        } else if (got.measurements().count() != want.measurements().count()) {
+            out << "object " << i << ": " << got.measurements().count() << " measurements, "
+                << want.measurements().count() << " expected";
+        } else {
+            for (int32_t k = 0; k < want.measurements().count(); ++k) {
+                const Measurement m = want.measurements().at(k);
+                Measurement found;
+                if (!got.measurements().find(m.name(), found)) {
+                    out << "object " << i << ": no " << m.name();
+                    break;
+                }
+                if (found.value() != m.value()) {
+                    out << "object " << i << ": " << m.name() << " is " << found.value() << ", " << m.value()
+                        << " expected";
+                    break;
+                }
+            }
+        }
+        if (out.tellp() > 0) {
+            return out.str();
+        }
+    }
+    return std::string();
+}
+
+void expectSameObjects(const std::vector<ObjectRecord>& reference, const std::vector<ObjectRecord>& objects,
+                       const std::string& label) {
+    const std::string difference = objectsDifference(reference, objects);
+    EXPECT_TRUE(difference.empty()) << label << ": " << difference;
 }
 
 } // namespace slideio::processor::testing_support

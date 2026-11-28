@@ -5,6 +5,7 @@
 // memory, or run it through the pipeline over a scene and assemble the level.
 
 #include <slideio/processor/core/data_type.hpp>
+#include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/geometry.hpp>
 #include <slideio/processor/core/ids.hpp>
 #include <slideio/processor/core/object_record.hpp>
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace slideio {
@@ -102,5 +104,48 @@ DirectObjects applyDirectObjects(Operation& op, const std::vector<DataType>& inp
 /// stored objects sorted by id.
 std::vector<ObjectRecord> runEagerObjects(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec,
                                           int32_t tileSize, int32_t workers);
+
+/// An Int64 (or, to test its refusal, UInt16) raster at level 0: value(x, y) at
+/// each pixel, asked for pixels beyond the level too. @p value must be
+/// thread-safe: the run's workers fill tiles concurrently.
+class AnchorSource : public TileRasterSource {
+public:
+    explicit AnchorSource(std::function<int64_t(int64_t, int64_t)> value, DataType type = DataType::Int64);
+
+    void fillTile(BlockView& out) override;
+    DataType planeType() const override;
+    int32_t planeCount() const override;
+
+private:
+    std::function<int64_t(int64_t, int64_t)> value_;
+    DataType type_;
+};
+
+/// What one run gave: the assembled analysis level and the stored objects.
+struct EagerRun {
+    Image raster;
+    std::vector<ObjectRecord> objects; // sorted by id
+};
+
+/// One Pipeline::runInto over @p scene with tile size tileSize x tileSize and
+/// @p workers workers, with objectsLayer() bound as "objects" and, when given,
+/// @p anchors bound as auxiliary raster "anchors": the raster runEager(...,
+/// true) would assemble and the objects runEagerObjects would return, from the
+/// same run.
+EagerRun runEagerAll(std::shared_ptr<slideio::Scene> scene, const PipelineSpec& spec, int32_t tileSize,
+                     int32_t workers, TileRasterSource* anchors = nullptr);
+
+/// As runEagerObjects, with @p anchors bound as auxiliary raster "anchors".
+std::vector<ObjectRecord> runWithAnchors(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
+                                         int32_t tileSize, TileRasterSource& anchors, int32_t workers = 4);
+
+/// The first difference between @p objects and @p reference, compared object
+/// by object: ids, layers, rings point for point and every measurement
+/// exactly; empty when they are the same.
+std::string objectsDifference(const std::vector<ObjectRecord>& reference, const std::vector<ObjectRecord>& objects);
+
+/// Expects objectsDifference() to be empty, the failure prefixed by @p label.
+void expectSameObjects(const std::vector<ObjectRecord>& reference, const std::vector<ObjectRecord>& objects,
+                       const std::string& label);
 
 } // namespace slideio::processor::testing_support

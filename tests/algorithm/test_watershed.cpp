@@ -61,43 +61,6 @@ std::vector<Point64> ringOf(const Polygon& polygon, int32_t ring) {
     return points;
 }
 
-bool sameGeometry(const Polygon& a, const Polygon& b) {
-    if (a.ringCount() != b.ringCount()) {
-        return false;
-    }
-    for (int32_t r = 0; r < a.ringCount(); ++r) {
-        if (a.ringIsHole(r) != b.ringIsHole(r)) {
-            return false;
-        }
-        const std::vector<Point64> pa = ringOf(a, r);
-        const std::vector<Point64> pb = ringOf(b, r);
-        if (pa.size() != pb.size() || !std::equal(pa.begin(), pa.end(), pb.begin())) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Expects @p objects to equal @p reference object by object: ids, layers,
-// rings point for point and every measurement exactly.
-void expectSameObjects(const std::vector<ObjectRecord>& reference, const std::vector<ObjectRecord>& objects,
-                       const std::string& label) {
-    ASSERT_EQ(objects.size(), reference.size()) << label;
-    for (size_t i = 0; i < reference.size(); ++i) {
-        const ObjectRecord& want = reference[i];
-        const ObjectRecord& got = objects[i];
-        ASSERT_TRUE(got.id() == want.id()) << label << ", object " << i;
-        EXPECT_EQ(got.layer(), want.layer()) << label << ", object " << i;
-        EXPECT_TRUE(sameGeometry(got.geometry(), want.geometry())) << label << ", object " << i;
-        ASSERT_EQ(got.measurements().count(), want.measurements().count()) << label << ", object " << i;
-        for (int32_t k = 0; k < want.measurements().count(); ++k) {
-            const Measurement m = want.measurements().at(k);
-            ASSERT_TRUE(has(got, m.name())) << label << ", object " << i << ": " << m.name();
-            EXPECT_EQ(measurement(got, m.name()), m.value()) << label << ", object " << i << ": " << m.name();
-        }
-    }
-}
-
 std::string jsonOf(const OperationParameters& parameters) {
     std::string text(static_cast<size_t>(parameters.toJson(nullptr, 0)) + 1, '\0');
     parameters.toJson(&text[0], static_cast<int32_t>(text.size()));
@@ -167,51 +130,9 @@ std::shared_ptr<slideio::Scene> sceneOf(int64_t width, int64_t height, std::vect
     return ts::makeSyntheticScene({{width, height, 0, 0}}, std::move(types), std::move(pixel));
 }
 
-// An Int64 raster at level 0: value(x, y) at each pixel.
-class AnchorSource : public TileRasterSource {
-public:
-    explicit AnchorSource(std::function<int64_t(int64_t, int64_t)> value, DataType type = DataType::Int64)
-        : value_(std::move(value)), type_(type) {}
-
-    void fillTile(BlockView& out) override {
-        const Rect64 origin = out.slideRect();
-        const int64_t size = dataTypeSizeBytes(type_);
-        for (int64_t y = 0; y < out.height(); ++y) {
-            auto* row = static_cast<uint8_t*>(out.planeData(0)) + y * out.planeRowStrideBytes(0);
-            for (int64_t x = 0; x < out.width(); ++x) {
-                const int64_t v = value_(origin.x + x, origin.y + y);
-                if (type_ == DataType::Int64) {
-                    std::memcpy(row + x * size, &v, sizeof v);
-                } else {
-                    const auto narrow = static_cast<uint16_t>(v);
-                    std::memcpy(row + x * size, &narrow, sizeof narrow);
-                }
-            }
-        }
-    }
-    DataType planeType() const override { return type_; }
-    int32_t planeCount() const override { return 1; }
-
-private:
-    std::function<int64_t(int64_t, int64_t)> value_;
-    DataType type_;
-};
-
-// A run as ts::runEagerObjects makes it, with @p anchors bound as "anchors".
-std::vector<ObjectRecord> runWithAnchors(const std::shared_ptr<slideio::Scene>& scene, const PipelineSpec& spec,
-                                         int32_t tileSize, TileRasterSource& anchors) {
-    const Configuration config =
-        ConfigurationBuilder().tileSize(tileSize, tileSize).tileSizeFromSlide(false).workerCount(4).build();
-    Pipeline pipeline(scene, config, spec);
-    pipeline.bindLayer("objects", ts::objectsLayer());
-    pipeline.auxiliaryRaster("anchors", &anchors);
-    ts::CollectingObjectSink sink;
-    pipeline.runInto(sink, nullptr, CancellationToken());
-    std::vector<ObjectRecord> records = sink.records();
-    std::sort(records.begin(), records.end(),
-              [](const ObjectRecord& a, const ObjectRecord& b) { return a.id() < b.id(); });
-    return records;
-}
+using ts::AnchorSource;
+using ts::expectSameObjects;
+using ts::runWithAnchors;
 
 enum class Reach { Either, TooFar, Unreached };
 

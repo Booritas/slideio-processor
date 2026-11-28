@@ -11,7 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <map>
+#include <set>
 #include <vector>
 
 using namespace slideio::processor;
@@ -105,26 +105,12 @@ TEST(FloodModel, MatchesSingleTileOnTouchingDiscs) {
                                              });
     ASSERT_EQ(labels.types, std::vector<DataType>{DataType::Int32});
 
-    // The same partition of the foreground: a bijection between labels and keys,
-    // and background (label 0) exactly where the model has background.
-    std::map<int64_t, int64_t> keyOfLabel;
-    std::map<int64_t, int64_t> labelOfKey;
-    for (int64_t y = 0; y < kHeight; ++y) {
-        for (int64_t x = 0; x < kWidth; ++x) {
-            const int64_t key = model.key[static_cast<size_t>(y * kWidth + x)];
-            const auto label = static_cast<int64_t>(labels.at(0, x, y));
-            ASSERT_NE(key, ts::kModelDropped) << "(" << x << ", " << y << ")";
-            ASSERT_EQ(label == 0, key == ts::kModelBackground) << "(" << x << ", " << y << ")";
-            if (label == 0) {
-                continue;
-            }
-            const auto byLabel = keyOfLabel.emplace(label, key).first;
-            const auto byKey = labelOfKey.emplace(key, label).first;
-            ASSERT_EQ(byLabel->second, key) << "label " << label << " at (" << x << ", " << y << ")";
-            ASSERT_EQ(byKey->second, label) << "key " << key << " at (" << x << ", " << y << ")";
-        }
-    }
-    EXPECT_EQ(keyOfLabel.size(), 2u);
+    // The same partition of the foreground, nothing left unreached, and two basins.
+    EXPECT_EQ(ts::partitionDifference(model.key, labels), "");
+    EXPECT_EQ(std::count(model.key.begin(), model.key.end(), ts::kModelDropped), 0);
+    std::set<int64_t> keys(model.key.begin(), model.key.end());
+    keys.erase(ts::kModelBackground);
+    EXPECT_EQ(keys.size(), 2u);
     EXPECT_NE(model.key[static_cast<size_t>(24 * kWidth + 24)], model.key[static_cast<size_t>(24 * kWidth + 40)]);
 }
 

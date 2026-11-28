@@ -1,9 +1,13 @@
 // Requirements: UR-SEG-8, UR-QA-2, UR-QA-3
 #include <algorithm/support/flood_model.hpp>
 
+#include <algorithm/support/harness.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <map>
+#include <sstream>
 #include <stdexcept>
 
 // Written from SDS 06 "Watershed, exactly" and the design
@@ -191,6 +195,50 @@ ModelResult modelWatershed(const std::vector<double>& values, int64_t width, int
         }
     }
     return result;
+}
+
+std::string partitionDifference(const std::vector<int64_t>& key, const Image& labels) {
+    const int64_t width = labels.width;
+    const int64_t height = labels.height;
+    std::ostringstream out;
+    if (key.size() != static_cast<size_t>(width * height) || labels.planes.empty()) {
+        out << "the key map has " << key.size() << " pixels, the label plane " << width << " x " << height;
+        return out.str();
+    }
+    const auto labelAt = [&](int64_t x, int64_t y) { return static_cast<int64_t>(labels.at(0, x, y)); };
+    const auto keyAt = [&](int64_t x, int64_t y) { return key[static_cast<size_t>(y * width + x)]; };
+    std::map<int64_t, int64_t> keyOfLabel;
+    for (int64_t y = 0; y < height; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            const int64_t label = labelAt(x, y);
+            const int64_t k = keyAt(x, y);
+            if ((label == 0) != (k < 0)) {
+                out << "(" << x << ", " << y << "): label " << label << ", key " << k;
+                return out.str();
+            }
+            if (label == 0) {
+                continue;
+            }
+            const auto byLabel = keyOfLabel.emplace(label, k).first;
+            if (byLabel->second != k) {
+                out << "(" << x << ", " << y << "): label " << label << " holds keys " << byLabel->second << " and "
+                    << k;
+                return out.str();
+            }
+            const int64_t neighbours[2][2] = {{x + 1, y}, {x, y + 1}};
+            for (const auto& n : neighbours) {
+                if (n[0] >= width || n[1] >= height || labelAt(n[0], n[1]) == 0) {
+                    continue;
+                }
+                if (keyAt(n[0], n[1]) == k && labelAt(n[0], n[1]) != label) {
+                    out << "(" << x << ", " << y << ") and (" << n[0] << ", " << n[1] << "): key " << k
+                        << " under labels " << label << " and " << labelAt(n[0], n[1]);
+                    return out.str();
+                }
+            }
+        }
+    }
+    return std::string();
 }
 
 } // namespace slideio::processor::testing_support
