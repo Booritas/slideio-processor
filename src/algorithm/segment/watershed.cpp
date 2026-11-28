@@ -304,6 +304,7 @@ public:
           distance_(p.minimumMarkerDistancePx),
           floor_(p.minimumMarkerValue),
           spacing_(p.maximumMarkerSpacingPx),
+          unreached_(p.unreached),
           plan_(p.measurements, static_cast<double>(p.minimumAreaPx), 0.0, true) {
         parameters_.setString("markers", kMarkerSpellings[static_cast<int32_t>(p.markers)])
             .setString("auxiliaryName", p.auxiliaryName.c_str())
@@ -413,7 +414,11 @@ public:
                     const int32_t seed = seeds[static_cast<size_t>(i)];
                     if (seed < 0 || std::max(std::abs(seed % width - (x + offsetX)),
                                              std::abs(seed / width - (y + offsetY))) > spacing_) {
-                        failReach(seed >= 0, tile.x + x, tile.y + y, floor_.has_value());
+                        if (unreached_ == WatershedUnreached::Fail) {
+                            failReach(seed >= 0, tile.x + x, tile.y + y, floor_.has_value());
+                        }
+                        // Drop: the pixel takes no basin, so labelling sees background.
+                        seeds[static_cast<size_t>(i)] = kUnreached;
                     }
                 }
             }
@@ -484,6 +489,7 @@ private:
     int64_t distance_;
     std::optional<double> floor_;
     int32_t spacing_;
+    WatershedUnreached unreached_;
     detail::MeasurementPlan plan_;
     OperationParameters parameters_;
 };

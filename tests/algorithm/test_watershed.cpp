@@ -423,14 +423,22 @@ TEST(Watershed, TilingInvariantAtThreeSizes) {
     }
 }
 
+// One disc of radius 60 at (100, 100) in a 200 x 200 level, its only maximum at the centre.
+double bigDiscPixel(int, int64_t x, int64_t y) {
+    const double d = std::sqrt(static_cast<double>((x - 100) * (x - 100) + (y - 100) * (y - 100)));
+    return d <= 60.0 ? 61.0 - d : 0.0;
+}
+
+// A strip two pixels high (rows 4 and 5, x < 150) falling from its one maximum at x = 0.
+double stripPixel(int, int64_t x, int64_t y) {
+    return y >= 4 && y < 6 && x < 150 ? 200.0 - static_cast<double>(x) : 0.0;
+}
+
 TEST(Watershed, SpacingExceededThrowsAtEveryTileSize) {
     // One disc of radius 60, its only maximum at the centre: its rim lies
     // further than the spacing of 32 from the one marker.
     constexpr int64_t kSide = 200;
-    const auto pixel = [](int, int64_t x, int64_t y) {
-        const double d = std::sqrt(static_cast<double>((x - 100) * (x - 100) + (y - 100) * (y - 100)));
-        return d <= 60.0 ? 61.0 - d : 0.0;
-    };
+    const auto pixel = bigDiscPixel;
     const auto scene = sceneOf(kSide, kSide, {slideio::DataType::DT_Float32}, pixel);
     const PipelineSpec spec = specOf(WatershedParameters().maximumMarkerSpacingPx(32));
     for (const int32_t tile : {64, 100, 257}) {
@@ -457,9 +465,7 @@ TEST(Watershed, StripLongerThanSpacingThrows) {
     // tile its far end is reached from a marker beyond the spacing; in small
     // tiles, those far from the maximum see no marker at all, and their pixels
     // are not reached.
-    const auto pixel = [](int, int64_t x, int64_t y) {
-        return y >= 4 && y < 6 && x < 150 ? 200.0 - static_cast<double>(x) : 0.0;
-    };
+    const auto pixel = stripPixel;
     const WatershedParameters parameters = WatershedParameters().minimumMarkerDistancePx(2).maximumMarkerSpacingPx(8);
     const OperationPtr op = makeWatershed(parameters);
     // In one tile the marker at (0, 4) reaches the whole strip; (9, 4) is the
@@ -474,6 +480,75 @@ TEST(Watershed, StripLongerThanSpacingThrows) {
         expectReachError([&] { ts::runEagerObjects(scene, specOf(parameters), 16, 4); }, "16-pixel tiles");
     EXPECT_EQ(tiled.message.find("minimumMarkerValue"), std::string::npos) << tiled.message;
     EXPECT_GT(pixel(0, tiled.x, tiled.y), 0.0) << tiled.message;
+}
+
+WatershedParameters dropStripParameters() {
+    return WatershedParameters()
+        .minimumMarkerDistancePx(2)
+        .maximumMarkerSpacingPx(8)
+        .unreachedForeground(WatershedUnreached::Drop);
+}
+
+TEST(Watershed, DropStripKeepsReach) {
+    // The strip touches the level's left edge, which a direct application would
+    // report as a seam fragment; one run over a single tile finishes it.
+    const auto scene = sceneOf(150, 10, {slideio::DataType::DT_Float32}, stripPixel);
+    const std::vector<ObjectRecord> records = ts::runEagerObjects(scene, specOf(dropStripParameters()), 512, 4);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(measurement(records[0], "area"), 18.0);
+    const ts::Image labels = ts::runEager(scene, specOf(dropStripParameters()), 512, 4, true);
+    for (int64_t y = 0; y < 10; ++y) {
+        for (int64_t x = 0; x < 150; ++x) {
+            const bool kept = (y == 4 || y == 5) && x <= 8;
+            EXPECT_EQ(labels.at(0, x, y) != 0.0, kept) << x << "," << y;
+        }
+    }
+    EXPECT_EQ(labels.at(0, 9, 4), 0.0);
+    EXPECT_EQ(labels.at(0, 149, 5), 0.0);
+}
+
+TEST(Watershed, DropUnmarkedObject) {
+    const auto scene = sceneOf(150, 10, {slideio::DataType::DT_Float32}, stripPixel);
+    const PipelineSpec spec = specOf(dropStripParameters().minimumMarkerValue(1000.0));
+    EXPECT_TRUE(ts::runEagerObjects(scene, spec, 512, 4).empty());
+    const ts::Image labels = ts::runEager(scene, spec, 512, 4, true);
+    for (int64_t y = 0; y < 10; ++y) {
+        for (int64_t x = 0; x < 150; ++x) {
+            ASSERT_EQ(labels.at(0, x, y), 0.0) << x << "," << y;
+        }
+    }
+}
+
+TEST(Watershed, DropDiscKeepsChebyshevSquare) {
+    constexpr int64_t kSide = 200;
+    const OperationPtr op = makeWatershed(
+        WatershedParameters().maximumMarkerSpacingPx(32).unreachedForeground(WatershedUnreached::Drop));
+    const ts::DirectObjects result = ts::applyDirectObjects(*op, {DataType::Float32}, {0}, kSide, kSide, bigDiscPixel);
+    EXPECT_EQ(result.objects.size(), 1u);
+    const ts::Image labels = ts::applyDirect(*op, {DataType::Float32}, {0}, kSide, kSide, bigDiscPixel);
+    for (int64_t y = 0; y < kSide; ++y) {
+        for (int64_t x = 0; x < kSide; ++x) {
+            const bool inDisc = bigDiscPixel(0, x, y) > 0.0;
+            const bool inSquare = std::max(std::abs(x - 100), std::abs(y - 100)) <= 32;
+            EXPECT_EQ(labels.at(0, x, y) != 0.0, inDisc && inSquare) << x << "," << y;
+        }
+    }
+}
+
+TEST(Watershed, DropWithAuxiliaryMarkers) {
+    const auto scene = sceneOf(150, 10, {slideio::DataType::DT_Float32}, stripPixel);
+    AnchorSource anchors([](int64_t x, int64_t y) -> int64_t { return x == 0 && y == 4 ? 7 : -1; });
+    const PipelineSpec spec = specOf(dropStripParameters().markers(WatershedMarkers::AuxiliaryRaster).auxiliaryName("anchors"));
+    const std::vector<ObjectRecord> records = runWithAnchors(scene, spec, 512, anchors);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(measurement(records[0], "area"), 18.0);
+}
+
+TEST(Watershed, DropThenAreaFloor) {
+    const auto scene = sceneOf(150, 10, {slideio::DataType::DT_Float32}, stripPixel);
+    EXPECT_TRUE(ts::runEagerObjects(scene, specOf(dropStripParameters().minimumAreaPx(19)), 512, 4).empty());
+    // Without the floor the same run keeps its 18-pixel object.
+    EXPECT_EQ(ts::runEagerObjects(scene, specOf(dropStripParameters().minimumAreaPx(18)), 512, 4).size(), 1u);
 }
 
 TEST(Watershed, AuxiliaryMarkers) {
