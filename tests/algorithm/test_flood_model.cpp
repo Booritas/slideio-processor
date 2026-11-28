@@ -168,3 +168,62 @@ TEST(FloodModel, StripRules) {
     expectStrip(fromAnchor, [](int64_t x) { return x >= 12 && x <= 28 ? int64_t{7} : ts::kModelDropped; },
                 "anchor at x = 20");
 }
+
+TEST(FloodModel, BoundedDiffersFromPlain) {
+    // Two rows of 6 apart (row 1 is background, so they flood independently),
+    // spacing 2, anchors at both ends of each row: keys 1 | 2 on row 0, 3 | 4 on
+    // row 2. Values:
+    //   row 0: 10  9  8  1  5  6     anchors x0 = 1, x5 = 2
+    //   row 2: 10  9  8 7.5 5  6     anchors x0 = 3, x5 = 4
+    //
+    // Row 0 (the claimant is chosen after filtering). Both rules flood x1, x2
+    // from x0 (9, 8 beat 5), then x4 from x5. x3 (value 1) comes last, with both
+    // neighbours flooded: x2 (value 8, seed x0, 3 away) and x4 (value 5, seed x5,
+    // 2 away).
+    //   DropPlain: x3 joins x2, the higher neighbour, seed 3 > 2 away: dropped.
+    //   DropBounded: x2 may not claim it, x4 may: key 2.
+    //
+    // Row 2 (claimable later). After x2 floods, x3 (7.5) is the highest frontier
+    // pixel and its only flooded neighbour is x2, whose seed is 3 away.
+    //   DropPlain: x3 joins key 3 from 3 away and is dropped. Then x4 has two
+    //   flooded neighbours, x3 (7.5, key 3) and x5 (6, key 4): it joins x3,
+    //   seed 4 away, and is dropped too.
+    //   DropBounded: x3 is not claimable yet, so x4 (5) floods first from x5;
+    //   then x4 (seed 2 away) claims x3: key 4.
+    constexpr int64_t kWidth = 6;
+    constexpr int64_t kHeight = 3;
+    const std::vector<double> values = {10, 9, 8, 1, 5, 6, 0, 0, 0, 0, 0, 0, 10, 9, 8, 7.5, 5, 6};
+    ts::ModelParameters p;
+    p.markerDistance = 1;
+    p.spacing = 2;
+    p.anchors.assign(values.size(), -1);
+    p.anchors[0] = 1;
+    p.anchors[5] = 2;
+    p.anchors[12] = 3;
+    p.anchors[17] = 4;
+
+    constexpr int64_t B = ts::kModelBackground;
+    constexpr int64_t D = ts::kModelDropped;
+    const std::vector<int64_t> plain = {1, 1, 1, D, 2, 2, B, B, B, B, B, B, 3, 3, 3, D, D, 4};
+    const std::vector<int64_t> bounded = {1, 1, 1, 2, 2, 2, B, B, B, B, B, B, 3, 3, 3, 4, 4, 4};
+
+    p.rule = ts::ModelRule::DropPlain;
+    const ts::ModelResult plainResult = ts::modelWatershed(values, kWidth, kHeight, p);
+    EXPECT_FALSE(plainResult.refused);
+    EXPECT_EQ(plainResult.key, plain);
+
+    p.rule = ts::ModelRule::DropBounded;
+    const ts::ModelResult boundedResult = ts::modelWatershed(values, kWidth, kHeight, p);
+    EXPECT_FALSE(boundedResult.refused);
+    EXPECT_EQ(boundedResult.key, bounded);
+    // The pixels where the rules differ.
+    EXPECT_EQ(plainResult.key[3], D);
+    EXPECT_EQ(boundedResult.key[3], 2);
+    EXPECT_EQ(plainResult.key[15], D);
+    EXPECT_EQ(boundedResult.key[15], 4);
+    EXPECT_EQ(plainResult.key[16], D);
+    EXPECT_EQ(boundedResult.key[16], 4);
+
+    p.rule = ts::ModelRule::Fail;
+    EXPECT_TRUE(ts::modelWatershed(values, kWidth, kHeight, p).refused);
+}
