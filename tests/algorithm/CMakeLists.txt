@@ -38,9 +38,11 @@ add_executable(slideio_processor_algorithm_tests
     test_connected_components.cpp
     test_contours.cpp
     test_watershed.cpp
+    test_flood_model.cpp
     test_tissue_detect.cpp
     test_label_image.cpp
     support/harness.cpp
+    support/flood_model.cpp
     # The label-image tests run a stage in a workspace over a slide file written
     # with libtiff, as the workspace tests do.
     ${PROJECT_SOURCE_DIR}/tests/workspace/support/test_slide.cpp
