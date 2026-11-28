@@ -470,6 +470,20 @@ enum class WatershedMarkers : int32_t {
 };
 
 /**
+ * @brief What `segment.watershed` does with a foreground pixel no marker
+ * reaches within `maximumMarkerSpacingPx`.
+ *
+ * Stored in the operation's parameters as its enumerator spelling, `"Fail"` or
+ * `"Drop"`; only `"Drop"` is recorded.
+ */
+enum class WatershedUnreached : int32_t {
+    /// The pixel fails the tile, and so the run.
+    Fail,
+    /// The pixel is dropped from the result.
+    Drop
+};
+
+/**
  * @brief The parameters of `segment.watershed`, set one by one and passed to
  * makeWatershed().
  *
@@ -485,6 +499,7 @@ enum class WatershedMarkers : int32_t {
  * | `minimumAreaPx` | int | 0 | at least 0 |
  * | `measurements` | string | every MeasurementKind | MeasurementKind spellings separated by commas, without spaces |
  * | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `LocalMaxima` |
+ * | `unreachedForeground` | string | absent (`"Fail"`) | `"Fail"` or `"Drop"`; recorded only when `"Drop"` |
  * | `targetLayer` | string | absent: the run's only bound layer | the name of a bound layer |
  *
  * A moved-from object may only be assigned to or destroyed.
@@ -673,6 +688,20 @@ public:
      * UR-SEG-8
      */
     WatershedParameters& minimumMarkerValue(double value);
+
+    /**
+     * @brief Sets what happens to a foreground pixel no marker reaches.
+     *
+     * `Fail`, the default, fails the run. `Drop` is recorded in the parameter
+     * bag under `unreachedForeground` as `"Drop"`; with `Fail` the key is left
+     * out, so the default configuration and every recorded stage is unchanged.
+     * @param behaviour The behaviour.
+     * @return These parameters, so calls can be chained.
+     * @throws InvalidArgumentError When these parameters are moved-from.
+     * @par Thread-safety
+     * ThreadCompatible.
+     */
+    WatershedParameters& unreachedForeground(WatershedUnreached behaviour);
 
     /**
      * @brief Names the bound layer the objects go to.

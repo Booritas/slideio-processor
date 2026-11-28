@@ -39,6 +39,7 @@ struct WatershedValues {
     MeasurementSelection measurements = MeasurementSelection::standard();
     std::string targetLayer; // empty: the run's only bound layer
     std::optional<double> minimumMarkerValue; // absent: every local maximum is a marker
+    WatershedUnreached unreached = WatershedUnreached::Fail;
 };
 
 struct WatershedParametersAccess {
@@ -62,6 +63,7 @@ namespace {
 
 constexpr const char* kName = "segment.watershed";
 constexpr const char* const kMarkerSpellings[] = {"LocalMaxima", "AuxiliaryRaster"};
+constexpr const char* const kUnreachedSpellings[] = {"Fail", "Drop"};
 // The largest spacing whose halo, 2 * spacing + 1, an int32 holds.
 constexpr int64_t kMaximumSpacingPx = (std::numeric_limits<int32_t>::max() - 1) / 2;
 
@@ -312,6 +314,9 @@ public:
         if (p.minimumMarkerValue) {
             parameters_.setDouble("minimumMarkerValue", *p.minimumMarkerValue);
         }
+        if (p.unreached == WatershedUnreached::Drop) {
+            parameters_.setString("unreachedForeground", kUnreachedSpellings[static_cast<int32_t>(p.unreached)]);
+        }
         if (!p.targetLayer.empty()) {
             parameters_.setString("targetLayer", p.targetLayer.c_str());
         }
@@ -511,6 +516,7 @@ OperationPtr watershedFromParameters(const OperationParameters& parameters) {
         // Finite already: OperationParameters refuses a non-finite double.
         p.minimumMarkerValue(bag.getDouble("minimumMarkerValue", 0.0));
     }
+    p.unreachedForeground(bag.getEnum("unreachedForeground", WatershedUnreached::Fail, kUnreachedSpellings, 2));
     p.targetLayer(bag.getString("targetLayer", ""));
     bag.finish();
     return makeWatershed(p);
@@ -594,6 +600,12 @@ WatershedParameters& WatershedParameters::minimumMarkerValue(double value) {
     return *this;
 }
 
+WatershedParameters& WatershedParameters::unreachedForeground(WatershedUnreached behaviour) {
+    checkNotMovedFrom(impl_.get());
+    impl_->unreached = behaviour;
+    return *this;
+}
+
 OperationPtr makeWatershed(const WatershedParameters& parameters) {
     const detail::WatershedValues* p = detail::WatershedParametersAccess::values(parameters);
     if (p == nullptr) {
@@ -604,6 +616,9 @@ OperationPtr makeWatershed(const WatershedParameters& parameters) {
     }
     if (p->markers == WatershedMarkers::AuxiliaryRaster && p->auxiliaryName.empty()) {
         fail("parameter 'auxiliaryName' must not be empty with AuxiliaryRaster markers");
+    }
+    if (p->unreached != WatershedUnreached::Fail && p->unreached != WatershedUnreached::Drop) {
+        fail("parameter 'unreachedForeground' is not a WatershedUnreached");
     }
     if (p->minimumMarkerValue && p->markers != WatershedMarkers::LocalMaxima) {
         fail("parameter 'minimumMarkerValue' applies only to LocalMaxima markers");

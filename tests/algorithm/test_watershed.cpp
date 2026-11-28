@@ -704,6 +704,52 @@ TEST(Watershed, MarkerFloorRoundTrips) {
               jsonOf(makeWatershed(WatershedParameters().minimumMarkerValue(3.0))->parameters()));
 }
 
+TEST(Watershed, UnreachedAbsentByDefault) {
+    const auto expectAbsent = [](const OperationPtr& op) {
+        EXPECT_STREQ(op->parameters().getString("unreachedForeground", "absent"), "absent");
+        EXPECT_EQ(op->parameters().count(), 6);
+    };
+    expectAbsent(makeWatershed(WatershedParameters()));
+    expectAbsent(OperationCatalog::instance().create(kName, OperationParameters()));
+    expectAbsent(makeWatershed(WatershedParameters().unreachedForeground(WatershedUnreached::Fail)));
+}
+
+TEST(Watershed, UnreachedDropRoundTrips) {
+    const OperationPtr typed = makeWatershed(WatershedParameters().unreachedForeground(WatershedUnreached::Drop));
+    OperationParameters bag;
+    bag.setString("unreachedForeground", "Drop");
+    const OperationPtr named = OperationCatalog::instance().create(kName, bag);
+    EXPECT_EQ(jsonOf(typed->parameters()), jsonOf(named->parameters()));
+    EXPECT_EQ(typed->parameters().count(), 7);
+    EXPECT_STREQ(named->parameters().getString("unreachedForeground", "absent"), "Drop");
+
+    OperationParameters failBag;
+    failBag.setString("unreachedForeground", "Fail");
+    EXPECT_EQ(jsonOf(OperationCatalog::instance().create(kName, failBag)->parameters()),
+              jsonOf(makeWatershed(WatershedParameters())->parameters()));
+}
+
+TEST(Watershed, UnreachedRejected) {
+    const auto expectNamed = [](const OperationParameters& bag, const std::string& bad) {
+        try {
+            OperationCatalog::instance().create(kName, bag);
+            ADD_FAILURE() << bad << ": nothing thrown";
+        } catch (const InvalidArgumentError& e) {
+            const std::string message = e.what();
+            EXPECT_NE(message.find("unreachedForeground"), std::string::npos) << message;
+            EXPECT_EQ(message.find(bad), std::string::npos) << message;
+        }
+    };
+    for (const char* bad : {"drop", "Skip"}) {
+        OperationParameters bag;
+        bag.setString("unreachedForeground", bad);
+        expectNamed(bag, bad);
+    }
+    OperationParameters integerBag;
+    integerBag.setInt("unreachedForeground", 1);
+    expectNamed(integerBag, "1");
+}
+
 TEST(Watershed, MarkerFloorRejected) {
     const auto expectNamed = [](const std::function<void()>& make, const std::string& what) {
         try {
