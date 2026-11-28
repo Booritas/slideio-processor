@@ -495,7 +495,7 @@ enum class WatershedUnreached : int32_t {
  * | `markers` | string | `"LocalMaxima"` | a WatershedMarkers spelling |
  * | `auxiliaryName` | string | `""` | with `AuxiliaryRaster`, the name of a bound raster, not empty |
  * | `minimumMarkerDistancePx` | int | 5 | 1 to `maximumMarkerSpacingPx` |
- * | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823 |
+ * | `maximumMarkerSpacingPx` | int | 32 | 1 to 1073741823; 1 to 536870911 with `unreachedForeground` `"Drop"` |
  * | `minimumAreaPx` | int | 0 | at least 0 |
  * | `measurements` | string | every MeasurementKind | MeasurementKind spellings separated by commas, without spaces |
  * | `minimumMarkerValue` | double | absent: every local maximum is a marker | finite; only with `LocalMaxima` |

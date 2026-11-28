@@ -609,6 +609,16 @@ TEST(Watershed, RejectsDistanceAboveSpacing) {
                   "zero spacing");
     expectInvalid([] { makeWatershed(WatershedParameters().maximumMarkerSpacingPx(1073741824)); },
                   "maximumMarkerSpacingPx", "spacing whose halo does not fit");
+    // Drop's halo is 4 * spacing + 1.
+    expectInvalid(
+        [] {
+            makeWatershed(
+                WatershedParameters().maximumMarkerSpacingPx(536870912).unreachedForeground(WatershedUnreached::Drop));
+        },
+        "maximumMarkerSpacingPx", "Drop spacing whose halo does not fit");
+    EXPECT_NO_THROW(makeWatershed(
+        WatershedParameters().maximumMarkerSpacingPx(536870911).unreachedForeground(WatershedUnreached::Drop)));
+    EXPECT_NO_THROW(makeWatershed(WatershedParameters().maximumMarkerSpacingPx(536870912)));
     expectInvalid([] { makeWatershed(WatershedParameters().minimumAreaPx(-1)); }, "minimumAreaPx", "negative area");
     expectInvalid([] { makeWatershed(WatershedParameters().markers(static_cast<WatershedMarkers>(5))); }, "markers",
                   "markers not an enumerator");

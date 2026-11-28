@@ -4,7 +4,7 @@
 // 2026-11-28-watershed-unreached-foreground, "Tile invariance: the gate"). Each
 // input is run three ways and compared:
 //   (b) the operation over one tile against the whole-image reference model
-//       (support/flood_model, rule DropPlain): the same partition and the same
+//       (support/flood_model, rule DropBounded): the same partition and the same
 //       dropped pixels; and Fail's refusal against the model's;
 //   (a) the operation tiled at several sizes and worker counts against the
 //       operation over one tile: the same objects and the same dropped pixels;
@@ -52,6 +52,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -66,6 +67,10 @@ namespace {
 constexpr int32_t kRandomInputs = 30000;
 // A tile no input reaches the side of: the single-tile reference.
 constexpr int32_t kSingleTile = 512;
+// The model rule the operation's Drop mode is compared with: bounded claims
+// (design step 4a), since the plain rule was found tile-dependent.
+constexpr ts::ModelRule kDropRule = ts::ModelRule::DropBounded;
+constexpr const char* kDropRuleName = "DropBounded";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -102,9 +107,9 @@ double asSample(double v, bool byteSamples) {
 }
 
 // The tile sizes the brief names, by role, for spacing s: 1, 3, 7, halo / 2,
-// halo and 2 halo + 1, where halo = 2 s + 1.
+// halo and 2 halo + 1, where halo = 4 s + 1, Drop's halo.
 std::vector<int32_t> roleTiles(int64_t spacing) {
-    const auto halo = static_cast<int32_t>(2 * spacing + 1);
+    const auto halo = static_cast<int32_t>(4 * spacing + 1);
     return {1, 3, 7, halo / 2, halo, 2 * halo + 1};
 }
 const char* const kRoleNames[] = {"1", "3", "7", "halo/2", "halo", "2*halo+1"};
@@ -517,7 +522,7 @@ Outcome checkCase(const Input& in, bool verbose = false) {
     mp.spacing = in.spacing;
     mp.floor = in.floor;
     mp.anchors = in.anchors;
-    mp.rule = ts::ModelRule::DropPlain;
+    mp.rule = kDropRule;
     const ts::ModelResult model = ts::modelWatershed(in.values, width, height, mp);
     mp.rule = ts::ModelRule::Fail;
     outcome.modelRefused = ts::modelWatershed(in.values, width, height, mp).refused;
@@ -538,12 +543,12 @@ Outcome checkCase(const Input& in, bool verbose = false) {
     outcome.dropped = std::count(singleDropped.begin(), singleDropped.end(), uint8_t{1});
     const std::string partition = ts::partitionDifference(model.key, single.raster);
     if (!partition.empty()) {
-        add(Kind::OperationVsModel, "single-tile Drop vs model DropPlain partition: " + partition);
+        add(Kind::OperationVsModel, std::string("single-tile Drop vs model ") + kDropRuleName + " partition: " + partition);
         outcome.firstCheck[1] = true;
     }
     const std::string modelMask = maskDifference(modelDropped, singleDropped, width);
     if (!modelMask.empty()) {
-        add(Kind::OperationVsModel, "single-tile Drop vs model DropPlain dropped set: " + modelMask);
+        add(Kind::OperationVsModel, std::string("single-tile Drop vs model ") + kDropRuleName + " dropped set: " + modelMask);
         outcome.secondCheck[1] = true;
     }
 
@@ -708,7 +713,7 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
                   bool byRole) {
     Summary summary;
     std::ostringstream out;
-    out << "==== " << title << ": " << results.size() << " inputs, plain Drop rule, " << seconds << " s wall ====\n";
+    out << "==== " << title << ": " << results.size() << " inputs, Drop against model " << kDropRuleName << ", " << seconds << " s wall ====\n";
     out << "coverage (inputs):\n";
     if (byRole) {
         // Per tile-size role and worker count: inputs run with that role's size.
@@ -1073,12 +1078,30 @@ double secondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
+// The generated shape called @p name.
+Input shapeNamed(const std::string& name) {
+    for (Input& in : generatedShapes()) {
+        if (in.name == name) {
+            return in;
+        }
+    }
+    throw std::invalid_argument("no generated shape is called '" + name + "'");
+}
+
+// One regression input: every comparison of checkCase must hold.
+void expectNoFindings(const Input& in) {
+    const Outcome outcome = checkCase(in);
+    for (const Finding& f : outcome.findings) {
+        ADD_FAILURE() << describe(in) << ": " << kKindNames[static_cast<size_t>(f.kind)] << ": " << f.detail;
+    }
+}
+
 } // namespace
 
-TEST(WatershedModel, RandomInputsDropPlain) {
+TEST(WatershedModel, RandomInputs) {
     const auto start = std::chrono::steady_clock::now();
     const auto results = runAll(kRandomInputs, [](int32_t i) { return randomInput(i); });
-    report("WatershedModel.RandomInputsDropPlain (seeds 0.." + std::to_string(kRandomInputs - 1) + ")", results,
+    report("WatershedModel.RandomInputs (seeds 0.." + std::to_string(kRandomInputs - 1) + ")", results,
            secondsSince(start), true);
 }
 
@@ -1088,6 +1111,33 @@ TEST(WatershedModel, GeneratedShapes) {
     const auto results = runAll(static_cast<int32_t>(shapes.size()),
                                 [&shapes](int32_t i) { return shapes[static_cast<size_t>(i)]; });
     report("WatershedModel.GeneratedShapes", results, secondsSince(start), false);
+}
+
+// Regression inputs: ones the plain Drop rule (Task 4) found tile-dependent,
+// class (a), each named after its seed or shape and its generator.
+TEST(WatershedModel, RegressionSeed1DistanceFloor) { expectNoFindings(randomInput(1)); }
+TEST(WatershedModel, RegressionSeed8DistanceAnchors) { expectNoFindings(randomInput(8)); }
+TEST(WatershedModel, RegressionSeed13Rectangles) { expectNoFindings(randomInput(13)); }
+TEST(WatershedModel, RegressionSeed14RectanglesFloor) { expectNoFindings(randomInput(14)); }
+TEST(WatershedModel, RegressionSeed22RectanglesAnchors) { expectNoFindings(randomInput(22)); }
+TEST(WatershedModel, RegressionSeed26Blocks) { expectNoFindings(randomInput(26)); }
+TEST(WatershedModel, RegressionSeed188DistanceSmall) { expectNoFindings(randomInput(188)); }
+// Inputs bounded claims alone (design step 4a) left tile-dependent, at
+// Drop's old halo of 2 * spacing + 1.
+TEST(WatershedModel, RegressionSeed176Blocks) { expectNoFindings(randomInput(176)); }
+TEST(WatershedModel, RegressionSeed433RectanglesFloor) { expectNoFindings(randomInput(433)); }
+TEST(WatershedModel, RegressionSeed695Distance) { expectNoFindings(randomInput(695)); }
+TEST(WatershedModel, RegressionSeed1496DistanceSmallAnchors) { expectNoFindings(randomInput(1496)); }
+TEST(WatershedModel, RegressionSeed3235RectanglesAnchors) { expectNoFindings(randomInput(3235)); }
+// shape:30 in Task 4's numbering, the design's counter-example reproduced.
+TEST(WatershedModel, RegressionShapeBlobNucleus0DegSpacing3Byte) {
+    expectNoFindings(shapeNamed("blob touching nucleus, 0 deg, spacing 3, Byte"));
+}
+TEST(WatershedModel, RegressionShapeBlobNucleus45DegCappedSpacing3Float32) {
+    expectNoFindings(shapeNamed("blob touching nucleus, 45 deg, capped at 6, spacing 3, Float32"));
+}
+TEST(WatershedModel, RegressionShapeBlobNucleus90DegSpacing6Byte) {
+    expectNoFindings(shapeNamed("blob touching nucleus, 90 deg, spacing 6, Byte"));
 }
 
 // Not part of the gate: the diagnosis of one input, every finding and every

@@ -66,6 +66,8 @@ constexpr const char* const kMarkerSpellings[] = {"LocalMaxima", "AuxiliaryRaste
 constexpr const char* const kUnreachedSpellings[] = {"Fail", "Drop"};
 // The largest spacing whose halo, 2 * spacing + 1, an int32 holds.
 constexpr int64_t kMaximumSpacingPx = (std::numeric_limits<int32_t>::max() - 1) / 2;
+// The same for Drop, whose halo is 4 * spacing + 1.
+constexpr int64_t kMaximumDropSpacingPx = (std::numeric_limits<int32_t>::max() - 1) / 4;
 
 // A pixel's flooding state, held where its seed goes: no marker has reached
 // it, or it waits in the queue. A flooded pixel holds the index of its seed.
@@ -206,7 +208,23 @@ public:
 
     // Floods the foreground from the marked pixels: each pixel, taken in
     // order, joins the seed of its first flooded side neighbour.
-    void run() {
+    //
+    // With @p bound (Drop mode), a flooded neighbour may claim a pixel only if
+    // its seed lies within @p bound (Chebyshev) of the pixel, and the pixel
+    // joins the first such neighbour. A pixel none may claim stays unflooded,
+    // propagates nothing, and is taken again when a later neighbour floods.
+    // This gives the order of the whole-image model (DropBounded in
+    // tests/algorithm/support/flood_model.cpp): the highest-precedence pixel
+    // some neighbour may claim floods next. The queue holds every such pixel,
+    // plus pixels that turn out to have no claimant. Whether a neighbour may
+    // claim a pixel depends only on which of its neighbours are flooded, and a
+    // flooded pixel keeps its seed, so a pixel popped with no claimant cannot
+    // gain one until a neighbour floods, and that neighbour queues it again
+    // (it is returned to kUnreached for that). Popping it changes nothing
+    // else. A pixel is queued at most once at a time, so the queue never holds
+    // more entries than foreground pixels.
+    // Without @p bound (Fail mode) every queued pixel floods, as it always has.
+    void run(std::optional<int64_t> bound = std::nullopt) {
         int64_t waiting = 0;
         for (size_t i = 0; i < seeds_.size(); ++i) {
             waiting += seeds_[i] == kUnreached && isForeground(static_cast<int64_t>(i)) ? 1 : 0;
@@ -234,17 +252,27 @@ public:
             int32_t first = -1;
             forNeighbours(pixel, [&](int64_t n) {
                 const auto neighbour = static_cast<int32_t>(n);
-                if (seeds_[static_cast<size_t>(n)] >= 0 && (first < 0 || precedes(neighbour, first))) {
+                if (seeds_[static_cast<size_t>(n)] >= 0 && (first < 0 || precedes(neighbour, first)) &&
+                    (!bound || chebyshev(pixel, seeds_[static_cast<size_t>(n)]) <= *bound)) {
                     first = neighbour;
                 }
             });
-            // A queued pixel has a flooded neighbour: the one that queued it.
+            if (first < 0) {
+                // Bounded only: no flooded neighbour's seed is near enough.
+                seeds_[static_cast<size_t>(pixel)] = kUnreached;
+                continue;
+            }
+            // Unbounded, a queued pixel has a flooded neighbour: the one that queued it.
             seeds_[static_cast<size_t>(pixel)] = seeds_[static_cast<size_t>(first)];
             enqueueNeighbours(pixel);
         }
     }
 
 private:
+    int64_t chebyshev(int64_t a, int64_t b) const {
+        return std::max(std::abs(a % width_ - b % width_), std::abs(a / width_ - b / width_));
+    }
+
     template <typename Visit>
     void forNeighbours(int64_t i, Visit visit) const {
         const int64_t x = i % width_;
@@ -330,7 +358,15 @@ public:
     // A tile pixel's basin depends on markers within the spacing, and their
     // detection on pixels a further minimumMarkerDistancePx (at most the
     // spacing) away; the one more keeps the pixels just beyond in view.
-    Halo halo() const override { return Halo::uniform(2 * spacing_ + 1); }
+    // In Drop mode a kept pixel's basin can also depend on which front reaches
+    // it first along paths within 2 * spacing of it, from seeds within the
+    // spacing of those paths, whose detection needs the marker window again:
+    // 4 * spacing + 1 (design "Tile invariance: the gate", step 4b). That is
+    // an estimate, not a proof; tests/algorithm/test_watershed_model.cpp
+    // checks it, and with the old halo bounded claims were tile-dependent.
+    Halo halo() const override {
+        return Halo::uniform(unreached_ == WatershedUnreached::Drop ? 4 * spacing_ + 1 : 2 * spacing_ + 1);
+    }
     DataType outputType(DataType) const override { return DataType::Int32; }
     // Plane 0 is flooded and at most kMaxMeasuredPlanes more are measured,
     // which is what the working set is declared for; validation calls this.
@@ -402,7 +438,7 @@ public:
                     }
                 }
             }
-            flood.run();
+            flood.run(unreached_ == WatershedUnreached::Drop ? std::optional<int64_t>(spacing_) : std::nullopt);
             // The reach: every foreground pixel of the tile was flooded from a
             // seed within the spacing. Checked before anything is emitted.
             for (int64_t y = 0; y < tile.height; ++y) {
@@ -631,6 +667,9 @@ OperationPtr makeWatershed(const WatershedParameters& parameters) {
     }
     if (p->maximumMarkerSpacingPx < 1 || p->maximumMarkerSpacingPx > kMaximumSpacingPx) {
         fail("parameter 'maximumMarkerSpacingPx' must be from 1 to 1073741823");
+    }
+    if (p->unreached == WatershedUnreached::Drop && p->maximumMarkerSpacingPx > kMaximumDropSpacingPx) {
+        fail("parameter 'maximumMarkerSpacingPx' must be from 1 to 536870911 with unreachedForeground Drop");
     }
     if (p->minimumMarkerDistancePx < 1) {
         fail("parameter 'minimumMarkerDistancePx' must be at least 1");
