@@ -106,10 +106,31 @@ double asSample(double v, bool byteSamples) {
     return static_cast<double>(static_cast<float>(v));
 }
 
+// The halo of segment.watershed in Drop mode at spacing s: 4 s + 1.
+int64_t dropHalo(int64_t spacing) { return 4 * spacing + 1; }
+
+// Whether some tile of a @p tile-px grid over a width x height level, from its
+// origin, has a halo'd context (inflated by @p halo, clipped to the level)
+// strictly smaller than the level in at least one dimension: a run in which
+// some tile cannot see the whole image, so tile invariance is not trivial.
+bool someContextSmallerThanLevel(int64_t width, int64_t height, int64_t tile, int64_t halo) {
+    const auto partial = [tile, halo](int64_t length) {
+        for (int64_t start = 0; start < length; start += tile) {
+            const int64_t lo = std::max<int64_t>(0, start - halo);
+            const int64_t hi = std::min(length, start + tile + halo);
+            if (hi - lo < length) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return partial(width) || partial(height);
+}
+
 // The tile sizes the brief names, by role, for spacing s: 1, 3, 7, halo / 2,
 // halo and 2 halo + 1, where halo = 4 s + 1, Drop's halo.
 std::vector<int32_t> roleTiles(int64_t spacing) {
-    const auto halo = static_cast<int32_t>(4 * spacing + 1);
+    const auto halo = static_cast<int32_t>(dropHalo(spacing));
     return {1, 3, 7, halo / 2, halo, 2 * halo + 1};
 }
 const char* const kRoleNames[] = {"1", "3", "7", "halo/2", "halo", "2*halo+1"};
@@ -737,8 +758,23 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
                                  ? 1
                                  : 0;
             }
+            // Tiled Drop runs at this role's size, both worker counts, and those
+            // in which some tile's halo'd context is smaller than the level.
+            int64_t roleRuns = 0;
+            int64_t rolePartial = 0;
+            for (const auto& [in, outcome] : results) {
+                const int32_t tile = roleTiles(in.spacing)[r];
+                for (const TiledRun& t : outcome.ran) {
+                    if (t.tile == tile) {
+                        ++roleRuns;
+                        rolePartial +=
+                            someContextSmallerThanLevel(in.width, in.height, t.tile, dropHalo(in.spacing)) ? 1 : 0;
+                    }
+                }
+            }
             out << "  tile " << kRoleNames[r] << ": 4 workers " << four << ", 1 worker " << one
-                << "; inputs tile-dependent at this size: " << dependent << "\n";
+                << "; inputs tile-dependent at this size: " << dependent << "; tiled Drop runs " << roleRuns
+                << ", with a context smaller than the level " << rolePartial << "\n";
         }
     }
     std::map<int32_t, int64_t> tilesFour;
@@ -766,6 +802,9 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
     int64_t failRobust = 0;
     int64_t failNowhere = 0;
     int64_t runs = 0;
+    // Tiled Drop runs per spacing (both worker counts), and those in which some
+    // tile's halo'd context is smaller than the level.
+    std::map<int64_t, std::pair<int64_t, int64_t>> contextBySpacing;
     std::vector<std::string> failMode;
     std::vector<std::string> byKind[4];
     std::vector<std::string> namesByKind[4];
@@ -783,6 +822,11 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
             ++tilesOne[t];
         }
         ++spacing[in.spacing];
+        for (const TiledRun& t : outcome.ran) {
+            auto& counts = contextBySpacing[in.spacing];
+            ++counts.first;
+            counts.second += someContextSmallerThanLevel(in.width, in.height, t.tile, dropHalo(in.spacing)) ? 1 : 0;
+        }
         ++markers[in.auxiliary ? "AuxiliaryRaster" : "LocalMaxima"];
         ++floor[in.floor ? "on" : "off"];
         ++type[in.byteSamples ? "Byte" : "Float32"];
@@ -828,6 +872,11 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
         }
     }
     countLine(out, "tile sizes, 4 workers", tilesFour);
+    out << "  tiled Drop runs by spacing (runs / with a halo'd context smaller than the level):";
+    for (const auto& [s, counts] : contextBySpacing) {
+        out << " " << s << "=" << counts.first << "/" << counts.second;
+    }
+    out << "\n";
     countLine(out, "tile sizes, 1 worker", tilesOne);
     countLine(out, "spacing", spacing);
     countLine(out, "markers", markers);
