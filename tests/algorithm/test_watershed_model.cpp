@@ -386,6 +386,11 @@ struct Outcome {
     bool modelRefused = false;
     std::vector<TiledRun> ran;
     std::vector<TiledRun> tileDependent; // the tiled Drop runs that differ from one tile
+    // Which of each class's two checks failed, on any run of the input:
+    // (a) objects / dropped set; (b) partition / dropped set; (c) dropped
+    // anything / objects.
+    bool firstCheck[3] = {false, false, false};
+    bool secondCheck[3] = {false, false, false};
 };
 
 std::string messageOf(const std::exception& e) {
@@ -534,21 +539,27 @@ Outcome checkCase(const Input& in, bool verbose = false) {
     const std::string partition = ts::partitionDifference(model.key, single.raster);
     if (!partition.empty()) {
         add(Kind::OperationVsModel, "single-tile Drop vs model DropPlain partition: " + partition);
+        outcome.firstCheck[1] = true;
     }
     const std::string modelMask = maskDifference(modelDropped, singleDropped, width);
     if (!modelMask.empty()) {
         add(Kind::OperationVsModel, "single-tile Drop vs model DropPlain dropped set: " + modelMask);
+        outcome.secondCheck[1] = true;
     }
 
     // 2. Tiled Drop against single-tile Drop.
     for (const TiledRun& run : in.runs) {
         outcome.ran.push_back(run);
-        const size_t before = outcome.findings.size();
+        bool differs = false;
         try {
             const ts::EagerRun tiled = ts::runEagerAll(scene, drop, run.tile, run.workers, anchors.get());
             const std::string objects = ts::objectsDifference(single.objects, tiled.objects);
+            const std::vector<uint8_t> tiledDropped = droppedMask(tiled.raster, in.values);
+            const std::string mask = maskDifference(singleDropped, tiledDropped, width);
+            differs = !objects.empty() || !mask.empty();
             if (!objects.empty()) {
                 add(Kind::TileDependence, runName(run.tile, run.workers) + ": objects: " + objects);
+                outcome.firstCheck[0] = true;
                 if (verbose) {
                     std::cout << "    " << runName(run.tile, run.workers) << ": " << objects << '\n'
                               << "    single tile:\n"
@@ -556,10 +567,9 @@ Outcome checkCase(const Input& in, bool verbose = false) {
                               << listing(tiled.objects);
                 }
             }
-            const std::vector<uint8_t> tiledDropped = droppedMask(tiled.raster, in.values);
-            const std::string mask = maskDifference(singleDropped, tiledDropped, width);
             if (!mask.empty()) {
                 add(Kind::TileDependence, runName(run.tile, run.workers) + ": dropped set: " + mask);
+                outcome.secondCheck[0] = true;
                 if (verbose) {
                     std::cout << "    " << runName(run.tile, run.workers) << ": " << mask << '\n'
                               << "    single tile:\n"
@@ -568,9 +578,11 @@ Outcome checkCase(const Input& in, bool verbose = false) {
                 }
             }
         } catch (const std::exception& e) {
-            add(Kind::TileDependence, runName(run.tile, run.workers) + ": Drop threw: " + messageOf(e));
+            // Drop never refuses for reach, so a throw is a harness or pipeline
+            // error, not tile-dependence.
+            add(Kind::Harness, runName(run.tile, run.workers) + ": tiled Drop threw: " + messageOf(e));
         }
-        if (outcome.findings.size() != before) {
+        if (differs) {
             outcome.tileDependent.push_back(run);
         }
     }
@@ -603,12 +615,14 @@ Outcome checkCase(const Input& in, bool verbose = false) {
     }
     if (outcome.failThrow.empty()) {
         if (outcome.dropped != 0) {
+            outcome.firstCheck[2] = true;
             add(Kind::DropVsFail, "Fail runs at every size, Drop dropped " + std::to_string(outcome.dropped) +
                                       " pixels over one tile");
         }
         for (const auto& [tile, objects] : failObjects) {
             const std::string difference = ts::objectsDifference(objects, single.objects);
             if (!difference.empty()) {
+                outcome.secondCheck[2] = true;
                 add(Kind::DropVsFail, "single-tile Drop vs Fail at " + std::to_string(tile) + "-px tiles: " + difference);
             }
         }
@@ -736,6 +750,11 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
     std::map<std::string, int64_t> dependentByFloor;
     std::map<std::string, int64_t> dependentByGenerator;
     int64_t workersDisagree = 0;
+    // Per class (a), (b), (c): inputs where only the first check failed, only
+    // the second, or both.
+    int64_t firstOnly[3] = {0, 0, 0};
+    int64_t secondOnly[3] = {0, 0, 0};
+    int64_t bothChecks[3] = {0, 0, 0};
     int64_t withDrops = 0;
     int64_t droppedPixels = 0;
     int64_t modelRefused = 0;
@@ -779,6 +798,11 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
             }
             workersDisagree += dependentFour != dependentOne ? 1 : 0;
         }
+        for (size_t k = 0; k < 3; ++k) {
+            firstOnly[k] += outcome.firstCheck[k] && !outcome.secondCheck[k] ? 1 : 0;
+            secondOnly[k] += !outcome.firstCheck[k] && outcome.secondCheck[k] ? 1 : 0;
+            bothChecks[k] += outcome.firstCheck[k] && outcome.secondCheck[k] ? 1 : 0;
+        }
         withDrops += outcome.dropped > 0 ? 1 : 0;
         droppedPixels += outcome.dropped;
         modelRefused += outcome.modelRefused ? 1 : 0;
@@ -817,6 +841,13 @@ Summary summarise(const std::string& title, const std::vector<std::pair<Input, O
     countLine(out, "(a) by floor", dependentByFloor);
     countLine(out, "(a) by generator", dependentByGenerator);
     out << "  (a) inputs whose tile-dependent sizes differ between 1 and 4 workers: " << workersDisagree << "\n";
+    const char* const checkNames[3][3] = {{"(a)", "objects", "dropped set"},
+                                          {"(b)", "partition", "dropped set"},
+                                          {"(c)", "Drop dropped pixels", "objects"}};
+    for (size_t k = 0; k < 3; ++k) {
+        out << "  " << checkNames[k][0] << " inputs: " << checkNames[k][1] << " only " << firstOnly[k] << ", "
+            << checkNames[k][2] << " only " << secondOnly[k] << ", both " << bothChecks[k] << "\n";
+    }
     for (size_t k = 0; k < 4; ++k) {
         summary.inputsWithKind[k] = static_cast<int64_t>(byKind[k].size());
         out << "  " << kKindNames[k] << ": " << byKind[k].size() << "\n";
