@@ -1390,14 +1390,22 @@ TEST(StageRunner, FailureAfterObjectsReachedTheStoreDiscardsThem) {
     const std::vector<EventKind> kinds = eventKinds(f);
     ASSERT_GE(firstOf(kinds, EventKind::ObjectsAdded), 0) << "the objects reached the store";
     EXPECT_LT(firstOf(kinds, EventKind::ObjectsAdded), firstOf(kinds, EventKind::StageDiscarded));
+    // How many objects reach the store before the failure depends on how many tiles run
+    // at once (a slide that reads concurrently fails sooner); the discard must remove
+    // every one that did.
+    int64_t added = 0;
     int64_t removed = 0;
     const EventCursorPtr cursor = f.workspace->store()->events().subscribe(EventJournal::kFromBeginning);
     while (cursor->next(0)) {
-        if (cursor->current().kind() == EventKind::StageDiscarded && cursor->current().stage() == id) {
+        if (cursor->current().stage() != id) continue;
+        if (cursor->current().kind() == EventKind::ObjectsAdded) {
+            added += cursor->current().objectCount();
+        } else if (cursor->current().kind() == EventKind::StageDiscarded) {
             removed = std::max(removed, cursor->current().objectCount());
         }
     }
-    EXPECT_EQ(removed, 9) << "the discard removed the nine stored objects";
+    EXPECT_GT(added, 0) << "objects reached the store";
+    EXPECT_EQ(removed, added) << "the discard removed every stored object";
 }
 
 TEST(StageRunner, FailedRecordingIsLoggedAndTheOriginalPropagates) {
